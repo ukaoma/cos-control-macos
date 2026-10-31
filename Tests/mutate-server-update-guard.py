@@ -7,7 +7,8 @@ import pathlib, shutil, subprocess, sys, tempfile, time
 
 sys.stdout.reconfigure(line_buffering=True)
 root = pathlib.Path(sys.argv[1]).resolve()
-MAIN, CORE = "HelperSources/main.swift", "HelperSources/ProviderStatusCore.swift"
+MAIN = "HelperSources/main.swift"
+CORE = "HelperSources/ProviderStatusCore.swift"
 FILES = [MAIN, CORE, "HelperSources/PairingCore.swift", "HelperSources/SessionUsageCollector.swift", "Sources/SessionUsageCore.swift", "Sources/WorkSessionLinks.swift"]
 MUTANTS = [
     ("a named version is refused too", CORE, 'guard requested == "latest", let ahead', "guard let ahead", "a named older version still installs"),

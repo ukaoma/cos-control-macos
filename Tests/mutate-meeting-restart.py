@@ -7,7 +7,8 @@ import pathlib, re, shutil, subprocess, sys, tempfile, time
 
 sys.stdout.reconfigure(line_buffering=True)
 root = pathlib.Path(sys.argv[1]).resolve()
-MAIN, MODELS = "HelperSources/main.swift", "Sources/Models.swift"
+MAIN = "HelperSources/main.swift"
+MODELS = "Sources/Models.swift"
 HELPER = [MAIN, "HelperSources/ProviderStatusCore.swift", "HelperSources/PairingCore.swift", "HelperSources/SessionUsageCollector.swift", "Sources/SessionUsageCore.swift", "Sources/WorkSessionLinks.swift"]
 SMALL = ["Sources/KeyLanes.swift", MODELS]
 MUTANTS = [

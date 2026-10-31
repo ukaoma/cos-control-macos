@@ -732,7 +732,8 @@ need(helper.count('case "dictionary-suggestions": try emitDictionarySuggestions(
 seam = body(helper, "private func emitDictionarySuggestions() throws {")
 need("FileHandle.standardInput" in seam and "request(" not in seam and "/api/" not in seam and "speakerReviewToken" not in seam
      and '"dormant": true' in seam, "the seam reads stdin, reads no token and sends nothing")
-need(not any('"dictionary-suggestions"' in src for src in sources.values()) and "transcript-cleanup" not in "".join(sources.values()).replace(core, ""),
+# 0.5.359: COS cost's rules name "transcript-cleanup" as a source the audit ledger writes. A label read from a row is not a call.
+need(not any('"dictionary-suggestions"' in src for src in sources.values()) and "transcript-cleanup" not in "".join(text for name, text in sources.items() if name != "SessionUsageCore.swift").replace(core, ""),
      "Control does not call the seam or the server's routes yet")
 
 # 0.5.334 (server 6.84.0): a correction-only learn ("/pricing") carries the server's note from the helper to the store,
