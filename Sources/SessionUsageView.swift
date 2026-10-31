@@ -17,6 +17,8 @@ final class SessionUsageStore: ObservableObject {
     /// Someone who has never run Cursor has nothing to count, so the page does not offer it.
     let cursorOnThisMac = FileManager.default.fileExists(atPath: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cursor").path)
     var offersCursor: Bool { cursorEnabled || cursorOnThisMac }
+    /// Read each time, so installing it while the page is open counts.
+    var cursorCommandLine: String? { SessionUsagePresentation.cursorCommandLine(home: FileManager.default.homeDirectoryForCurrentUser.path) }
     private let helper = HelperClient()
     private var loop: Task<Void, Never>?
     func start() {
@@ -35,9 +37,7 @@ final class SessionUsageStore: ObservableObject {
         guard !loading else { return }
         loading = true
         defer { loading = false }
-        var arguments = importNew ? ["session-usage"] : ["session-usage", "--read-only"]
-        if cursorEnabled { arguments.append("--cursor") }
-        if cursorEnabled && cursorNow { arguments.append("--cursor-now") }
+        let arguments = SessionUsagePresentation.helperArguments(importNew: importNew, tracking: enabled, cursorEnabled: cursorEnabled, cursorNow: cursorNow)
         do {
             let result = try await helper.run(arguments, timeout: 45)
             guard result.ok else { throw HelperClientError.commandFailed(result.message) }
@@ -45,14 +45,25 @@ final class SessionUsageStore: ObservableObject {
             error = nil
         } catch { self.error = "Usage could not refresh: \(error.localizedDescription)" }
     }
-    /// The one place the feed turns on. A refresh already running must not swallow the first sync.
+    /// The one place the feed turns on. Paused reads nothing, so the choice is saved and the first sync waits for Resume.
     func countCursorTokens() {
         cursorEnabled = true
+        guard enabled else { return }
+        readWhileWaiting()
+    }
+    /// Back on after a pause: read at once instead of waiting on the five-minute timer.
+    func resume() {
+        enabled = true
+        readWhileWaiting()
+    }
+    /// A refresh already running must not swallow the first sync.
+    private func readWhileWaiting() {
         Task {
             while loading { try? await Task.sleep(for: .milliseconds(200)) }
             // The first read takes a few passes. Keep the person who just asked in the loop, without waiting on the
-            // five-minute timer, and bounded in case something stays pending.
+            // five-minute timer, and bounded in case something stays pending. Pausing part way stops it.
             for _ in 0..<12 {
+                guard enabled else { break }
                 await refresh(cursorNow: true)
                 guard report?.cursorFeed?.pending == true, error == nil else { break }
                 try? await Task.sleep(for: .seconds(15))
@@ -134,7 +145,7 @@ struct SessionUsageView: View {
             switch self {
             case .records: return "Usage records, about one for each model response."
             case .cacheReads: return "How much of all tokens was context read again from cache."
-            case .perMillion: return "API value for each million new tokens, priced records only."
+            case .perMillion: return "API value for each million new tokens, counting only rows where every record has a price."
             case .lastUsed: return "The last day with a record in this selection."
             }
         }
@@ -310,6 +321,7 @@ struct SessionUsageView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 filterRow
+                if !store.enabled { pausedBar.padding(.top, 12) }
                 if let exportStatus {
                     Text(exportStatus).font(COSType.body(11)).foregroundStyle(COSPalette.subtle).padding(.top, 8)
                 }
@@ -392,15 +404,17 @@ struct SessionUsageView: View {
                     .buttonStyle(.plain).font(COSType.body(12)).foregroundStyle(COSPalette.accent)
             }
             Spacer(minLength: 8)
-            if let updatedTime, !(narrow && hasFilter) {
-                Text("Updated \(updatedTime)").font(COSType.body(12)).foregroundStyle(COSPalette.subtle).monospacedDigit().lineLimit(1).fixedSize()
+            if let freshness = P.freshnessLabel(tracking: store.enabled, updatedTime: updatedTime), !(narrow && hasFilter) {
+                Text(freshness).font(COSType.body(12)).foregroundStyle(COSPalette.subtle).monospacedDigit().lineLimit(1).fixedSize()
             }
             if store.loading { ProgressView().controlSize(.mini).accessibilityLabel("Refreshing usage") }
             Menu {
-                Toggle("Track session usage on this Mac", isOn: $store.enabled)
+                Toggle("Track session usage on this Mac", isOn: Binding(get: { store.enabled }, set: { on in
+                    if on { store.resume() } else { store.enabled = false }
+                }))
                 if store.offersCursor {
-                    // Turning this on reads Keychain at once, so the item says so.
-                    Toggle("Count Cursor tokens (reads your sign-in from Keychain)", isOn: Binding(get: { store.cursorEnabled }, set: { on in
+                    // Turning this on reads Keychain at once, or once tracking resumes, so the item says so.
+                    Toggle(store.enabled ? "Count Cursor tokens (reads your sign-in from Keychain)" : "Count Cursor tokens once tracking resumes (reads your sign-in from Keychain)", isOn: Binding(get: { store.cursorEnabled }, set: { on in
                         if on { store.countCursorTokens() } else { store.cursorEnabled = false }
                     }))
                 }
@@ -429,14 +443,22 @@ struct SessionUsageView: View {
         if let error = store.error {
             Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger).padding(.top, 10)
         }
-        if let report = store.report, report.pendingFiles > 0 {
-            Text("Reading older history: \(report.pendingFiles) files remaining. Totals will grow until it finishes.")
-                .font(COSType.body(12)).foregroundStyle(COSPalette.subtle).padding(.top, 10)
+        let feed = store.report?.cursorFeed
+        ForEach(P.pendingNotes(tracking: store.enabled, pendingFiles: store.report?.pendingFiles ?? 0, feedMessage: feed?.pending == true ? feed?.message : nil), id: \.self) { note in
+            Text(note).font(COSType.body(12)).foregroundStyle(COSPalette.subtle).padding(.top, 10)
         }
-        if let feed = store.report?.cursorFeed, feed.pending, let message = feed.message {
-            Text(message + " Totals will grow until it finishes.")
-                .font(COSType.body(12)).foregroundStyle(COSPalette.subtle).padding(.top, 10)
+    }
+
+    /// Says so on the page, with the way back, because paused history otherwise reads like a live page.
+    private var pausedBar: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(P.pausedLine(pendingFiles: store.report?.pendingFiles ?? 0, hasHistory: !buckets.isEmpty))
+                .font(COSType.body(12)).foregroundStyle(COSPalette.subtle).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button("Resume tracking") { store.resume() }.font(COSType.body(12)).fixedSize()
         }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 8))
     }
 
     /// First load, or no history at all: one state instead of a chart, zero tiles and empty tables.
@@ -446,14 +468,14 @@ struct SessionUsageView: View {
                 ProgressView("Reading local usage…").controlSize(.small)
             } else if let error = store.error {
                 Text(error).foregroundStyle(COSPalette.danger)
-            } else if store.report == nil {
-                Text("Usage has not been read yet. Refresh reads Claude Code and Codex logs on this Mac.").foregroundStyle(COSPalette.subtle)
             } else {
-                Text("No usage recorded yet. Claude Code and Codex sessions on this Mac appear here once their logs are read. A missing tool is not zero usage.")
-                    .foregroundStyle(COSPalette.subtle)
+                Text(P.emptyWords(tracking: store.enabled, hasReport: store.report != nil)).foregroundStyle(COSPalette.subtle)
             }
-            if let report = store.report, report.pendingFiles > 0 {
-                Text("Reading older history: \(report.pendingFiles) files remaining. Totals will grow until it finishes.").foregroundStyle(COSPalette.subtle)
+            ForEach(P.pendingNotes(tracking: store.enabled, pendingFiles: store.report?.pendingFiles ?? 0, feedMessage: nil), id: \.self) { note in
+                Text(note).foregroundStyle(COSPalette.subtle)
+            }
+            if !store.enabled && store.cursorEnabled {
+                Text(P.cursorWaiting).foregroundStyle(COSPalette.subtle)
             }
             if store.offersCursor && !store.cursorEnabled {
                 Button("Count Cursor tokens") { store.countCursorTokens() }.font(COSType.body(12)).fixedSize()
@@ -491,10 +513,12 @@ struct SessionUsageView: View {
         return f.string(from: date)
     }
 
+    /// Sign-in needs the command line, so without one the button copies the way to get it.
     private var copySignInButton: some View {
-        Button("Copy sign-in command") {
+        let path = store.cursorCommandLine
+        return Button(path == nil ? "Copy install command" : "Copy sign-in command") {
             NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString("cursor-agent login", forType: .string)
+            NSPasteboard.general.setString(path.map(P.cursorSignInCommand) ?? P.cursorInstallCommand, forType: .string)
         }.font(COSType.body(12)).fixedSize()
     }
 
@@ -508,7 +532,7 @@ struct SessionUsageView: View {
                     if let unpricedNote { Text(unpricedNote) }
                     if let checked = cursorCheckedTime { Text("Cursor checked \(checked).") }
                     // While the table's Cursor row is showing, it already says this.
-                    if let feed = report.cursorFeed, feed.isProblem, !cursorRowVisible, let message = feed.message {
+                    if let feed = report.cursorFeed, !cursorRowVisible, let message = P.cursorProblem(feed, commandLine: store.cursorCommandLine, tracking: store.enabled) {
                         Text(message).foregroundStyle(COSPalette.amber)
                         if feed.state == .signIn || feed.state == .expired { copySignInButton }
                     }
@@ -677,7 +701,7 @@ struct SessionUsageView: View {
         let all = compare(false), new = compare(true)
         let days = Set(selected.map(\.day)).count
         let matching = buckets.filter { (provider == P.allProviders || $0.provider == provider) && (model == P.allModels || $0.model == model) }
-        let pace = P.monthPace(matching, now: Date(), timeZone: reportingZone)
+        let pace = P.monthPace(matching, now: Date(), timeZone: reportingZone, tracking: store.enabled)
         var list = [
             Figure(title: "API value", value: P.costCell(selected), note: priorNote(all.costDeltaLabel, all, pricedOnly: all.costDeltaPartial),
                    help: "What these tokens would cost at standard API rates. Not your subscription bill."),
@@ -691,7 +715,7 @@ struct SessionUsageView: View {
         if let pace, pace.hasPrice {
             list.append(Figure(title: "\(pace.month) so far", value: P.dollars(pace.usd) + (pace.complete ? "" : "+"),
                 note: pace.projectedUSD.map { "About \(P.dollars($0)) by \(pace.lastDay)" },
-                help: "This calendar month for the tool and model in view, whatever period is selected. The estimate is a straight line from the days so far."))
+                help: "This calendar month for the tool and model in view, whatever period is selected. " + (store.enabled ? "The estimate is a straight line from the days so far." : "There is no estimate while tracking is paused, because paused days are not a real pace.")))
         }
         return HStack(alignment: .top, spacing: 16) {
             ForEach(Array(list.enumerated()), id: \.element.id) { index, figure in
@@ -720,8 +744,7 @@ struct SessionUsageView: View {
     private func dayFigure(_ value: Double) -> String {
         measure == .cost ? P.dollars(value) : P.shortTokens(Int64(value))
     }
-    /// Measuring value, a day with no price has no figure to show or average.
-    private func dayCounted(_ summary: P.Summary) -> Bool { measure != .cost || summary.pricedEvents > 0 }
+    private func dayCounted(_ summary: P.Summary) -> Bool { P.dayCounted(summary, measure: measure) }
     private var thisYear: Int { Int(dateFormatter.string(from: Date()).prefix(4)) ?? 0 }
 
     @ViewBuilder private var dayByDay: some View {
@@ -745,6 +768,11 @@ struct SessionUsageView: View {
         }
     }
 
+    /// The same call the chart makes, so the legend cannot promise a line the chart did not draw.
+    private var drawsAverage: Bool {
+        P.chartAverage(points.map { P.PeriodPortion(key: $0.key, pricedEvents: $0.pricedEvents, value: Double($0.tokens)) }, measure: measure, partial: partialPeriods, lineChart: lineChart) != nil
+    }
+
     private var legend: some View {
         var totals: [String: Double] = [:]
         for point in points { totals[point.series, default: 0] += measure == .cost ? point.usd : Double(point.tokens) }
@@ -763,8 +791,7 @@ struct SessionUsageView: View {
                 }
             }
             if !lineChart && !partialPeriods.isEmpty {
-                // The chart draws an average only from four full periods.
-                Text("Lighter bars cover part of a \(scaleWord)" + (periodKeys.count - partialPeriods.count >= 4 ? " and are left out of the average." : "."))
+                Text(P.partialBarsNote(scaleWord: scaleWord, averageDrawn: drawsAverage))
             }
         }
         .font(COSType.body(12)).foregroundStyle(COSPalette.subtle)
@@ -858,7 +885,7 @@ struct SessionUsageView: View {
         }
         let cell = shareCell(rows)
         return HStack(spacing: 8) {
-            // A narrow window with every column on keeps the numbers and gives up the bars.
+            // A narrow window with three or more extra columns keeps the numbers and gives up the bars.
             if !(narrow && extraColumns.count > 2) {
                 // An unpriced row has no share of value, and an empty track would read as zero.
                 Capsule().fill(cell == "Unavailable" ? Color.clear : COSPalette.line).frame(width: 56, height: 5)
@@ -1012,7 +1039,7 @@ struct SessionUsageView: View {
     private var cursorRow: some View {
         let feed = store.report?.cursorFeed
         let on = store.cursorEnabled
-        let words = on ? (feed?.state == .ready ? "Cursor reports no token usage for this account." : feed?.message ?? "Reading your Cursor usage.") : "Cursor keeps its token counts on its servers. Counting them reads your Cursor sign-in from this Mac's Keychain and asks Cursor for your usage."
+        let words = P.cursorWords(on: on, tracking: store.enabled, feed: feed, commandLine: store.cursorCommandLine)
         return GridRow {
             HStack(spacing: 8) {
                 RoundedRectangle(cornerRadius: 2).strokeBorder(COSPalette.subtle, style: StrokeStyle(lineWidth: 1, dash: [2, 2])).frame(width: 9, height: 9)
@@ -1151,10 +1178,8 @@ struct SessionUsageChart: View {
             peak = totals.values.max() ?? 0
         }
         axisTop = SessionUsagePresentation.niceAxisTop(peak)
-        var periodTotals: [String: Double] = [:]
-        // A period with no price is not a $0 period.
-        for point in points where !point.key.isEmpty && (measure != .cost || point.pricedEvents > 0) { periodTotals[point.key, default: 0] += plotted(point) }
-        average = lineChart ? nil : SessionUsagePresentation.periodAverage(periodTotals, partial: partialPeriods)
+        average = SessionUsagePresentation.chartAverage(points.map { SessionUsagePresentation.PeriodPortion(key: $0.key, pricedEvents: $0.pricedEvents, value: plotted($0)) },
+            measure: measure, partial: partialPeriods, lineChart: lineChart)
     }
 
     init(points: [SessionUsageView.Point], rows: [SessionUsageBucket], monthly: Bool, costChart: Bool,
@@ -1250,7 +1275,7 @@ struct SessionUsageChart: View {
         P.axisKeys(periodKeys).compactMap { P.noon(of: P.periodStart($0), calendar: calendar) }
     }
 
-    /// One line beside the pointer: the inspector holds the breakdown.
+    /// The hover card's first line. Its rows come from hoverRows, and the inspector holds the rest of the breakdown.
     private func hoverLine(_ key: String) -> String {
         let group = periodValues(key)
         let counts = group.reduce(SessionUsageCounts()) { $0 + $1.counts }
@@ -1278,7 +1303,7 @@ struct SessionUsageChart: View {
 
     var body: some View {
         Chart {
-            ForEach(points.filter { measure != .cost || $0.pricedEvents > 0 }) { point in
+            ForEach(points.filter { P.hasFigure(measure, pricedEvents: $0.pricedEvents) }) { point in
                 if lineChart {
                     LineMark(x: .value("Date", point.date, unit: calendarUnit),
                         y: .value(yValueLabel, value(point)))
@@ -1388,8 +1413,8 @@ struct SessionUsageChart: View {
     }
 }
 
-/// The whole period until a bar is chosen, then that bar. Replaces the hover card, the period dropdown, the provider
-/// table and the token mix section, and stays usable from the keyboard through its step buttons.
+/// The whole period until a bar is chosen, then that bar: its tools, models and token types. It sits beside the chart's
+/// hover card and above the table, and stays usable from the keyboard through its step buttons.
 struct SessionUsageInspector: View {
     private typealias P = SessionUsagePresentation
     let title: String
@@ -1573,7 +1598,8 @@ struct SessionUsageInspector: View {
 
 /// A calendar and its margin read as one figure: each weekday row runs left to right through the weeks and ends in
 /// that weekday's average. Wide enough, a square carries its own number and reads like a ledger; narrow, it is a heat
-/// map and the number moves to the tooltip. Days with no logs stay hollow, because no record is not zero.
+/// map and the number moves to the tooltip. A day with no logs, or no price while measuring value, gets no gold, because
+/// no record is not zero: an outline up to 26 weeks, a faint fill past that. Past what fits, see CalendarFit.
 struct SessionUsageCalendar: View {
     private typealias P = SessionUsagePresentation
     let weeks: [SessionUsagePresentation.CalendarWeek]
@@ -1586,42 +1612,40 @@ struct SessionUsageCalendar: View {
     let emptyWords: String
     let detail: (SessionUsagePresentation.Summary) -> String
     let onPick: (String) -> Void
-    @State private var carriesNumbers = false
+    @State private var gridWidth: CGFloat = 0
     @Environment(\.colorScheme) private var colorScheme
     private static let names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    private static let spacing: CGFloat = 3
     private static let marginWidth: CGFloat = 150
 
     /// Too many squares to tab through or read aloud. The Daily breakdown list reaches every day instead.
     private var long: Bool { weeks.count > 26 }
-    private var rowHeight: CGFloat { carriesNumbers ? 26 : 16 }
-    private var peak: Double {
-        weeks.flatMap(\.days).compactMap { $0.summary }.filter(counted).map(value).max() ?? 0
-    }
 
     var body: some View {
-        let top = peak
+        let fit = P.calendarFit(weeks, width: Double(gridWidth))
+        let spacing = CGFloat(fit.spacing)
+        let rowHeight: CGFloat = fit.carriesNumbers ? 26 : 16
+        let top = fit.weeks.flatMap(\.days).compactMap { $0.summary }.filter(counted).map(value).max() ?? 0
         let topAverage = averages.max() ?? 0
-        VStack(alignment: .leading, spacing: Self.spacing) {
+        VStack(alignment: .leading, spacing: 3) {
             HStack(alignment: .bottom, spacing: 8) {
                 Color.clear.frame(width: 26, height: 14)
-                HStack(spacing: Self.spacing) {
-                    ForEach(weeks) { week in
+                HStack(spacing: spacing) {
+                    ForEach(fit.weeks) { week in
                         Color.clear.frame(maxWidth: .infinity, minHeight: 14, maxHeight: 14)
                             .overlay(alignment: .leading) {
                                 if let label = week.monthLabel { Text(label).fixedSize() }
                             }
                     }
                 }
-                .onGeometryChange(for: Bool.self) { $0.size.width / CGFloat(max(1, weeks.count)) - Self.spacing >= 44 } action: { carriesNumbers = $0 }
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { gridWidth = $0 }
                 Text("Daily average").frame(width: Self.marginWidth, alignment: .leading)
             }
             .font(COSType.body(11)).foregroundStyle(COSPalette.subtle)
             ForEach(0..<7, id: \.self) { weekday in
                 HStack(spacing: 8) {
                     Text(Self.names[weekday]).font(COSType.body(11)).foregroundStyle(COSPalette.subtle).frame(width: 26, alignment: .leading)
-                    HStack(spacing: Self.spacing) {
-                        ForEach(weeks) { week in cell(week.days[weekday], top: top) }
+                    HStack(spacing: spacing) {
+                        ForEach(fit.weeks) { week in cell(week.days[weekday], top: top, numbers: fit.carriesNumbers) }
                     }
                     HStack(spacing: 8) {
                         RoundedRectangle(cornerRadius: 2).fill(COSPalette.gold)
@@ -1637,12 +1661,16 @@ struct SessionUsageCalendar: View {
                 }
                 .frame(height: rowHeight)
             }
+            if fit.weeks.count < weeks.count {
+                Text("Showing the most recent \(fit.weeks.count) of \(weeks.count) weeks. The daily averages cover all of them, and Daily breakdown lists every day.")
+                    .font(COSType.body(11)).foregroundStyle(COSPalette.subtle).padding(.top, 5)
+            }
         }
         .accessibilityElement(children: long ? .ignore : .contain)
         .accessibilityLabel(long ? "Calendar of \(weeks.count) weeks. Daily breakdown lists each day." : "")
     }
 
-    @ViewBuilder private func cell(_ day: SessionUsagePresentation.CalendarDay, top: Double) -> some View {
+    @ViewBuilder private func cell(_ day: SessionUsagePresentation.CalendarDay, top: Double, numbers: Bool) -> some View {
         if !day.inRange {
             Color.clear.frame(maxWidth: .infinity)
         } else if let summary = day.summary, counted(summary) {
@@ -1651,7 +1679,7 @@ struct SessionUsageCalendar: View {
             Button { onPick(day.id) } label: {
                 RoundedRectangle(cornerRadius: 3).fill(COSPalette.gold.opacity(0.12 + 0.82 * level))
                     .overlay {
-                        if carriesNumbers {
+                        if numbers {
                             Text(cellFigure(summary)).font(COSType.body(11)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
                                 .foregroundStyle(colorScheme == .light || level > 0.65 ? COSPalette.ink : Color.primary)
                         }

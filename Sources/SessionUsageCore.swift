@@ -46,14 +46,14 @@ struct SessionUsageReport: Codable, Sendable {
 
 /// The Cursor account feed, as the helper last left it. Never carries the sign-in.
 struct SessionUsageCursorFeedStatus: Codable, Equatable, Sendable {
-    enum State: String, Codable, Sendable { case off, ready, backfilling, signIn, expired, blocked, failed, changed }
+    enum State: String, Codable, Sendable { case off, ready, backfilling, signIn, expired, blocked, keychainBusy, failed, changed }
     var state: State
     /// Plain words for anything other than off or ready.
     var message: String? = nil
     var lastSuccessAt: String? = nil
     /// More history is waiting, so the store refreshes again soon.
     var pending: Bool { state == .backfilling }
-    var isProblem: Bool { [.signIn, .expired, .blocked, .failed, .changed].contains(state) }
+    var isProblem: Bool { [.signIn, .expired, .blocked, .keychainBusy, .failed, .changed].contains(state) }
 }
 
 enum SessionUsageTimeScale: String, CaseIterable, Sendable {
@@ -579,6 +579,105 @@ enum SessionUsagePresentation {
         let full = totals.filter { !partial.contains($0.key) }.map(\.value)
         return full.count >= 4 ? full.reduce(0, +) / Double(full.count) : nil
     }
+    /// Measuring value, a day or period with no price has no figure. It is left out, never drawn or averaged as $0.
+    static func hasFigure(_ measure: SessionUsageMeasure, pricedEvents: Int) -> Bool { measure != .cost || pricedEvents > 0 }
+    static func dayCounted(_ summary: Summary, measure: SessionUsageMeasure) -> Bool { hasFigure(measure, pricedEvents: summary.pricedEvents) }
+    /// One series' part of one chart period.
+    struct PeriodPortion: Sendable {
+        let key: String
+        let pricedEvents: Int
+        let value: Double
+    }
+    /// The chart's average line, and the one thing that may promise it. Lines draw none.
+    static func chartAverage(_ portions: [PeriodPortion], measure: SessionUsageMeasure, partial: Set<String>, lineChart: Bool) -> Double? {
+        guard !lineChart else { return nil }
+        var totals: [String: Double] = [:]
+        for portion in portions where !portion.key.isEmpty && hasFigure(measure, pricedEvents: portion.pricedEvents) {
+            totals[portion.key, default: 0] += portion.value
+        }
+        return periodAverage(totals, partial: partial)
+    }
+    /// The legend line for lighter bars. It mentions the average only when a line is drawn to be left out of.
+    static func partialBarsNote(scaleWord: String, averageDrawn: Bool) -> String {
+        "Lighter bars cover part of a \(scaleWord)" + (averageDrawn ? " and are left out of the average." : ".")
+    }
+
+    // MARK: Paused and Cursor words. A paused pass reads nothing and stamps the report now, so these cannot imply a read.
+
+    /// The helper call for a refresh. Paused never imports, whoever asks, and the helper ignores --cursor-now on a read-only pass.
+    static func helperArguments(importNew: Bool, tracking: Bool, cursorEnabled: Bool, cursorNow: Bool) -> [String] {
+        let importing = importNew && tracking
+        var arguments = importing ? ["session-usage"] : ["session-usage", "--read-only"]
+        if cursorEnabled { arguments.append("--cursor") }
+        if cursorEnabled && cursorNow && importing { arguments.append("--cursor-now") }
+        return arguments
+    }
+    /// Beside the filters. Nil hides it.
+    static func freshnessLabel(tracking: Bool, updatedTime: String?) -> String? {
+        tracking ? updatedTime.map { "Updated \($0)" } : "Paused"
+    }
+    /// The lines that promise the totals will grow. Paused nothing is reading, so there are none.
+    static func pendingNotes(tracking: Bool, pendingFiles: Int, feedMessage: String?) -> [String] {
+        guard tracking else { return [] }
+        var notes: [String] = []
+        if pendingFiles > 0 { notes.append("Reading older history: \(pendingFiles) files remaining. Totals will grow until it finishes.") }
+        if let feedMessage { notes.append(feedMessage + " Totals will grow until it finishes.") }
+        return notes
+    }
+    static func pausedLine(pendingFiles: Int, hasHistory: Bool = true) -> String {
+        (hasHistory ? "Tracking is paused, so no new logs are being read and these numbers stop at the last read." : "Tracking is paused, so no logs are being read.")
+            + (pendingFiles > 0 ? " \(pendingFiles.formatted()) log \(pendingFiles == 1 ? "file is" : "files are") still waiting." : "")
+    }
+    /// The page with no history to show.
+    static func emptyWords(tracking: Bool, hasReport: Bool) -> String {
+        switch (tracking, hasReport) {
+        case (true, false): return "Usage has not been read yet. Refresh reads Claude Code and Codex logs on this Mac."
+        case (true, true): return "No usage recorded yet. Claude Code and Codex sessions on this Mac appear here once their logs are read. A missing tool is not zero usage."
+        case (false, false): return "Usage has not been read yet. Resume tracking to read Claude Code and Codex logs on this Mac."
+        case (false, true): return "Nothing has been read yet. Claude Code and Codex sessions on this Mac appear here after you resume tracking. A missing tool is not zero usage."
+        }
+    }
+    static let cursorWaiting = "Cursor is on. Nothing is read from Keychain or Cursor until tracking resumes."
+    /// Cursor's official installer (ProviderConnectModel.installCommand). Tests/session-usage-pins.py holds the two together.
+    static let cursorInstallCommand = "curl https://cursor.com/install -fsS | bash"
+    /// Cursor's command line, as a real file. Control opened from Finder has no login PATH, and the app alone does not
+    /// install it. It answers to two names (ProviderStatusCore.names).
+    static func cursorCommandLine(home: String, systemFolders: [String] = ["/opt/homebrew/bin", "/usr/local/bin"]) -> String? {
+        let names = ["cursor-agent", "agent"]
+        let manager = FileManager.default
+        for folder in ["\(home)/.local/bin"] + systemFolders {
+            for name in names {
+                let path = folder + "/" + name
+                var isFolder: ObjCBool = false
+                if manager.fileExists(atPath: path, isDirectory: &isFolder), !isFolder.boolValue, manager.isExecutableFile(atPath: path) { return path }
+            }
+        }
+        return nil
+    }
+    /// A full path, so it runs from a Terminal whose PATH does not have it.
+    static func cursorSignInCommand(_ path: String) -> String {
+        (path.contains(" ") ? "'\(path)'" : path) + " login"
+    }
+    /// What is wrong with the feed, in words that can be acted on from here, or nil. Sign-in repair needs the command
+    /// line, so without it the next step is getting it.
+    static func cursorProblem(_ feed: SessionUsageCursorFeedStatus?, commandLine: String?, tracking: Bool) -> String? {
+        guard let feed, feed.isProblem else { return nil }
+        if commandLine == nil, feed.state == .signIn || feed.state == .expired {
+            return "Counting Cursor needs its command line, and the Cursor app does not install it. Run \(cursorInstallCommand) in Terminal, then cursor-agent login, then \(tracking ? "refresh" : "resume tracking")."
+        }
+        return feed.message
+    }
+    /// The table's Cursor row, when Cursor has no rows yet.
+    static func cursorWords(on: Bool, tracking: Bool, feed: SessionUsageCursorFeedStatus?, commandLine: String?) -> String {
+        guard on else {
+            return "Cursor keeps its token counts on its servers. Counting them reads your Cursor sign-in from this Mac's Keychain and asks Cursor for your usage."
+                + (tracking ? "" : " Turning it on now saves the choice, and it waits until tracking resumes.")
+        }
+        if let problem = cursorProblem(feed, commandLine: commandLine, tracking: tracking) { return problem }
+        guard tracking else { return cursorWaiting }
+        return feed?.state == .ready ? "Cursor reports no token usage for this account." : feed?.message ?? "Reading your Cursor usage."
+    }
+
     /// API value for an average day. A day with no price is left out, never counted as $0, and + says some of the
     /// days counted have unpriced records.
     static func dailyValueLabel(_ rows: [SessionUsageBucket]) -> String {
@@ -654,6 +753,43 @@ enum SessionUsagePresentation {
         }
         return weeks
     }
+    /// What fits across a calendar's width. Past a year the gaps tighten, and no square goes under `calendarMinimumCell`:
+    /// the most recent weeks that fit stay and the oldest drop off. Scrolling sideways was the other choice, but it would
+    /// split each weekday row from its name and its average and put a second scroller inside a scrolling page.
+    struct CalendarFit: Sendable {
+        let weeks: [CalendarWeek]
+        let spacing: Double
+        let carriesNumbers: Bool
+        let cell: Double
+    }
+    static let calendarMinimumCell = 4.0
+    /// Over the real width of an 11 pt label, so a thinned row never touches. Checked against rendered pages.
+    static func calendarLabelWidth(_ label: String) -> Double { Double(label.count) * 6.5 + 2 }
+    static func calendarFit(_ all: [CalendarWeek], width: Double) -> CalendarFit {
+        let spacing = all.count > 52 ? 1.0 : 3.0
+        // Not measured yet: everything, labels as built. The first layout pass replaces it before anything is drawn.
+        guard width > 0, !all.isEmpty else { return CalendarFit(weeks: all, spacing: spacing, carriesNumbers: false, cell: 0) }
+        let fits = max(1, Int((width + spacing) / (calendarMinimumCell + spacing)))
+        var weeks = Array(all.suffix(fits))
+        // A cut calendar starts mid-history, so its first column says where it starts, with the year.
+        if weeks.count < all.count, let first = weeks[0].days.first(where: \.inRange), let day = SessionUsageDay(first.id) {
+            weeks[0] = CalendarWeek(id: weeks[0].id, monthLabel: String(monthNames[day.month - 1].prefix(3)) + " \(day.year)", days: weeks[0].days)
+        }
+        let pitch = (width + spacing) / Double(weeks.count)
+        // Years first, so a month never pushes a year out. The rest fill the room that is left, in order.
+        var kept: [(start: Double, end: Double)] = []
+        var labels: [Int: String] = [:]
+        let labelled = weeks.indices.compactMap { index in weeks[index].monthLabel.map { (index, $0) } }
+        for (index, label) in labelled.filter({ $0.1.contains(" ") }) + labelled.filter({ !$0.1.contains(" ") }) {
+            let start = Double(index) * pitch, end = start + calendarLabelWidth(label)
+            guard !kept.contains(where: { start < $0.end + 4 && $0.start < end + 4 }), end <= width + 8 else { continue }
+            kept.append((start, end))
+            labels[index] = label
+        }
+        let thinned = weeks.indices.map { CalendarWeek(id: weeks[$0].id, monthLabel: labels[$0], days: weeks[$0].days) }
+        return CalendarFit(weeks: thinned, spacing: spacing, carriesNumbers: width / Double(weeks.count) - spacing >= 44,
+                           cell: (width - spacing * Double(weeks.count - 1)) / Double(weeks.count))
+    }
     /// The average for each weekday, Monday first, across the days `counted` accepts. Measuring value, that leaves out
     /// a day with no price, which would otherwise read as a $0 day and pull the average down.
     static func weekdayAverages(_ rows: [SessionUsageBucket], counted: (Summary) -> Bool, value: (Summary) -> Double) -> [Double] {
@@ -670,13 +806,13 @@ enum SessionUsagePresentation {
         let usd: Double
         let hasPrice: Bool
         let complete: Bool
-        /// Straight line from the first day with usage this month. Nil until three days have passed since it, and on the
-        /// last day, when nothing is left to project.
+        /// Straight line from the first day with usage this month. Nil before its third day, counting that first day as
+        /// one, on the last day, when nothing is left to project, and while paused, when the days are not a real pace.
         let projectedUSD: Double?
         let lastDay: String
     }
     /// This calendar month so far, for the tool and model in view.
-    static func monthPace(_ rows: [SessionUsageBucket], now: Date, timeZone: TimeZone) -> MonthPace? {
+    static func monthPace(_ rows: [SessionUsageBucket], now: Date, timeZone: TimeZone, tracking: Bool = true) -> MonthPace? {
         guard let today = SessionUsageDay(dayFormatter(timeZone: timeZone).string(from: now)) else { return nil }
         let month = rows.filter { $0.day.hasPrefix(today.monthKey) }
         let usd = month.reduce(0.0) { $0 + $1.estimatedUSD }
@@ -687,7 +823,7 @@ enum SessionUsagePresentation {
         let elapsed = today.day - start + 1
         let projected = elapsed >= 3 && today.day < total && priced > 0 ? usd + usd / Double(elapsed) * Double(total - today.day) : nil
         return MonthPace(month: monthNames[today.month - 1], usd: usd, hasPrice: priced > 0, complete: priced == events,
-            projectedUSD: projected, lastDay: short(today.monthEnd))
+            projectedUSD: tracking ? projected : nil, lastDay: short(today.monthEnd))
     }
 
     /// A cost table cell's share of the priced total.
@@ -803,7 +939,6 @@ enum SessionUsagePresentation {
     struct PeriodComparison: Sendable {
         let dailyAvgTokens: Int64
         let dailyAvgRecords: Int
-        let dailyAvgUSD: Double
         let peakDay: Summary?
         let currentRange: ClosedRange<String>?
         let priorRange: ClosedRange<String>?
@@ -845,11 +980,10 @@ enum SessionUsagePresentation {
         let curUSD = selectedRows.reduce(0.0) { $0 + $1.estimatedUSD }
         let avgTokens: Int64 = days > 0 ? curTokens / Int64(days) : 0
         let avgRecords: Int = days > 0 ? Int((Double(curEvents) / Double(days)).rounded()) : 0
-        let avgUSD: Double = days > 0 ? curUSD / Double(days) : 0
         let peak = peakDay(selectedRows, measure: measure, excludingCacheReads: excludingCacheReads)
         let today = dayFormatter(timeZone: timeZone).string(from: now)
         guard let windows = comparisonWindows(period: period, now: now, timeZone: timeZone, customStart: customStart, customEnd: customEnd) else {
-            return PeriodComparison(dailyAvgTokens: avgTokens, dailyAvgRecords: avgRecords, dailyAvgUSD: avgUSD, peakDay: peak,
+            return PeriodComparison(dailyAvgTokens: avgTokens, dailyAvgRecords: avgRecords, peakDay: peak,
                 currentRange: nil, priorRange: nil, includesToday: false, priorTokens: 0, priorRecords: 0, priorUSD: 0, priorPriced: false,
                 hasPriorBaseline: false, partialPriorHistory: false, costDeltaPartial: false,
                 tokenDeltaLabel: "Unavailable", recordsDeltaLabel: "Unavailable", costDeltaLabel: "Unavailable")
@@ -872,7 +1006,7 @@ enum SessionUsagePresentation {
         let tokDelta = hasBaseline ? deltaPercent(current: Double(curTokens), prior: Double(pTokens)) : "Unavailable"
         let recDelta = hasBaseline ? deltaPercent(current: Double(curEvents), prior: Double(pEvents)) : "Unavailable"
         let usdDelta = (hasBaseline && curPriced > 0 && pPriced > 0) ? deltaPercent(current: curUSD, prior: pUSD) : "Unavailable"
-        return PeriodComparison(dailyAvgTokens: avgTokens, dailyAvgRecords: avgRecords, dailyAvgUSD: avgUSD, peakDay: peak,
+        return PeriodComparison(dailyAvgTokens: avgTokens, dailyAvgRecords: avgRecords, peakDay: peak,
             currentRange: windows.current, priorRange: prior, includesToday: windows.current.contains(today),
             priorTokens: pTokens, priorRecords: pEvents, priorUSD: pUSD, priorPriced: pPriced > 0,
             hasPriorBaseline: hasBaseline, partialPriorHistory: partialPrior,
