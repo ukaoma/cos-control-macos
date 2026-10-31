@@ -280,6 +280,8 @@ import Foundation
         for phrase in ["restart server", "update", "update the deck", "stop recording the demo", "please start recording the call with Dana right now", "run doctor please"] {
             check(returned(phrase) == .move("ask"), "[a near-command moves to Ask]", "\(phrase): \(returned(phrase))")
         }
+        // The rule on its own, because a saved answer can also send Return to Ask: a command's phrase inside a long sentence.
+        check(C.nearCommand("please start recording the call with Dana right now"), "[a near-command moves to Ask]", "a command's phrase in a long sentence")
         // A command in the list, still being typed, never starts a run either.
         check(returned("go to se") == .move("ask"), "[a command in the list moves to Ask]", "\(returned("go to se"))")
         // The whole phrase runs at once; a highlight runs what it highlights.

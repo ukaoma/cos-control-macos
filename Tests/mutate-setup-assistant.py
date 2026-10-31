@@ -207,12 +207,12 @@ MUTANTS = [
     ("center: server down still offers Start", C, "            return s.serverReachable ? nil : RecordingHeld.server\n", "            return nil\n", "[server down holds Start]"),
     ("center: saving says nothing", C, 'if !macListed, !r.stoppable, let line = r.saveLine { rows.append(info("saving", .doing, line, state: "Saving")) }', "if false, let line = r.saveLine { _ = line }", "[saving shows a line]"),
     # The command center: session titles
-    ("center: a title keeps its newline", C, "                if CharacterSet.whitespacesAndNewlines.contains(scalar) {\n", '                if scalar == " " {\n', "[titles are one line]"),
-    ("center: a title keeps its direction marks", C, "                } else if CharacterSet.controlCharacters.contains(scalar) || CharacterSet.illegalCharacters.contains(scalar) {\n", "                } else if false {\n", "[titles lose bidi and control]"),
+    ("center: a title keeps its newline", C, "                if CharacterSet.whitespacesAndNewlines.contains(scalar) {\n", '                if scalar == " " {\n', "[titles are cleaned on the row]"),
+    ("center: a title keeps its direction marks", C, "                } else if CharacterSet.controlCharacters.contains(scalar) || CharacterSet.illegalCharacters.contains(scalar) {\n", "                } else if false {\n", "[titles are cleaned on the row]"),
     ("center: a title is unbounded", C, "            return String(String(out).trimmingCharacters(in: .whitespaces).prefix(titleCap))\n", "            return String(out).trimmingCharacters(in: .whitespaces)\n", "[titles are bounded]"),
     ("center: a waiting title is not cleaned", C, 'Row(id: "waiting:" + item.id, kind: .waiting(item.id), group: .waiting, title: clean(item.title),', 'Row(id: "waiting:" + item.id, kind: .waiting(item.id), group: .waiting, title: item.title,',
      "[titles are cleaned on the row]"),
-    ("center: a title match highlights itself", C, "                sessions.append(row)\n", "                sessions.append(row); result.autoHighlight = result.autoHighlight ?? row.id\n", "[a title never takes the command's place]"),
+    ("center: a title match highlights itself", C, "                sessions.append(row)\n", "                sessions.append(row); result.autoHighlight = result.autoHighlight ?? row.id\n", "[a session match never highlights]"),
     ("center: a session lists twice", C, "                if let session = item.sessionID { guard seen.insert(session).inserted else { return } }\n", "", "[a session lists once]"),
     ("center: the search is uncapped", C, "                guard sessions.count < sessionCap, typed.count >= 2,", "                guard typed.count >= 2,", "[the search is capped]"),
     # The command center: confirms
@@ -238,7 +238,7 @@ MUTANTS = [
     ("knowledge: a failure reads as setup", C, '              phrases: ["cant install parakeet", "wont install parakeet", "cant download parakeet", "parakeet install failed", "parakeet setup failed"],\n', "", "[knowledge base: parakeet-install]"),
     ("knowledge: start recording misses", C, 'phrases: ["start recording", "start a recording", "stop recording",', 'phrases: ["start a recording", "stop recording",', "[knowledge base: mac-recording]"),
     ("knowledge: a transcript that never finished misses", C, 'phrases: ["transcript never finished", "transcript never finishes",', 'phrases: ["transcript never finishes",', "[knowledge base: transcript-unfinished]"),
-    ("knowledge: how to use dictation misses", C, 'phrases: ["how do i use dictation", "how does dictation work",', 'phrases: ["how does dictation work",', "[knowledge base: dictation-use]"),
+    ("knowledge: how to use dictation misses", C, 'phrases: ["how do i use dictation", "how does dictation work", "how to use dictation", "how do i dictate", "how to dictate", "use dictation", "start dictation",', 'phrases: ["start dictation",', "[knowledge base: dictation-use]"),
     ("knowledge: rename a voice misses", C, 'phrases: ["rename a voice", "rename voice",', 'phrases: ["rename voice",', "[knowledge base: voice-rename]"),
     ("knowledge: speaker names wrong misses", C, '"speaker names wrong", "speaker name wrong",', '"speaker name wrong",', "[knowledge base: voice-rename]"),
     # The command center's view half (Sources/ActivityWindow.swift), held by the pins
