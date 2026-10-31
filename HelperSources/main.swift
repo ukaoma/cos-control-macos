@@ -442,9 +442,30 @@ final class COSControlHelper {
         case "foundation-draft": try emitControl2Foundation(action: "draft", args: args)
         case "self-test": try selfTest()
         case "self-test-lock-crash": try selfTestLockCrash()
+        // Test-only, like the lock harness: refuses a real home. install() cannot be driven on a Mac whose own server
+        // holds the ports, so Tests/server-update-guard-checks.py reaches the same two steps through this.
+        // Test-only too: the real scan of a temporary home's pending-batch, for each answer lsof and launchd could give.
+        case "self-test-held-audio":
+            guard ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"]?.hasPrefix("/tmp/") == true else {
+                throw HelperError.message("The held audio probe requires an isolated temporary home.")
+            }
+            var fields = meetingSyncStatusFromPendingBatch(workCanRun: args.contains("--process"), serverAnswered: args.contains("--answered"))
+            applyIdleMeetingWorkOverlay(&fields)
+            emit(ok: true, message: "Held audio probe", details: fields)
+        case "self-test-update-guard":
+            guard ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"]?.hasPrefix("/tmp/") == true else {
+                throw HelperError.message("The update guard probe requires an isolated temporary home.")
+            }
+            let requested = option("--version", in: args) ?? "latest"
+            let release = try resolveVersion(requested)
+            try requireLatestMovesForward(requested: requested, resolved: release.version)
+            emit(ok: true, message: "Would install \(release.version)", details: ["version": release.version])
         case "session-usage":
             let collector = try SessionUsageCollector(home: home)
             let readOnly = args.contains("--read-only")
+            // The app's own Node first, beside this helper; the rest of the usual list covers the stable helper copy.
+            let bundledNode = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.deletingLastPathComponent().appendingPathComponent("BundledNode/bin/node").path
+            collector.compressedLogNodes = ([bundledNode] + executableCandidates("node")).filter { fm.isExecutableFile(atPath: $0) }
             let cursorEnabled = args.contains("--cursor")
             // The feed is opt-in and reads the network, so a read-only pass never touches it.
             let started = Date()
@@ -455,7 +476,7 @@ final class COSControlHelper {
             }
             // Control waits 45 seconds for this command, so a slow feed pass shortens the log import.
             let importSeconds = max(2, min(12, 40 - Date().timeIntervalSince(started)))
-            let report = try collector.refresh(maxBytes: readOnly ? 0 : 64*1024*1024, seconds: importSeconds, cursorEnabled: cursorEnabled, cursorSyncFailed: cursorSyncFailed)
+            let report = try collector.refresh(maxBytes: readOnly ? 0 : 64*1024*1024, seconds: importSeconds, cursorEnabled: cursorEnabled, cursorSyncFailed: cursorSyncFailed, readOnly: readOnly)
             let details = try JSONSerialization.jsonObject(with: JSONEncoder().encode(report)) as? [String: Any] ?? [:]
             emit(ok: true, message: "Local usage refreshed", details: details)
         case "status": emit(ok: true, message: "Status refreshed", details: statusDetails())
@@ -1482,6 +1503,7 @@ final class COSControlHelper {
         try prepareNodeIfNeeded()
         progress("Resolving npm release…")
         let release = try resolveVersion(requestedVersion)
+        try requireLatestMovesForward(requested: requestedVersion, resolved: release.version)
         try requireVideoUploadDowngradeSafe(targetVersion: release.version)
         try requireKeyLanesDowngradeSafe(targetVersion: release.version)
         let generation = try stageGeneration(version: release.version, integrity: release.integrity)
@@ -3074,7 +3096,12 @@ final class COSControlHelper {
                 "meetingSyncMeetings": Self.meetingSyncRows(meetings),
             ]
         }
-        return meetingSyncStatusFromPendingBatch()
+        // Saved audio on disk is not proof of work. Only a server can be saving it, so with no answer and no server
+        // process (nothing on the API ports, launchd has no pid) nothing can be running. A process that does not answer
+        // may still be mid-save, so that stays blocked: lsof and launchd are what tell the two apart.
+        guard health == nil else { return meetingSyncStatusFromPendingBatch(workCanRun: true, serverAnswered: true) }
+        let snapshot = ownershipSnapshot()
+        return meetingSyncStatusFromPendingBatch(workCanRun: !snapshot.allListenerPIDs.isEmpty || snapshot.servicePID != nil, serverAnswered: false)
     }
 
     /// 0.5.237: each meeting the server is polishing or saving, as it reports it
@@ -3197,7 +3224,7 @@ final class COSControlHelper {
         ]
     }
 
-    private func meetingSyncStatusFromPendingBatch() -> [String: Any] {
+    private func meetingSyncStatusFromPendingBatch(workCanRun: Bool, serverAnswered: Bool) -> [String: Any] {
         let root = configDir.appendingPathComponent("data/pending-batch", isDirectory: true)
         guard fm.fileExists(atPath: root.path) else {
             return [
@@ -3211,6 +3238,7 @@ final class COSControlHelper {
         }
         let now = Date()
         var activeMeetings = 0
+        var heldMeetings = 0
         var chunkTotal = 0
         var bestPercent: Int?
         var labels: [String] = []
@@ -3249,6 +3277,7 @@ final class COSControlHelper {
             }
             if !markerFresh && percent == nil && wavs == 0 { continue }
             activeMeetings += 1
+            if wavs > 0 { heldMeetings += 1 }
             chunkTotal += wavs
             if let percent {
                 bestPercent = bestPercent.map { ($0 + percent) / 2 } ?? percent
@@ -3261,10 +3290,24 @@ final class COSControlHelper {
                 labels.append("HQ polish · pending")
             }
         }
+        // Nothing can be running, so this holds nothing shut. Nothing is deleted either, and the row still says it is there.
+        if !workCanRun {
+            return [
+                "meetingSyncActive": false,
+                "meetingSyncPercent": NSNull(),
+                "meetingSyncLabel": heldMeetings == 0 ? "Idle" : "Audio kept for \(heldMeetings) meeting\(heldMeetings == 1 ? "" : "s")",
+                "meetingSyncBlocksRestart": false,
+                "meetingSyncCount": 0,
+                "meetingSyncHeldCount": heldMeetings,
+            ]
+        }
         let active = activeMeetings > 0
         let label: String
         if !active {
             label = "Idle"
+        } else if !serverAnswered {
+            // A running process that does not answer cannot say what these are, so the row does not guess.
+            label = "Server not answering · \(activeMeetings) meeting\(activeMeetings == 1 ? "" : "s") may be saving"
         } else if activeMeetings == 1, let only = labels.first {
             label = only
         } else if let bestPercent {
@@ -3278,6 +3321,7 @@ final class COSControlHelper {
             "meetingSyncLabel": label,
             "meetingSyncBlocksRestart": active,
             "meetingSyncCount": activeMeetings,
+            "meetingSyncUnconfirmed": active && !serverAnswered,
         ]
     }
 
@@ -3755,6 +3799,11 @@ final class COSControlHelper {
         var snapshot = ownershipSnapshot()
         guard snapshot.launchAgentKind == .knownLegacy else {
             throw HelperError.message("Adoption requires the exact recognized legacy LaunchAgent shape.")
+        }
+        // Asked before the legacy server stops: once it is down, install() can no longer see what it was running.
+        if requestedVersion == "latest" {
+            try prepareNodeIfNeeded()
+            try requireLatestMovesForward(requested: requestedVersion, resolved: resolveVersion(requestedVersion).version)
         }
         if !snapshot.allListenerPIDs.isEmpty {
             // Guided stop→install for the recognized LaunchAgent only. Refuse
@@ -7072,6 +7121,25 @@ final class COSControlHelper {
         let reported = health["threadAttachEnabled"] as? Bool == true
         guard reported == enabled else {
             throw HelperError.message("the restarted server reported Continue agent threads as \(reported ? "enabled" : "disabled")")
+        }
+    }
+
+    /// Every version this Mac can show it has: the server answering now, the managed manifest, and a legacy server's
+    /// own package, which is the only trace of it while it is stopped.
+    private func installedServerVersions() -> [String] {
+        var versions = [request("/api/health", timeout: 8)?.body?["server_version"] as? String, loadManifest()?.version].compactMap { $0 }
+        if let dir = legacyAppDir(),
+           let data = try? Data(contentsOf: URL(fileURLWithPath: dir, isDirectory: true).appendingPathComponent("package.json")),
+           let package = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           package["name"] as? String == packageName, let version = package["version"] as? String {
+            versions.append(version)
+        }
+        return versions
+    }
+
+    private func requireLatestMovesForward(requested: String, resolved: String) throws {
+        if let refusal = ServerUpdateGuard.refusal(requested: requested, resolved: resolved, installed: installedServerVersions(), canRollBack: loadManifest() != nil) {
+            throw HelperError.message(refusal)
         }
     }
 
@@ -21724,6 +21792,14 @@ final class COSControlHelper {
                 && maxTier["COS_MEETING_PROGRESSIVE_HQ_THREADS"] == "6",
             "Max transcription mapping"
         )
+        // Update Server only moves forward. The whole path runs in Tests/server-update-guard-checks.py.
+        try expect(ServerUpdateGuard.refusal(requested: "latest", resolved: "6.94.2", installed: ["6.96.3"], canRollBack: true)?.contains("nothing changed") == true,
+                   "latest older than what runs is refused")
+        try expect(ServerUpdateGuard.refusal(requested: "latest", resolved: "6.94.2", installed: ["6.94.2"], canRollBack: true) == nil, "the same version can reinstall")
+        try expect(ServerUpdateGuard.refusal(requested: "latest", resolved: "6.100.0", installed: ["6.96.3"], canRollBack: true) == nil, "versions compare by number, not text")
+        try expect(ServerUpdateGuard.refusal(requested: "6.90.0", resolved: "6.90.0", installed: ["6.96.3"], canRollBack: true) == nil, "a named version is deliberate")
+        try expect(ServerUpdateGuard.refusal(requested: "latest", resolved: "6.94.2", installed: [], canRollBack: false) == nil, "a fresh install has nothing to protect")
+        try expect(ServerUpdateGuard.refusal(requested: "latest", resolved: "6.94.2", installed: ["garbled"], canRollBack: true) == nil, "an unreadable version proves nothing and leaves update working")
         try expect(versionAtLeast("6.15.2", "6.15.2") && versionAtLeast("6.16.0", "6.15.2"), "transactional proof version gate")
         try expect(!versionAtLeast("6.15.1", "6.15.2") && !versionAtLeast("invalid", "6.15.2"), "legacy proof compatibility gate")
         try expect(redactPath(home.appendingPathComponent("workspace").path) == "~/workspace", "home path redaction")
