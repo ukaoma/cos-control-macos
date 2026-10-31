@@ -107,6 +107,27 @@ import CryptoKit
   for f in files349 {precondition((try! Data(contentsOf:stock349.appendingPathComponent(f))) == (try! Data(contentsOf:candidate.appendingPathComponent(f))),"349 rollback asset changed")}
   let stamp349=try fm.attributesOfItem(atPath:map349.path)[.modificationDate] as! Date
   precondition(refresh349() == .notApplicable && (try! fm.attributesOfItem(atPath:map349.path)[.modificationDate] as! Date)==stamp349,"349 upgrade must be idempotent")
-  print("PASS: V15, 348 and 349 upgrades, custom timing/scale/art protection, missing-asset atomic failure, ambient native slicing/cadence, 13 unchanged casts and both rollback generations")
+  // Motion V2 (Miles 2026-10-31): a Windu Motion V1 installation (0.5.350 to 0.5.359) receives the fragment-free working
+  // strips under new names; its motion-v1 files stay as they were for rollback, and a customized cast is left alone.
+  let historyV1=try JSONSerialization.jsonObject(with:Data(contentsOf:candidate.appendingPathComponent("stock-state-history.json"))) as! [String:Any]
+  let motionV1=(historyV1["maps"] as! [[String:Any]]).first{($0["name"] as? String)?.hasPrefix("Windu Motion V1") == true}!["state"]!
+  let stockV1=temp.appendingPathComponent("stockMotionV1")
+  try fm.createDirectory(at:stockV1,withIntermediateDirectories:true)
+  let filesV1=refs(motionV1)
+  for f in filesV1 {try fm.copyItem(at:candidate.appendingPathComponent(f),to:stockV1.appendingPathComponent(f))}
+  let mapV1=stockV1.appendingPathComponent(PetSpriteStore.stateFileName)
+  try JSONSerialization.data(withJSONObject:motionV1).write(to:mapV1)
+  func refreshV1()->PetSpriteStore.BundledCharacterRefreshResult {autoreleasepool{PetSpriteStore.refreshRecognizedBundledCharacter(into:stockV1,sourceRootOverride:sources,retainedMilesOverride:old)}}
+  let customizedV1=stockV1.appendingPathComponent("windu-motion-v1-working-c-full-1x.png"),originalV1=try Data(contentsOf:customizedV1)
+  try (originalV1+Data([1])).write(to:customizedV1)
+  precondition(refreshV1() == .notApplicable,"custom motion-v1 cast must survive")
+  try originalV1.write(to:customizedV1)
+  precondition(refreshV1() == .refreshed("jedi-miles-windu"),"motion-v1 stock must receive the fragment fix")
+  precondition((try! Data(contentsOf:mapV1))==next)
+  for f in refs(try JSONSerialization.jsonObject(with:next)){precondition((try! Data(contentsOf:stockV1.appendingPathComponent(f))) == (try! Data(contentsOf:candidate.appendingPathComponent(f))),"motion-v2 asset mismatch \(f)")}
+  for f in filesV1 {precondition((try! Data(contentsOf:stockV1.appendingPathComponent(f))) == (try! Data(contentsOf:candidate.appendingPathComponent(f))),"motion-v1 rollback asset changed")}
+  let stampV1=try fm.attributesOfItem(atPath:mapV1.path)[.modificationDate] as! Date
+  precondition(refreshV1() == .notApplicable && (try! fm.attributesOfItem(atPath:mapV1.path)[.modificationDate] as! Date)==stampV1,"motion-v1 upgrade must be idempotent")
+  print("PASS: V15, 348, 349 and motion-v1 upgrades, custom timing/scale/art protection, missing-asset atomic failure, ambient native slicing/cadence, 13 unchanged casts and both rollback generations")
  }
 }

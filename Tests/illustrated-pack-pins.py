@@ -21,18 +21,20 @@ assert hashlib.sha256((root/'Resources/DefaultPet/session-pet-states.json').read
 ambient=json.loads((root/'Tests/ambient-pack-sha256.json').read_text());assert len(ambient)==6
 for f,digest in ambient.items(): assert hashlib.sha256((pack/f).read_bytes()).hexdigest()==digest,f
 assert hashlib.sha256((pack/'ambient-v2-state-map.json').read_bytes()).hexdigest()=='2e020116b0c78da9346f07091c5514c92936c1f3b84af52a6a397fb2ef306500'
-motion=json.loads((root/'Tests/windu-motion-sha256.json').read_text());assert len(motion)==12
+motion=json.loads((root/'Tests/windu-motion-sha256.json').read_text());assert len(motion)==36
 for f,digest in motion.items(): assert hashlib.sha256((pack/f).read_bytes()).hexdigest()==digest,f
-assert hashlib.sha256((pack/'session-pet-states.json').read_bytes()).hexdigest()=='2ba8634a87ccbc0ec37bb10a383e4ffd76aba30122a31df120516f70513c39d1'
+assert hashlib.sha256((pack/'session-pet-states.json').read_bytes()).hexdigest()=='0292c01a15077ee7c28d61fb7d82b86b6959c2137fd55a30dc9375f18c7a2313'
 prior=json.loads((pack/'ambient-v2-state-map.json').read_text())['poses']
 for pose in set(rows)-{'working'}: assert rows[pose]==prior[pose],pose
 a,b=rows['working'],prior['working']
 for key in set(a)-{'file','retina','rotation'}: assert a[key]==b[key],key
 assert a['rotation']['handoffFrame']==b['rotation']['handoffFrame']
 for x,y in zip(a['rotation']['variants'],b['rotation']['variants']):
- assert x['id']==y['id'] and x['bodyFile']==y['bodyFile'] and x['entryFile']==y['entryFile']
+ c=x['id'][-1];assert x['id']==y['id'] and x['bodyFile']==f'windu-motion-v2-working-{c}-body-1x.png' and x['entryFile']==y['entryFile']
 for x,y in zip(a['retina']['variants'],b['retina']['variants']):
- assert x['id']==y['id'] and x['bodyFile']==y['bodyFile'] and x['entryFile']==y['entryFile'] and x['file'][2:]==y['file'][2:]
+ # Motion V2 (2026-10-31): cells 106-183 (s3, s4) of the full and body strips are the fragment-free copies.
+ c=x['id'][-1];v2=lambda kind:[f'windu-motion-v2-working-{c}-{kind}-2x-s3.png',f'windu-motion-v2-working-{c}-{kind}-2x-s4.png']
+ assert x['id']==y['id'] and x['bodyFile']==y['bodyFile'][:2]+v2('body') and x['entryFile']==y['entryFile'] and x['file'][2:]==v2('full')
 for pose,(count,interval,width) in {'idle':(82,.04,128),'waiting':(76,.04,160),'patrol':(8,.14,160)}.items():
  row=rows[pose];assert row['frames']==count and row['interval']==interval and row['renderScale']==1
  for filename,scale in [(row['file'],1),(row['retina']['file'][0],2)]:
