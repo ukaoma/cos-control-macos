@@ -187,7 +187,7 @@ MUTANTS = [
     ("center: sessions off ignored", C, "                if inputs.sessionsOff {\n", "                if false {\n", "[sessions off]"),
     ("center: sessions off says nothing waits", C, 'inputs.sessionsOff ? "Nothing else is waiting on you." : "Nothing is waiting on you."', '"Nothing is waiting on you."', "[sessions off never says nothing waits]"),
     ("center: extras listed as fixes", C, "board(s).suggestions.filter({ $0.tier == .repair }).prefix(fixCap)", "board(s).suggestions.prefix(fixCap)", "[fix only when broken]"),
-    ("center: two fixes share an id", C, 'fixes.append(Row(id: "fix:" + suggestion.id, kind: .action(action),', 'fixes.append(Row(id: "action:" + action.rawValue, kind: .action(action),', "[server down]"),
+    ("center: two fixes share an id", C, 'fixes.append(Row(id: "fix:" + suggestion.id, kind: .action(action),', 'fixes.append(Row(id: "action:" + action.rawValue, kind: .action(action),', "[row ids are unique]"),
     ("center: the server fix comes last", C, "            return live + (s.serverReachable ? rows + fixes : fixes + rows)\n", "            return live + rows + fixes\n", "[server down lists the fix first]"),
     ("center: Doctor listed twice", C, "if !fixes.contains(where: { $0.kind == .action(.runDoctor) }), let doctor", "if let doctor", "[Doctor listed once]"),
     ("center: the started run is not first", C, "            let running = startedFirst(inputs.running, inputs.startedRunID)\n", "            let running = inputs.running\n", "[a row opens the started run]"),
