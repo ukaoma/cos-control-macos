@@ -458,6 +458,13 @@ final class COSControlHelper {
             let report = try collector.refresh(maxBytes: readOnly ? 0 : 64*1024*1024, seconds: importSeconds, cursorEnabled: cursorEnabled, cursorSyncFailed: cursorSyncFailed)
             let details = try JSONSerialization.jsonObject(with: JSONEncoder().encode(report)) as? [String: Any] ?? [:]
             emit(ok: true, message: "Local usage refreshed", details: details)
+        case "cos-usage":
+            // Counts only. Reads the server's ledgers and the Work and G2 session logs, never in a paused Usage.
+            let collector = try SessionUsageCollector(home: home)
+            let environment = serverEnvironment()
+            let report = try collector.cosUsage(plistScripts: environment["COS_SCRIPTS_DIR"], dataDirectory: environment["COS_DATA_DIR"], importSessions: !args.contains("--read-only"))
+            let details = try JSONSerialization.jsonObject(with: JSONEncoder().encode(report)) as? [String: Any] ?? [:]
+            emit(ok: true, message: "COS usage refreshed", details: details)
         case "status": emit(ok: true, message: "Status refreshed", details: statusDetails())
         case "setup": try withMutationLock {
             // First run must never turn into adoption, repair or an update after

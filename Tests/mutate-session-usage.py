@@ -6,7 +6,7 @@ never mutated). A green baseline is required first; each mutant must land exactl
 and must fail on the check named for it. A failure on any other check is MISATTRIBUTED: the rule is not the thing
 its own test pins. A busy shared compile lock (exit 70) or a memory headroom refusal (75) waits and retries; it is
 never counted as a kill.
-Usage: python3 Tests/mutate-session-usage.py <repo root>
+Usage: python3 Tests/mutate-session-usage.py <repo root> [only mutants whose name starts with this, or several with |]
 """
 import pathlib, shutil, subprocess, sys, tempfile, time
 
@@ -303,6 +303,90 @@ MUTANTS = [
      "",
      "the feed is off until turned on", COLLECTOR),
 ]
+
+# 0.5.359: COS cost. Names start "cos:", so `mutate-session-usage.py <root> cos:` runs only these.
+MUTANTS += [
+    ("cos: a stamp ignores its offset", "minute * 60 + second - offset) + fraction", "minute * 60 + second) + fraction", "a -0500 stamp is that instant"),
+    ("cos: a no-colon offset is refused", "if u[i] == 58 { i += 1 }", "if u[i] == 58 { i += 1 } else { return nil }", "a -0500 stamp is that instant"),
+    ("cos: a stamp with no zone reads as UTC", "guard i < u.count else { return nil }\n        var offset = 0", "guard i < u.count else { return Double(day.serial * 86_400 + hour * 3600 + minute * 60 + second) }\n        var offset = 0", "a stamp with no zone names no instant"),
+    ("cos: an undated row is dropped", "else { undated += 1; return }", "else { return }", "a row with no parseable date is counted, not dropped"),
+    ("cos: a plain polish row ignores the split", 'if c == "dictation_autoclean" { return day < splitDay ? .dictationBeforeSplit : .dictation }', 'if c == "dictation_autoclean" { return .dictation }', "a plain polish row before the split is its own row"),
+    ("cos: an unknown source is guessed", "if s == \"g2-query\" || s == \"g2-voice\" || s == \"live-cos-ask\" || s.hasPrefix(\"meeting-ask\") { return .answers }\n        return .other", "if s == \"g2-query\" || s == \"g2-voice\" || s == \"live-cos-ask\" || s.hasPrefix(\"meeting-ask\") { return .answers }\n        return .answers", ("a blank caller goes to Other", "an unknown source goes to Other")),
+    ("cos: Work chat falls through to its source", 'if c.hasPrefix("work_") || ', 'if ', "Work chat is Work even with an Ask source"),
+    ("cos: a routine counts as an answer", 'c.hasPrefix("routine:") || ', '', "a routine is upkeep even with a G2 source"),
+    ("cos: an estimate adds measured dollars", "r.estimatedUSD += usd\n", "r.estimatedUSD += usd; r.measuredUSD += usd\n", "a character-count row is an estimate and adds no measured dollars"),
+    ("cos: a real row loses to its estimate", "if row.isMeasured { addMeasured(row, category: category); return }\n", "", "a provider_final row wins over its estimate and its cost wins over the card"),
+    ("cos: the card beats a reported cost", "var usd = row.realUSD\n", "var usd: Double? = nil\n", "a provider_final row wins over its estimate and its cost wins over the card"),
+    ("cos: an unpriced measured row is not marked", "} else if isCall { r.unpricedMeasuredCalls += 1 }", "}", "a measured row with no rate is unpriced, never $0 of spend"),
+    ("cos: a gist row counts beside its run", 'if row.caller == "lens_gist" || row.source == "g2-lens-gist", takeGist(at: at, ledgerModel: row.model) { return }\n', '', "an audit gist row and its run are one measured call"),
+    ("cos: a gist match ignores the gap", "var bestGap = Self.gistMatchSeconds", "var bestGap = Double.infinity", "a gist row too far from a run stays an estimate"),
+    ("cos: a gist match ignores the model", "where !gistUsed[index] && run.model == model && run.engine == engine", "where !gistUsed[index]", "a gist row with another model does not match"),
+    ("cos: one gist run absorbs many rows", "gistUsed[best] = true\n", "", "one gist run absorbs one audit row"),
+    ("cos: a G2 row counts beside its slice", "} else if runHasEvents[match.index] {", "} else if false {", "a G2 row with a run and a slice is one measured answer, not two"),
+    ("cos: a run match ignores the model", "for index in runs.indices where runs[index].model == row.model && fits(index) {", "for index in runs.indices where fits(index) {", "a G2 row with another model does not match a run"),
+    ("cos: a time match is not labelled", "if match.approximate { r.approximateMatches += 1 }\n", "", "a time and model match is labelled approximate"),
+    ("cos: a real row and its slice both count", "for index in runs.indices where runHasEvents[index] && !runRealAudit[index] {", "for index in runs.indices where runHasEvents[index] {", "a real G2 row is not counted again from its session slice"),
+    ("cos: a late result is another call", "addMeasured(row, category: category, isCall: false)", "addMeasured(row, category: category, isCall: true)", "a late result is not another call"),
+    ("cos: a late result is dropped", "if row.isMeasured { addMeasured(row, category: category, isCall: false) }\n", "", "a late result sums into its run"),
+    ("cos: a slice doubles a late result", "if runHasEvents[index] && !runRealAudit[index] { return }\n", "", "a slice already holding a run's late result does not add it twice"),
+    ("cos: an attached turn prices the provider name", "var pricedModel: String { resolvedModel.isEmpty ? model : resolvedModel }", "var pricedModel: String { model }", "an attached turn is priced from its resolved model"),
+    ("cos: a real row in a Work slice counts twice", "if category == .work && workSliceHolds(sessionID: row.sessionID, at: at) { return }\n", "", "a real row inside a Work session's slice is not counted twice"),
+    ("cos: a dispatch with no log is lost", "if workSessionsWithEvents.contains(runs[match.index].session) { return }\n                category = .work", "return", "a dispatch has no log, so its real row and late result are what Work has"),
+    ("cos: Work counts the whole session", "if let start = workStarts[event.session], event.at >= start - Self.runLeadSeconds {", "if workStarts[event.session] != nil {", "Work counts only from the moment the run started"),
+    ("cos: a copied message counts in each session", "if !event.id.isEmpty && !counted.insert(event.id).inserted { continue }\n            runHasEvents[index] = true", "runHasEvents[index] = true", "a message copied into a second session counts once in either order"),
+    ("cos: reading order decides a copied message", "if a != b { return a }\n", "", "a copied message goes to Work over a G2 run"),
+    ("cos: a tool result counts as typed", 'if blocks.isEmpty || blocks.contains(where: { $0["type"] as? String == "tool_result" }) { return nil }', 'if blocks.isEmpty { return nil }', "a tool result is never a typed turn"),
+    ("cos: the reader's tool result filter passes typed", '!has("\\"type\\":\\"tool_result\\""), let row', 'let row', "on real row shapes a tool result does not end a run and a typed turn does", COLLECTOR),
+    ("cos: a typed turn does not end a run", "if let closer = rest.first(where: { $0.kind != .end }) { return closer.at }\n", "", "a typed turn ends the run's window"),
+    ("cos: the run's own prompt ends it", "rest = after[after.index(after: first)...]\n", "", "a typed turn ends the run's window"),
+    ("cos: any later row is the run's own prompt", "after[first].at - run.start <= deliverySeconds,\n", "", "a row long after the handoff is not the run's own prompt"),
+    ("cos: a person's first turn is taken as the prompt", "after[first].kind == .handedIn || after[first].kind == .peer || (run.openedInApp && after[first].kind == .typed) {", "after[first].kind == .handedIn || after[first].kind == .peer || after[first].kind == .typed {", "a person typing right after a handoff ends the run, because their words are not its prompt"),
+    ("cos: a background notice ends a run", 'if row["isMeta"] as? Bool == true || origin == "task-notification" { return nil }', 'if row["isMeta"] as? Bool == true { return nil }', "a background task's notice is not a typed turn"),
+    ("cos: an end is guessed", "return rest.last(where: { $0.kind == .end })?.at\n", "return rest.last?.at ?? run.start + 3600\n", "a run with no provable end is said and stays out of the lead figure"),
+    ("cos: the last turn is not the end", "return rest.last(where: { $0.kind == .end })?.at\n", "return rest.first(where: { $0.kind == .end })?.at\n", "a background task's turn is still the run"),
+    ("cos: an unproven run counts in the lead", "else { work.unprovenRuns += 1; continue }", "else { work.unprovenRuns += 1; windows[run.session, default: []].append(run.start...Double.infinity); continue }", "a run with no provable end is said and stays out of the lead figure"),
+    ("cos: the lead is the wider figure", "if windows[event.session]?.contains(where: { $0.contains(event.at) }) == true {", "if true {", "a typed turn ends the run's window"),
+    ("cos: a subagent's row moves a run", "guard let kind, !isSubagent, let stamp", "guard let kind, let stamp", "on real row shapes a tool result does not end a run and a typed turn does", COLLECTOR),
+    ("cos: a fork counts in its source", "if let value = receipt.forkChildID ?? receipt.sessionID {", "if let value = receipt.sessionID {", "on real row shapes a tool result does not end a run and a typed turn does", COLLECTOR),
+    ("cos: Codex turns do not move a run", 'case "task_started": return .handedIn\n', '', "Codex turns open and close by event type"),
+    ("cos: the wider figure reaches the page as the lead", "report.work.measuredUSD + (report.rows.first { $0.category == .work }?.measuredUSD ?? 0)", "report.work.widerUSD + (report.rows.first { $0.category == .work }?.measuredUSD ?? 0)", "the Work line adds its slices and its real rows"),
+    ("cos: the wider figure is not said", 'guard wider - workUSD(report) >= 0.01 else { return nil }', 'return nil', "the wider figure is said plainly"),
+    ("cos: a turn outside a run counts", "event.at >= self.runs[$0].start - Self.runLeadSeconds && event.at <= self.runs[$0].end + Self.runTailSeconds", "event.at > 0", "a turn outside any run in the same session is not COS's"),
+    ("cos: a new-rate slice does not add", "== nil ? usd ?? 0 : 0\n", "== nil ? 0 : 0\n", "a slice priced only by a new rate adds to the total, because Usage has no price for it"),
+    ("cos: Cursor spend always adds", "(cursorFeedOn ? 0 : $1.addsUnlessCursorFeedUSD)", "$1.addsUnlessCursorFeedUSD", "with the feed on, Usage already holds Cursor spend"),
+    ("cos: Cursor spend never adds", "(cursorFeedOn ? 0 : $1.addsUnlessCursorFeedUSD)", "0", "with the feed off, the total adds Cursor spend"),
+    ("cos: Luna does not follow Cursor", 'return m.hasPrefix("cursor") || m.hasPrefix("luna")', 'return m.hasPrefix("cursor")', "Cursor and Luna run through Cursor"),
+    ("cos: Cursor spend goes in the plain additions", "{ r.addsUnlessCursorFeedUSD += usd }", "{ r.addsToTotalUSD += usd }", "Cursor spend is held apart from the plain additions"),
+    ("cos: the total ignores the window", "let usage = usageBuckets.filter { bounds.contains($0.day) }.reduce(0.0)", "let usage = usageBuckets.reduce(0.0)", "the total is Usage's window plus what it cannot see"),
+    ("cos: the total leaves out what Usage cannot see", "return usage + adds + report.work.addsToTotalUSD", "return usage", ("with the feed off, the total adds Cursor spend", "the total is Usage's window plus what it cannot see")),
+    ("cos: Work joins COS's figure", "report.rows.filter { $0.category != .work }", "report.rows", "Work stays out of COS's own figure"),
+    ("cos: a share can pass the whole", "guard usage == .ready, measured > 0, ran > 0, measured <= ran else { return nil }", "guard usage == .ready, measured > 0, ran > 0 else { return nil }", "a share never exceeds what it divides"),
+    ("cos: a share while Usage is paused", "guard usage == .ready, measured > 0, ran > 0, measured <= ran else { return nil }", "guard measured > 0, ran > 0, measured <= ran else { return nil }", "a paused Usage has no share"),
+    ("cos: nothing measured still says measured", "guard measured > 0 else { return (", "guard measured >= 0 else { return (", "with nothing measured the headline names no dollars"),
+    ("cos: a figure bigger than its total stays", "usage == .unavailable || ran <= 0 || usd > ran {", "usage == .unavailable || ran <= 0 {", "a figure bigger than the total drops the total"),
+    ("cos: still reading is not said", 'let lead = report.sessions.stillReading > 0 ? "Measured so far: COS used " : "Measured: COS used "', 'let lead = "Measured: COS used "', "sessions still being read say so far"),
+    ("cos: an estimate sorts with measured rows", "if row.measuredUSD > 0 { return 0 }", "if row.measuredUSD > 0 || row.estimatedUSD > 0 { return 0 }", "estimated rows sort below measured ones, then No price, then empty"),
+    ("cos: the comparison ignores the price", "money(share * price)", "money(share * 17000)", "the comparison is share times price"),
+    ("cos: a key file joins the list", 'static let dataFiles = ["claude-runs.jsonl",', 'static let dataFiles = ["subq-key.json", "claude-runs.jsonl",', "no file on the helper's list is a key file"),
+    ("cos: the door opens anything", "list.contains(name) && !name.lowercased().contains(\"key\")", "true", "the door refuses a key file"),
+    ("cos: the door trusts the list about keys", "list.contains(name) && !name.lowercased().contains(\"key\")", "list.contains(name)", "a key file is refused even if someone lists it"),
+    ("cos: a slice reads another session's rows", 'guard row["sessionId"] as? String == target.id, let event', 'guard let event', "a slice keeps one fragment per message, adds subagents and leaves another session's rows out", COLLECTOR),
+    ("cos: a subagent log is missed", "found[target, default: []].append(agents.appendingPathComponent(agent))\n", "", "a slice keeps one fragment per message, adds subagents and leaves another session's rows out", COLLECTOR),
+    ("cos: a pass ignores its time", "let deadline = Date().addingTimeInterval(seconds)\n        // Compressed", "let deadline = Date().addingTimeInterval(3600)\n        // Compressed", "no time budget reads nothing and says the sessions are still to read", COLLECTOR),
+    ("cos: a pass ignores its per-file budget", "var budget = min(remaining, fileBytes)", "var budget = remaining", "a byte budget stops a pass part way through a log", COLLECTOR),
+    ("cos: a paused Usage still reads logs", "if importSessions {", "if true {", "a paused Usage reads no session logs", COLLECTOR),
+    ("cos: the home audit mixes in", "accumulator.add(CosAuditRow(json: line)) } ?? 0\n            break", "accumulator.add(CosAuditRow(json: line)) } ?? 0", "the server's audit is read and the home file does not mix in", COLLECTOR),
+    (".env opened with the scripts folder known".join(["cos: ", ""]), "if plistScripts == nil {", "if true {", "with the server's scripts folder known, .env is never opened", COLLECTOR),
+    ("cos: failed receipts count as runs", ', !["failed", "canceled"].contains(receipt.status ?? "")', '', "failed and old receipts are out, and a Cursor run has no log to read", COLLECTOR),
+    ("cos: a compressed session is not said", "guard let pass else { progress.compressed += 1; return }", "guard let pass else { return }", "the reader says which sessions have no log and which are compressed", COLLECTOR),
+    ("cos: a missing log is not said", "if files.isEmpty { progress.noLogs += 1; continue }", "if files.isEmpty { continue }", "the reader says which sessions have no log and which are compressed", COLLECTOR),
+    ("cos: an oversized row stops the log", "cursor.skippingLongLine = true\n                            cursor.offset += UInt64(bytes.count)\n                            continue", "break", "an oversized row does not stop the session finishing", COLLECTOR),
+    ("cos: a busy history fails the page", "catch { report.sessions.busy = true }", "catch { throw error }", "a busy history keeps the page and says so", COLLECTOR),
+    ("cos: a row past the window is stored", "let at = CosCostRules.epoch(event.timestamp), at >= retainFrom else { return }", "let at = CosCostRules.epoch(event.timestamp) else { return }", "a row older than the window is not stored", COLLECTOR),
+]
+if len(sys.argv) > 2:
+    # One name prefix, or several with | to run in that order, for when the compile lock is busy and only some can run.
+    MUTANTS = [m for wanted in sys.argv[2].split("|") for m in MUTANTS if m[0].startswith(wanted)]
 
 
 def compile_and_run(work):

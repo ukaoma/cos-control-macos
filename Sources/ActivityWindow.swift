@@ -514,7 +514,8 @@ struct ActivityWindow: View {
     /// 0.5.278: Settings, "Show live meeting transcript" (the Meetings tab's live dot reads it).
     @AppStorage(LiveTranscript.enabledKey) private var showLiveTranscript = true
     @State private var showingSettings = false
-    @State private var showingSessionUsage = false
+    @State private var sessionsPane: SessionsPane = .sessions
+    private var showingSessionUsage: Bool { sessionsPane != .sessions }
     @State private var workSubview: ActivityWorkSubview = .tasks
     @State private var selectedTurnID: String?
     /// The archive drill-through: a date, then a chat index inside that date.
@@ -2299,9 +2300,10 @@ struct ActivityWindow: View {
             sectionHeader(
                 section: .sessions,
                 title: "Sessions",
-                detail: showingSessionUsage ? "Token usage and estimated API value" : sessionsStatus,
+                detail: sessionsPane == .cost ? "What COS itself used, on top of your sessions" : showingSessionUsage ? "Token usage and estimated API value" : sessionsStatus,
                 refresh: { Task {
-                    if showingSessionUsage { await model.sessionUsage.refresh(importNew: model.sessionUsage.enabled, cursorNow: true) }
+                    if sessionsPane == .cost { await CosCostStore.shared.refresh(importSessions: model.sessionUsage.enabled) }
+                    else if showingSessionUsage { await model.sessionUsage.refresh(importNew: model.sessionUsage.enabled, cursorNow: true) }
                     else { await model.loadClaudeSessions(force: true) }
                 } },
                 refreshDisabled: showingSessionUsage ? false : model.claudeSessionsLoading,
@@ -2315,11 +2317,13 @@ struct ActivityWindow: View {
                 }
             )
             HStack {
-                COSViewSwitch("Sessions view", selection: $showingSessionUsage,
-                              options: [COSViewOption(false, "Sessions"), COSViewOption(true, "Usage")])
+                COSViewSwitch("Sessions view", selection: $sessionsPane,
+                              options: [COSViewOption(.sessions, "Sessions"), COSViewOption(.usage, "Usage"), COSViewOption(.cost, "COS cost")])
                 Spacer()
             }.padding(.horizontal, 22).padding(.vertical, 10)
-            if showingSessionUsage {
+            if sessionsPane == .cost {
+                CosCostView(usage: model.sessionUsage)
+            } else if showingSessionUsage {
                 SessionUsageView(store: model.sessionUsage)
             } else {
             sessionsSearchBar

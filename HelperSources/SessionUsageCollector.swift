@@ -480,3 +480,393 @@ final class SessionUsageCollector {
         return SessionUsageReport(buckets:buckets,updatedAt:iso.string(from:Date()),timeZone:zone.identifier,filesIndexed:cursors.count,pendingFiles:max(0,pending.count-completed),unreadableFiles:unreadable+cursors.reduce(0){$0+$1.oversizedRows},malformedRows:cursors.reduce(0){$0+$1.malformed},missingBaselineEvents:cursors.reduce(0){$0+$1.gaps},coverage:["Claude Code and Codex local session logs, including archived sessions and subagents.",cursorEnabled ? "Cursor usage comes from your Cursor account, using the sign-in its command line keeps in this Mac's Keychain. Only counts, dates, model names and each request's reported cost are stored." : "Cursor is counted only after you turn it on. Its token counts are kept on Cursor's servers.","Browser-only chats, other Macs and providers without token records are not included.","History starts at the earliest usage still present on this Mac. Deleted logs cannot be backfilled. Incomplete final lines wait for the next write; rows larger than 8 MiB are skipped and reported as coverage gaps.","Input, cache read, cache write and output are disjoint. Reasoning is included in output."],pricingVersion:SessionUsagePricing.version,cursorFeed:try cursorFeedStatus(enabled:cursorEnabled,syncFailed:cursorSyncFailed))
     }
 }
+
+// MARK: - COS cost: the bounded reader behind `cos-usage` (0.5.359)
+//
+// Reads ledgers and session logs, writes only its own two tables, and returns counts. The rules are in SessionUsageCore.
+// The audit is an unlocked append file that grows without rotation, so it is streamed a line at a time and nothing of it
+// is held across passes. The session slice table exists because `events` has no session id and reimporting it would cost
+// 25 GB of reading: it stores the same counts again, for Work and G2 sessions only, keyed by a digest of the session id.
+extension SessionUsageCollector {
+    /// Long enough for the ledgers plus a real slice of logs, inside the 45 seconds Control waits.
+    static let cosPassSeconds: TimeInterval = 20
+    static let cosPassBytes = 4*1024*1024*1024
+    /// So one huge log cannot take a whole pass from the others. Time bounds the pass whatever this says.
+    static let cosFileBytesPerPass = 1536*1024*1024
+    private static let cosChunk = 8*1024*1024
+    /// A little past the window, so a window edge never moves onto rows already thrown away.
+    private static let cosRetentionSeconds = 32.0*86_400
+
+    struct CosSliceTarget: Hashable {
+        var provider: String // "claude" or "codex"
+        var id: String
+    }
+
+    private func cosPrepareTables() throws {
+        // Skips the write when they exist, so another command holding the lock costs nothing on an ordinary pass.
+        if try query("SELECT COUNT(*) FROM sqlite_master WHERE name IN ('cos_slice_events','cos_slice_marks')").first?.first == "2" { return }
+        try Self.execute(db, "CREATE TABLE IF NOT EXISTS cos_slice_marks(session TEXT NOT NULL, at REAL NOT NULL, kind TEXT NOT NULL, PRIMARY KEY(session, at, kind)); CREATE INDEX IF NOT EXISTS cos_slice_mark_at ON cos_slice_marks(at); CREATE TABLE IF NOT EXISTS cos_slice_files(path TEXT PRIMARY KEY, session TEXT NOT NULL, size INTEGER NOT NULL, modified REAL NOT NULL, state TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cos_slice_events(id TEXT PRIMARY KEY, event TEXT NOT NULL, session TEXT NOT NULL, at REAL NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL, output INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL, one_hour INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS cos_slice_at ON cos_slice_events(at);")
+    }
+
+    /// Lines of an append-only file, without holding it. Returns the count of lines that were not valid JSON objects. A
+    /// final line with no newline may still be being written, so it is left for the next read rather than counted.
+    private static func cosForEachJSONLine(_ file: URL, _ body: ([String: Any]) -> Void) -> Int? {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
+        defer { try? handle.close() }
+        var unreadable = 0
+        var carry = Data()
+        while let chunk = try? handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+            carry.append(chunk)
+            guard let last = carry.lastIndex(of: 10) else { continue }
+            autoreleasepool {
+                for line in carry[carry.startIndex...last].split(separator: 10) {
+                    if let row = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any] { body(row) } else { unreadable += 1 }
+                }
+            }
+            carry = Data(carry[carry.index(after: last)...])
+        }
+        return unreadable
+    }
+
+    /// Where the Work and G2 logs are. One listing of each root per pass, so it costs the same for 5 sessions or 500.
+    private func cosLocate(_ targets: Set<CosSliceTarget>) -> [CosSliceTarget: [URL]] {
+        let fm = FileManager.default
+        var found: [CosSliceTarget: [URL]] = [:]
+        let claude = Dictionary(uniqueKeysWithValues: targets.filter { $0.provider == "claude" }.map { ($0.id, $0) })
+        if !claude.isEmpty {
+            let root = home.appendingPathComponent(".claude/projects")
+            for project in (try? fm.contentsOfDirectory(atPath: root.path)) ?? [] {
+                let folder = root.appendingPathComponent(project)
+                for name in (try? fm.contentsOfDirectory(atPath: folder.path)) ?? [] where name.hasSuffix(".jsonl") {
+                    guard let target = claude[String(name.dropLast(6))] else { continue }
+                    found[target, default: []].append(folder.appendingPathComponent(name))
+                    // A subagent's log carries its parent's session id, and its usage is the session's.
+                    let agents = folder.appendingPathComponent(String(name.dropLast(6))).appendingPathComponent("subagents")
+                    for agent in (try? fm.contentsOfDirectory(atPath: agents.path)) ?? [] where agent.hasSuffix(".jsonl") {
+                        found[target, default: []].append(agents.appendingPathComponent(agent))
+                    }
+                }
+            }
+        }
+        let codex = targets.filter { $0.provider == "codex" }
+        if !codex.isEmpty {
+            let ids = Dictionary(uniqueKeysWithValues: codex.map { ($0.id, $0) })
+            for root in [".codex/sessions", ".codex/archived_sessions"] {
+                guard let walk = fm.enumerator(at: home.appendingPathComponent(root), includingPropertiesForKeys: nil) else { continue }
+                for case let file as URL in walk {
+                    let name = file.lastPathComponent
+                    guard name.hasSuffix(".jsonl") || name.hasSuffix(".jsonl.zst"), name.count > 36 else { continue }
+                    let stem = name.hasSuffix(".zst") ? String(name.dropLast(10)) : String(name.dropLast(6))
+                    if let target = ids[String(stem.suffix(36))] { found[target, default: []].append(file) }
+                }
+            }
+        }
+        return found
+    }
+
+    /// For the tests: how many session rows the table holds, so a row past the window can be seen not to be stored.
+    func cosStoredEventCount() throws -> Int {
+        Int(try query("SELECT COUNT(*) FROM cos_slice_events").first?.first ?? "") ?? 0
+    }
+
+    /// THE COMPRESSED LOG HOOK. Codex keeps most rollouts as `.jsonl.zst`, and `claude/usage-qa-fixes` brings the reader
+    /// (`readCompressedLog` and `compressedFilter`, through the bundled Node). When that merges, this is the one place to
+    /// plug it in: hand each usage row's bytes to `onLine` from decoded offset `skip`, stop at `limit` bytes or `deadline`,
+    /// and return how far the decoder got. Nil means it cannot read them yet, and the page says so. Its filter must also pass
+    /// `"task_started"`, `"task_complete"` and `"turn_aborted"` rows, or Codex Work runs have no provable end.
+    private func cosReadCompressedRows(_ file: URL, skip: UInt64, limit: Int, deadline: Date, onLine: (Data) throws -> Void) throws -> (decodedTo: UInt64, finished: Bool)? {
+        nil
+    }
+
+    /// The hook's caller. A compressed file never changes, so once it is finished it stays finished.
+    private func cosReadCompressedSlice(_ target: CosSliceTarget, file: URL, known: [String]?, retainFrom: Double, deadline: Date, progress: inout CosSliceProgress, open: inout Set<CosSliceTarget>) throws {
+        var cursor = known.flatMap { $0[3].data(using: .utf8) }.flatMap { try? JSONDecoder().decode(Cursor.self, from: $0) } ?? Cursor()
+        if cursor.waitingForAppend { return }
+        let sessionKey = Self.digest(target.provider + ":" + target.id)
+        let pass = try cosReadCompressedRows(file, skip: cursor.offset, limit: Self.cosFileBytesPerPass, deadline: deadline) { line in
+            try cosHandle(line: line, target: target, cursor: &cursor, sessionKey: sessionKey, retainFrom: retainFrom)
+        }
+        guard let pass else { progress.compressed += 1; return }
+        cursor.offset = pass.decodedTo
+        cursor.waitingForAppend = pass.finished
+        cursor.scannedAt = Date().timeIntervalSince1970
+        try run("INSERT OR REPLACE INTO cos_slice_files VALUES(?,?,0,0,?)", [file.path, sessionKey, String(decoding: try JSONEncoder().encode(cursor), as: UTF8.self)])
+        if !pass.finished { open.insert(target) }
+    }
+
+    private func cosRecord(_ event: Event, sessionKey: String, oneHour: Int64, retainFrom: Double) throws {
+        guard event.counts.total > 0, let at = CosCostRules.epoch(event.timestamp), at >= retainFrom else { return }
+        let c = event.counts
+        try run("""
+            INSERT INTO cos_slice_events VALUES(?,?,?,CAST(? AS REAL),?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+            input=excluded.input, output=excluded.output, cache_read=excluded.cache_read, cache_write=excluded.cache_write, one_hour=excluded.one_hour
+            WHERE excluded.input+excluded.output+excluded.cache_read+excluded.cache_write > cos_slice_events.input+cos_slice_events.output+cos_slice_events.cache_read+cos_slice_events.cache_write
+            """, [Self.digest(sessionKey + "|" + event.id), event.id, sessionKey, String(at), event.provider, event.model, String(c.input), String(c.output), String(c.cacheRead), String(c.cacheWrite), String(oneHour)])
+    }
+
+    /// One usage row out of a session log. Only rows whose own session id matches count: a fork or a resume copies its
+    /// parent's rows forward under the parent's id. The filter looks at bytes first, so a row of pasted images or a long
+    /// tool result is never parsed, and nothing but counts leaves here.
+    private func cosHandle(line: some DataProtocol, target: CosSliceTarget, cursor: inout Cursor, sessionKey: String, retainFrom: Double, isSubagent: Bool = false) throws {
+        let bytes = Data(line)
+        func has(_ needle: StaticString) -> Bool {
+            needle.withUTF8Buffer { n in bytes.withUnsafeBytes { b in memmem(b.baseAddress, b.count, n.baseAddress, n.count) != nil } }
+        }
+        func mark(_ kind: CosMarkKind?, _ stamp: Any?) throws {
+            guard let kind, !isSubagent, let stamp = stamp as? String, let at = CosCostRules.epoch(stamp), at >= retainFrom else { return }
+            try run("INSERT OR IGNORE INTO cos_slice_marks VALUES(?,CAST(? AS REAL),?)", [sessionKey, String(at), kind.rawValue])
+        }
+        if target.provider == "claude" {
+            // An unescaped "type":"tool_result" can only be a real block, so these rows, the bulk of a log, skip the parser.
+            if has("\"user\""), !has("\"type\":\"tool_result\""), let row = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
+               row["type"] as? String == "user", row["sessionId"] as? String == target.id {
+                try mark(CosCostRules.claudeMark(row), row["timestamp"])
+                return
+            }
+            guard has("\"assistant\""), has("\"usage\"") else { return }
+            guard let row = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any] else { cursor.malformed += 1; return }
+            guard row["sessionId"] as? String == target.id else { return }
+            try mark(CosCostRules.claudeMark(row), row["timestamp"])
+            guard let event = Self.event(row, source: "claude", cursor: &cursor) else { return }
+            try cosRecord(event, sessionKey: sessionKey, oneHour: event.oneHour, retainFrom: retainFrom)
+        } else {
+            guard has("\"token_count\"") || has("\"turn_context\"") || has("\"session_meta\"") || has("\"task_started\"") || has("\"task_complete\"") || has("\"turn_aborted\"") else { return }
+            guard let row = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any] else { cursor.malformed += 1; return }
+            if cursor.session.isEmpty || cursor.session == target.id { try mark(CosCostRules.codexMark(row), row["timestamp"]) }
+            guard let event = Self.event(row, source: "codex", cursor: &cursor), cursor.session.isEmpty || cursor.session == target.id else { return }
+            try cosRecord(event, sessionKey: sessionKey, oneHour: 0, retainFrom: retainFrom)
+        }
+    }
+
+    /// The bounded pass. Files that have waited longest go first and each gets a share, so a 5 GB log and a growing hot
+    /// session both move forward and neither stalls the rest. Every chunk commits, so a killed helper loses nothing.
+    func cosReadSessionSlices(_ targets: Set<CosSliceTarget>, seconds: TimeInterval = SessionUsageCollector.cosPassSeconds, maxBytes: Int = SessionUsageCollector.cosPassBytes, fileBytes: Int = SessionUsageCollector.cosFileBytesPerPass, now: Date = Date()) throws -> CosSliceProgress {
+        try cosPrepareTables()
+        var progress = CosSliceProgress()
+        progress.tracked = targets.count
+        let located = cosLocate(targets)
+        let known = Dictionary(uniqueKeysWithValues: try query("SELECT path,size,modified,state FROM cos_slice_files").map { ($0[0], $0) })
+        struct Pending { var target: CosSliceTarget; var file: URL; var size: Int; var modified: Double; var cursor: Cursor }
+        var pending: [Pending] = []
+        var open = Set<CosSliceTarget>()
+        let retainFrom = now.timeIntervalSince1970 - Self.cosRetentionSeconds
+        let deadline = Date().addingTimeInterval(seconds)
+        // Compressed rollouts share the pass, and plain logs always keep at least half of it.
+        let compressedDeadline = Date().addingTimeInterval(seconds / 2)
+        for target in targets {
+            let files = located[target] ?? []
+            if files.isEmpty { progress.noLogs += 1; continue }
+            var compressedOnly = true
+            for file in files {
+                if file.lastPathComponent.hasSuffix(".zst") { continue }
+                compressedOnly = false
+                guard let values = try? file.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]), values.isRegularFile == true else { continue }
+                let size = values.fileSize ?? 0, modified = values.contentModificationDate?.timeIntervalSince1970 ?? 0
+                var cursor = Cursor()
+                if let row = known[file.path], let data = row[3].data(using: .utf8), let saved = try? JSONDecoder().decode(Cursor.self, from: data) { cursor = saved }
+                if cursor.offset > UInt64(size) { cursor = Cursor() } // rewritten shorter: event ids keep a reread from counting twice
+                if cursor.offset < UInt64(size) && !(cursor.waitingForAppend && known[file.path].map { Int($0[1]) == size } == true) {
+                    pending.append(Pending(target: target, file: file, size: size, modified: modified, cursor: cursor))
+                }
+            }
+            if compressedOnly, let file = files.first {
+                try cosReadCompressedSlice(target, file: file, known: known[file.path], retainFrom: retainFrom, deadline: compressedDeadline, progress: &progress, open: &open)
+            }
+        }
+        pending.sort { $0.cursor.scannedAt == $1.cursor.scannedAt ? $0.size < $1.size : $0.cursor.scannedAt < $1.cursor.scannedAt }
+        var remaining = maxBytes
+        for item in pending {
+            let sessionKey = Self.digest(item.target.provider + ":" + item.target.id)
+            var cursor = item.cursor
+            var budget = min(remaining, fileBytes)
+            if budget > 0 && Date() < deadline, let handle = try? FileHandle(forReadingFrom: item.file) {
+                defer { try? handle.close() }
+                try handle.seek(toOffset: cursor.offset)
+                cursor.waitingForAppend = false
+                while budget > 0 && Date() < deadline && cursor.offset < UInt64(item.size) {
+                    let wanted = min(Self.cosChunk, budget)
+                    var bytes = try handle.read(upToCount: wanted) ?? Data()
+                    if bytes.isEmpty { break }
+                    budget -= bytes.count
+                    remaining -= bytes.count
+                    if cursor.skippingLongLine == true {
+                        if let newline = bytes.firstIndex(of: 10) {
+                            cursor.offset += UInt64(newline - bytes.startIndex + 1)
+                            bytes = Data(bytes[bytes.index(after: newline)...])
+                            cursor.skippingLongLine = false
+                        } else {
+                            cursor.offset += UInt64(bytes.count)
+                            continue
+                        }
+                    }
+                    guard let end = bytes.lastIndex(of: 10) else {
+                        if bytes.count >= Self.cosChunk {
+                            cursor.oversizedRows += 1
+                            cursor.skippingLongLine = true
+                            cursor.offset += UInt64(bytes.count)
+                            continue
+                        }
+                        // A short read with no newline is a final line still being written, or a budget cut. Either way
+                        // the next pass starts from its first byte.
+                        if cursor.offset + UInt64(bytes.count) >= UInt64(item.size) { cursor.waitingForAppend = true }
+                        try handle.seek(toOffset: cursor.offset)
+                        break
+                    }
+                    let whole = bytes[bytes.startIndex...end]
+                    try Self.execute(db, "BEGIN IMMEDIATE")
+                    do {
+                        try autoreleasepool {
+                            for line in whole.split(separator: 10) {
+                                try cosHandle(line: line, target: item.target, cursor: &cursor, sessionKey: sessionKey, retainFrom: retainFrom, isSubagent: item.file.deletingLastPathComponent().lastPathComponent == "subagents")
+                            }
+                        }
+                        cursor.offset += UInt64(whole.count)
+                        cursor.scannedAt = Date().timeIntervalSince1970
+                        try run("INSERT OR REPLACE INTO cos_slice_files VALUES(?,?,CAST(? AS INTEGER),CAST(? AS REAL),?)", [item.file.path, sessionKey, String(item.size), String(item.modified), String(decoding: try JSONEncoder().encode(cursor), as: UTF8.self)])
+                        try Self.execute(db, "COMMIT")
+                    } catch { try? Self.execute(db, "ROLLBACK"); throw error }
+                    // A partial tail goes back on the file, so the bytes are read again as a whole line next time.
+                    if end != bytes.index(before: bytes.endIndex) { try handle.seek(toOffset: cursor.offset) }
+                }
+                cursor.scannedAt = Date().timeIntervalSince1970
+                try run("INSERT OR REPLACE INTO cos_slice_files VALUES(?,?,CAST(? AS INTEGER),CAST(? AS REAL),?)", [item.file.path, sessionKey, String(item.size), String(item.modified), String(decoding: try JSONEncoder().encode(cursor), as: UTF8.self)])
+            }
+            if cursor.offset < UInt64(item.size) && !cursor.waitingForAppend { open.insert(item.target) }
+        }
+        progress.stillReading = open.count
+        try run("DELETE FROM cos_slice_events WHERE at < CAST(? AS REAL)", [String(retainFrom)])
+        try run("DELETE FROM cos_slice_marks WHERE at < CAST(? AS REAL)", [String(retainFrom)])
+        return progress
+    }
+
+    /// The one door into the server's data folder, which also holds API keys. It opens only the fixed list in
+    /// CosCostRules, one name at a time, and the folder is never listed. Tests/run-session-usage.sh fails if any other
+    /// line builds a path under it.
+    private func cosDataFile(_ data: URL, _ name: String, opened: (String) -> Void) -> URL? {
+        guard CosCostRules.dataFileAllowed(name) else { return nil }
+        opened(name)
+        return data.appendingPathComponent(name)
+    }
+
+    /// The whole report. `importSessions` is off when Usage is paused: the person turned off reading their logs.
+    /// `opened` hears the name of each ledger as it is opened, so a test can pin the list. Session logs are found by id.
+    func cosUsage(plistScripts: String?, dataDirectory: String?, importSessions: Bool, seconds: TimeInterval = SessionUsageCollector.cosPassSeconds, now: Date = Date(), opened: (String) -> Void = { _ in }) throws -> CosUsageReport {
+        let fm = FileManager.default
+        let window = CosCostRules.window(now: now, timeZone: zone)
+        var report = CosUsageReport(windowStart: window.lowerBound, windowEnd: window.upperBound, timeZone: zone.identifier, updatedAt: iso.string(from: now))
+        let data = dataDirectory.map { URL(fileURLWithPath: $0) } ?? home.appendingPathComponent(".cos-glasses/data")
+        let inWindow: (Double) -> Bool = { [zone] at in window.contains(CosCostRules.dayKey(epoch: at, timeZone: zone)) }
+
+        // G2 runs: a run that started in the window, or ran into it.
+        var merged: [String: CosRun] = [:]
+        for (name, provider) in [("claude-runs.jsonl", "claude"), ("codex-runs.jsonl", "codex")] {
+            guard let file = cosDataFile(data, name, opened: opened), fm.fileExists(atPath: file.path) else { continue }
+            report.runLedgersFound = true
+            report.unreadableRows += Self.cosForEachJSONLine(file) { line in
+                guard let id = line["runId"] as? String, let patch = line["patch"] as? [String: Any] else { return }
+                merged[id, default: CosRun(runID: id, provider: provider)].apply(patch: patch)
+            } ?? 0
+        }
+        let runs = merged.values.filter { $0.start > 0 && (inWindow($0.start) || inWindow($0.end)) }.sorted { $0.start < $1.start }
+
+        // Work: the receipts Control itself keeps, on any install. Only these fields are decoded.
+        struct Receipt: Decodable { var createdAt: Double?; var sessionID: String?; var status: String?; var provider: String?; var forkChildID: String?; var channel: String? }
+        struct Handoffs: Decodable { var receipts: [Receipt]? }
+        let handoffsFile = home.appendingPathComponent("Library/Application Support/COS Control/work-handoffs/handoffs.json")
+        opened("handoffs.json")
+        let handoffs = (try? Data(contentsOf: handoffsFile)).flatMap { try? JSONDecoder().decode(Handoffs.self, from: $0) }
+        var workRuns = 0
+        var workStarts: [CosSliceTarget: Double] = [:]
+        var workHandoffs: [CosWorkRun] = []
+        var workWithoutSession = 0
+        for receipt in handoffs?.receipts ?? [] {
+            guard let at = receipt.createdAt, inWindow(at), !["failed", "canceled"].contains(receipt.status ?? "") else { continue }
+            workRuns += 1
+            var named = false
+            // A fork runs in its child when the receipt knows it. The source session keeps going without it.
+            if let value = receipt.forkChildID ?? receipt.sessionID {
+                let parts = value.split(separator: ":", maxSplits: 1).map(String.init)
+                let target = parts.count == 2 ? CosSliceTarget(provider: parts[0], id: parts[1]) : CosSliceTarget(provider: receipt.provider ?? "", id: value)
+                if target.provider == "claude" || target.provider == "codex" {
+                    workStarts[target] = min(workStarts[target] ?? at, at)
+                    workHandoffs.append(CosWorkRun(session: target.provider + ":" + target.id, start: at, openedInApp: receipt.channel == "app"))
+                    named = true
+                }
+            }
+            if !named { workWithoutSession += 1 }
+        }
+
+        // The bounded read. A busy history means no new rows this pass, not a failed page.
+        var targets = Set(workStarts.keys)
+        for run in runs where !run.session.isEmpty { targets.insert(CosSliceTarget(provider: run.provider, id: run.session)) }
+        report.sessions.tracked = targets.count
+        if importSessions {
+            do { report.sessions = try cosReadSessionSlices(targets, seconds: seconds, now: now) }
+            catch { report.sessions.busy = true }
+        }
+
+        // Stored slices for the tracked sessions, under the same digests the reader wrote.
+        let lowerEpoch = (CosCostRules.epoch(window.lowerBound + "T00:00:00Z") ?? 0) - 86_400
+        let keyed = Dictionary(targets.map { (Self.digest($0.provider + ":" + $0.id), $0) }, uniquingKeysWith: { a, _ in a })
+        var events: [CosSliceEvent] = []
+        // No table yet, or no lock to make one, means no stored slices this pass. The rest of the page still stands.
+        for row in (try? query("SELECT session,at,provider,model,input,output,cache_read,cache_write,one_hour,event FROM cos_slice_events WHERE at >= CAST(? AS REAL)", [String(lowerEpoch)])) ?? [] {
+            guard let target = keyed[row[0]] else { continue }
+            events.append(CosSliceEvent(id: row[9], session: target.provider + ":" + target.id, at: Double(row[1]) ?? 0, provider: row[2], model: row[3],
+                counts: SessionUsageCounts(input: Int64(row[4]) ?? 0, output: Int64(row[5]) ?? 0, cacheRead: Int64(row[6]) ?? 0, cacheWrite: Int64(row[7]) ?? 0), oneHour: Int64(row[8]) ?? 0))
+        }
+
+        // What moved each session on: row types and times, with no words in them.
+        var marks: [CosSliceMark] = []
+        for row in (try? query("SELECT session,at,kind FROM cos_slice_marks WHERE at >= CAST(? AS REAL)", [String(lowerEpoch)])) ?? [] {
+            guard let target = keyed[row[0]], let kind = CosMarkKind(rawValue: row[2]) else { continue }
+            marks.append(CosSliceMark(session: target.provider + ":" + target.id, at: Double(row[1]) ?? 0, kind: kind))
+        }
+
+        // The gist ledger's real usage. Halves itself at 2 MB, and its size stays small.
+        var gist: [CosGistRun] = []
+        if let gistFile = cosDataFile(data, "lens-gist-runs.jsonl", opened: opened), fm.fileExists(atPath: gistFile.path) {
+            report.gistLedgerFound = true
+            report.unreadableRows += Self.cosForEachJSONLine(gistFile) { line in
+                if let run = CosGistRun(json: line) { gist.append(run) }
+            } ?? 0
+        }
+
+        var runsKeyed = runs
+        for index in runsKeyed.indices where !runsKeyed[index].session.isEmpty {
+            runsKeyed[index].session = runsKeyed[index].provider + ":" + runsKeyed[index].session
+        }
+        var accumulator = CosCostAccumulator(window: window, timeZone: zone, gistRuns: gist, runs: runsKeyed,
+            workStarts: Dictionary(uniqueKeysWithValues: workStarts.map { ($0.key.provider + ":" + $0.key.id, $0.value) }), events: events,
+            workRuns: workHandoffs, marks: marks)
+
+        // The audit, streamed. The server's own path first, so a test file at the fallback never mixes in.
+        var envScripts: String?
+        if plistScripts == nil {
+            // Only when the server's own settings do not say. One key comes out of this text and the rest is dropped here.
+            opened(".env")
+            envScripts = (try? String(contentsOf: home.appendingPathComponent(".cos-glasses/.env"), encoding: .utf8)).flatMap { CosCostRules.envValue($0, key: "COS_SCRIPTS_DIR") }
+        }
+        for path in CosCostRules.auditPaths(plistScripts: plistScripts, envScripts: envScripts, home: home.path) where fm.fileExists(atPath: path) {
+            report.auditFound = true
+            opened((path as NSString).lastPathComponent)
+            report.unreadableRows += Self.cosForEachJSONLine(URL(fileURLWithPath: path)) { line in accumulator.add(CosAuditRow(json: line)) } ?? 0
+            break
+        }
+
+        // Day ledgers, read one named file at a time. The same folder holds keys, so this is never a glob.
+        for ledger in CosCostRules.dailyLedgers {
+            guard let file = cosDataFile(data, ledger.file, opened: opened), let raw = try? Data(contentsOf: file),
+                  let days = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any] else { continue }
+            for (day, value) in days {
+                accumulator.addDailyTokens(SessionUsageCounts.number(value), category: ledger.category, priced: ledger.priced, day: day)
+            }
+        }
+
+        let finished = accumulator.finish(handoffsFound: handoffs != nil, workRuns: workRuns, workRunsWithoutLogs: workWithoutSession)
+        report.rows = finished.rows
+        report.work = finished.work
+        report.undatedCalls = accumulator.undated
+        return report
+    }
+}

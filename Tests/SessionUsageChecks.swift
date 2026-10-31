@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 @main struct Checks {
     static func main() throws {
@@ -627,10 +628,639 @@ import Foundation
         let oldJSON = try JSONSerialization.data(withJSONObject: ["buckets": [], "updatedAt": "x", "timeZone": "UTC", "filesIndexed": 0, "pendingFiles": 0, "unreadableFiles": 0, "malformedRows": 0, "missingBaselineEvents": 0, "coverage": [], "pricingVersion": "v"])
         check(try JSONDecoder().decode(SessionUsageReport.self, from: oldJSON).cursorFeed == nil, "a report without the feed field decodes")
         print("PASS: tool names, model names, default scales, per-tool prior windows and the Cursor feed (parsing, privacy, paging, backoff, resume)")
+        try cosCostChecks(home: home)
 
         print("PASS: weekly buckets, category USD mix, period comparisons, table sorting and CSV/JSON export")
         print("PASS: 30/90/custom dates, DST/leap/calendar boundaries, provider/day summaries and token mix")
         print("PASS: usage period boundaries, timezone, token/category shares, tooltip aggregation and unknown-price handling")
         print("PASS: usage parsing, deduplication, cache pricing, local dates, reset, partial append, retention and unknown coverage")
+    }
+}
+
+// MARK: - COS cost. Fixtures for each data rule, then the reader on a scratch home and database.
+extension Checks {
+    static func cosCostChecks(home: URL) throws {
+        func check(_ yes: Bool, _ label: String) { if !yes { fatalError(label) } }
+        let chicago = TimeZone(identifier: "America/Chicago")!
+        let R = CosCostRules.self, P = CosCostPresentation.self
+        // Timestamps. Python writes -0500, Node writes Z, and one file holds both.
+        check(R.epoch("2026-10-30T12:00:00-0500") == 1_793_379_600, "a -0500 stamp is that instant")
+        check(R.epoch("2026-10-30T12:00:00-05:00") == 1_793_379_600, "a -05:00 stamp is that instant")
+        check(R.epoch("2026-10-30T17:00:00Z") == 1_793_379_600, "a Z stamp is that instant")
+        check(R.epoch("2026-10-30T17:00:00.500Z") == 1_793_379_600.5, "a stamp keeps its fraction")
+        check(R.epoch("2026-10-30T12:00:00.250-0500") == 1_793_379_600.25, "a fraction before a zone is read")
+        check(R.epoch("2026-10-30T22:30:00+0530") == 1_793_379_600, "a positive offset is that instant")
+        check(R.epoch("2026-10-30T12:00:00") == nil && R.epoch("2026-10-30T12:00:00.500") == nil, "a stamp with no zone names no instant")
+        check(R.epoch("") == nil && R.epoch("yesterday afternoon at 3pm") == nil && R.epoch("2026-13-30T12:00:00Z") == nil && R.epoch("2026-10-30T12:00:00Zjunk") == nil && R.epoch("2026-10-30T25:00:00Z") == nil, "a stamp that is not a date is nil")
+        check(R.dayKey(epoch: R.epoch("2026-10-31T00:30:00Z")!, timeZone: chicago) == "2026-10-30", "the day is the reporting zone's day")
+        check(R.dayKey(epoch: R.epoch("2026-10-31T00:30:00-0500")!, timeZone: chicago) == "2026-10-31", "a -0500 stamp after local midnight is the next day")
+        // Classification. A shared source does not win over a caller, and anything unknown stays visible.
+        check(R.category(source: "g2-dictation-autoclean", caller: "dictation_autoclean_message", day: "2026-10-25") == .dictation, "message polish is dictation")
+        check(R.category(source: "g2-dictation-autoclean", caller: "dictation_autoclean_prompt_draft", day: "2026-10-25") == .dictation, "a prompt draft is dictation")
+        check(R.category(source: "", caller: "prompt_edit", day: "2026-10-25") == .dictation, "a prompt edit is dictation")
+        check(R.category(source: "g2-dictation-autoclean", caller: "dictation_autoclean_meeting", day: "2026-10-25") == .transcription, "meeting polish is transcription cleanup")
+        check(R.category(source: "x", caller: "transcript-cleanup", day: "2026-10-25") == .transcription, "transcript cleanup is transcription cleanup")
+        check(R.category(source: "g2-dictation-autoclean", caller: "dictation_autoclean", day: "2026-10-19") == .dictationBeforeSplit, "a plain polish row before the split is its own row")
+        check(R.category(source: "g2-dictation-autoclean", caller: "dictation_autoclean", day: "2026-10-20") == .dictation, "a plain polish row from the split on is dictation")
+        check(R.category(source: "g2-archive", caller: "chat_summary", day: "2026-10-25") == .meetingNotes, "a chat summary is meeting notes")
+        check(R.category(source: "cos-script", caller: "domain_intel_extract", day: "2026-10-25") == .meetingNotes, "meeting extraction is meeting notes")
+        check(R.category(source: "g2-query", caller: "full_query", day: "2026-10-25") == .answers, "a G2 query is an answer")
+        check(R.category(source: "meeting-ask-web", caller: "meeting_ask_web", day: "2026-10-25") == .answers, "Ask is an answer")
+        check(R.category(source: "g2-query", caller: "routine:morning-brief", day: "2026-10-25") == .liveAndUpkeep, "a routine is upkeep even with a G2 source")
+        check(R.category(source: "live-cues-v2", caller: "live-cues-v2", day: "2026-10-25") == .liveAndUpkeep, "cues are live help")
+        check(R.category(source: "x", caller: "live-cues-lightrag", day: "2026-10-25") == .liveAndUpkeep, "a cue's memory lookup is live help, not indexing")
+        check(R.category(source: "g2-lens-gist", caller: "lens_gist", day: "2026-10-25") == .liveAndUpkeep, "a gist is upkeep")
+        check(R.category(source: "g2-prewarm", caller: "prewarm", day: "2026-10-25") == .liveAndUpkeep, "prewarm is upkeep")
+        check(R.category(source: "cos-script", caller: "lightrag", day: "2026-10-25") == .memoryIndexing, "LightRAG is memory indexing")
+        check(R.category(source: "cos-script", caller: "memory-tier-judge", day: "2026-10-25") == .memoryIndexing, "a memory job is memory indexing")
+        check(R.category(source: "meeting-ask", caller: "work_chat_summary", day: "2026-10-25") == .work, "Work chat is Work even with an Ask source")
+        check(R.category(source: "jev", caller: "work-intake-jev", day: "2026-10-25") == .work, "Work intake is Work")
+        check(R.category(source: "g2-query", caller: "dispatch_task", day: "2026-10-25") == .work && R.category(source: "g2-query", caller: "work_review", day: "2026-10-25") == .work, "dispatch and review are Work even with a G2 source")
+        check(R.category(source: "g2-attached", caller: "attached_turn", day: "2026-10-25") == .work && R.category(source: "g2-attached", caller: "attached_turn:timeout", day: "2026-10-25") == .work, "an attached turn is Work, failed or not")
+        check(R.category(source: "g2-fork", caller: "fork_thread", day: "2026-10-25") == .work && R.category(source: "g2-fork", caller: "fork_thread:denied", day: "2026-10-25") == .work, "a fork is Work, failed or not")
+        check(R.category(source: "cos-script", caller: "", day: "2026-04-01") == .other, "a blank caller goes to Other")
+        check(R.category(source: "brand-new-source", caller: "brand_new_caller", day: "2026-10-25") == .other, "an unknown source goes to Other")
+        // Session-log flags. These decide what the total adds, so a row cannot be in the total twice.
+        check(R.inSessionLogs(source: "g2-query", caller: "full_query") && R.inSessionLogs(source: "g2-prewarm", caller: "prewarm") && R.inSessionLogs(source: "g2-archive", caller: "chat_summary"), "G2, prewarm and archive are in session logs")
+        check(!R.inSessionLogs(source: "g2-dictation-autoclean", caller: "dictation_autoclean_message") && !R.inSessionLogs(source: "g2-lens-gist", caller: "lens_gist")
+              && !R.inSessionLogs(source: "meeting-ask", caller: "meeting_ask") && !R.inSessionLogs(source: "cos-script", caller: "lightrag"), "polish, gist, Ask and scripts are not in session logs")
+        check(!R.inSessionLogs(source: "g2-query", caller: "dispatch_task"), "a dispatch keeps no session log even with a G2 source")
+        check(R.inSessionLogs(source: "g2-attached", caller: "attached_turn") && R.inSessionLogs(source: "g2-fork", caller: "fork_thread"), "attached and fork turns are in session logs")
+        check(!R.inSessionLogs(source: "g2-query", caller: "work_review", model: "claude-opus-5-5") && R.inSessionLogs(source: "g2-query", caller: "work_review", model: "gpt-6.1-sol"), "a Claude review keeps no session log and a Codex one does")
+        check(R.baseCaller("full_query:late_result") == "full_query" && R.baseCaller("routine:morning-brief") == "routine:morning-brief" && R.isLate("full_query:late_result") && !R.isLate("full_query"), "only the late suffix comes off a caller")
+        check(R.runsThroughCursor(model: "cursor-grok") && R.runsThroughCursor(model: "cursor:grok-4.7-low-fast") && R.runsThroughCursor(model: "luna-5.6-fast") && !R.runsThroughCursor(model: "claude:claude-sonnet-5-5"), "Cursor and Luna run through Cursor")
+        // Rates. Unknown is No price, never $0, and an alias maps through one table.
+        let rates = CosCostRates.self
+        check(rates.resolve("opus")?.model == "claude-opus-5-5" && rates.resolve("sonnet")?.model == "claude-sonnet-5-5" && rates.resolve("haiku")?.model == "claude-haiku-5-5", "a bare alias maps to today's model")
+        check(rates.resolve("claude:claude-sonnet-5-5")?.model == "claude-sonnet-5-5" && rates.resolve("claude-opus-5-5[1m]")?.model == "claude-opus-5-5", "a harness prefix and a context suffix are stripped")
+        check(rates.resolve("codex:gpt-5.6-terra")?.provider == "OpenAI" && rates.resolve("codex:gpt-5.6-terra")?.model == "gpt-5.6-terra", "a Codex model resolves to OpenAI")
+        check(rates.resolve("codex:sonnet") == nil && rates.resolve("codex-frontier") == nil && rates.resolve("cursor-grok") == nil && rates.resolve("luna-5.6-fast") == nil && rates.resolve("ollama:qwen3.8:27b") == nil, "a tier, a router or a local model has no price")
+        check(abs(rates.usd(provider: "OpenAI", model: "gpt-5.6-terra", counts: SessionUsageCounts(input: 100_000, output: 100_000, cacheRead: 100_000))! - 1.42) < 1e-9, "terra is $2, $0.20 and $12 per million")
+        check(abs(rates.usd(provider: "OpenAI", model: "gpt-5.5", counts: SessionUsageCounts(input: 100_000, output: 100_000, cacheRead: 100_000))! - 3.55) < 1e-9, "GPT-5.5 is $5, $0.50 and $30 per million")
+        check(abs(rates.usd(provider: "OpenAI", model: "gpt-5.6-sol", counts: SessionUsageCounts(input: 100_000, output: 100_000, cacheRead: 100_000))! - 2.44) < 1e-9, "5.6 Sol is $4, $0.40 and $20 per million")
+        check(rates.usd(provider: "OpenAI", model: "gpt-5.6-terra", counts: SessionUsageCounts(input: 300_000)) == nil, "a verified rate stops at 272K of context")
+        check(rates.usd(provider: "OpenAI", model: "gpt-5.6-terra", counts: SessionUsageCounts(input: 10, cacheWrite: 5)) == nil, "a verified rate does not price cache writes")
+        check(SessionUsagePricing.estimate(provider: "OpenAI", model: "gpt-5.6-terra", counts: SessionUsageCounts(input: 10)) == nil, "stored Usage rates do not change")
+        check(rates.usd(provider: "OpenAI", model: "gpt-made-up", counts: SessionUsageCounts(input: 10)) == nil, "an unknown model has no price")
+        check(abs(rates.estimateUSD(ledgerModel: "jev-1.13.0", input: 1_000_000_000, output: 500)! - 42) < 1e-9, "Jev is $42 a billion input tokens")
+        check(abs(rates.estimateUSD(ledgerModel: "sonnet", input: 1_000_000, output: 1_000_000)! - 12) < 1e-9, "an estimate uses the plain input and output rates")
+        check(rates.estimateUSD(ledgerModel: "cursor-grok", input: 1000, output: 1000) == nil, "an estimate on an unpriced model has no dollars")
+        // A real row beside the card: claude-sonnet-5-5 through the command line, all input written to a one-hour cache.
+        let gistCard = rates.usd(provider: "Anthropic", model: "claude-sonnet-5-5", counts: SessionUsageCounts(output: 66_732, cacheWrite: 1_043_971), oneHour: 1_043_971)!
+        check(abs(gistCard - 4.8401) / 4.8401 < 0.002, "the card matches what the command line reported on real gist rows")
+        // Paths and the one key read out of .env.
+        check(R.auditPaths(plistScripts: "/a", envScripts: "/b", home: "/h") == ["/a/.cos_token_audit.jsonl", "/b/.cos_token_audit.jsonl", "/h/.cos-glasses/token-audit.jsonl"], "the plist comes before .env and .env before home")
+        check(R.envValue("# COS_SCRIPTS_DIR=/no\nOTHER=1\nexport COS_SCRIPTS_DIR=\"/yes it is\"\n", key: "COS_SCRIPTS_DIR") == "/yes it is", ".env handles comments, export and quotes")
+        check(R.envValue("OTHER=1\nCOS_SCRIPTS_DIR=\n", key: "COS_SCRIPTS_DIR") == nil, "an empty .env value is no value")
+        check(R.dailyLedgers.allSatisfy { $0.file.hasSuffix("-usage.json") }, "the day ledgers are named usage files, never a key file")
+        check(R.dataFiles.allSatisfy { !$0.lowercased().contains("key") }, "no file on the helper's list is a key file")
+        check(R.dataFiles.allSatisfy { R.dataFileAllowed($0) }, "every file on the helper's list is allowed")
+        check(!R.dataFileAllowed("subq-key.json") && !R.dataFileAllowed("jev-key.json") && !R.dataFileAllowed("some-new-key.json"), "the door refuses a key file")
+        check(!R.dataFileAllowed("subq-key.json", list: ["subq-key.json"]), "a key file is refused even if someone lists it")
+        check(!R.dataFileAllowed("anything-else.json") && !R.dataFileAllowed("../.env") && !R.dataFileAllowed(".cos-profile.json"), "the door refuses anything not on the list")
+
+        // The accumulator.
+        let window = "2026-10-02"..."2026-10-31"
+        func audit(_ stamp: String, source: String = "g2-dictation-autoclean", caller: String = "dictation_autoclean_message", model: String = "sonnet", input: Int64 = 1000, output: Int64 = 100, kind: String = "estimated", run: String = "") -> CosAuditRow {
+            var row = CosAuditRow()
+            row.stamp = stamp; row.source = source; row.caller = caller; row.model = model
+            row.estimatedInput = input; row.estimatedOutput = output; row.usageKind = kind; row.runID = run
+            return row
+        }
+        func make(gist: [CosGistRun] = [], runs: [CosRun] = [], work: [String: Double] = [:], events: [CosSliceEvent] = [], handoffs: [CosWorkRun]? = nil, marks: [CosSliceMark] = []) -> CosCostAccumulator {
+            CosCostAccumulator(window: window, timeZone: chicago, gistRuns: gist, runs: runs, workStarts: work, events: events,
+                               workRuns: handoffs ?? work.map { CosWorkRun(session: $0.key, start: $0.value) }, marks: marks)
+        }
+        func finish(_ a: inout CosCostAccumulator) -> [CosCostCategory: CosCostRow] {
+            Dictionary(uniqueKeysWithValues: a.finish(handoffsFound: true, workRuns: 0, workRunsWithoutLogs: 0).rows.map { ($0.category, $0) })
+        }
+        var a = make()
+        a.add(audit("not a date at all"))
+        a.add(audit("2026-10-30T12:00:00"))
+        a.add(audit("2026-10-30T12:00:00-0500"))
+        a.add(audit("2026-10-01T23:00:00-0500")) // the day before the window
+        a.add(audit("2026-10-02T00:30:00-0500")) // the window's first day
+        check(a.undated == 2, "a row with no parseable date is counted, not dropped")
+        var rows = finish(&a)
+        check(rows[.dictation]?.calls == 2, "a -0500 row lands on its local day and the day before the window is out")
+        check(rows[.dictation]?.estimatedCalls == 2 && rows[.dictation]?.measuredCalls == 0 && rows[.dictation]?.measuredUSD == 0, "a character-count row is an estimate and adds no measured dollars")
+        check(abs((rows[.dictation]?.estimatedUSD ?? 0) - 2 * (1000*2.0 + 100*10.0)/1_000_000) < 1e-12, "an estimate's floor is its tokens at the model's rate")
+        a = make()
+        a.add(audit("2026-10-30T12:00:00Z", source: "cos-script", caller: "", model: "haiku"))
+        rows = finish(&a)
+        check(rows[.other]?.calls == 1, "a blank caller row is visible in Other")
+        // provider_final wins over an estimate.
+        var final = audit("2026-10-30T12:00:00Z", model: "sonnet", kind: "provider_final")
+        final.real = SessionUsageCounts(input: 1000, output: 100); final.realUSD = 5
+        a = make(); a.add(final); rows = finish(&a)
+        check(rows[.dictation]?.measuredCalls == 1 && rows[.dictation]?.estimatedCalls == 0 && rows[.dictation]?.measuredUSD == 5, "a provider_final row wins over its estimate and its cost wins over the card")
+        check(rows[.dictation]?.addsToTotalUSD == 5, "measured polish adds to the total, because Usage cannot see it")
+        final.realUSD = nil
+        a = make(); a.add(final); rows = finish(&a)
+        check(abs((rows[.dictation]?.measuredUSD ?? 0) - 0.003) < 1e-12, "a provider_final row with no cost uses the card")
+        final.model = "cursor-composer"
+        a = make(); a.add(final); rows = finish(&a)
+        check(rows[.dictation]?.measuredCalls == 1 && rows[.dictation]?.measuredUSD == 0 && rows[.dictation]?.unpricedMeasuredCalls == 1, "a measured row with no rate is unpriced, never $0 of spend")
+        check(rows[.dictation]?.addsUnlessCursorFeedUSD == 0 && rows[.dictation]?.addsToTotalUSD == 0, "an unpriced row adds nothing to the total")
+        // Gist rows dedupe against their ledger, and the measured source wins.
+        func gistRun(_ at: String, model: String = "claude-sonnet-5-5", cost: Double? = 0.25) -> CosGistRun {
+            var usage: [String: Any] = ["inputTokens": 1000, "outputTokens": 100]
+            if let cost { usage["costUsd"] = cost }
+            return CosGistRun(json: ["engine": "claude", "model": model, "at": at, "usage": usage])!
+        }
+        check(CosGistRun(json: ["engine": "claude", "model": "x", "at": "2026-10-30T12:00:00Z", "ok": false]) == nil, "a gist run with no usage is not a measurement")
+        let gistRow = audit("2026-10-30T12:00:00.010Z", source: "g2-lens-gist", caller: "lens_gist", model: "claude:claude-sonnet-5-5")
+        a = make(gist: [gistRun("2026-10-30T12:00:00.020Z")]); a.add(gistRow); rows = finish(&a)
+        check(rows[.liveAndUpkeep]?.calls == 1 && rows[.liveAndUpkeep]?.measuredCalls == 1 && rows[.liveAndUpkeep]?.estimatedCalls == 0, "an audit gist row and its run are one measured call")
+        check(rows[.liveAndUpkeep]?.measuredUSD == 0.25 && rows[.liveAndUpkeep]?.addsToTotalUSD == 0.25, "a gist run's own cost is measured and adds to the total")
+        a = make(gist: [gistRun("2026-10-30T12:01:00Z")]); a.add(gistRow); rows = finish(&a)
+        check(rows[.liveAndUpkeep]?.calls == 2 && rows[.liveAndUpkeep]?.estimatedCalls == 1, "a gist row too far from a run stays an estimate")
+        a = make(gist: [gistRun("2026-10-30T12:00:00Z", model: "claude-opus-5-5")]); a.add(gistRow); rows = finish(&a)
+        check(rows[.liveAndUpkeep]?.estimatedCalls == 1, "a gist row with another model does not match")
+        a = make(gist: [gistRun("2026-10-30T12:00:00Z")])
+        a.add(gistRow); a.add(gistRow); rows = finish(&a)
+        check(rows[.liveAndUpkeep]?.measuredCalls == 1 && rows[.liveAndUpkeep]?.estimatedCalls == 1, "one gist run absorbs one audit row")
+        a = make(gist: [gistRun("2026-10-30T12:00:00Z", cost: nil)]); rows = finish(&a)
+        check(abs((rows[.liveAndUpkeep]?.measuredUSD ?? 0) - 0.003) < 1e-12, "a gist run with no cost of its own uses the card")
+        a = make(gist: [gistRun("2026-10-30T12:00:00Z", model: "brand-new-model", cost: nil)]); rows = finish(&a)
+        check(rows[.liveAndUpkeep]?.measuredUSD == 0 && rows[.liveAndUpkeep]?.unpricedMeasuredCalls == 1, "a gist run with no cost and no rate stays unpriced")
+        a = make(gist: [gistRun("2026-09-01T12:00:00Z")]); rows = finish(&a)
+        check(rows[.liveAndUpkeep] == nil, "a gist run outside the window is out")
+        // G2 runs and their session slices.
+        func run(_ id: String, session: String = "claude:s1", model: String = "opus", start: String = "2026-10-30T12:00:00Z", end: String = "2026-10-30T12:01:00Z") -> CosRun {
+            var r = CosRun(runID: id, provider: "claude")
+            r.apply(patch: ["cliSessionId": String(session.split(separator: ":").last!), "model": model, "createdAt": start, "updatedAt": end])
+            r.session = session
+            return r
+        }
+        func event(_ at: String, session: String = "claude:s1", input: Int64 = 1000, model: String = "claude-opus-5-5", provider: String = "Anthropic") -> CosSliceEvent {
+            CosSliceEvent(session: session, at: R.epoch(at)!, provider: provider, model: model, counts: SessionUsageCounts(input: input))
+        }
+        let g2Row = audit("2026-10-30T12:01:00Z", source: "g2-query", caller: "full_query", model: "opus", input: 5000)
+        a = make(runs: [run("r1")], events: [event("2026-10-30T12:00:30Z")]); a.add(g2Row); rows = finish(&a)
+        check(rows[.answers]?.calls == 1 && rows[.answers]?.measuredCalls == 1 && rows[.answers]?.estimatedCalls == 0, "a G2 row with a run and a slice is one measured answer, not two")
+        check(abs((rows[.answers]?.measuredUSD ?? 0) - 0.004) < 1e-12, "a run's dollars come from its session slice")
+        check(rows[.answers]?.approximateMatches == 1, "a time and model match is labelled approximate")
+        check(rows[.answers]?.addsToTotalUSD == 0, "a slice Usage has priced adds nothing to the total")
+        a = make(runs: [run("r1")], events: [event("2026-10-30T12:00:30Z")]); a.add(audit("2026-10-30T12:01:00Z", source: "g2-query", caller: "full_query", model: "opus", run: "r1")); rows = finish(&a)
+        check(rows[.answers]?.approximateMatches == 0 && rows[.answers]?.measuredCalls == 1, "a row carrying its run id is an exact match")
+        a = make(runs: [run("r1", model: "sonnet")], events: [event("2026-10-30T12:00:30Z")]); a.add(g2Row); rows = finish(&a)
+        check(rows[.answers]?.calls == 2 && rows[.answers]?.estimatedCalls == 1, "a G2 row with another model does not match a run")
+        a = make(runs: [run("r1")]); a.add(g2Row); rows = finish(&a)
+        check(rows[.answers]?.estimatedCalls == 1 && rows[.answers]?.measuredCalls == 0, "a G2 row whose session has no log stays an estimate")
+        a = make(runs: [run("r1")], events: [event("2026-10-30T12:00:30Z")]); rows = finish(&a)
+        check(rows[.answers]?.calls == 1 && rows[.answers]?.measuredCalls == 1, "a run with no audit row still counts as a call")
+        a = make(runs: [run("r1")], events: [event("2026-10-30T12:30:00Z")]); rows = finish(&a)
+        check(rows[.answers] == nil, "a turn outside any run in the same session is not COS's")
+        a = make(runs: [run("r1")], events: [event("2026-10-30T12:00:30Z")])
+        a.add(audit("2026-10-30T12:01:00Z", source: "g2-query", caller: "routine:morning-brief", model: "opus")); rows = finish(&a)
+        check(rows[.liveAndUpkeep]?.measuredCalls == 1 && rows[.answers] == nil, "a routine's run lands on the routine's row")
+        // 6.97 rows. A real row wins for its run, and the slice is for older rows only.
+        func real(_ stamp: String, source: String = "g2-query", caller: String = "full_query", model: String = "opus", resolved: String = "", run: String = "", session: String = "", usd: Double? = nil, input: Int64 = 1000, output: Int64 = 0, read: Int64 = 0, write: Int64 = 0, oneHour: Int64? = nil) -> CosAuditRow {
+            var json: [String: Any] = ["ts": stamp, "source": source, "caller": caller, "model": model, "est_input_tokens": 1, "est_output_tokens": 1, "usage_kind": "provider_final", "input_tokens": input, "output_tokens": output, "cache_read_tokens": read, "cache_write_tokens": write]
+            if !resolved.isEmpty { json["resolved_model"] = resolved }
+            if !run.isEmpty { json["run_id"] = run }
+            if !session.isEmpty { json["cli_session_id"] = session }
+            if let usd { json["cost_usd"] = usd }
+            if let oneHour { json["cache_write_1h_tokens"] = oneHour }
+            return CosAuditRow(json: json)
+        }
+        let parsedReal = real("2026-10-30T12:00:00Z", resolved: "claude-opus-5-5", run: "r9", session: "s9", usd: 1.5, input: 1, output: 2, read: 3, write: 4, oneHour: 2)
+        check(parsedReal.real == SessionUsageCounts(input: 1, output: 2, cacheRead: 3, cacheWrite: 4) && parsedReal.realOneHour == 2 && parsedReal.realUSD == 1.5 && parsedReal.resolvedModel == "claude-opus-5-5" && parsedReal.runID == "r9" && parsedReal.sessionID == "s9", "a real row's fields are read by name")
+        var legacySession = CosAuditRow(json: ["session_id": "older", "usage_kind": "estimated", "input_tokens": 5])
+        check(legacySession.sessionID == "older" && legacySession.real == nil, "an estimated row is not real whatever else it carries")
+        legacySession = CosAuditRow(json: ["session_id": "cos", "cli_session_id": "provider"])
+        check(legacySession.sessionID == "provider", "the provider's session id wins over COS's")
+        check(real("2026-10-30T12:00:00Z", input: 0).isMeasured, "a real zero is still a measurement")
+        a = make(runs: [run("r1")], events: [event("2026-10-30T12:00:30Z", input: 500_000)])
+        a.add(real("2026-10-30T12:01:00Z", run: "r1", usd: 2)); rows = finish(&a)
+        check(rows[.answers]?.calls == 1 && rows[.answers]?.measuredUSD == 2, "a real G2 row is not counted again from its session slice")
+        check(rows[.answers]?.measuredTokens == 1000 && rows[.answers]?.addsToTotalUSD == 0, "a real G2 row's tokens stand alone and Usage already holds its dollars")
+        a = make(runs: [run("r1")], events: [event("2026-10-30T12:00:30Z")])
+        a.add(real("2026-10-30T12:01:00Z", run: "r1", usd: 2))
+        a.add(real("2026-10-30T12:01:01Z", caller: "full_query:late_result", run: "r1", usd: 3, input: 500)); rows = finish(&a)
+        check(rows[.answers]?.calls == 1 && rows[.answers]?.measuredCalls == 1, "a late result is not another call")
+        check(rows[.answers]?.measuredUSD == 5 && rows[.answers]?.measuredTokens == 1500, "a late result sums into its run")
+        a = make(runs: [run("r1")], events: [event("2026-10-30T12:00:30Z")])
+        a.add(g2Row)
+        a.add(real("2026-10-30T12:01:01Z", caller: "full_query:late_result", run: "r1", usd: 3, input: 500)); rows = finish(&a)
+        check(abs((rows[.answers]?.measuredUSD ?? 0) - 0.004) < 1e-12 && rows[.answers]?.calls == 1, "a slice already holding a run's late result does not add it twice")
+        a = make(); a.add(real("2026-10-30T12:01:01Z", caller: "full_query:late_result", run: "gone", usd: 3)); rows = finish(&a)
+        check(rows[.answers]?.calls == 0 && rows[.answers]?.measuredUSD == 3 && rows[.answers]?.unpricedMeasuredCalls == 0, "a late result whose first row aged out adds dollars and no call")
+        var lateEstimate = audit("2026-10-30T12:01:01Z", source: "g2-query", caller: "full_query:late_result", model: "opus", input: 1, output: 1); lateEstimate.runID = "gone"
+        a = make(); a.add(lateEstimate); rows = finish(&a)
+        check(rows[.answers] == nil, "a late result with no real numbers adds nothing")
+        // Attached and fork: no run id, the provider's name as model.
+        a = make(); a.add(real("2026-10-30T12:00:00Z", source: "g2-attached", caller: "attached_turn", model: "claude", resolved: "claude-sonnet-5-5", session: "s-other")); rows = finish(&a)
+        check(rows[.work]?.measuredCalls == 1 && abs((rows[.work]?.measuredUSD ?? 0) - 0.002) < 1e-12, "an attached turn is priced from its resolved model")
+        check(rows[.work]?.addsToTotalUSD == 0, "an attached turn is in session logs, so the total does not add it")
+        var attachedEstimate = audit("2026-10-30T12:00:00Z", source: "g2-attached", caller: "attached_turn", model: "codex"); attachedEstimate.resolvedModel = ""
+        a = make(); a.add(attachedEstimate); rows = finish(&a)
+        check(rows[.work]?.estimatedCalls == 1 && rows[.work]?.estimatedUSD == 0, "an estimated attached turn has only a provider name, so no price")
+        let workStartAttached = R.epoch("2026-10-30T11:00:00Z")!
+        a = make(work: ["claude:s-w": workStartAttached], events: [event("2026-10-30T12:00:00Z", session: "claude:s-w")])
+        a.add(real("2026-10-30T12:00:00Z", source: "g2-attached", caller: "attached_turn", model: "claude", resolved: "claude-opus-5-5", session: "s-w", usd: 9))
+        var attachedFinish = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
+        check(attachedFinish.rows.isEmpty && abs(attachedFinish.work.widerUSD - 0.004) < 1e-12, "a real row inside a Work session's slice is not counted twice")
+        a = make(runs: [run("rd", session: "claude:s-d", start: "2026-10-30T12:00:00Z")], work: ["claude:s-d": workStartAttached])
+        a.add(real("2026-10-30T12:01:00Z", caller: "dispatch_task", model: "sonnet", resolved: "claude-sonnet-5-5", run: "rd", session: "s-d", usd: 4))
+        a.add(real("2026-10-30T12:01:01Z", caller: "dispatch_task:late_result", model: "sonnet", run: "rd", session: "s-d", usd: 1))
+        attachedFinish = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
+        check(attachedFinish.rows.first { $0.category == .work }?.measuredUSD == 5 && attachedFinish.rows.first { $0.category == .work }?.calls == 1, "a dispatch has no log, so its real row and late result are what Work has")
+        check(attachedFinish.rows.first { $0.category == .work }?.addsToTotalUSD == 5, "a dispatch adds to the total, because no log holds it")
+        // Gist and Ask real rows are the only record: no session is ever opened for them.
+        a = make(); a.add(real("2026-10-30T12:00:00Z", source: "meeting-ask", caller: "meeting_ask", model: "claude:claude-sonnet-5-5", session: "ask-session", usd: 0.5)); rows = finish(&a)
+        check(rows[.answers]?.measuredUSD == 0.5 && rows[.answers]?.addsToTotalUSD == 0.5, "a real Ask row is measured and adds to the total")
+        a = make(gist: [gistRun("2026-10-30T12:00:00Z")]); a.add(real("2026-10-30T12:00:00.010Z", source: "g2-lens-gist", caller: "lens_gist", model: "claude:claude-sonnet-5-5", session: "gist-session", usd: 0.25)); rows = finish(&a)
+        check(rows[.liveAndUpkeep]?.calls == 1 && rows[.liveAndUpkeep]?.measuredUSD == 0.25, "a real gist row and its run are one call")
+        a = make(); a.add(real("2026-10-30T12:00:00Z", source: "g2-lens-gist", caller: "lens_gist", model: "claude:claude-sonnet-5-5", session: "gist-session", usd: 0.25)); rows = finish(&a)
+        check(rows[.liveAndUpkeep]?.measuredUSD == 0.25 && rows[.liveAndUpkeep]?.addsToTotalUSD == 0.25, "a real gist row with no run in the ledger still counts")
+        // Work starts own the session from then on, and a dollar is in one place.
+        let workStart = R.epoch("2026-10-30T12:10:00Z")!
+        a = make(runs: [run("r1")], work: ["claude:s1": workStart], events: [event("2026-10-30T12:00:30Z"), event("2026-10-30T12:05:00Z"), event("2026-10-30T12:20:00Z", input: 2000)])
+        a.add(g2Row)
+        var finished = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
+        rows = Dictionary(uniqueKeysWithValues: finished.rows.map { ($0.category, $0) })
+        check(abs(finished.work.widerUSD - 0.008) < 1e-12 && finished.work.widerTokens == 2000, "Work counts only from the moment the run started")
+        check(abs((rows[.answers]?.measuredUSD ?? 0) - 0.004) < 1e-12, "a G2 turn before Work started stays an answer")
+        check(finished.work.runs == 1 && finished.work.handoffsFound, "the Work line carries its run count")
+        a = make(runs: [run("r2", start: "2026-10-30T12:15:00Z", end: "2026-10-30T12:16:00Z")], work: ["claude:s1": workStart], events: [event("2026-10-30T12:15:30Z")])
+        a.add(audit("2026-10-30T12:16:00Z", source: "g2-query", caller: "full_query", model: "opus"))
+        finished = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
+        rows = Dictionary(uniqueKeysWithValues: finished.rows.map { ($0.category, $0) })
+        check(rows[.answers] == nil && abs(finished.work.widerUSD - 0.004) < 1e-12, "a dispatch's audit row is not also an answer")
+        a = make(work: ["codex:t1": workStart], events: [event("2026-10-30T12:20:00Z", session: "codex:t1", input: 100_000, model: "gpt-5.6-terra", provider: "OpenAI"), event("2026-10-30T12:21:00Z", session: "codex:t1", input: 1000, model: "gpt-made-up", provider: "OpenAI")])
+        finished = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
+        check(abs(finished.work.widerUSD - 0.2) < 1e-9 && abs(finished.work.addsToTotalUSD - 0.2) < 1e-9, "a slice priced only by a new rate adds to the total, because Usage has no price for it")
+        // The Work run itself, as against what the person did later in the session.
+        let handoff = R.epoch("2026-10-30T12:00:00Z")!
+        func mark(_ at: String, _ kind: CosMarkKind, session: String = "claude:s1") -> CosSliceMark { CosSliceMark(session: session, at: R.epoch(at)!, kind: kind) }
+        func workTurns(_ marks: [CosSliceMark], handoffs: [CosWorkRun]? = nil) -> CosWorkSummary {
+            var w = make(work: ["claude:s1": handoff], events: [event("2026-10-30T11:59:00Z", input: 1), event("2026-10-30T12:00:10Z", input: 100), event("2026-10-30T12:05:00Z", input: 200), event("2026-10-30T12:10:00Z", input: 400)], handoffs: handoffs, marks: marks)
+            return w.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0).work
+        }
+        var turn = workTurns([mark("2026-10-30T12:00:03Z", .handedIn), mark("2026-10-30T12:05:30Z", .typed)])
+        check(turn.measuredTokens == 300, "a typed turn ends the run's window")
+        check(turn.widerTokens == 700, "what came after the typed turn stays in the wider figure")
+        check(turn.unprovenRuns == 0, "a typed turn is a provable end")
+        turn = workTurns([mark("2026-10-30T12:00:03Z", .handedIn)])
+        check(turn.measuredTokens == 0 && turn.unprovenRuns == 1 && turn.widerTokens == 700, "a run with no provable end is said and stays out of the lead figure")
+        turn = workTurns([mark("2026-10-30T12:00:03Z", .handedIn), mark("2026-10-30T12:05:30Z", .end)])
+        check(turn.measuredTokens == 300 && turn.unprovenRuns == 0, "with no typed turn, the last finished turn is the end")
+        turn = workTurns([mark("2026-10-30T12:00:03Z", .handedIn), mark("2026-10-30T12:04:00Z", .end), mark("2026-10-30T12:05:30Z", .end)])
+        check(turn.measuredTokens == 300, "a background task's turn is still the run")
+        turn = workTurns([mark("2026-10-30T12:00:00Z", .peer), mark("2026-10-30T12:00:30Z", .typed)])
+        check(turn.measuredTokens == 100, "a resumed session: the handed-in message is passed over and the person's first typed turn ends it")
+        turn = workTurns([mark("2026-10-30T12:00:03Z", .handedIn), mark("2026-10-30T12:05:30Z", .peer)])
+        check(turn.measuredTokens == 300, "another session's message ends the run")
+        turn = workTurns([mark("2026-10-30T11:59:30Z", .typed), mark("2026-10-30T12:00:03Z", .handedIn), mark("2026-10-30T12:05:30Z", .typed)])
+        check(turn.measuredTokens == 300, "a resumed session: turns before the handoff are not the run's")
+        turn = workTurns([mark("2026-10-30T12:08:00Z", .handedIn), mark("2026-10-30T12:10:30Z", .end)])
+        check(turn.measuredTokens == 300, "a row long after the handoff is not the run's own prompt")
+        turn = workTurns([mark("2026-10-30T12:00:30Z", .typed), mark("2026-10-30T12:05:30Z", .typed)])
+        check(turn.measuredTokens == 100, "a person typing right after a handoff ends the run, because their words are not its prompt")
+        turn = workTurns([mark("2026-10-30T12:00:20Z", .typed), mark("2026-10-30T12:05:30Z", .typed)], handoffs: [CosWorkRun(session: "claude:s1", start: handoff, openedInApp: true)])
+        check(turn.measuredTokens == 300, "a prompt opened in the app and sent by the person is the run's own")
+        turn = workTurns([mark("2026-10-30T12:00:03Z", .handedIn), mark("2026-10-30T12:04:00Z", .handedIn), mark("2026-10-30T12:04:03Z", .end), mark("2026-10-30T12:09:00Z", .end)],
+                         handoffs: [CosWorkRun(session: "claude:s1", start: handoff), CosWorkRun(session: "claude:s1", start: R.epoch("2026-10-30T12:03:59Z")!)])
+        check(turn.measuredTokens == 300 && turn.widerTokens == 700, "two runs in one session do not count a turn twice")
+        var silent = make(work: ["claude:s1": handoff], events: [event("2026-10-30T11:59:00Z", input: 1)])
+        check(silent.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 2).work.runsWithoutLogs == 3, "a run with no rows after its start is said as having no log")
+        // Row types only. Tool results and system rows are not a person typing.
+        func userRow(_ content: Any, origin: String? = nil, extra: [String: Any] = [:]) -> [String: Any] {
+            var row: [String: Any] = ["type": "user", "message": ["role": "user", "content": content]]
+            if let origin { row["origin"] = ["kind": origin] }
+            return row.merging(extra) { $1 }
+        }
+        check(R.claudeMark(userRow("hello", origin: "human")) == .typed && R.claudeMark(userRow([["type": "text", "text": "hello"]], origin: "human")) == .typed && R.claudeMark(userRow([["type": "image"]], origin: "human")) == .typed, "a human row with text or an image is typed")
+        check(R.claudeMark(userRow([["type": "tool_result", "content": "x"]])) == nil && R.claudeMark(userRow([["type": "tool_result"], ["type": "text"]], origin: "human")) == nil, "a tool result is never a typed turn")
+        check(R.claudeMark(userRow("the words tool_result are in this text", origin: "human")) == .typed, "words in a message do not change its type")
+        check(R.claudeMark(userRow("notice", origin: "task-notification")) == nil, "a background task's notice is not a typed turn")
+        check(R.claudeMark(userRow("injected", extra: ["isMeta": true])) == nil && R.claudeMark(userRow("summary", extra: ["isCompactSummary": true])) == nil && R.claudeMark(userRow("agent", extra: ["isSidechain": true])) == nil, "system rows and subagent rows are not typed turns")
+        check(R.claudeMark(userRow("hi", origin: "peer", extra: ["isMeta": true])) == .peer, "another session's message is its own kind")
+        check(R.claudeMark(userRow("prompt")) == .handedIn, "a row with no origin is handed in")
+        check(R.claudeMark(["type": "assistant", "message": ["stop_reason": "end_turn"]]) == .end && R.claudeMark(["type": "assistant", "message": ["stop_reason": "tool_use"]]) == nil, "only a finished turn ends one")
+        check(R.claudeMark(["type": "assistant", "isSidechain": true, "message": ["stop_reason": "end_turn"]]) == nil, "a subagent finishing is not the run finishing")
+        check(R.codexMark(["type": "event_msg", "payload": ["type": "task_started"]]) == .handedIn && R.codexMark(["type": "event_msg", "payload": ["type": "task_complete"]]) == .end && R.codexMark(["type": "event_msg", "payload": ["type": "turn_aborted"]]) == .end, "Codex turns open and close by event type")
+        check(R.codexMark(["type": "event_msg", "payload": ["type": "token_count"]]) == nil && R.codexMark(["type": "response_item", "payload": ["type": "message", "role": "user"]]) == nil, "other Codex rows do not move a run")
+        check(finished.work.unpricedEvents == 0, "an unpriced row outside a proven window is not in the lead figure")
+        // A message copied into a second session happened once, whichever session is read first.
+        var copyA = event("2026-10-30T12:00:30Z", session: "claude:s1"); copyA.id = "same-message"
+        var copyB = event("2026-10-30T12:00:30Z", session: "claude:s2"); copyB.id = "same-message"
+        a = make(runs: [run("r1"), run("r2", session: "claude:s2")], events: [copyA, copyB]); rows = finish(&a)
+        let firstOrder = rows[.answers]?.measuredTokens
+        a = make(runs: [run("r1"), run("r2", session: "claude:s2")], events: [copyB, copyA]); rows = finish(&a)
+        check(firstOrder == 1000 && rows[.answers]?.measuredTokens == 1000, "a message copied into a second session counts once in either order")
+        a = make(runs: [run("r2", session: "claude:s2")], work: ["claude:s1": R.epoch("2026-10-30T12:00:00Z")!], events: [copyB, copyA])
+        finished = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
+        check(finished.work.widerTokens == 1000 && !finished.rows.contains { $0.category == .answers }, "a copied message goes to Work over a G2 run")
+        // Day ledgers add tokens and dollars, never calls.
+        a = make()
+        a.addDailyTokens(1_000_000, category: .liveAndUpkeep, priced: true, day: "2026-10-30")
+        a.addDailyTokens(1_000_000, category: .liveAndUpkeep, priced: false, day: "2026-10-30")
+        a.addDailyTokens(1_000_000, category: .liveAndUpkeep, priced: true, day: "2026-09-01")
+        rows = finish(&a)
+        check(rows[.liveAndUpkeep]?.calls == 0 && rows[.liveAndUpkeep]?.measuredTokens == 2_000_000, "a day ledger adds tokens and no calls, and only inside the window")
+        check(abs((rows[.liveAndUpkeep]?.measuredUSD ?? 0) - 0.042) < 1e-9, "only a priced day ledger adds dollars")
+
+        // The denominator, and the Cursor rule spelled out.
+        func report(_ rows: [CosCostRow], work: CosWorkSummary = CosWorkSummary(), stillReading: Int = 0, auditFound: Bool = true) -> CosUsageReport {
+            var r = CosUsageReport(windowStart: "2026-10-02", windowEnd: "2026-10-31", timeZone: "America/Chicago", updatedAt: "x", auditFound: auditFound, runLedgersFound: true)
+            r.rows = rows; r.work = work; r.sessions.stillReading = stillReading
+            return r
+        }
+        func bucket(_ day: String, _ usd: Double) -> SessionUsageBucket {
+            SessionUsageBucket(day: day, provider: "Anthropic", model: "claude-opus-5-5", counts: SessionUsageCounts(input: 1), events: 1, pricedEvents: 1, estimatedUSD: usd)
+        }
+        var cursorFinal = audit("2026-10-30T12:00:00Z", model: "cursor-grok", kind: "provider_final")
+        cursorFinal.realUSD = 7
+        a = make(); a.add(cursorFinal); var cursorRows = a.finish(handoffsFound: true, workRuns: 0, workRunsWithoutLogs: 0).rows
+        check(cursorRows[0].addsToTotalUSD == 0 && cursorRows[0].addsUnlessCursorFeedUSD == 7, "Cursor spend is held apart from the plain additions")
+        var cursorReport = report(cursorRows)
+        check(P.ranUSD(usageBuckets: [bucket("2026-10-30", 100)], report: cursorReport, cursorFeedOn: true) == 100, "with the feed on, Usage already holds Cursor spend")
+        check(P.ranUSD(usageBuckets: [bucket("2026-10-30", 100)], report: cursorReport, cursorFeedOn: false) == 107, "with the feed off, the total adds Cursor spend")
+        check(P.measuredUSD(cursorReport) == 7, "the numerator counts Cursor spend once with the feed on or off")
+        cursorFinal.model = "luna-5.6-fast"
+        a = make(); a.add(cursorFinal); cursorRows = a.finish(handoffsFound: true, workRuns: 0, workRunsWithoutLogs: 0).rows
+        cursorReport = report(cursorRows)
+        check(P.ranUSD(usageBuckets: [], report: cursorReport, cursorFeedOn: true) == 0 && P.ranUSD(usageBuckets: [], report: cursorReport, cursorFeedOn: false) == 7, "Luna follows the Cursor rule")
+        var adds = CosCostRow(category: .liveAndUpkeep); adds.addsToTotalUSD = 3
+        var workAdds = CosWorkSummary(); workAdds.addsToTotalUSD = 2
+        check(P.ranUSD(usageBuckets: [bucket("2026-10-30", 100), bucket("2026-10-01", 900)], report: report([adds], work: workAdds), cursorFeedOn: false) == 105, "the total is Usage's window plus what it cannot see")
+        // The share never exceeds what it divides, and never divides by a total still moving.
+        check(P.share(measured: 5, ran: 100, usage: .ready) == 0.05, "a share is measured over the total")
+        check(P.share(measured: 200, ran: 100, usage: .ready) == nil, "a share never exceeds what it divides")
+        check(P.share(measured: 5, ran: 100, usage: .paused) == nil, "a paused Usage has no share")
+        check(P.share(measured: 5, ran: 100, usage: .importing(files: 3)) == nil, "an importing Usage has no share")
+        check(P.share(measured: 5, ran: 0, usage: .ready) == nil && P.share(measured: 0, ran: 100, usage: .ready) == nil, "no total or no measurement has no share")
+        // The headline, literally.
+        var m = CosCostRow(category: .answers); m.calls = 10; m.measuredCalls = 10; m.measuredUSD = 284
+        var e = CosCostRow(category: .dictation); e.calls = 1685; e.estimatedCalls = 1685; e.estimatedUSD = 0.44
+        check(P.headline(report: report([m, e]), ran: 18_612, usage: .ready) == "Measured: COS used $284 of the $18,612 you ran in the last 30 days. 1,685 more calls have only character counts, so the real figure is higher.", "the mixed headline says measured, total and the calls left out")
+        check(P.headline(report: report([m]), ran: 18_612, usage: .ready) == "Measured: COS used $284 of the $18,612 you ran in the last 30 days.", "a fully measured headline has no second sentence")
+        check(P.headline(report: report([e]), ran: 18_612, usage: .ready) == "COS made 1,685 calls in the last 30 days. This server doesn't measure their cost yet.", "with nothing measured the headline names no dollars")
+        check(!P.headline(report: report([e]), ran: 18_612, usage: .ready).contains("$"), "an estimate never reaches the headline's dollars")
+        check(P.headline(report: report([]), ran: 0, usage: .ready) == "COS made no calls in the last 30 days.", "no calls says so")
+        check(P.headline(report: report([], auditFound: false), ran: 0, usage: .ready).hasPrefix("COS has no record"), "no ledger says so")
+        check(P.headline(report: report([m]), ran: 18_612, usage: .paused) == "Measured: COS used $284 in the last 30 days.", "a paused Usage drops the total from the headline")
+        check(P.headline(report: report([m]), ran: 18_612, usage: .importing(files: 3)) == "Measured: COS used $284 of the $18,612 read so far in the last 30 days.", "an importing Usage says so far")
+        check(P.headline(report: report([m], stillReading: 2), ran: 18_612, usage: .ready).hasPrefix("Measured so far: COS used $284"), "sessions still being read say so far")
+        check(P.headline(report: report([m]), ran: 100, usage: .ready) == "Measured: COS used $284 in the last 30 days.", "a figure bigger than the total drops the total")
+        var one = CosCostRow(category: .answers); one.calls = 1; one.estimatedCalls = 1
+        check(P.headline(report: report([one]), ran: 1, usage: .ready) == "COS made 1 call in the last 30 days. This server doesn't measure their cost yet.", "one call is singular")
+        var unpriced = CosCostRow(category: .answers); unpriced.calls = 4; unpriced.measuredCalls = 4; unpriced.unpricedMeasuredCalls = 4; unpriced.measuredTokens = 1000
+        check(P.headline(report: report([unpriced]), ran: 1, usage: .ready).contains("no verified price"), "measured calls with no rate say so instead of $0")
+        check(P.overhead(report([m, CosCostRow(category: .work, calls: 9, estimatedCalls: 9)])).count == 1 && P.calls(report([m, CosCostRow(category: .work, calls: 9, estimatedCalls: 9)])) == 10, "Work stays out of COS's own figure")
+        // Rows.
+        check(P.atLeast(0.44) == "at least $0.44" && P.atLeast(0.001) == "at least a fraction of 1¢", "a floor under a cent does not contradict itself")
+        check(P.money(0.444) == "$0.44" && P.money(284.4) == "$284" && P.money(18612) == "$18,612" && P.money(0.001) == "under 1¢", "money keeps cents only when they matter")
+        let measuredLine = P.rowLine(m)
+        check(measuredLine.evidence == .measured && measuredLine.figure == "$284" && measuredLine.mix == nil, "a measured row shows measured dollars")
+        let estimatedLine = P.rowLine(e)
+        check(estimatedLine.evidence == .estimated && estimatedLine.figure == "Estimated" && estimatedLine.detail == "at least $0.44" && estimatedLine.count == "1,685 dictations", "an estimated row says Estimated, at least, with its noun")
+        var mix = CosCostRow(category: .liveAndUpkeep); mix.calls = 1433; mix.measuredCalls = 694; mix.measuredUSD = 4.31; mix.measuredTokens = 989_491; mix.estimatedCalls = 739; mix.estimatedUSD = 1.1
+        check(P.rowLine(mix).mix == "694 measured, at least $1.10 estimated for the rest.", "a row with a mix says how many calls were measured")
+        var mixNoRate = mix; mixNoRate.estimatedUSD = 0
+        check(P.rowLine(mixNoRate).mix == "694 measured, no verified price for the rest.", "a mix with no rate for the rest says so")
+        var noRate = CosCostRow(category: .other); noRate.calls = 8; noRate.estimatedCalls = 8; noRate.estimatedTokens = 12_000
+        check(P.rowLine(noRate).evidence == .noPrice && P.rowLine(noRate).figure == "No price" && P.rowLine(noRate).detail == "12.0K tokens", "a model with no rate shows tokens and No price")
+        check(P.rowLine(CosCostRow(category: .transcription)).count == "None in the last 30 days" && P.rowLine(CosCostRow(category: .transcription)).evidence == .none, "an empty row says none")
+        var bigFloor = CosCostRow(category: .memoryIndexing); bigFloor.calls = 2725; bigFloor.estimatedCalls = 2725; bigFloor.estimatedUSD = 900
+        var small = CosCostRow(category: .answers); small.calls = 3; small.measuredCalls = 3; small.measuredUSD = 2
+        let lines = P.rowLines(report([bigFloor, small, noRate]))
+        check(lines.map(\.id) == [.answers, .memoryIndexing, .other, .dictation, .transcription], "estimated rows sort below measured ones, then No price, then empty")
+        check(lines[0].measuredFraction > 0 && lines[0].estimatedFraction == 0 && lines[1].estimatedFraction == 1 && lines[1].measuredFraction == 0, "a bar keeps measured and estimated apart")
+        // What you pay.
+        check(P.monthlyPrice("$200") == 200 && P.monthlyPrice(" 1,200.50 ") == 1200.5, "a price reads with a dollar sign and commas")
+        check(P.monthlyPrice("") == nil && P.monthlyPrice("free") == nil && P.monthlyPrice("0") == nil && P.monthlyPrice("-5") == nil, "anything else is no price")
+        check(P.compareLine(share: 0.015, price: 200) == "About 1.5% of your usage, roughly $3.00 of your $200.", "the comparison is share times price")
+        check(P.compareLine(share: nil, price: 200) == nil && P.compareLine(share: 0.015, price: nil) == nil, "no share or no price compares nothing")
+        // Notes and the Work words.
+        var progress = report([m]); progress.sessions = CosSliceProgress(tracked: 9, stillReading: 2, noLogs: 1, compressed: 3, busy: true); progress.undatedCalls = 4; progress.unreadableRows = 1
+        let notes = P.sessionNotes(progress)
+        check(P.stillReadingNote(progress).hasPrefix("Still reading 2 sessions") && notes.contains { $0.hasPrefix("3 sessions are compressed") } && notes.contains { $0.hasPrefix("1 session has no log") }, "the page says what is not in yet")
+        check(P.headlineParts(report: report([m, e]), ran: 18_612, usage: .ready).caveat == " 1,685 more calls have only character counts, so the real figure is higher.", "the caveat is its own part of the headline")
+        check(P.showsDollars(report([m])) && P.showsDollars(report([e])) && !P.showsDollars(report([one])), "the page says what the dollars are only when it shows some")
+        check(P.compareHint(share: nil, price: nil).contains("never sent") && P.compareHint(share: nil, price: 20).contains("needs a current Usage total") && P.compareHint(share: nil, price: nil, measured: false).hasPrefix("Once this server measures"), "the price field says what it does and why it cannot yet")
+        var quietReport = report([]); quietReport.runLedgersFound = false
+        check(P.sessionNotes(quietReport).isEmpty && !P.sessionNotes({ var r = report([e]); r.runLedgersFound = false; return r }()).isEmpty, "the run record note appears only when there are calls for it to explain")
+        var approximate = report([m]); approximate.rows[0].approximateMatches = 3
+        check(P.method(approximate).contains { $0.hasPrefix("3 calls were matched") } && !P.method(report([m])).contains { $0.contains("matched to") }, "the method says how many matches are approximate")
+        check(notes.contains { $0.hasPrefix("4 calls have no readable date") } && notes.contains { $0.hasPrefix("1 line could not") }, "undated and unreadable rows are said, not dropped")
+        check(P.workCount(CosWorkSummary()) == "This Mac has no record of Work runs." && P.workCount(CosWorkSummary(handoffsFound: true, runs: 27)) == "27 runs you started", "the Work line says how many runs, or that there is no record")
+        var workMeasured = CosCostRow(category: .work); workMeasured.measuredUSD = 2; workMeasured.measuredTokens = 10; workMeasured.calls = 5; workMeasured.estimatedCalls = 4; workMeasured.estimatedUSD = 0.6
+        var workReport = report([workMeasured]); workReport.work.measuredUSD = 300; workReport.work.measuredTokens = 100; workReport.work.widerUSD = 4002
+        check(P.workUSD(workReport) == 302 && P.workTokens(workReport) == 110 && P.workFigure(workReport) == "$302", "the Work line adds its slices and its real rows")
+        check(P.workWider(workReport) == "$4,004 if you count what you did later in those sessions.", "the wider figure is said plainly")
+        workReport.work.widerUSD = 300
+        check(P.workWider(workReport) == nil, "with nothing later, there is no wider figure to say")
+        check(P.workUnproven(CosWorkSummary(unprovenRuns: 2)) == "2 runs have no provable end, so they are only in the wider figure." && P.workUnproven(CosWorkSummary()) == nil, "runs with no provable end are said, not guessed")
+        var withWork = report([m]); withWork.work.widerUSD = 9_000; withWork.work.measuredUSD = 8_000
+        check(P.measuredUSD(withWork) == 284 && P.headline(report: withWork, ran: 18_612, usage: .ready).hasPrefix("Measured: COS used $284 of"), "neither Work figure reaches the headline or a share")
+        check(P.workBackground(workReport) == "Plus 4 background calls, at least $0.60 estimated.", "Work's character-count rows sit beside the figure, not in it")
+        for text in notes + P.method(approximate) + [P.workMethod, P.headline(report: report([m, e]), ran: 1000, usage: .ready), P.compareHint(share: 0.1, price: 20)] {
+            check(!text.contains("\u{2014}") && !text.contains("\u{2192}") && !text.contains("->"), "page copy has no em dash or arrow")
+        }
+
+        // The reader, on a scratch home. Nothing here touches a real file.
+        let root = home.appendingPathComponent("cos-cost-home")
+        let fm = FileManager.default
+        func write(_ relative: String, _ text: String) throws {
+            let file = root.appendingPathComponent(relative)
+            try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try text.write(to: file, atomically: true, encoding: .utf8)
+        }
+        func json(_ value: [String: Any]) throws -> String { String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self) + "\n" }
+        func claudeRow(_ id: String, _ time: String, session: String, output: Int = 20) throws -> String {
+            try json(["type": "assistant", "timestamp": time, "sessionId": session, "message": ["id": id, "model": "claude-opus-5-5", "usage": ["input_tokens": 1000, "output_tokens": output, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0], "content": [["text": "SECRET_PROMPT_NEVER_STORE"]]]])
+        }
+        let now = R.epoch("2026-10-31T12:00:00Z").map { Date(timeIntervalSince1970: $0) }!
+        let scripts = root.appendingPathComponent("scripts").path
+        // Nothing there at all: a valid report that says so, no crash.
+        let empty = try SessionUsageCollector(home: root, database: home.appendingPathComponent("cos-empty.sqlite"), timeZone: chicago)
+        let nothing = try empty.cosUsage(plistScripts: nil, dataDirectory: nil, importSessions: true, now: now)
+        check(!nothing.auditFound && !nothing.runLedgersFound && !nothing.gistLedgerFound && !nothing.work.handoffsFound && nothing.rows.isEmpty && nothing.sessions.tracked == 0, "missing ledgers give a valid report that says so")
+        check(nothing.windowStart == "2026-10-02" && nothing.windowEnd == "2026-10-31", "the window is the same 30 days Usage shows")
+        try write(".claude/projects/p1/s-main.jsonl", try claudeRow("m1", "2026-10-30T12:00:30Z", session: "s-main") + claudeRow("m1", "2026-10-30T12:00:31Z", session: "s-main", output: 40)
+            + claudeRow("copied", "2026-10-30T12:00:32Z", session: "someone-else") + "{not json at all but it says \"assistant\" and \"usage\"\n" + "{\"type\":\"user\",\"sessionId\":\"s-main\",\"message\":{\"content\":\"SECRET_PROMPT_NEVER_STORE\"}}\n")
+        try write(".claude/projects/p1/s-main/subagents/agent-1.jsonl", try claudeRow("sub1", "2026-10-30T12:00:40Z", session: "s-main"))
+        try write(".claude/projects/p2/s-work.jsonl", try claudeRow("w-before", "2026-10-30T10:00:00Z", session: "s-work") + claudeRow("w-after", "2026-10-30T13:00:00Z", session: "s-work"))
+        try write(".claude/projects/p2/s-old.jsonl", try claudeRow("ancient", "2026-08-01T10:00:00Z", session: "s-old") + claudeRow("fresh", "2026-10-30T14:00:30Z", session: "s-old"))
+        try write(".codex/sessions/2026/10/30/rollout-2026-10-30T12-00-00-11111111-1111-1111-1111-111111111111.jsonl",
+            try json(["type": "session_meta", "payload": ["id": "11111111-1111-1111-1111-111111111111", "model_provider": "openai"]]) + json(["type": "turn_context", "payload": ["model": "gpt-5.6-terra"]])
+            + json(["type": "event_msg", "timestamp": "2026-10-30T15:00:30Z", "payload": ["type": "token_count", "info": ["total_token_usage": ["input_tokens": 1_000, "output_tokens": 100, "cached_input_tokens": 0], "last_token_usage": ["input_tokens": 1_000, "output_tokens": 100, "cached_input_tokens": 0]]]]))
+        try write(".codex/sessions/2026/10/30/rollout-2026-10-30T12-00-00-22222222-2222-2222-2222-222222222222.jsonl.zst", "not really zstd")
+        func runLine(_ id: String, _ patch: [String: Any]) throws -> String { try json(["runId": id, "ts": "2026-10-30T12:00:00Z", "patch": patch]) }
+        try write(".cos-glasses/data/claude-runs.jsonl", try runLine("r1", ["cliSessionId": "s-main", "model": "opus", "createdAt": "2026-10-30T12:00:00Z", "updatedAt": "2026-10-30T12:00:50Z", "cliCommand": "SECRET_PROMPT_NEVER_STORE"]) + runLine("r1", ["status": "completed", "updatedAt": "2026-10-30T12:01:00Z"])
+            + runLine("r-old", ["cliSessionId": "s-old", "model": "opus", "createdAt": "2026-10-30T14:00:00Z", "updatedAt": "2026-10-30T14:01:00Z"])
+            + runLine("r-gone", ["cliSessionId": "s-gone", "model": "opus", "createdAt": "2026-10-30T15:00:00Z", "updatedAt": "2026-10-30T15:01:00Z"])
+            + runLine("r-ancient", ["cliSessionId": "s-ancient", "model": "opus", "createdAt": "2026-05-30T15:00:00Z", "updatedAt": "2026-05-30T15:01:00Z"]))
+        try write(".cos-glasses/data/codex-runs.jsonl", try runLine("x1", ["codexThreadId": "11111111-1111-1111-1111-111111111111", "model": "codex-balanced", "createdAt": "2026-10-30T15:00:00Z", "updatedAt": "2026-10-30T15:01:00Z"])
+            + runLine("x2", ["codexThreadId": "22222222-2222-2222-2222-222222222222", "model": "codex-frontier", "createdAt": "2026-10-30T16:00:00Z", "updatedAt": "2026-10-30T16:01:00Z"]))
+        try write(".cos-glasses/data/lens-gist-runs.jsonl", try json(["engine": "claude", "model": "claude-sonnet-5-5", "ok": true, "ms": 900, "at": "2026-10-30T17:00:00.020Z", "kind": "session", "usage": ["inputTokens": 1000, "cachedInputTokens": 0, "outputTokens": 100, "costUsd": 0.25]]))
+        try write(".cos-glasses/data/jev-cues-usage.json", try json(["2026-10-30": 1_000_000, "2026-08-01": 5_000_000]))
+        try write(".cos-glasses/data/subq-completion-usage.json", try json(["2026-10-30": 3000]))
+        // Shaped like a day ledger on purpose: if anything reads these, their tokens land on a row and the checks below fail.
+        for name in ["subq-key.json", "jev-key.json", "subq-usage-key.json"] {
+            try write(".cos-glasses/data/\(name)", try json(["2026-10-30": 777_000_000, "key": "SECRET_KEY_NEVER_READ"]))
+        }
+        try write("Library/Application Support/COS Control/work-handoffs/handoffs.json", try json(["receipts": [
+            ["createdAt": R.epoch("2026-10-30T12:30:00Z")!, "sessionID": "claude:s-work", "provider": "claude", "status": "delivered", "prompt": "SECRET_PROMPT_NEVER_STORE"],
+            ["createdAt": R.epoch("2026-10-30T12:40:00Z")!, "sessionID": "cursor:c1", "provider": "cursor", "status": "completed"],
+            ["createdAt": R.epoch("2026-10-30T12:50:00Z")!, "sessionID": "claude:s-work", "provider": "claude", "status": "failed"],
+            ["createdAt": R.epoch("2026-08-30T12:50:00Z")!, "sessionID": "claude:s-long-ago", "provider": "claude", "status": "delivered"],
+        ], "sessions": [], "drafts": [], "version": 1]))
+        let auditText = try json(["ts": "2026-10-30T12:00:55-0500", "source": "g2-dictation-autoclean", "model": "sonnet", "input_chars": 40, "output_chars": 40, "est_input_tokens": 1000, "est_output_tokens": 100, "caller": "dictation_autoclean_message"])
+            + json(["ts": "2026-10-30T12:00:59.000Z", "source": "g2-query", "model": "opus", "est_input_tokens": 9000, "est_output_tokens": 100, "caller": "full_query", "duration_ms": 1])
+            + json(["ts": "2026-10-30T17:00:00.010Z", "source": "g2-lens-gist", "model": "claude:claude-sonnet-5-5", "est_input_tokens": 300, "est_output_tokens": 30, "caller": "lens_gist"])
+            + json(["ts": "not a date", "source": "cos-script", "model": "haiku", "est_input_tokens": 1, "est_output_tokens": 1, "caller": "lightrag"])
+            + "{this line is torn\n"
+            + json(["ts": "2026-10-30T12:00:00-0500", "source": "cos-script", "model": "codex:gpt-5.6-terra", "est_input_tokens": 1000, "est_output_tokens": 0, "caller": "lightrag"])
+        try write("scripts/.cos_token_audit.jsonl", auditText + "{\"ts\":\"2026-10-30T12:00:00-0500\",\"source\":\"half a li")
+        try write(".cos-glasses/token-audit.jsonl", try json(["ts": "2026-10-30T12:00:00-0500", "source": "cos-script", "model": "haiku", "est_input_tokens": 1, "est_output_tokens": 1, "caller": "home_file_row"]))
+        let db = home.appendingPathComponent("cos-real.sqlite")
+        let collector = try SessionUsageCollector(home: root, database: db, timeZone: chicago)
+        let paused = try collector.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: false, now: now)
+        check(paused.sessions.tracked == 6 && paused.rows.first { $0.category == .answers }?.measuredCalls == 0, "a paused Usage reads no session logs")
+        var opened: [String] = []
+        let full = try collector.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: true, now: now, opened: { opened.append($0) })
+        func row(_ c: CosCostCategory, _ r: CosUsageReport) -> CosCostRow { r.rows.first { $0.category == c } ?? CosCostRow(category: c) }
+        check(!opened.contains { $0.lowercased().contains("key") }, "a pass never opens a key file")
+        check(Set(opened) == Set(R.dataFiles + ["handoffs.json", ".cos_token_audit.jsonl"]), "a pass opens exactly the fixed file list")
+        check(!opened.contains(".env"), "with the server's scripts folder known, .env is never opened")
+        check(full.rows.reduce(Int64(0)) { $0 + $1.measuredTokens } + full.work.measuredTokens < 700_000_000, "a key file's numbers never reach a row")
+        check(full.auditFound && full.runLedgersFound && full.gistLedgerFound && full.work.handoffsFound, "the reader finds each ledger")
+        check(row(.other, full).calls == 0, "the server's audit is read and the home file does not mix in")
+        check(full.undatedCalls == 1, "the reader counts an undated audit row")
+        check(full.unreadableRows == 1, "a torn line is unreadable and a half-written last line waits")
+        let answers = row(.answers, full)
+        // s-main: m1 at its fullest (1040) plus the subagent (1020), not the other session's row. s-old: fresh only (1020). x1 is Codex (1100, priced by the new rate). s-gone and x2 have no readable log.
+        check(answers.measuredTokens == 1040 + 1020 + 1020 + 1100, "a slice keeps one fragment per message, adds subagents and leaves another session's rows out")
+        check(answers.calls == 3 && answers.measuredCalls == 3, "three runs with logs are three measured answers")
+        check(abs(answers.addsToTotalUSD - (1000*2.0 + 100*12.0)/1_000_000) < 1e-9, "only the Codex slice on a new rate adds to the total")
+        check(row(.dictation, full).estimatedCalls == 1, "polish stays an estimate")
+        check(row(.liveAndUpkeep, full).measuredCalls == 1 && row(.liveAndUpkeep, full).estimatedCalls == 0, "the reader dedupes a gist row against its run")
+        check(abs(row(.liveAndUpkeep, full).measuredUSD - (0.25 + 0.042)) < 1e-9, "a gist's cost and a priced day ledger add up, and the old day is out")
+        check(row(.memoryIndexing, full).estimatedCalls == 1 && abs(row(.memoryIndexing, full).estimatedUSD - 0.002) < 1e-9, "LightRAG on terra has a floor at the verified rate")
+        check(row(.other, full).measuredTokens == 3000 && row(.other, full).measuredUSD == 0, "a SubQ day ledger has tokens and no price")
+        check(full.sessions.noLogs == 1 && full.sessions.compressed == 1 && full.sessions.stillReading == 0, "the reader says which sessions have no log and which are compressed")
+        check(full.work.runs == 2 && full.work.runsWithoutLogs == 1, "failed and old receipts are out, and a Cursor run has no log to read")
+        check(full.work.widerTokens == 1020 && full.work.measuredTokens == 0, "a continued Work session counts from the run's start, and with no ending it stays wider")
+        check(full.work.unprovenRuns == 1, "the reader says a run has no provable end")
+        check(try collector.cosStoredEventCount() == 6, "a row older than the window is not stored")
+        // A Work run on real row shapes, from a scratch log: its prompt, a tool call, a tool result, a typed turn, then more.
+        let turnsHome = root.appendingPathComponent("turns")
+        func writeTurns(_ relative: String, _ text: String) throws {
+            let file = turnsHome.appendingPathComponent(relative)
+            try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try text.write(to: file, atomically: true, encoding: .utf8)
+        }
+        func assistant(_ id: String, _ time: String, stop: String) throws -> String {
+            try json(["type": "assistant", "timestamp": time, "sessionId": "s-led", "message": ["id": id, "model": "claude-opus-5-5", "stop_reason": stop, "usage": ["input_tokens": 1000, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0], "content": [["type": "text", "text": "SECRET_PROMPT_NEVER_STORE"]]]])
+        }
+        func user(_ time: String, _ content: Any, origin: String? = nil, session: String = "s-led") throws -> String {
+            var row: [String: Any] = ["type": "user", "timestamp": time, "sessionId": session, "message": ["role": "user", "content": content]]
+            if let origin { row["origin"] = ["kind": origin] }
+            return try json(row)
+        }
+        try writeTurns(".claude/projects/p9/s-led.jsonl",
+            try user("2026-10-30T09:00:00Z", "SECRET_PROMPT_NEVER_STORE", origin: "human") + assistant("before", "2026-10-30T09:00:05Z", stop: "end_turn")
+            + user("2026-10-30T12:00:03Z", "SECRET_PROMPT_NEVER_STORE") + assistant("a1", "2026-10-30T12:00:10Z", stop: "tool_use")
+            + user("2026-10-30T12:00:20Z", [["type": "tool_result", "content": "SECRET_PROMPT_NEVER_STORE"]]) + assistant("a2", "2026-10-30T12:00:30Z", stop: "end_turn")
+            + user("2026-10-30T12:05:00Z", "SECRET_PROMPT_NEVER_STORE", origin: "task-notification") + assistant("a3", "2026-10-30T12:05:10Z", stop: "end_turn")
+            + user("2026-10-30T12:30:00Z", [["type": "text", "text": "SECRET_PROMPT_NEVER_STORE"]], origin: "human") + assistant("later", "2026-10-30T12:30:10Z", stop: "end_turn"))
+        try writeTurns(".claude/projects/p9/s-led/subagents/agent-1.jsonl", try user("2026-10-30T12:02:00Z", "SECRET_PROMPT_NEVER_STORE", origin: "human") + assistant("sub", "2026-10-30T12:02:10Z", stop: "end_turn"))
+        let codexThread = "33333333-3333-3333-3333-333333333333"
+        func codexTurn(_ time: String, _ total: Int) throws -> String {
+            try json(["type": "event_msg", "timestamp": time, "payload": ["type": "token_count", "info": ["total_token_usage": ["input_tokens": total, "output_tokens": 0, "cached_input_tokens": 0], "last_token_usage": ["input_tokens": 1000, "output_tokens": 0, "cached_input_tokens": 0]]]])
+        }
+        try writeTurns(".codex/sessions/2026/10/30/rollout-2026-10-30T12-00-00-\(codexThread).jsonl",
+            try json(["type": "session_meta", "payload": ["id": codexThread, "model_provider": "openai"]]) + json(["type": "turn_context", "payload": ["model": "gpt-6.1-sol"]])
+            + json(["type": "event_msg", "timestamp": "2026-10-30T13:00:03Z", "payload": ["type": "task_started"]]) + codexTurn("2026-10-30T13:00:10Z", 1000)
+            + json(["type": "event_msg", "timestamp": "2026-10-30T13:00:20Z", "payload": ["type": "task_complete"]])
+            + json(["type": "event_msg", "timestamp": "2026-10-30T13:30:00Z", "payload": ["type": "task_started"]]) + codexTurn("2026-10-30T13:30:10Z", 2000))
+        try writeTurns("Library/Application Support/COS Control/work-handoffs/handoffs.json", try json(["receipts": [
+            ["createdAt": R.epoch("2026-10-30T12:00:00Z")!, "sessionID": "claude:s-led", "provider": "claude", "status": "completed", "channel": "turn"],
+            ["createdAt": R.epoch("2026-10-30T13:00:00Z")!, "sessionID": "codex:\(codexThread)", "provider": "codex", "status": "completed", "channel": "job"],
+            ["createdAt": R.epoch("2026-10-30T13:00:00Z")!, "sessionID": "claude:s-source", "forkChildID": "claude:s-led-child", "provider": "claude", "status": "completed", "channel": "fork"],
+        ]]))
+        try writeTurns(".claude/projects/p9/s-led-child.jsonl", try user("2026-10-30T13:00:03Z", "SECRET_PROMPT_NEVER_STORE", session: "s-led-child")
+            + json(["type": "assistant", "timestamp": "2026-10-30T13:00:10Z", "sessionId": "s-led-child", "message": ["id": "fork-1", "model": "claude-opus-5-5", "stop_reason": "end_turn", "usage": ["input_tokens": 1000, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0]]]))
+        try writeTurns(".claude/projects/p9/s-source.jsonl", try user("2026-10-30T13:10:00Z", "SECRET_PROMPT_NEVER_STORE", origin: "human", session: "s-source")
+            + json(["type": "assistant", "timestamp": "2026-10-30T13:10:10Z", "sessionId": "s-source", "message": ["id": "source-1", "model": "claude-opus-5-5", "stop_reason": "end_turn", "usage": ["input_tokens": 9000, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0]]]))
+        let turnsDB = home.appendingPathComponent("cos-turns.sqlite")
+        let turnsReader = try SessionUsageCollector(home: turnsHome, database: turnsDB, timeZone: chicago)
+        let turns = try turnsReader.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: true, now: now)
+        // Claude: a1, a2, the background notice's a3 and the subagent are the run. `before` and `later` are not. Codex: its first turn only.
+        // The fork counts in its child, not the source. 4 Claude messages + 1 fork message + 1 Codex turn.
+        check(turns.work.measuredTokens == 6000, "on real row shapes a tool result does not end a run and a typed turn does")
+        check(turns.work.widerTokens == 8000, "the wider figure holds the later turns, from the run's start")
+        check(turns.work.unprovenRuns == 0 && turns.work.runsWithoutLogs == 0 && turns.work.runs == 3, "each scratch run has a provable end")
+        check(!Data(try Data(contentsOf: turnsDB)).contains(Data("SECRET_PROMPT_NEVER_STORE".utf8)), "no words from a typed turn reach the usage history")
+        // A log that grows is read from where it stopped, and its rows are not counted twice.
+        let again = try collector.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: true, now: now)
+        check(row(.answers, again).measuredTokens == answers.measuredTokens, "a second pass over unchanged logs adds nothing")
+        let grown = root.appendingPathComponent(".claude/projects/p1/s-main.jsonl")
+        let h = try FileHandle(forWritingTo: grown); try h.seekToEnd(); try h.write(contentsOf: Data(try claudeRow("m2", "2026-10-30T12:00:45Z", session: "s-main").utf8)); try h.close()
+        check(row(.answers, try collector.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: true, now: now)).measuredTokens == answers.measuredTokens + 1020, "an appended row is read on the next pass")
+        // Privacy: the report and the tables hold counts only.
+        let encoded = String(decoding: try JSONEncoder().encode(full), as: UTF8.self)
+        for secret in ["s-main", "s-work", "r1", "11111111", SessionUsageCollector.digest("claude:s-main"), "SECRET"] {
+            check(!encoded.contains(secret), "the report holds counts only, no ids, hashes or text")
+        }
+        // Stronger than looking for known secrets: the only strings a report can hold are dates, the zone and row names.
+        func strings(_ value: Any) -> [String] {
+            if let text = value as? String { return [text] }
+            if let list = value as? [Any] { return list.flatMap(strings) }
+            if let map = value as? [String: Any] { return map.values.flatMap(strings) }
+            return []
+        }
+        let names = Set(CosCostCategory.allCases.map(\.rawValue))
+        let reportStrings = strings(try JSONSerialization.jsonObject(with: Data(encoded.utf8)))
+        check(reportStrings.allSatisfy { names.contains($0) || SessionUsageDay($0) != nil || $0 == "America/Chicago" || R.epoch($0) != nil }, "the report holds no free text, so it cannot carry key material")
+        let stored = try Data(contentsOf: db)
+        check(stored.range(of: Data("SECRET_PROMPT_NEVER_STORE".utf8)) == nil && stored.range(of: Data("SECRET_KEY_NEVER_READ".utf8)) == nil, "no prompt or key reaches the usage history")
+        // Another command holding the write lock costs this pass its slices, never the page.
+        let busyDB = home.appendingPathComponent("cos-busy.sqlite")
+        let busy = try SessionUsageCollector(home: root, database: busyDB, timeZone: chicago)
+        _ = try busy.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: true, now: now)
+        var holder: OpaquePointer?
+        check(sqlite3_open(busyDB.path, &holder) == SQLITE_OK && sqlite3_exec(holder, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK, "the test holds the write lock")
+        let h2 = try FileHandle(forWritingTo: grown); try h2.seekToEnd(); try h2.write(contentsOf: Data(try claudeRow("m3", "2026-10-30T12:00:46Z", session: "s-main").utf8)); try h2.close()
+        let held = try busy.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: true, now: now)
+        check(held.sessions.busy && held.auditFound && row(.answers, held).measuredCalls == 3, "a busy history keeps the page and says so")
+        sqlite3_exec(holder, "COMMIT", nil, nil, nil); sqlite3_close(holder)
+        let free = try busy.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: true, now: now)
+        check(!free.sessions.busy && row(.answers, free).measuredTokens == row(.answers, held).measuredTokens + 1020, "the pass after a busy one catches up")
+        // Bounded and resumable: a pass with almost no budget stops, says so, and the next ones finish to the same total.
+        let slow = try SessionUsageCollector(home: root, database: home.appendingPathComponent("cos-slow.sqlite"), timeZone: chicago)
+        let targets: Set<SessionUsageCollector.CosSliceTarget> = [.init(provider: "claude", id: "s-main"), .init(provider: "claude", id: "s-old")]
+        var pass = try slow.cosReadSessionSlices(targets, seconds: 0, now: now)
+        check(pass.stillReading == 2, "no time budget reads nothing and says the sessions are still to read")
+        pass = try slow.cosReadSessionSlices(targets, fileBytes: 700, now: now)
+        check(pass.stillReading > 0, "a byte budget stops a pass part way through a log")
+        var passes = 1
+        while pass.stillReading > 0 && passes < 30 { pass = try slow.cosReadSessionSlices(targets, fileBytes: 700, now: now); passes += 1 }
+        check(pass.stillReading == 0 && passes > 1, "the next passes finish what a bounded one left")
+        let oneShot = try SessionUsageCollector(home: root, database: home.appendingPathComponent("cos-oneshot.sqlite"), timeZone: chicago)
+        _ = try oneShot.cosReadSessionSlices(targets, now: now)
+        let slowSum = row(.answers, try slow.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: false, now: now)).measuredTokens
+        let oneSum = row(.answers, try oneShot.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: false, now: now)).measuredTokens
+        check(slowSum == oneSum && slowSum > 0, "a slow read ends at the same total as a whole one")
+        // A row longer than a chunk is skipped through its newline, and the usage after it is still reached.
+        try write(".claude/projects/p3/s-long.jsonl", String(repeating: "x", count: 9*1024*1024) + "\n" + (try claudeRow("after-long", "2026-10-30T12:00:30Z", session: "s-long")))
+        let longer = try SessionUsageCollector(home: root, database: home.appendingPathComponent("cos-long.sqlite"), timeZone: chicago)
+        var longPass = try longer.cosReadSessionSlices([.init(provider: "claude", id: "s-long")], now: now)
+        var longTries = 0
+        while longPass.stillReading > 0 && longTries < 10 { longPass = try longer.cosReadSessionSlices([.init(provider: "claude", id: "s-long")], now: now); longTries += 1 }
+        check(longPass.stillReading == 0, "an oversized row does not stop the session finishing")
+        // The fallback path: no plist means .env, no .env means home.
+        let viaHome = try SessionUsageCollector(home: root, database: home.appendingPathComponent("cos-home.sqlite"), timeZone: chicago).cosUsage(plistScripts: nil, dataDirectory: nil, importSessions: false, now: now)
+        check(viaHome.auditFound && row(.other, viaHome).calls == 1, "with no scripts folder the home audit is read")
+        try write(".cos-glasses/.env", "SOME_SECRET=abc\nCOS_SCRIPTS_DIR=\(scripts)\n")
+        let viaEnv = try SessionUsageCollector(home: root, database: home.appendingPathComponent("cos-env.sqlite"), timeZone: chicago).cosUsage(plistScripts: nil, dataDirectory: nil, importSessions: false, now: now)
+        check(row(.other, viaEnv).calls == 0 && row(.dictation, viaEnv).calls == 1, ".env names the scripts folder when the plist does not")
+        check(!String(decoding: try JSONEncoder().encode(viaEnv), as: UTF8.self).contains("abc"), "nothing else out of .env reaches the report")
+        print("PASS: COS cost rules (dates, classification, session-log flags, rates, dedupe, Work, Cursor rule, denominator, headline, rows) and the bounded reader on a scratch home")
     }
 }
