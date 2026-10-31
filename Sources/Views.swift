@@ -5139,7 +5139,11 @@ private struct VoiceBatchBar: View {
             let candidates = model.voiceBatchCandidates
             let ticked = model.voiceBatch.ticked(candidates)
             let undoable = model.voiceBatch.undoableBatch != nil
-            if !candidates.isEmpty || undoable || model.voiceBatch.result != nil || model.voiceBatch.undoResult != nil || model.voiceBatch.note != nil {
+            let running = model.voiceBatch.hasRunningBatch
+            let answer = model.voiceBatch.result?.line ?? model.voiceBatch.undoResult?.line ?? model.voiceBatch.note
+            // The answer to what was just clicked says it better. This is for a review opened later.
+            let history = answer == nil ? model.voiceBatch.historyLine : nil
+            if !candidates.isEmpty || undoable || answer != nil || history != nil {
                 VStack(alignment: .leading, spacing: 7) {
                     if model.voiceBatch.previewOpen, !candidates.isEmpty {
                         Text(VoiceDisplayCopy.batchPreviewNote)
@@ -5167,7 +5171,7 @@ private struct VoiceBatchBar: View {
                         HStack(spacing: 8) {
                             Button(VoiceDisplayCopy.nameVoices(ticked.count)) { model.confirmVoiceBatch() }
                                 .buttonStyle(COSPrimaryButtonStyle())
-                                .disabled(ticked.isEmpty || model.mergeInFlight)
+                                .disabled(ticked.isEmpty || model.mergeInFlight || running)
                             Button("Cancel") { model.voiceBatch.previewOpen = false }
                                 .disabled(model.mergeInFlight)
                             if model.mergeInFlight { ProgressView().controlSize(.mini) }
@@ -5181,9 +5185,9 @@ private struct VoiceBatchBar: View {
                         }
                         .font(.system(size: 11))
                         .controlSize(.small)
-                        .disabled(model.mergeInFlight)
+                        .disabled(model.mergeInFlight || running)
                     }
-                    if let line = model.voiceBatch.result?.line ?? model.voiceBatch.undoResult?.line ?? model.voiceBatch.note {
+                    if let line = answer ?? history {
                         Text(line)
                             .font(.system(size: 11))
                             .fixedSize(horizontal: false, vertical: true)
@@ -5192,7 +5196,7 @@ private struct VoiceBatchBar: View {
                         Button(VoiceDisplayCopy.undoNames) { model.undoVoiceBatch() }
                             .font(.system(size: 11))
                             .controlSize(.small)
-                            .disabled(model.mergeInFlight)
+                            .disabled(model.mergeInFlight || running)
                     }
                 }
                 .padding(.horizontal, 16).padding(.vertical, 9)

@@ -1,0 +1,536 @@
+{
+ "_about": "Response bodies from the server this Control pairs with, copied from its own tests and code at ~/cos-worktrees/server-voice-display commit 9e5715f (6.96.3). `source` names the assertion or code each body comes from. A literal from toEqual or toMatchObject is copied as written; sourceRevision and batchId are computed in those tests, so a hex and a uuid of the same shape stand in. Read by Tests/VoiceDisplayChecks.swift.",
+ "voiceDisplay": {
+  "source": "server/routes/meeting-voice-suggestions-route.test.ts:236 (toEqual)",
+  "body": {
+   "source": "speaker-shadow",
+   "recordedAt": "2026-10-28T18:00:00.000Z",
+   "foldUnderSeconds": 15,
+   "groups": [
+    {
+     "id": "shadow-S1",
+     "labels": [
+      "Voice 1",
+      "Voice 2"
+     ],
+     "seconds": 36
+    }
+   ],
+   "singles": [
+    {
+     "label": "Voice 3",
+     "seconds": 18
+    },
+    {
+     "label": "Voice 4",
+     "seconds": null
+    }
+   ],
+   "short": []
+  }
+ },
+ "suggestionsIdle": {
+  "source": "server/routes/meeting-voice-suggestions-route.test.ts:359 (toEqual)",
+  "body": {
+   "state": "idle",
+   "rule": {
+    "floor": 0.7,
+    "margin": 0.05
+   },
+   "modelSpace": "192d",
+   "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+ },
+ "suggestionsIdleUnsaved": {
+  "source": "server/routes/meeting-voice-suggestions-route.test.ts:510 (toEqual)",
+  "body": {
+   "state": "idle",
+   "rule": {
+    "floor": 0.7,
+    "margin": 0.05
+   },
+   "modelSpace": "192d",
+   "sourceRevision": ""
+  }
+ },
+ "suggestionsDone": {
+  "source": "server/routes/meeting-voice-suggestions-route.test.ts:373 (toEqual)",
+  "body": {
+   "state": "done",
+   "progress": {
+    "done": 12,
+    "total": 12
+   },
+   "rule": {
+    "floor": 0.7,
+    "margin": 0.05
+   },
+   "modelSpace": "192d",
+   "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "suggestions": [
+    {
+     "labels": [
+      "Voice 1",
+      "Voice 2"
+     ],
+     "name": "Dana Reyes",
+     "score": 1,
+     "margin": 1,
+     "units": 6,
+     "kept": 6,
+     "requiresConfirmation": true,
+     "highConfidence": true
+    },
+    {
+     "labels": [
+      "Voice 3"
+     ],
+     "name": "Theo Marsh",
+     "score": 1,
+     "margin": 1,
+     "units": 3,
+     "kept": 3,
+     "requiresConfirmation": true,
+     "highConfidence": true
+    }
+   ],
+   "unmatched": [
+    {
+     "labels": [
+      "Voice 4"
+     ],
+     "gate": "below_rule"
+    }
+   ]
+  }
+ },
+ "suggestionsRefused": {
+  "source": "server/routes/meeting-voice-suggestions-route.test.ts:430 (toMatchObject), with server/lib/mac-voice-suggestions.ts idle()",
+  "body": {
+   "state": "refused",
+   "reason": "recording_active",
+   "rule": {
+    "floor": 0.7,
+    "margin": 0.05
+   },
+   "modelSpace": "192d",
+   "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+ },
+ "suggestionsRefusedUnreadable": {
+  "source": "server/routes/meeting-voice-suggestions-route.test.ts:500 (toMatchObject)",
+  "body": {
+   "state": "refused",
+   "reason": "sidecar_unreadable",
+   "rule": {
+    "floor": 0.7,
+    "margin": 0.05
+   },
+   "modelSpace": "192d",
+   "sourceRevision": ""
+  }
+ },
+ "suggestionsFailed": {
+  "source": "server/routes/meeting-voice-suggestions-route.test.ts:462 (toMatchObject), with server/lib/mac-voice-suggestions.ts body()",
+  "body": {
+   "state": "failed",
+   "reason": "recording_active",
+   "rule": {
+    "floor": 0.7,
+    "margin": 0.05
+   },
+   "modelSpace": "192d",
+   "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+ },
+ "batchApplied": {
+  "source": "server/routes/meeting-voice-naming-batch-route.test.ts:163-164",
+  "body": {
+   "batchId": "11111111-2222-4333-8444-555555555555",
+   "state": "applied",
+   "named": [
+    {
+     "labels": [
+      "Voice 1"
+     ],
+     "name": "Dana Reyes",
+     "samplesAdded": 4
+    },
+    {
+     "labels": [
+      "Voice 2"
+     ],
+     "name": "Theo Marsh",
+     "samplesAdded": 4
+    }
+   ],
+   "notNamed": [],
+   "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "undoAvailable": true
+  }
+ },
+ "batchRefusedStale": {
+  "source": "server/routes/meeting-voice-naming-batch-route.test.ts:197-198, rows from server/lib/mac-voice-naming-batch.ts allRefused()",
+  "body": {
+   "batchId": "",
+   "state": "refused",
+   "reason": "suggestions_stale",
+   "named": [],
+   "notNamed": [
+    {
+     "labels": [
+      "Voice 1"
+     ],
+     "name": "Dana Reyes",
+     "reason": "suggestions_stale"
+    },
+    {
+     "labels": [
+      "Voice 2"
+     ],
+     "name": "Theo Marsh",
+     "reason": "suggestions_stale"
+    }
+   ],
+   "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "undoAvailable": false
+  }
+ },
+ "batchRefusedItem": {
+  "source": "server/lib/mac-voice-naming-batch.test.ts:277-278 (toEqual on notNamed)",
+  "body": {
+   "batchId": "",
+   "state": "refused",
+   "reason": "not_high_confidence",
+   "named": [],
+   "notNamed": [
+    {
+     "labels": [
+      "Voice 1"
+     ],
+     "name": "Dana Reyes",
+     "reason": "not_attempted"
+    },
+    {
+     "labels": [
+      "Voice 5"
+     ],
+     "name": "Ivo Lund",
+     "reason": "not_high_confidence"
+    }
+   ],
+   "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "undoAvailable": false
+  }
+ },
+ "batchPartialAudio": {
+  "source": "server/lib/mac-voice-naming-batch.test.ts:354-358 (toEqual on notNamed)",
+  "body": {
+   "batchId": "11111111-2222-4333-8444-555555555555",
+   "state": "partial",
+   "reason": "audio_not_retained",
+   "named": [
+    {
+     "labels": [
+      "Voice 1"
+     ],
+     "name": "Dana Reyes",
+     "samplesAdded": 4
+    }
+   ],
+   "notNamed": [
+    {
+     "labels": [
+      "Voice 2"
+     ],
+     "name": "Theo Marsh",
+     "reason": "audio_not_retained"
+    },
+    {
+     "labels": [
+      "Voice 3",
+      "Voice 4"
+     ],
+     "name": "Neva Sharpe",
+     "reason": "not_attempted"
+    }
+   ],
+   "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "undoAvailable": true
+  }
+ },
+ "batchPartialStoreEarlier": {
+  "source": "server/lib/mac-voice-naming-batch.test.ts:445-448, the later item from server/lib/mac-voice-naming-batch.ts:687",
+  "body": {
+   "batchId": "11111111-2222-4333-8444-555555555555",
+   "state": "partial",
+   "reason": "store_unavailable",
+   "named": [
+    {
+     "labels": [
+      "Voice 1"
+     ],
+     "name": "Dana Reyes",
+     "samplesAdded": 0
+    }
+   ],
+   "notNamed": [
+    {
+     "labels": [
+      "Voice 2"
+     ],
+     "name": "Theo Marsh",
+     "reason": "not_attempted"
+    }
+   ],
+   "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "undoAvailable": true
+  }
+ },
+ "batchPartialStoreLast": {
+  "source": "server/lib/mac-voice-naming-batch.test.ts:445-448 with one item, so server/lib/mac-voice-naming-batch.ts:687 lists nothing",
+  "body": {
+   "batchId": "11111111-2222-4333-8444-555555555555",
+   "state": "partial",
+   "reason": "store_unavailable",
+   "named": [
+    {
+     "labels": [
+      "Voice 1"
+     ],
+     "name": "Dana Reyes",
+     "samplesAdded": 0
+    }
+   ],
+   "notNamed": [],
+   "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "undoAvailable": true
+  }
+ },
+ "batchInterrupted": {
+  "source": "server/lib/mac-voice-naming-batch.test.ts:536, rows from server/lib/mac-voice-naming-batch.ts:712",
+  "body": {
+   "batchId": "11111111-2222-4333-8444-555555555555",
+   "state": "partial",
+   "reason": "interrupted",
+   "named": [
+    {
+     "labels": [
+      "Voice 1"
+     ],
+     "name": "Dana Reyes",
+     "samplesAdded": 4
+    }
+   ],
+   "notNamed": [
+    {
+     "labels": [
+      "Voice 2"
+     ],
+     "name": "Theo Marsh",
+     "reason": "interrupted"
+    }
+   ],
+   "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "undoAvailable": true
+  }
+ },
+ "undoLabelChanged": {
+  "source": "server/routes/meeting-voice-naming-batch-route.test.ts:179 (toMatchObject), evicted counts from server/lib/mac-voice-naming-batch.ts undoResult()",
+  "body": {
+   "state": "partial",
+   "reverted": [
+    {
+     "labels": [
+      "Voice 2"
+     ],
+     "name": "Theo Marsh"
+    }
+   ],
+   "left": [
+    {
+     "labels": [
+      "Voice 1"
+     ],
+     "name": "Dana Reyes",
+     "reason": "label_changed_by_person"
+    }
+   ],
+   "samplesRemoved": 8,
+   "evictedRestored": 0,
+   "evictedNotRestored": 0,
+   "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+ },
+ "undoSamplesNotFound": {
+  "source": "server/lib/mac-voice-naming-batch.test.ts:882-883, and server/lib/mac-voice-naming-batch.ts undoResult(): the voice is in both lists",
+  "body": {
+   "state": "partial",
+   "reverted": [
+    {
+     "labels": [
+      "Voice 1"
+     ],
+     "name": "Dana Reyes"
+    }
+   ],
+   "left": [
+    {
+     "labels": [
+      "Voice 1"
+     ],
+     "name": "Dana Reyes",
+     "reason": "samples_not_found"
+    }
+   ],
+   "samplesRemoved": 0,
+   "evictedRestored": 0,
+   "evictedNotRestored": 4,
+   "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+ },
+ "undoEvictedLost": {
+  "source": "server/lib/mac-voice-naming-batch.test.ts:869 (toMatchObject)",
+  "body": {
+   "state": "undone",
+   "reverted": [
+    {
+     "labels": [
+      "Voice 1"
+     ],
+     "name": "Dana Reyes"
+    }
+   ],
+   "left": [],
+   "samplesRemoved": 4,
+   "evictedRestored": 0,
+   "evictedNotRestored": 4,
+   "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+ },
+ "undoEvictedBack": {
+  "source": "server/lib/mac-voice-naming-batch.test.ts:851 (toMatchObject)",
+  "body": {
+   "state": "undone",
+   "reverted": [
+    {
+     "labels": [
+      "Voice 1"
+     ],
+     "name": "Dana Reyes"
+    }
+   ],
+   "left": [],
+   "samplesRemoved": 4,
+   "evictedRestored": 4,
+   "evictedNotRestored": 0,
+   "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+ },
+ "undoRefused": {
+  "source": "server/routes/meeting-voice-naming-batch-route.test.ts:224, with server/lib/mac-voice-naming-batch.ts undo() refusal()",
+  "body": {
+   "state": "refused",
+   "reason": "batch_not_found",
+   "reverted": [],
+   "left": [],
+   "samplesRemoved": 0,
+   "evictedRestored": 0,
+   "evictedNotRestored": 0,
+   "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+ },
+ "listApplied": {
+  "source": "server/routes/meeting-voice-naming-batch-route.test.ts:168, with server/lib/mac-voice-naming-batch.ts list()",
+  "body": {
+   "batches": [
+    {
+     "batchId": "11111111-2222-4333-8444-555555555555",
+     "at": "2026-10-30T20:05:00.000Z",
+     "state": "applied",
+     "named": [
+      {
+       "labels": [
+        "Voice 1"
+       ],
+       "name": "Dana Reyes",
+       "samplesAdded": 4
+      },
+      {
+       "labels": [
+        "Voice 2"
+       ],
+       "name": "Theo Marsh",
+       "samplesAdded": 4
+      }
+     ],
+     "undoAvailable": true
+    }
+   ]
+  }
+ },
+ "listInterrupted": {
+  "source": "server/lib/mac-voice-naming-batch.test.ts:538, with server/lib/mac-voice-naming-batch.ts list()",
+  "body": {
+   "batches": [
+    {
+     "batchId": "11111111-2222-4333-8444-555555555555",
+     "at": "2026-10-30T20:05:00.000Z",
+     "state": "interrupted",
+     "named": [
+      {
+       "labels": [
+        "Voice 1"
+       ],
+       "name": "Dana Reyes",
+       "samplesAdded": 4
+      }
+     ],
+     "undoAvailable": true
+    }
+   ]
+  }
+ },
+ "listUndoPartial": {
+  "source": "server/routes/meeting-voice-naming-batch-route.test.ts:189, with server/lib/mac-voice-naming-batch.ts list()",
+  "body": {
+   "batches": [
+    {
+     "batchId": "11111111-2222-4333-8444-555555555555",
+     "at": "2026-10-30T20:05:00.000Z",
+     "state": "undo_partial",
+     "named": [
+      {
+       "labels": [
+        "Voice 1"
+       ],
+       "name": "Dana Reyes",
+       "samplesAdded": 4
+      }
+     ],
+     "undoAvailable": false
+    }
+   ]
+  }
+ },
+ "listUnreadable": {
+  "source": "server/lib/mac-voice-naming-batch.ts list(), the unreadable journal branch",
+  "body": {
+   "batches": [
+    {
+     "batchId": "11111111-2222-4333-8444-555555555555",
+     "at": "",
+     "state": "unreadable",
+     "named": [],
+     "undoAvailable": false
+    }
+   ]
+  }
+ },
+ "listEmpty": {
+  "source": "server/routes/meeting-voice-naming-batch-route.test.ts:225 (toEqual)",
+  "body": {
+   "batches": []
+  }
+ }
+}

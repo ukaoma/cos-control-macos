@@ -121,9 +121,15 @@ import SwiftUI
         // (i) what an undo reports, partial included.
         model.voiceBatch.result = nil
         model.voiceBatch.undoResult = VoiceBatchUndoResult(json(["state": "partial", "reverted": [row(["Voice 1"], "Dana Reyes"), row(["Voice 2"], "Dana Reyes")],
-            "left": [row(["Voice 3", "Voice 4"], "Dana Reyes", reason: "changed_since_batch")], "samplesRemoved": 12]))
+            "left": [row(["Voice 3", "Voice 4"], "Dana Reyes", reason: "label_changed_by_person")], "samplesRemoved": 12]))
         try render(pane(), height: 520, name: "i-undo-partial", out: out)
         model.voiceBatch.undoResult = nil
+        // (l) a review opened later: what the Undo would take back, and an interrupted batch said plainly.
+        func listed(_ rows: [[String: Any]]) { model.voiceBatch = VoiceBatchState(probed: true).applyingList(["batches": json(["x": rows]).object!["x"]!]) }
+        listed([["batchId": "b1", "at": "2026-10-30T20:05:00.000Z", "state": "applied", "undoAvailable": true, "named": [row(["Voice 1"], "Dana Reyes"), row(["Voice 2", "Voice 3"], "Riley Park")]]])
+        try render(pane(), height: 520, name: "l-reopened-undo", out: out)
+        listed([["batchId": "b1", "at": "2026-10-30T20:05:00.000Z", "state": "interrupted", "undoAvailable": true, "named": [row(["Voice 1"], "Dana Reyes")]]])
+        try render(pane(), height: 520, name: "m-reopened-interrupted", out: out)
         model.voiceBatch = VoiceBatchState(probed: true)
         // (j) a merged row's own naming: the chooser, its one Save, and a refusal partway.
         model.namingVoice = "group:g1"

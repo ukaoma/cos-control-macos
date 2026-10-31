@@ -52,7 +52,9 @@ import Foundation
         review['voices']=[v for v in review['voices'] if v['label']!=label]
         if not any(v['label']==to for v in review['voices']):review['voices'].append({'label':to,'segments':2,'nameAsserted':True,'reliability':'confident','speakingMs':0})
         f['revision']+=1;f['writes']=f.get('writes',0)+1;f['jobs']=[{'state':'idle'}]
-        out={'ok':True,'message':'applied','details':{'state':'applied','result':{'enrolment':{'enrolled':3 if '--assign-voice-profile' in a else 0}}}}
+        enrolment={'enrolled':3 if '--assign-voice-profile' in a else 0}
+        if f.get('skipped'):enrolment={'enrolled':0,'skipped':f['skipped']}
+        out={'ok':True,'message':'applied','details':{'state':'applied','result':{'enrolment':enrolment}}}
     elif a[0]=='meeting-voice-suggestions':
       if f.get('suggestRoute')=='absent':out={'ok':True,'message':'x','details':{'unavailable':'route_absent'}}
       elif f.get('suggestRoute')=='broken':out={'ok':False,'message':'Unauthorized','details':{}}
@@ -64,8 +66,17 @@ import Foundation
         out={'ok':True,'message':'x','details':{'job':job,'httpStatus':200}}
     elif a[0]=='meeting-voice-batch':
       if f.get('batchRoute')=='absent':out={'ok':True,'message':'x','details':{'unavailable':'route_absent'}}
-      else:out={'ok':True,'message':'x','details':{'batches':f.get('batches',[])}}
+      else:
+        if f.get('runningPolls',0)>0:
+          f['runningPolls']-=1
+          if f['runningPolls']==0:
+            for b in f['batches']:b['state']='applied';b['undoAvailable']=True
+            review['voices']=[v for v in review['voices'] if v['label']!='Voice 5']
+            review['voices'].append({'label':'Avery Stone','segments':2,'nameAsserted':True,'reliability':'confident','speakingMs':0});f['revision']+=1
+        out={'ok':True,'message':'x','details':{'batches':f.get('batches',[])}}
     elif a[0]=='meeting-voice-batch-apply':
+      if f.get('batchCrash'):
+        time.sleep(0.2);sys.exit(3)
       answer=f['batchAnswer']
       if answer.get('state')!='refused':
         for row in answer.get('named',[]):
@@ -512,6 +523,60 @@ import Foundation
         model.undoVoiceBatch()
         try await Task.sleep(for: .milliseconds(80))
         check(!calls().contains { $0.first == "meeting-voice-batch-undo" }, "404 hides the batch")
+
+        // ── Rename voice from a meeting's menu: the name field lives on the voice's own row, so whatever holds that row opens.
+        try fixture()
+        model.openSpeakerReview(sessionId: sid, nameVoice: "Voice 2")
+        try await wait("rename merged") { model.openReview?.sessionId == sid && !model.reviewLoading }
+        check(model.namingVoice == "Voice 2", "rename voice opens naming", model.namingVoice ?? "nil")
+        check(model.voiceDisplayExpandedRows == ["group:g1"] && !model.voiceDisplayShortExpanded, "rename voice opens its merged row", "\(model.voiceDisplayExpandedRows)")
+        model.openSpeakerReview(sessionId: sid, nameVoice: "Voice 6")
+        try await wait("rename short") { model.openReview?.sessionId == sid && !model.reviewLoading }
+        check(model.namingVoice == "Voice 6" && model.voiceDisplayShortExpanded && model.voiceDisplayExpandedRows.isEmpty, "rename voice opens the fold")
+        model.openSpeakerReview(sessionId: sid, nameVoice: "Voice 5")
+        try await wait("rename single") { model.openReview?.sessionId == sid && !model.reviewLoading }
+        check(model.namingVoice == "Voice 5" && !model.voiceDisplayShortExpanded && model.voiceDisplayExpandedRows.isEmpty, "a row on show opens nothing")
+
+        // ── A group save warns when a name lands and its samples do not.
+        try fixture(["skipped": "store_unavailable"])
+        try await open()
+        model.notice = nil
+        model.previewVoiceGroupName(mergedRow()!, to: "Dana Reyes", assignVoiceProfile: true)
+        try await wait("preview") { !model.mergeInFlight }
+        model.confirmVoiceGroupName(model.pendingVoiceGroupName!)
+        try await wait("save") { !model.mergeInFlight && !model.reviewLoading && model.notice != nil }
+        check(model.notice?.contains("the voice samples could not be saved") == true, "group save warns of skipped samples", model.notice ?? "nil")
+
+        // ── A suggestion on a Short voice opens the fold, so the count above the list points at something.
+        try fixture(["jobs": [["state": "idle"], ["state": "done", "suggestions": [["labels": ["Voice 6"], "name": "Dana Reyes", "score": 0.9, "margin": 0.2, "units": 4, "kept": 4, "requiresConfirmation": true, "highConfidence": true]]]]])
+        try await open()
+        check(!model.voiceDisplayShortExpanded, "fold starts shut")
+        model.startVoiceSuggestions()
+        try await wait("short suggestion") { model.voiceSuggestions.job?.state == .done }
+        check(model.voiceDisplayShortExpanded, "short suggestion opens the fold")
+
+        // ── A batch that outlived its reply: both buttons wait, then the rows and the Undo come in on their own.
+        try fixture(["runningPolls": 3, "batches": [["batchId": "live", "at": "2026-10-30T20:05:00Z", "state": "running", "named": [], "undoAvailable": false]]])
+        model.openSpeakerReview(sessionId: sid)
+        try await wait("running open") { model.openReview?.sessionId == sid && !model.reviewLoading && model.voiceBatch.probed }
+        check(model.voiceBatch.hasRunningBatch && model.voiceBatch.undoableBatch == nil, "running batch noticed")
+        try await wait("running ends") { !model.voiceBatch.hasRunningBatch && model.voiceBatch.undoableBatch?.batchId == "live" }
+        try await wait("rows refresh") { model.openReview?.voices.contains { $0.label == "Avery Stone" } == true && !model.reviewLoading }
+        check(model.openReview?.voices.contains { $0.label == "Voice 5" } == false, "rows refresh after a running batch")
+
+        // ── A lost reply after moving to another meeting still says so.
+        try fixture(["jobs": [["state": "idle"], ["state": "done", "suggestions": [["labels": ["Voice 5"], "name": "Avery Stone", "score": 0.9, "margin": 0.2, "units": 4, "kept": 4, "requiresConfirmation": true, "highConfidence": true]]]], "batchCrash": true, "batches": []])
+        model.openSpeakerReview(sessionId: sid)
+        try await wait("crash open") { model.openReview?.sessionId == sid && !model.reviewLoading && model.voiceSuggestions.probed && model.voiceBatch.probed }
+        model.startVoiceSuggestions()
+        try await wait("crash suggest") { model.voiceSuggestions.job?.state == .done }
+        model.notice = nil
+        model.voiceBatch.previewOpen = true
+        model.confirmVoiceBatch()
+        try await wait("crash sent") { !applyBodies().isEmpty }
+        model.openSpeakerReview(sessionId: other)
+        try await wait("crash reported") { model.notice != nil }
+        check(model.notice == VoiceDisplayCopy.batchLostReply, "a lost reply after moving says so", model.notice ?? "nil")
 
         // ── The collision message: the server sends `error`, and the panel now reads it.
         let word: [String: Any] = ["id": String(repeating: "c", count: 64), "text": "invented", "startElapsedMs": 100, "endElapsedMs": 200, "elapsedMs": 100, "wordCount": 1]

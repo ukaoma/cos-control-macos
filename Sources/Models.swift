@@ -6614,7 +6614,10 @@ struct SpeakerReview: Sendable {
     let effectiveSpeakerSummary: EffectiveSpeakerSummary?
     let intervalViewReadOnly: Bool
     var inventoryHeader: String {
-        if let layout = voiceDisplayLayout { return "\(segments) segments · \(voices.count) voice labels in \(layout.visibleRowCount) rows" }
+        if let layout = voiceDisplayLayout {
+            let labels = voices.count == 1 ? "1 voice label" : "\(voices.count) voice labels"
+            return "\(segments) segments · \(labels) in \(layout.visibleRowCount) row\(layout.visibleRowCount == 1 ? "" : "s")"
+        }
         return effectiveSpeakerSummary?.header ?? (intervalViewReadOnly ? "Speaker grouping unavailable" : "\(segments) segments · \(voices.count) voices")
     }
     let timeline: [SpeakerTimelineSpan]
@@ -6881,7 +6884,6 @@ struct VoiceDisplayHint: Sendable, Hashable {
     struct Single: Sendable, Hashable { let label: String; let seconds: Double? }
     struct Short: Sendable, Hashable { let label: String; let seconds: Double }
     static let foldUnderSeconds = 15
-    let recordedAt: String
     let groups: [Group]
     let singles: [Single]
     let short: [Short]
@@ -6893,9 +6895,8 @@ struct VoiceDisplayHint: Sendable, Hashable {
     init?(_ value: JSONValue?) {
         guard let o = value?.object, o["source"]?.string == "speaker-shadow",
               SpeakerGroupScope.exactInt(o["foldUnderSeconds"]) == Self.foldUnderSeconds,
-              let recordedAt = o["recordedAt"]?.string, !recordedAt.isEmpty,
+              o["recordedAt"]?.string?.isEmpty == false,
               let groupRows = o["groups"]?.array, let singleRows = o["singles"]?.array, let shortRows = o["short"]?.array else { return nil }
-        self.recordedAt = recordedAt
         groups = groupRows.compactMap { row in
             guard let g = row.object, let id = g["id"]?.string, !id.isEmpty, let labels = g["labels"]?.array?.compactMap(\.string), !labels.isEmpty else { return nil }
             return Group(id: id, labels: labels, seconds: Self.seconds(g["seconds"]))
@@ -6939,6 +6940,15 @@ struct VoiceDisplayLayout: Sendable, Hashable {
     /// Per-label time from the hint. The review's own speakingMs is 0 on these rows.
     let seconds: [String: Double]
     var visibleRowCount: Int { rows.count + (short.isEmpty ? 0 : 1) }
+    enum Holder: Sendable, Equatable { case merged(String), short }
+    /// The collapsed row a label sits inside, nil when its own row is already on show. A voice's name field lives on its own row, so
+    /// anything that opens naming on a voice has to open this first.
+    func collapsedHolder(of label: String) -> Holder? {
+        for row in rows {
+            if case .merged(let merged) = row, merged.labels.contains(label) { return .merged(merged.id) }
+        }
+        return short.contains { $0.label == label } ? .short : nil
+    }
 }
 
 /// Words on the voice display surface. No em dashes or arrows. Rows are never called people, and no score is called an identity.
@@ -6948,6 +6958,7 @@ enum VoiceDisplayCopy {
     static let suggestionsOnly = "Suggestions only. Nothing is named until you click Use this name."
     static let noSuggestions = "No suggestions for this call. Nothing changed."
     static let checking = "Checking voices"
+    static let checkStoppedChanged = "This meeting or a voice profile changed, so the voice check stopped. Suggest names again to redo it."
     static let staleSuggestions = "This meeting changed, so those suggestions were dropped. Suggest names again to refresh them."
     static let didNotFinish = "The voice check did not finish. Try again."
     static let didNotRun = "The voice check did not run. Try again later."
@@ -6975,6 +6986,17 @@ enum VoiceDisplayCopy {
         guard let first = labels.first else { return "" }
         return labels.count == 1 ? first : "\(first) and \(labels.count - 1) more"
     }
+    /// When a batch ran, from the server's ISO time. nil when it cannot be read, so the sentence simply leaves it out.
+    static func when(_ at: String, timeZone: TimeZone = .current) -> String? {
+        let parser = ISO8601DateFormatter()
+        parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let date = parser.date(from: at) ?? ISO8601DateFormatter().date(from: at) else { return nil }
+        let format = DateFormatter()
+        format.locale = Locale(identifier: "en_US_POSIX")
+        format.timeZone = timeZone
+        format.dateFormat = "MMM d 'at' h:mm a"
+        return format.string(from: date)
+    }
     /// A merged row counts as one voice.
     static func voices(_ count: Int) -> String { "\(count) voice\(count == 1 ? "" : "s")" }
     static func nameVoices(_ count: Int) -> String { "Name \(voices(count))" }
@@ -7001,7 +7023,12 @@ enum VoiceDisplayCopy {
         case "below_floor", "mixed_voice", "too_little_audio": return "The voice checks flagged this voice"
         case "profile_store_unavailable": return "The saved voice profiles could not be read"
         case "write_failed", "ledger_unwritable", "journal_unwritable", "internal_error": return "The server could not save it"
-        case "not_attempted", "not_applied", "not_named", "not_reverted": return "It was not reached"
+        case "not_attempted", "not_applied", "not_named": return "It was not reached"
+        case "not_reverted": return "It could not be put back"
+        case "store_unavailable": return "The voice samples could not be saved"
+        case "interrupted": return "The batch was interrupted"
+        case "journal_unreadable": return "The record of this batch could not be read"
+        case "samples_not_found": return "Some of its voice samples could not be found"
         case "label_changed_by_person": return "You changed it after the batch"
         case "confirmed_by_person": return "You confirmed it after the batch"
         case "batch_not_found": return "These names can no longer be undone"
@@ -7013,7 +7040,8 @@ enum VoiceDisplayCopy {
             return reason.contains(" ") ? sentence : "The server did not apply it"
         }
     }
-    static func progress(done: Int, total: Int) -> String { "\(checking), \(done) of \(total)" }
+    /// While it plans, the server reports 0 of 0.
+    static func progress(done: Int, total: Int) -> String { total > 0 ? "\(checking), \(done) of \(total)" : checking }
     static func suggested(_ count: Int) -> String {
         "\(count) suggestion\(count == 1 ? "" : "s"). " + suggestionsOnly
     }
@@ -7052,9 +7080,6 @@ struct VoiceNameSuggestion: Identifiable, Sendable, Hashable {
     let labels: [String]
     let name: String
     let score: Double
-    let margin: Double
-    let units: Int
-    let kept: Int
     /// Server 6.96.3, its word and never recomputed here: `score` is rounded for display. Only these may go in the one-click batch.
     let highConfidence: Bool
 
@@ -7066,11 +7091,8 @@ struct VoiceNameSuggestion: Identifiable, Sendable, Hashable {
               let name = o["name"]?.string, name == name.trimmingCharacters(in: .whitespacesAndNewlines), (2...200).contains(name.count),
               name.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }),
               !MacVoiceLabel.isVoice(name), !SpeakerGroupScope.isUnassigned(name),
-              let score = o["score"]?.double, score.isFinite, (0...1).contains(score),
-              let margin = o["margin"]?.double, margin.isFinite,
-              let units = SpeakerGroupScope.exactInt(o["units"]), units >= 0,
-              let kept = SpeakerGroupScope.exactInt(o["kept"]), kept >= 0 else { return nil }
-        self.labels = labels; self.name = name; self.score = score; self.margin = margin; self.units = units; self.kept = kept
+              let score = o["score"]?.double, score.isFinite, (0...1).contains(score) else { return nil }
+        self.labels = labels; self.name = name; self.score = score
         highConfidence = o["highConfidence"]?.bool == true
     }
 }
@@ -7125,6 +7147,8 @@ struct VoiceSuggestionState: Sendable, Hashable {
                 // The server starts over at a new revision. Keep the old answer so the line can say why its suggestions went.
                 next.job = self.job
             } else {
+                // A running check that answers idle was dropped because the meeting or a profile moved. Say so, and keep saying it.
+                if job.state == .idle, self.job?.state == .running || note == VoiceDisplayCopy.checkStoppedChanged { next.note = VoiceDisplayCopy.checkStoppedChanged }
                 next.job = job
             }
         } else {
@@ -7153,6 +7177,11 @@ struct VoiceSuggestionState: Sendable, Hashable {
         }.sorted { a, b in
             a.element.labels.count != b.element.labels.count ? a.element.labels.count > b.element.labels.count : a.offset < b.offset
         }.map(\.element)
+    }
+    /// A suggestion for a voice inside the collapsed fold, which the count above the list would otherwise point at nothing for.
+    func holdsShortSuggestion(in review: SpeakerReview) -> Bool {
+        guard let layout = review.voiceDisplayLayout else { return false }
+        return layout.short.contains { !suggestions(heldBy: [$0.label], in: review).isEmpty }
     }
     /// What the one-click batch may name, in list order: one entry per suggestion, so two on one merged row are two entries. Under .80
     /// keeps its own Use this name and stays out, and so does a suggestion for the wearer or one no row holds.
@@ -7208,13 +7237,11 @@ struct VoiceBatchCandidate: Identifiable, Sendable, Hashable {
 struct VoiceBatchRow: Sendable, Hashable {
     let labels: [String]
     let name: String
-    let samples: Int
     let reason: String?
     var title: String { VoiceDisplayCopy.rowTitle(labels) }
     init?(_ value: JSONValue) {
         guard let o = value.object, let labels = o["labels"]?.array?.compactMap(\.string), !labels.isEmpty, let name = o["name"]?.string else { return nil }
         self.labels = labels; self.name = name
-        samples = max(0, SpeakerGroupScope.exactInt(o["samplesAdded"]) ?? 0)
         reason = o["reason"]?.string
     }
 }
@@ -7223,12 +7250,10 @@ struct VoiceBatchRow: Sendable, Hashable {
 struct VoiceBatchResult: Sendable, Hashable {
     enum State: String, Sendable { case applied, partial, refused }
     let state: State
-    let batchId: String?
     let reason: String?
     /// Always empty on a refusal, whatever else the body carries: a refused batch named nothing.
     let named: [VoiceBatchRow]
     let notNamed: [VoiceBatchRow]
-    let undoAvailable: Bool
 
     init?(_ value: JSONValue?) {
         guard let o = value?.object, let state = o["state"]?.string.flatMap(State.init(rawValue:)) else { return nil }
@@ -7236,20 +7261,22 @@ struct VoiceBatchResult: Sendable, Hashable {
         reason = o["reason"]?.string
         notNamed = (o["notNamed"]?.array ?? []).compactMap(VoiceBatchRow.init)
         named = state == .refused ? [] : (o["named"]?.array ?? []).compactMap(VoiceBatchRow.init)
-        let id = o["batchId"]?.string
-        batchId = id?.isEmpty == false ? id : nil
-        undoAvailable = state != .refused && batchId != nil && !named.isEmpty && o["undoAvailable"]?.bool == true
     }
 
     var line: String {
         if state == .applied, notNamed.isEmpty, !named.isEmpty { return "Named \(VoiceDisplayCopy.voices(named.count))." }
         // A refusal stopped the whole batch before any write, so its one reason is the sentence.
         if state == .refused { return "Nothing was named. " + VoiceDisplayCopy.batchReason(reason ?? notNamed.first?.reason) + "." }
-        let lead = named.isEmpty ? "Nothing was named." : "Named \(VoiceDisplayCopy.voices(named.count))."
-        // The row that stopped it: rows after it read not_attempted, and can come first in the list.
-        guard let first = notNamed.first(where: { $0.reason != "not_attempted" }) ?? notNamed.first else { return lead + " " + VoiceDisplayCopy.batchReason(reason) + "." }
-        return lead + " Stopped at \(first.title): \(VoiceDisplayCopy.batchReason(first.reason ?? reason))."
-            + " Not named: " + notNamed.map(\.title).joined(separator: ", ") + "."
+        var parts = [named.isEmpty ? "Nothing was named." : "Named \(VoiceDisplayCopy.voices(named.count))."]
+        // The row that stopped it. Rows after it read not_attempted and can come first. If every row reads that, the voice that stopped
+        // the batch was itself named (its samples could not be saved, say), so only the batch's own reason knows why.
+        if let stopper = notNamed.first(where: { $0.reason != nil && $0.reason != "not_attempted" }) {
+            parts.append("Stopped at \(stopper.title): \(VoiceDisplayCopy.batchReason(stopper.reason)).")
+        } else {
+            parts.append(VoiceDisplayCopy.batchReason(reason) + ".")
+        }
+        if !notNamed.isEmpty { parts.append("Not named: " + notNamed.map(\.title).joined(separator: ", ") + ".") }
+        return parts.joined(separator: " ")
     }
 }
 
@@ -7261,6 +7288,9 @@ struct VoiceBatchUndoResult: Sendable, Hashable {
     let reverted: [VoiceBatchRow]
     let left: [VoiceBatchRow]
     let samplesRemoved: Int
+    /// Older samples this batch had pushed out of a full profile, and whether they went back.
+    let evictedRestored: Int
+    let evictedNotRestored: Int
 
     init?(_ value: JSONValue?) {
         guard let o = value?.object, let state = o["state"]?.string.flatMap(State.init(rawValue:)) else { return nil }
@@ -7268,30 +7298,66 @@ struct VoiceBatchUndoResult: Sendable, Hashable {
         reason = o["reason"]?.string
         reverted = state == .refused ? [] : (o["reverted"]?.array ?? []).compactMap(VoiceBatchRow.init)
         left = (o["left"]?.array ?? []).compactMap(VoiceBatchRow.init)
-        samplesRemoved = state == .refused ? 0 : max(0, SpeakerGroupScope.exactInt(o["samplesRemoved"]) ?? 0)
+        func count(_ key: String) -> Int { state == .refused ? 0 : max(0, SpeakerGroupScope.exactInt(o[key]) ?? 0) }
+        samplesRemoved = count("samplesRemoved")
+        evictedRestored = count("evictedRestored")
+        evictedNotRestored = count("evictedNotRestored")
     }
 
     var line: String {
-        let samples = "Removed \(samplesRemoved) profile sample\(samplesRemoved == 1 ? "" : "s")."
+        func samples(_ n: Int, _ kind: String) -> String { "\(n) \(kind)sample\(n == 1 ? "" : "s")" }
         if state == .refused { return "Nothing was undone. " + VoiceDisplayCopy.batchReason(left.first?.reason ?? reason) + "." }
-        let lead = "Undid \(reverted.count) name\(reverted.count == 1 ? "" : "s")."
-        guard let first = left.first else { return lead + " " + samples }
-        return lead + " " + samples + " Left in place: " + left.map(\.title).joined(separator: ", ") + ". "
-            + first.title + ": " + VoiceDisplayCopy.batchReason(first.reason ?? reason) + "."
+        var parts = ["Undid \(reverted.count) name\(reverted.count == 1 ? "" : "s").", "Removed \(samples(samplesRemoved, "profile "))."]
+        if evictedRestored > 0 { parts.append("Put back \(samples(evictedRestored, "older "))." ) }
+        if evictedNotRestored > 0 { parts.append("\(samples(evictedNotRestored, "older ")) could not be restored.") }
+        // A voice can be in both lists: its name went back and a sample could not be found. That is not a name left in place.
+        let back = Set(reverted.flatMap(\.labels))
+        for row in left where row.reason == "samples_not_found" {
+            parts.append(row.labels.allSatisfy(back.contains)
+                ? "The name on \(row.title) was reverted, but some of its voice samples could not be found."
+                : "Some voice samples for \(row.title) could not be found.")
+        }
+        let held = left.filter { $0.reason != "samples_not_found" }
+        if let first = held.first {
+            parts.append("Left in place: " + held.map(\.title).joined(separator: ", ") + ".")
+            parts.append("\(first.title): \(VoiceDisplayCopy.batchReason(first.reason ?? reason)).")
+        }
+        return parts.joined(separator: " ")
     }
 }
 
-/// One line of `GET /meeting/:id/voice-naming-batch`.
+/// One line of `GET /meeting/:id/voice-naming-batch`. What a reopened review knows about a batch.
 struct VoiceBatchSummary: Identifiable, Sendable, Hashable {
     let batchId: String
     let at: String
+    let state: String
+    let named: [VoiceBatchRow]
     let undoAvailable: Bool
     var id: String { batchId }
     init?(_ value: JSONValue) {
         guard let o = value.object, let id = o["batchId"]?.string, !id.isEmpty else { return nil }
         batchId = id
-        at = o["at"]?.string ?? o["at"]?.double.map { String(format: "%020.3f", $0) } ?? ""
+        at = o["at"]?.string ?? ""
+        state = o["state"]?.string ?? ""
+        named = (o["named"]?.array ?? []).compactMap(VoiceBatchRow.init)
         undoAvailable = o["undoAvailable"]?.bool == true
+    }
+
+    /// What and when, for a review opened later. nil when there is nothing to say.
+    func line(timeZone: TimeZone = .current) -> String? {
+        let when = VoiceDisplayCopy.when(at, timeZone: timeZone).map { " on " + $0 } ?? ""
+        let voices = VoiceDisplayCopy.voices(named.count)
+        let names = Array(NSOrderedSet(array: named.map(\.name))).compactMap { $0 as? String }
+        let who = names.isEmpty ? "" : ": " + names.prefix(3).joined(separator: ", ") + (names.count > 3 ? " and \(names.count - 3) more" : "")
+        switch state {
+        case "running": return "A batch is still naming voices. This refreshes when it finishes."
+        case "interrupted":
+            return "A batch was interrupted\(when) after naming \(voices)\(who)." + (undoAvailable ? " Undo puts back what it named." : "")
+        case "undo_partial":
+            return "Undo of the batch\(when) only partly finished." + (undoAvailable ? " You can try it again." : " What was left stays as it is.")
+        case "unreadable": return "The record of a batch\(when) could not be read, so it cannot be undone here."
+        default: return undoAvailable ? "Named \(voices)\(when)\(who)." : nil
+        }
     }
 }
 
@@ -7322,12 +7388,18 @@ struct VoiceBatchState: Sendable, Hashable {
         }
         return next
     }
-    func showsControls(for review: SpeakerReview) -> Bool { review.canSuggestNames && probed && !routeAbsent }
+    /// A batch whose POST outlived its reply. The server blocks a second one, and the rows are stale until it ends.
+    var hasRunningBatch: Bool { batches.contains { $0.state == "running" } }
+    private func newest(_ rows: [VoiceBatchSummary]) -> VoiceBatchSummary? {
+        rows.enumerated().max { a, b in a.element.at != b.element.at ? a.element.at < b.element.at : a.offset < b.offset }?.element
+    }
     /// The newest batch the server still says can be undone. This is what survives closing and reopening the review.
-    var undoableBatch: VoiceBatchSummary? {
-        batches.enumerated().filter(\.element.undoAvailable).max { a, b in
-            a.element.at != b.element.at ? a.element.at < b.element.at : a.offset < b.offset
-        }?.element
+    var undoableBatch: VoiceBatchSummary? { newest(batches.filter { $0.undoAvailable && $0.state != "running" }) }
+    /// The line above the Undo button: what it would undo, or what is true of a batch that cannot be.
+    var historyLine: String? {
+        if let running = batches.first(where: { $0.state == "running" }) { return running.line() }
+        if let undoable = undoableBatch { return undoable.line() }
+        return newest(batches.filter { ["interrupted", "undo_partial", "unreadable"].contains($0.state) })?.line()
     }
     func isTicked(_ candidate: VoiceBatchCandidate) -> Bool { !unticked.contains(candidate.id) }
     func ticked(_ candidates: [VoiceBatchCandidate]) -> [VoiceBatchCandidate] { candidates.filter(isTicked) }
@@ -7339,6 +7411,7 @@ struct VoiceBatchState: Sendable, Hashable {
                                    "items": rows.map { ["labels": $0.labels, "name": $0.name] as [String: Any] }]
         return try? JSONSerialization.data(withJSONObject: body)
     }
+    func showsControls(for review: SpeakerReview) -> Bool { review.canSuggestNames && probed && !routeAbsent }
 }
 
 /// Naming a merged row, previewed: one server preview per label at one revision, nothing written yet.
@@ -7374,9 +7447,15 @@ struct VoiceGroupNamingOutcome: Sendable, Equatable {
     let stoppedAt: String?
     /// Why it stopped. nil means every label was named.
     let reason: String?
+    /// What the server said of a label's voice samples, the note a single row's Save shows.
+    var skipped: [String] = []
     var named: [String] { Array(labels.prefix(namedCount)) }
     var notNamed: [String] { Array(labels.dropFirst(namedCount)) }
     var line: String {
+        var seen = Set<String>()
+        return sentence + skipped.filter { seen.insert($0).inserted }.map(MacVoiceCopy.appliedNoteForSkip).joined()
+    }
+    private var sentence: String {
         guard let reason else { return "Named \(Self.list(named)) \(to) in this meeting." }
         let why = stoppedAt.map { "Stopped at \($0): \(reason)" } ?? reason
         if named.isEmpty { return "Nothing was named. \(why)" }

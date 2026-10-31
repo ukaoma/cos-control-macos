@@ -66,6 +66,8 @@ import Foundation
         batchCandidates()
         batchResults()
         batchUndo()
+        reviewFixes()
+        contract(CommandLine.arguments[1])
         print("PASS: \(checks) voice display checks")
     }
 
@@ -542,7 +544,6 @@ import Foundation
     static func batchResults() {
         let applied = VoiceBatchResult(json(["batchId": "b1", "state": "applied", "named": (1...9).map { batchRow(["Voice \($0)"], samples: 3) }, "notNamed": [], "sourceRevision": revB, "undoAvailable": true]))!
         check(applied.line == "Named 9 voices.", "all named line", applied.line)
-        check(applied.undoAvailable && applied.batchId == "b1", "applied can undo")
         let one = VoiceBatchResult(json(["batchId": "b1", "state": "applied", "named": [batchRow(["Voice 1", "Voice 2"])], "notNamed": [], "undoAvailable": true]))!
         check(one.line == "Named 1 voice.", "merged row reads as one", one.line)
         // A partial result lists the right labels.
@@ -552,7 +553,6 @@ import Foundation
         check(partial.named.flatMap(\.labels) == (1...5).map { "Voice \($0)" }, "partial lists the named", "\(partial.named)")
         check(partial.notNamed.map(\.labels) == [["Voice 12"], ["Voice 20", "Voice 21", "Voice 22"]], "partial lists the not named", "\(partial.notNamed)")
         check(partial.line == "Named 5 voices. Stopped at Voice 12: That name is already used differently. Not named: Voice 12, Voice 20 and 2 more.", "partial line", partial.line)
-        check(partial.undoAvailable, "partial can undo what it named")
         // The row's own reason wins, then the batch's, and a bare code never shows.
         let code = VoiceBatchResult(json(["batchId": "b", "state": "partial", "named": [batchRow(["Voice 1"])], "notNamed": [batchRow(["Voice 2"], reason: "recording_active")]]))!
         check(code.line == "Named 1 voice. Stopped at Voice 2: A recording is active. Not named: Voice 2.", "reason in plain words", code.line)
@@ -565,11 +565,11 @@ import Foundation
         let wholeRefusal = VoiceBatchResult(json(["batchId": "", "state": "refused", "reason": "not_high_confidence", "named": [], "undoAvailable": false,
             "notNamed": [batchRow(["Voice 1"], reason: "not_attempted"), batchRow(["Voice 5"], reason: "not_high_confidence")]]))!
         check(wholeRefusal.line == "Nothing was named. This suggestion no longer qualifies.", "refusal line", wholeRefusal.line)
-        check(wholeRefusal.batchId == nil, "an empty batch id is none")
         // Every reason the server can send reads as a sentence, never as its code.
         for reason in ["recording_active", "meeting_finalizing", "maintenance", "suggestions_stale", "meeting_changed", "transcript_changed", "record_source_mismatch", "not_high_confidence", "owner_refused",
                        "label_not_anonymous", "duplicate_label", "correction_pending", "batch_running", "sync_running", "sidecar_unreadable", "audio_not_retained", "below_floor", "mixed_voice", "too_little_audio",
                        "profile_store_unavailable", "write_failed", "ledger_unwritable", "journal_unwritable", "internal_error", "not_attempted", "not_applied", "not_named", "not_reverted",
+                       "store_unavailable", "interrupted", "journal_unreadable", "samples_not_found",
                        "label_changed_by_person", "confirmed_by_person", "batch_not_found", "derived_call_view", "not_saved_mac_capture", "direct_library_read_only"] {
             let line = VoiceDisplayCopy.batchReason(reason)
             check(line != "The server did not apply it" && !line.contains("_"), "every batch reason in plain words", reason)
@@ -578,12 +578,7 @@ import Foundation
         // A refusal leaves nothing named, whatever the body claims.
         let refused = VoiceBatchResult(json(["batchId": "b3", "state": "refused", "reason": "recording_active", "named": [batchRow(["Voice 1"])], "notNamed": [], "undoAvailable": true]))!
         check(refused.named.isEmpty, "refusal names nothing", "\(refused.named)")
-        check(!refused.undoAvailable, "refusal has no undo")
         check(refused.line == "Nothing was named. A recording is active.", "refusal line", refused.line)
-        // No id or nothing named means nothing to undo.
-        check(!VoiceBatchResult(json(["state": "applied", "named": [batchRow(["Voice 1"])], "undoAvailable": true]))!.undoAvailable, "no id no undo")
-        check(!VoiceBatchResult(json(["batchId": "b", "state": "partial", "named": [], "notNamed": [batchRow(["Voice 1"])], "undoAvailable": true]))!.undoAvailable, "nothing named no undo")
-        check(!VoiceBatchResult(json(["batchId": "b", "state": "applied", "named": [batchRow(["Voice 1"])]]))!.undoAvailable, "undo needs the server's word")
         check(VoiceBatchResult(json(["state": "later"])) == nil && VoiceBatchResult(json(["named": []])) == nil, "unknown batch state rejected")
         // Applied with no rows is not a success line.
         let empty = VoiceBatchResult(json(["batchId": "b", "state": "applied", "named": [], "notNamed": []]))!
@@ -622,6 +617,122 @@ import Foundation
         for line in [VoiceDisplayCopy.undoNames, VoiceDisplayCopy.batchLostReply, VoiceDisplayCopy.batchPreviewNote, done.line, partial.line] {
             check(!line.contains("\u{2014}") && !line.contains("\u{2192}") && !line.lowercased().contains("identified") && !line.lowercased().contains("person") && !line.lowercased().contains("people"), "batch copy rules", line)
         }
+    }
+
+    /// The independent review of 3ce5972, one behaviour each.
+    static func reviewFixes() {
+        // Rename voice opens on a voice that can sit inside a collapsed row.
+        let layoutReview = review(base(roster, hint: hint(groups: [group("g", ["Voice 1", "Voice 2"], 300)], singles: [single("Voice 4", 90)], short: [short("Voice 5", 4)])))
+        let layout = layoutReview.voiceDisplayLayout!
+        check(layout.collapsedHolder(of: "Voice 2") == .merged("group:g"), "holder of a merged member")
+        check(layout.collapsedHolder(of: "Voice 5") == .short, "holder of a short voice")
+        check(layout.collapsedHolder(of: "Voice 4") == nil && layout.collapsedHolder(of: "Ext") == nil && layout.collapsedHolder(of: "Voice 90") == nil, "a row on show has no holder")
+        // Singular words.
+        let lone = review(base([voice("Voice 1"), voice("Voice 2")], hint: hint(groups: [group("g", ["Voice 1", "Voice 2"], 30)])))
+        check(lone.inventoryHeader == "783 segments · 2 voice labels in 1 row", "header singular", lone.inventoryHeader)
+        let one = review(base([voice("Voice 1")], hint: hint(singles: [single("Voice 1", 30)])))
+        check(one.inventoryHeader == "783 segments · 1 voice label in 1 row", "header singular", one.inventoryHeader)
+        // Planning reports 0 of 0.
+        let open = review(base(roster))
+        check(state(job("running", extra: ["progress": ["done": 0, "total": 0]])).line(for: open) == "Checking voices", "planning has no count", state(job("running", extra: ["progress": ["done": 0, "total": 0]])).line(for: open) ?? "nil")
+        // A running check that answers idle was dropped: say why, keep saying it, and offer the button.
+        let running = state(job("running", extra: ["progress": ["done": 3, "total": 9]]))
+        let dropped = running.applying(["job": json(job("idle"))])
+        check(dropped.line(for: open) == VoiceDisplayCopy.checkStoppedChanged, "a dropped check says why", dropped.line(for: open) ?? "nil")
+        check(dropped.showsButton(for: open) && !dropped.isRunning, "a dropped check offers the button")
+        check(dropped.applying(["job": json(job("idle"))]).line(for: open) == VoiceDisplayCopy.checkStoppedChanged, "a dropped check says why")
+        check(dropped.applying(["job": json(job("running"))]).line(for: open) == VoiceDisplayCopy.checking, "a new check clears the note")
+        check(state(job("idle")).applying(["job": json(job("idle"))]).line(for: open) == VoiceDisplayCopy.suggestionsOnly, "idle to idle says nothing")
+        // A suggestion inside the fold.
+        func done(_ rows: [[String: Any]]) -> VoiceSuggestionState { state(job("done", suggestions: rows)) }
+        check(done([suggestion(["Voice 5"])]).holdsShortSuggestion(in: layoutReview), "short suggestion opens the fold")
+        check(!done([suggestion(["Voice 4"])]).holdsShortSuggestion(in: layoutReview), "other suggestions leave it shut")
+        check(!state(job("idle")).holdsShortSuggestion(in: layoutReview), "other suggestions leave it shut")
+        check(!done([suggestion(["Voice 1"])]).holdsShortSuggestion(in: open), "other suggestions leave it shut")
+        // A name can land while its samples do not.
+        let skipped = VoiceGroupNamingOutcome(to: "Dana Reyes", labels: ["Voice 1", "Voice 2"], namedCount: 2, stoppedAt: nil, reason: nil, skipped: ["store_unavailable", "store_unavailable"])
+        check(skipped.line == "Named Voice 1 and 2 Dana Reyes in this meeting. · the name is applied, but the voice samples could not be saved", "group save warns of skipped samples", skipped.line)
+        // A batch still running blocks both buttons, and has no Undo to offer yet.
+        func listed(_ rows: [[String: Any]]) -> VoiceBatchState { VoiceBatchState().applyingList(["batches": json(["x": rows]).object!["x"]!]) }
+        let live = listed([["batchId": "r", "at": "2026-10-30T21:00:00Z", "state": "running", "named": [], "undoAvailable": true]])
+        check(live.hasRunningBatch, "running batch noticed")
+        check(live.undoableBatch == nil, "running batch has no undo yet")
+        check(live.historyLine == "A batch is still naming voices. This refreshes when it finishes.", "running batch says so", live.historyLine ?? "nil")
+        check(!listed([["batchId": "a", "at": "x", "state": "applied", "undoAvailable": true]]).hasRunningBatch, "running batch noticed")
+        // Some samples missing where no name went back says only that.
+        let missing = VoiceBatchUndoResult(json(["state": "partial", "reverted": [], "left": [batchRow(["Voice 1"], reason: "samples_not_found")], "samplesRemoved": 0]))!
+        check(missing.line == "Undid 0 names. Removed 0 profile samples. Some voice samples for Voice 1 could not be found.", "samples missing without a revert", missing.line)
+        // What and when, for a review opened later.
+        let row = VoiceBatchSummary(json(["batchId": "a", "at": "2026-10-30T20:05:00.000Z", "state": "applied", "undoAvailable": true, "named": [batchRow(["Voice 1"]), batchRow(["Voice 2", "Voice 3"], "Avery Stone")]]))!
+        let utc = TimeZone(identifier: "UTC")!
+        check(row.line(timeZone: utc) == "Named 2 voices on Oct 30 at 8:05 PM: Dana Reyes, Avery Stone.", "history says what and when", row.line(timeZone: utc) ?? "nil")
+        let plainISO = VoiceBatchSummary(json(["batchId": "a", "at": "2026-10-30T20:05:00Z", "state": "applied", "undoAvailable": true, "named": []]))!
+        check(plainISO.line(timeZone: utc) == "Named 0 voices on Oct 30 at 8:05 PM.", "history reads either iso", plainISO.line(timeZone: utc) ?? "nil")
+        let noTime = VoiceBatchSummary(json(["batchId": "a", "at": "", "state": "applied", "undoAvailable": true, "named": [batchRow(["Voice 1"])]]))!
+        check(noTime.line(timeZone: utc) == "Named 1 voice: Dana Reyes.", "history leaves out a bad time", noTime.line(timeZone: utc) ?? "nil")
+        let many = VoiceBatchSummary(json(["batchId": "a", "at": "", "state": "applied", "undoAvailable": true, "named": ["A One", "B Two", "C Three", "D Four", "A One"].enumerated().map { batchRow(["Voice \($0.offset + 1)"], $0.element) }]))!
+        check(many.line(timeZone: utc) == "Named 5 voices: A One, B Two, C Three and 1 more.", "history bounds its names", many.line(timeZone: utc) ?? "nil")
+        check(VoiceBatchSummary(json(["batchId": "a", "at": "", "state": "applied", "undoAvailable": false]))!.line() == nil, "a spent batch says nothing")
+        check(VoiceBatchSummary(json(["batchId": "a", "at": "", "state": "undone", "undoAvailable": false]))!.line() == nil, "a spent batch says nothing")
+        // An undone batch is no history, an honest state is, and the newest undoable wins over both.
+        check(listed([["batchId": "a", "at": "t", "state": "undone"]]).historyLine == nil, "a spent batch says nothing")
+        let stuck = listed([["batchId": "a", "at": "", "state": "undo_partial"], ["batchId": "b", "at": "", "state": "applied", "undoAvailable": true, "named": [batchRow(["Voice 1"])]]])
+        check(stuck.historyLine == "Named 1 voice: Dana Reyes.", "undoable comes first", stuck.historyLine ?? "nil")
+    }
+
+    /// Real bodies, in Tests/fixtures/voice-display-server-6.96.3.json. Each one's `source` names where in the server it came from.
+    static func contract(_ path: String) {
+        guard let data = FileManager.default.contents(atPath: path),
+              let fixtures = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { check(false, "contract fixture reads", path); return }
+        func body(_ name: String) -> JSONValue {
+            guard let entry = fixtures[name] as? [String: Any], (entry["source"] as? String)?.isEmpty == false, let raw = entry["body"] else {
+                check(false, "every fixture names its source", name); return .null
+            }
+            return json(["x": raw]).object!["x"]!
+        }
+        func answer(_ name: String, _ state: VoiceSuggestionState = VoiceSuggestionState()) -> VoiceSuggestionState { state.applying(["job": body(name)]) }
+        let open = review(base(roster, hint: body("voiceDisplay").object.map { _ in (fixtures["voiceDisplay"] as! [String: Any])["body"] as! [String: Any] }))
+        // /speakers
+        let layout = open.voiceDisplayLayout
+        check(layout != nil, "contract: voiceDisplay parses")
+        check(layout.map { tops($0).prefix(3) == ["Voice 1 and 1 more", "Voice 3", "Voice 4"] } == true, "contract: voiceDisplay order", layout.map { "\(tops($0))" } ?? "nil")
+        guard case .merged(let row)? = layout?.rows.first else { check(false, "contract: voiceDisplay order"); return }
+        check(row.timeText == "0m 36s", "contract: voiceDisplay time", row.timeText ?? "nil")
+        // /voice-suggestions
+        check(answer("suggestionsIdle").line(for: open) == VoiceDisplayCopy.suggestionsOnly, "contract: idle")
+        check(answer("suggestionsIdleUnsaved").job?.sourceRevision == nil, "contract: empty revision")
+        let done = answer("suggestionsDone")
+        check(done.job?.state == .done && done.suggestions(for: open).count == 2, "contract: done", "\(String(describing: done.job))")
+        check(done.suggestions(heldBy: ["Voice 1", "Voice 2"], in: open).first?.name == "Dana Reyes", "contract: done")
+        check(done.suggestions(heldBy: ["Voice 4"], in: open).isEmpty, "contract: unmatched shows nothing")
+        check(done.batchCandidates(for: open).map(\.title) == ["Voice 1 and 1 more", "Voice 3"], "contract: batch rows", "\(done.batchCandidates(for: open).map(\.title))")
+        check(answer("suggestionsRefused").line(for: open) == "A recording is active. Try again when it ends.", "contract: refused")
+        check(answer("suggestionsRefusedUnreadable").line(for: open) == "This call's saved speaker data could not be read.", "contract: refused")
+        check(answer("suggestionsFailed").line(for: open) == "A recording started, so the voice check stopped. Try again when it ends.", "contract: failed")
+        // POST /voice-naming-batch
+        func line(_ name: String) -> String { VoiceBatchResult(body(name))?.line ?? "unparsed" }
+        check(line("batchApplied") == "Named 2 voices.", "contract: batch applied", line("batchApplied"))
+        check(line("batchRefusedStale") == "Nothing was named. This meeting changed since the suggestions were made.", "contract: batch refused", line("batchRefusedStale"))
+        check(line("batchRefusedItem") == "Nothing was named. This suggestion no longer qualifies.", "contract: batch refused", line("batchRefusedItem"))
+        check(line("batchPartialAudio") == "Named 1 voice. Stopped at Voice 2: This call's audio is no longer kept. Not named: Voice 2, Voice 3 and 1 more.", "contract: batch partial", line("batchPartialAudio"))
+        check(line("batchPartialStoreEarlier") == "Named 1 voice. The voice samples could not be saved. Not named: Voice 2.", "contract: store unavailable earlier", line("batchPartialStoreEarlier"))
+        check(line("batchPartialStoreLast") == "Named 1 voice. The voice samples could not be saved.", "contract: store unavailable last", line("batchPartialStoreLast"))
+        check(line("batchInterrupted") == "Named 1 voice. Stopped at Voice 2: The batch was interrupted. Not named: Voice 2.", "contract: interrupted", line("batchInterrupted"))
+        // POST .../undo
+        func undo(_ name: String) -> String { VoiceBatchUndoResult(body(name))?.line ?? "unparsed" }
+        check(undo("undoLabelChanged") == "Undid 1 name. Removed 8 profile samples. Left in place: Voice 1. Voice 1: You changed it after the batch.", "contract: undo partial", undo("undoLabelChanged"))
+        check(undo("undoSamplesNotFound") == "Undid 1 name. Removed 0 profile samples. 4 older samples could not be restored. The name on Voice 1 was reverted, but some of its voice samples could not be found.", "contract: samples not found", undo("undoSamplesNotFound"))
+        check(undo("undoEvictedLost") == "Undid 1 name. Removed 4 profile samples. 4 older samples could not be restored.", "contract: older samples lost", undo("undoEvictedLost"))
+        check(undo("undoEvictedBack") == "Undid 1 name. Removed 4 profile samples. Put back 4 older samples.", "contract: older samples back", undo("undoEvictedBack"))
+        check(undo("undoRefused") == "Nothing was undone. These names can no longer be undone.", "contract: undo refused", undo("undoRefused"))
+        // GET /voice-naming-batch
+        func list(_ name: String) -> VoiceBatchState { VoiceBatchState().applyingList(body(name).object ?? [:]) }
+        let utc = TimeZone(identifier: "UTC")!
+        check(list("listEmpty").probed && list("listEmpty").undoableBatch == nil && list("listEmpty").historyLine == nil, "contract: empty list")
+        check(list("listApplied").undoableBatch?.line(timeZone: utc) == "Named 2 voices on Oct 30 at 8:05 PM: Dana Reyes, Theo Marsh.", "contract: list applied", list("listApplied").undoableBatch?.line(timeZone: utc) ?? "nil")
+        check(list("listInterrupted").undoableBatch?.line(timeZone: utc) == "A batch was interrupted on Oct 30 at 8:05 PM after naming 1 voice: Dana Reyes. Undo puts back what it named.", "contract: list interrupted", list("listInterrupted").undoableBatch?.line(timeZone: utc) ?? "nil")
+        check(list("listUndoPartial").undoableBatch == nil && list("listUndoPartial").batches.first?.line(timeZone: utc) == "Undo of the batch on Oct 30 at 8:05 PM only partly finished. What was left stays as it is.", "contract: list undo partial", list("listUndoPartial").batches.first?.line(timeZone: utc) ?? "nil")
+        check(list("listUnreadable").undoableBatch == nil && list("listUnreadable").historyLine == "The record of a batch could not be read, so it cannot be undone here.", "contract: list unreadable", list("listUnreadable").historyLine ?? "nil")
     }
 
     static func refusal() {

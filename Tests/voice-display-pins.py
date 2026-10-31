@@ -70,6 +70,7 @@ pin(batch.count("model.confirmVoiceBatch()") == 1, "batch save is a click", "one
 pin(views.count("model.confirmVoiceBatch()") == 1 and views.count("model.undoVoiceBatch()") == 1, "batch save is a click", "one call site each")
 pin('Toggle(isOn:' in batch and "COSCheckStyle()" in batch, "ticks", "each row has the COS checkbox")
 pin("VoiceDisplayCopy.undoNames" in batch, "undo offered", "Undo these names is in the bar")
+pin("model.voiceBatch.historyLine" in batch and "answer ?? history" in batch, "history above undo", "a reopened review says what the Undo would take back")
 pin(".sheet(" not in batch and ".popover(" not in batch, "inline only", "the batch list is inline")
 batch_run = code(between(model, "/// Confirm: the ticked rows and nothing else.", "/// Read the check's state when a review lands."))
 pin('"meeting-relabel"' not in batch_run, "server does the batch", "the batch path never loops a relabel from Control")

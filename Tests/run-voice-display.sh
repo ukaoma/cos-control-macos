@@ -15,7 +15,7 @@ mkdir -m 700 "$DIR/home"
 export COS_LIVE_CUES_V2=0 COS_SPEAKER_SHADOW=0 COS_MAC_SPEAKER_LIVE=0 COS_MAC_ACOUSTIC_VOICES=0
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/VoiceDisplayChecks.swift" -framework AppKit -o "$DIR/model-checks"
-HOME="$DIR/home" CFFIXED_USER_HOME="$DIR/home" COS_CONTROL_TEST_HOME="$DIR/home" "$DIR/model-checks"
+HOME="$DIR/home" CFFIXED_USER_HOME="$DIR/home" COS_CONTROL_TEST_HOME="$DIR/home" "$DIR/model-checks" "$ROOT/Tests/fixtures/voice-display-server-6.96.3.json"
 if [[ -z "$HELPER" ]]; then
   /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete \
     "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" "$ROOT/HelperSources/SessionUsageCollector.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/WorkSessionLinks.swift" \

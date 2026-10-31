@@ -569,6 +569,7 @@ final class ControllerModel: ObservableObject {
     /// The one-click batch of high-confidence names: its ticks, its last answer, and what can still be undone.
     @Published var voiceBatch = VoiceBatchState()
     private var voiceSuggestionTask: Task<Void, Never>?
+    private var voiceBatchFollowTask: Task<Void, Never>?
     var voiceSuggestionPollInterval: Duration = .milliseconds(1500)
     @Published var intervalWordRecoveryArmed = false
     @Published var intervalOriginalViewArmed = false
@@ -9661,6 +9662,8 @@ final class ControllerModel: ObservableObject {
             openReview = review
             probeVoiceSuggestions(review: review, generation: generation)
             Task { [weak self] in await self?.loadVoiceBatches(review: review, generation: generation) }
+            // The name field lives on the voice's own row, which can sit inside a collapsed row or the fold.
+            if let wanted = pendingNameVoice { revealVoice(wanted, in: review) }
             // 0.5.340 Rename voice: open straight onto naming the voice the meeting's Rename voice picked.
             if let wanted = pendingNameVoice, review.voices.contains(where: { $0.label == wanted && $0.canRename }) { namingVoice = wanted }
             pendingNameVoice = nil
@@ -11059,7 +11062,17 @@ final class ControllerModel: ObservableObject {
         voiceSuggestionTask?.cancel()
         voiceSuggestionTask = nil
         voiceSuggestions = VoiceSuggestionState()
+        voiceBatchFollowTask?.cancel()
+        voiceBatchFollowTask = nil
         voiceBatch = VoiceBatchState()
+    }
+
+    private func revealVoice(_ label: String, in review: SpeakerReview) {
+        switch review.voiceDisplayLayout?.collapsedHolder(of: label) {
+        case .merged(let id): voiceDisplayExpandedRows.insert(id)
+        case .short: voiceDisplayShortExpanded = true
+        case nil: break
+        }
     }
 
     /// Preview naming a merged row: the same `meeting-relabel` dry run a single VoiceRow sends, once per member, all at the revision
@@ -11133,7 +11146,7 @@ final class ControllerModel: ObservableObject {
             guard let self else { return }
             defer { if reviewSelectionGeneration == generation { mergeInFlight = false; voiceGroupNamingProgress = nil } }
             var review = start, namedCount = 0, samples = 0
-            var stop: String?
+            var stop: String?, skips: [String] = []
             steps: for (index, correction) in plan.corrections.enumerated() {
                 guard review.voices.contains(where: { $0.label == correction.from && $0.canRename }) else {
                     stop = "It is no longer in this meeting."; break steps
@@ -11151,6 +11164,8 @@ final class ControllerModel: ObservableObject {
                     }
                     namedCount += 1
                     samples += response.details["result"]?.object?["enrolment"]?.object?["enrolled"]?.int ?? 0
+                    // A name can land while its samples do not. The single row's Save warns of this, and so must this one.
+                    if let skipped = response.details["result"]?.object?["enrolment"]?.object?["skipped"]?.string, !skipped.isEmpty { skips.append(skipped) }
                     guard index < plan.corrections.count - 1 else { break steps }
                     guard reviewSelectionGeneration == generation, lastReviewSession == session else {
                         stop = "Another meeting was opened, so the rest were left."; break steps
@@ -11171,7 +11186,7 @@ final class ControllerModel: ObservableObject {
                     stop = error.localizedDescription; break steps
                 }
             }
-            let outcome = VoiceGroupNamingOutcome(to: plan.to, labels: labels, namedCount: namedCount, stoppedAt: stop == nil ? nil : labels[namedCount], reason: stop)
+            let outcome = VoiceGroupNamingOutcome(to: plan.to, labels: labels, namedCount: namedCount, stoppedAt: stop == nil ? nil : labels[namedCount], reason: stop, skipped: skips)
             // The person moved to another meeting while this ran. What happened still has to reach them.
             guard reviewSelectionGeneration == generation, lastReviewSession == session else { notice = outcome.line; return }
             if namedCount > 0 {
@@ -11239,12 +11254,35 @@ final class ControllerModel: ObservableObject {
         guard let response = try? await helper.run(["meeting-voice-batch", "--session", review.sessionId]),
               reviewSelectionGeneration == generation, lastReviewSession == review.sessionId else { return }
         voiceBatch = voiceBatch.applyingList(response.details)
+        if voiceBatch.hasRunningBatch { followRunningVoiceBatch(session: review.sessionId, generation: generation) }
+    }
+
+    /// A batch that outlived its reply, or was already running when the review opened. Poll until it ends, then read everything again,
+    /// because until then the rows are stale and its Undo has not appeared. Bounded: 30 minutes at the default interval.
+    private func followRunningVoiceBatch(session: String, generation: Int) {
+        guard voiceBatchFollowTask == nil else { return }
+        voiceBatchFollowTask = Task { [weak self] in
+            guard let self else { return }
+            for _ in 0..<1200 {
+                try? await Task.sleep(for: voiceSuggestionPollInterval)
+                guard !Task.isCancelled, reviewSelectionGeneration == generation, lastReviewSession == session else { return }
+                guard let response = try? await helper.run(["meeting-voice-batch", "--session", session]),
+                      !Task.isCancelled, reviewSelectionGeneration == generation, lastReviewSession == session else { continue }
+                voiceBatch = voiceBatch.applyingList(response.details)
+                guard voiceBatch.hasRunningBatch else {
+                    voiceBatchFollowTask = nil
+                    await refreshAfterVoiceBatch(session: session, generation: generation)
+                    return
+                }
+            }
+            voiceBatchFollowTask = nil
+        }
     }
 
     /// Confirm: the ticked rows and nothing else. The server does the whole batch, so this path never loops a relabel from here.
     func confirmVoiceBatch() {
         let candidates = voiceBatchCandidates
-        guard !mergeInFlight, voiceBatch.previewOpen, let review = openReview,
+        guard !mergeInFlight, voiceBatch.previewOpen, !voiceBatch.hasRunningBatch, let review = openReview,
               !PhoneMeetingCapture.protected(review.sessionId), let body = voiceBatch.applyBody(candidates, review: review) else { return }
         let session = review.sessionId, generation = reviewSelectionGeneration
         mergeInFlight = true
@@ -11269,7 +11307,7 @@ final class ControllerModel: ObservableObject {
                 if result == nil && !routeGone { note = VoiceDisplayCopy.batchLostReply }
             } catch {
                 // A lost reply may follow a batch that ran. The refresh below shows the truth, and nothing offers to repeat it blind.
-                guard reviewSelectionGeneration == generation, lastReviewSession == session else { return }
+                guard reviewSelectionGeneration == generation, lastReviewSession == session else { notice = VoiceDisplayCopy.batchLostReply; return }
                 note = VoiceDisplayCopy.batchLostReply
             }
             voiceBatch.result = result
@@ -11300,7 +11338,7 @@ final class ControllerModel: ObservableObject {
                 undo = VoiceBatchUndoResult(response.details["result"])
                 if undo == nil { note = VoiceDisplayCopy.batchLostReply }
             } catch {
-                guard reviewSelectionGeneration == generation, lastReviewSession == session else { return }
+                guard reviewSelectionGeneration == generation, lastReviewSession == session else { notice = VoiceDisplayCopy.batchLostReply; return }
                 note = VoiceDisplayCopy.batchLostReply
             }
             voiceBatch.undoResult = undo
@@ -11354,6 +11392,8 @@ final class ControllerModel: ObservableObject {
                 guard !Task.isCancelled, reviewSelectionGeneration == generation, lastReviewSession == session else { return }
                 failures = 0
                 let next = voiceSuggestions.applying(response.details)
+                // The count above the list must not point at a fold that hides what it counts.
+                if next.job?.state == .done, voiceSuggestions.job?.state != .done, let review = openReview, next.holdsShortSuggestion(in: review) { voiceDisplayShortExpanded = true }
                 if next != voiceSuggestions { voiceSuggestions = next }
                 guard next.isRunning else { voiceSuggestionTask = nil; return }
             } catch {
