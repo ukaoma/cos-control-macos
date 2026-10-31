@@ -6,3 +6,4 @@ trap 'rm -rf "$TMP"' EXIT
 "$ROOT/Tests/compile-guard.sh" swiftc -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/HelperSources/SessionUsageCollector.swift" "$ROOT/Tests/SessionUsageChecks.swift" -o "$TMP/checks"
 "$TMP/checks"
+python3 "$ROOT/Tests/session-usage-pins.py" "$ROOT"

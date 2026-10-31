@@ -20,7 +20,8 @@ export COS_TEST_KIT_DIR="${COS_TEST_KIT_DIR:-$TMP/kits}"
 # opted in by hand. The self-test proves each rule can fail.
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT"
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT" --selftest
-# Hand-run: Tests/mutate-session-usage.py (the Usage slicing mutation lane, serial, green baseline first) and
+# Hand-run: Tests/mutate-session-usage.py (the Usage slicing mutation lane, serial, green baseline first),
+# Tests/mutate-server-update-guard.py and Tests/mutate-meeting-restart.py (one helper compile per helper mutant) and
 # Tests/run-session-usage-render.sh (offscreen PNGs, including the 760 pt narrow slice).
 "$ROOT/Tests/run-session-usage.sh"
 "$ROOT/Tests/run-onboarding.sh"
@@ -108,6 +109,12 @@ if not value.get("ok") or value.get("details", {}).get("checks", 0) < 62:
 ' "$WORK_SELF_TEST"
 
 python3 "$ROOT/Tests/HeldNamingTransport.py" "$TMP/cos-control-helper"
+# Update Server only moves forward: the real resolve and refusal path, against a stand-in npm and a loopback fixture.
+python3 "$ROOT/Tests/server-update-guard-checks.py" "$TMP/cos-control-helper"
+# Control's half of the restart lockout: a health payload and the pending-batch scan, down to what the buttons read.
+"$ROOT/Tests/run-meeting-restart.sh" "$TMP/cos-control-helper"
+# Compressed Codex logs through the helper's own Node resolution, in a temporary home.
+python3 "$ROOT/Tests/session-usage-helper-checks.py" "$TMP/cos-control-helper"
 # Work helper transports against loopback fixtures (never the live service): reviews and Intake.
 python3 "$ROOT/Tests/work-review-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-roundtrip-helper-checks.py" "$TMP/cos-control-helper"
@@ -1608,14 +1615,15 @@ start = views.index("    private var syncedPanel: some View {")
 if ".cosControlTheme()" not in views[start:views.index("        .onAppear {", start)]:
     sys.exit("the menu-bar panel root lost .cosControlTheme()")
 # Every Toggle names a COS style, except items in a system menu: the pet's right-click menu and, from 0.5.358, the Usage
-# settings and Columns menus.
+# settings and Columns menus. In Usage only a Toggle between `Menu {` and `} label:` counts (0.5.359), so a stray one
+# elsewhere in those two views fails here; Tests/run-controls-guard-selftest.py proves it.
 sources = {p.name: code(p.read_text(encoding="utf-8")) for p in (root / "Sources").glob("*.swift") if p.name != COMPONENTS}
 toggles = sum(len(re.findall(r"(?<![A-Za-z0-9_])Toggle\(", text)) for text in sources.values())
 pet = sources["SessionPet.swift"]
 menu = pet[pet.index("@ViewBuilder private var spriteMenu: some View {"):pet.index("private func handleSpriteClick()")].count("Toggle(")
 usage = sources["SessionUsageView.swift"]
-menu += usage[usage.index("private var filterRow: some View {"):usage.index("@ViewBuilder private var statusLines: some View {")].count("Toggle(")
-menu += usage[usage.index("private var usageTable: some View {"):usage.index("private func toolRow(")].count("Toggle(")
+for start, end in (("private var filterRow: some View {", "@ViewBuilder private var statusLines: some View {"), ("private var usageTable: some View {", "private func toolRow(")):
+    menu += sum(block.count("Toggle(") for block in re.findall(r"Menu \{(.*?)\} label:", usage[usage.index(start):usage.index(end)], re.S))
 styled = sum(len(re.findall(r"\.toggleStyle\(COS(?:Switch|Check|ChipToggle)Style\(\)\)", text)) for text in sources.values())
 if styled != toggles - menu:
     sys.exit(f"{toggles} Toggles, {menu} in the pet's menu, but {styled} name a COS toggle style")
@@ -5315,7 +5323,7 @@ need("if showingSessionUsage {\n                SessionUsageView(store: model.se
 # The Cursor feed reads a sign-in and the network, so it is opt-in at both ends and a read-only pass never reaches it.
 usage_view_src = (root / "Sources/SessionUsageView.swift").read_text()
 helper_src = (root / "HelperSources/main.swift").read_text()
-need('UserDefaults.standard.bool(forKey: "sessionUsageCursorFeed")' in usage_view_src and 'if cursorEnabled { arguments.append("--cursor") }' in usage_view_src,
+need('UserDefaults.standard.bool(forKey: "sessionUsageCursorFeed")' in usage_view_src and 'if cursorEnabled { arguments.append("--cursor") }' in (root / "Sources/SessionUsageCore.swift").read_text(),
      "Usage passes the Cursor feed flag only after the person turned it on")
 need('if cursorEnabled && !readOnly {\n                do { try collector.syncCursorFeed(' in helper_src and 'let cursorEnabled = args.contains("--cursor")' in helper_src,
      "the helper syncs the Cursor feed only with the flag and never on a read-only pass")
