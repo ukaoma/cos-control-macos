@@ -873,6 +873,21 @@ import Foundation
             try padded.write(to: swapFile)
             try FileManager.default.setAttributes([.modificationDate: swapDate], ofItemAtPath: swapFile.path)
             check(try swapLedger.refresh().pendingFiles == 0, "a log swapped under its saved place does not take the pass down")
+            // A log replaced part way through starts over. Carrying on from the old place would skip its first rows.
+            let (replacedLedger, replacedFolder) = try zstLedger("replaced")
+            let replacedFile = replacedFolder.appendingPathComponent("rollout.jsonl.zst")
+            try writeZst([whole], to: replacedFile)
+            _ = try replacedLedger.refresh(maxBytes: 64)
+            var other = Array(steps.prefix(2))
+            for step in 1...3 { other.append(try line(codex(step * 700, step * 70, 0, 700, "2026-10-20T12:00:00Z"))) }
+            try writeZst([other.joined()], to: replacedFile)
+            let (replacedPlainLedger, replacedPlainFolder) = try zstLedger("replaced-plain")
+            try other.joined().write(to: replacedPlainFolder.appendingPathComponent("rollout.jsonl"), atomically: true, encoding: .utf8)
+            let replacedReference = try replacedPlainLedger.refresh()
+            var replacedRead = try replacedLedger.refresh()
+            while replacedRead.pendingFiles > 0 { replacedRead = try replacedLedger.refresh() }
+            let replacedDay = replacedRead.buckets.first { $0.day == "2026-10-20" }?.counts.total
+            check(replacedDay != nil && replacedDay == replacedReference.buckets.first { $0.day == "2026-10-20" }?.counts.total, "a log replaced part way through starts over")
             // A log of more than one frame, which the decoder alone would stop reading after the first.
             let (framesLedger, framesFolder) = try zstLedger("frames")
             try writeZst([steps.prefix(30).joined(), steps.dropFirst(30).joined()], to: framesFolder.appendingPathComponent("rollout.jsonl.zst"))
@@ -898,6 +913,9 @@ import Foundation
             try writeZst([whole], to: junk, keep: 200)
             let afterCut = try badLedger.refresh()
             check(afterCut.unreadableFiles == 1 && afterCut.pendingFiles == 0, "a truncated compressed log counts as unreadable")
+            try writeZst([whole], to: junk, keep: 6)
+            let afterHeader = try badLedger.refresh()
+            check(afterHeader.unreadableFiles == 1 && afterHeader.pendingFiles == 0, "a log cut off in its first block header counts as unreadable")
             try writeZst([whole], to: junk)
             let afterFix = try badLedger.refresh()
             check(afterFix.unreadableFiles == 0 && totals(afterFix) == totals(reference), "a replaced log is read again")
