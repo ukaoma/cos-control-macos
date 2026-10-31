@@ -737,6 +737,8 @@ final class COSControlHelper {
         case "meeting-speakers": try emitMeetingSpeakers(args: args)
         case "meeting-speaker-policy": try emitMeetingSpeakerPolicy(args: args)
         case "meeting-content": try emitMeetingContent(args: args)
+        case "meeting-voice-suggestions": try emitMeetingVoiceSuggestions(args: args)
+        case "meeting-voice-batch", "meeting-voice-batch-apply", "meeting-voice-batch-undo": try emitMeetingVoiceBatch(args: args)
         case "fences": try emitFences()
         case "fence-release": try emitFenceRelease(args: args)
         case "voice-profiles": try emitVoiceProfiles()
@@ -18408,6 +18410,95 @@ final class COSControlHelper {
                 "detail": text,
             ])
         }
+    }
+
+    /// 0.5.357 (server 6.96.3): read the voice check for a saved Mac call, or start it with --start. A check never names anything.
+    ///
+    /// The job passes through VERBATIM, whatever the status, because a refusal is an answer with its own `state`. A 404 is an older
+    /// server (`route_absent`), which the panel answers by hiding the button, and never reports as an error. A body with no `state`
+    /// is `error`, so an unrelated failure cannot read as a job.
+    private func emitMeetingVoiceSuggestions(args: [String]) throws {
+        guard let session = option("--session", in: args), validSessionID(session), session.hasPrefix("mac_") else {
+            throw HelperError.message("A saved Mac meeting is required")
+        }
+        let start = args.contains("--start")
+        let token = try speakerReviewToken()
+        guard let response = request("/api/meeting/\(escapedSessionID(session))/voice-suggestions", method: start ? "POST" : "GET",
+                                     token: token, body: start ? "{}" : nil, timeout: 15) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        if response.status == 404 {
+            emit(ok: true, message: "Voice suggestions unavailable", details: ["unavailable": "route_absent"])
+            return
+        }
+        guard let body = response.body, body["state"] is String else {
+            emit(ok: true, message: "Voice suggestions failed", details: ["unavailable": "error", "httpStatus": response.status])
+            return
+        }
+        emit(ok: true, message: "Voice suggestions", details: ["job": body, "httpStatus": response.status])
+    }
+
+    /// 0.5.357 (server 6.96.3): name high-confidence voices in one call, list the batches, or undo one. The server does the whole
+    /// batch because the source revision changes after each write. The apply body comes on stdin, bounded, so names stay out of argv.
+    /// Validated before any network call. A body with a `state` is an answer at any status; a 404 without one is an older server.
+    private func emitMeetingVoiceBatch(args: [String]) throws {
+        guard let command = args.first else { throw HelperError.message("Unknown batch command") }
+        var path: String
+        var payload: String?
+        switch command {
+        case "meeting-voice-batch", "meeting-voice-batch-undo":
+            guard let session = option("--session", in: args), validSessionID(session), session.hasPrefix("mac_") else {
+                throw HelperError.message("A saved Mac meeting is required")
+            }
+            path = "/api/meeting/\(escapedSessionID(session))/voice-naming-batch"
+            if command == "meeting-voice-batch-undo" {
+                guard let batch = option("--batch", in: args), !batch.isEmpty, batch.utf8.count <= 128,
+                      batch.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45, 58, 95].contains($0) }) else {
+                    throw HelperError.message("A batch to undo is required")
+                }
+                path += "/\(batch)/undo"
+                payload = #"{"confirm":true}"#
+            }
+        default:
+            guard args.count == 1, let body = try JSONSerialization.jsonObject(with: readBoundedStdin(2_097_152)) as? [String: Any],
+                  Set(body.keys) == ["sessionId", "sourceRevision", "items", "confirm"],
+                  let session = body["sessionId"] as? String, validSessionID(session), session.hasPrefix("mac_"),
+                  let revision = body["sourceRevision"] as? String, Self.validPreviewHash(revision),
+                  let confirm = body["confirm"] as? NSNumber, CFGetTypeID(confirm) == CFBooleanGetTypeID(), confirm.boolValue,
+                  let items = body["items"] as? [[String: Any]], (1...200).contains(items.count) else {
+                throw HelperError.message("A current Mac meeting, its revision and at least one confirmed row are required")
+            }
+            var seen = Set<String>()
+            for item in items {
+                guard Set(item.keys) == ["labels", "name"], let labels = item["labels"] as? [String], !labels.isEmpty, labels.count <= 100,
+                      labels.allSatisfy({ $0.range(of: #"\AVoice [1-9][0-9]?\z"#, options: .regularExpression) != nil && seen.insert($0).inserted }),
+                      let name = item["name"] as? String, name == name.trimmingCharacters(in: .whitespacesAndNewlines),
+                      (2...200).contains(name.count), !name.lowercased().hasPrefix("voice "),
+                      !["ext", "unknown", "mu", "unidentified", "unidentified voice"].contains(name.lowercased()),
+                      name.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else {
+                    throw HelperError.message("Each row needs unique Voice labels and one name")
+                }
+            }
+            path = "/api/meeting/\(escapedSessionID(session))/voice-naming-batch"
+            payload = String(decoding: try JSONSerialization.data(withJSONObject: ["sourceRevision": revision, "items": items, "confirm": true]), as: UTF8.self)
+        }
+        let token = try speakerReviewToken()
+        guard let response = request(path, method: payload == nil ? "GET" : "POST", token: token, body: payload, timeout: command == "meeting-voice-batch" ? 15 : 300) else {
+            throw HelperError.message("Server stopped")
+        }
+        if response.status == 401 || response.status == 403 { throw HelperError.message("Unauthorized") }
+        if command == "meeting-voice-batch" {
+            if response.status == 404 { emit(ok: true, message: "Voice batches unavailable", details: ["unavailable": "route_absent"]); return }
+            guard response.status == 200, let rows = response.body?["batches"] as? [Any] else {
+                emit(ok: true, message: "Voice batches failed", details: ["unavailable": "error", "httpStatus": response.status]); return
+            }
+            emit(ok: true, message: "Voice batches", details: ["batches": rows]); return
+        }
+        if let body = response.body, body["state"] is String {
+            emit(ok: true, message: "Voice batch answered", details: ["result": body, "httpStatus": response.status]); return
+        }
+        emit(ok: true, message: "Voice batch unavailable", details: ["unavailable": response.status == 404 ? "route_absent" : "error", "httpStatus": response.status])
     }
 
     /// Enrolled profiles, for the naming field's autocomplete.

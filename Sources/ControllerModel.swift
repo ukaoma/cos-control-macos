@@ -555,6 +555,21 @@ final class ControllerModel: ObservableObject {
     @Published var pendingCorrection: PendingCorrection?
     @Published var pendingSpeakerGroupName: PendingSpeakerGroupName?
     @Published var pendingIntervalWordName: PendingIntervalWordName?
+    /// 0.5.357 (server 6.96.3): a merged Speakers row previewed for naming, one label at a time, nothing written yet.
+    @Published var pendingVoiceGroupName: PendingVoiceGroupName?
+    /// "Naming Voice 7, 3 of 13" while a merged row is previewed or saved.
+    @Published var voiceGroupNamingProgress: String?
+    /// How the last group naming ended, in plain words. Stays until dismissed or a new meeting opens.
+    @Published var voiceGroupNamingOutcome: VoiceGroupNamingOutcome?
+    /// Which merged rows are open, and the Short voices fold. Kept here so they survive the reread after a name and reset on a new meeting.
+    @Published var voiceDisplayExpandedRows: Set<String> = []
+    @Published var voiceDisplayShortExpanded = false
+    /// Suggest names: what the server said for the open review.
+    @Published var voiceSuggestions = VoiceSuggestionState()
+    /// The one-click batch of high-confidence names: its ticks, its last answer, and what can still be undone.
+    @Published var voiceBatch = VoiceBatchState()
+    private var voiceSuggestionTask: Task<Void, Never>?
+    var voiceSuggestionPollInterval: Duration = .milliseconds(1500)
     @Published var intervalWordRecoveryArmed = false
     @Published var intervalOriginalViewArmed = false
     /// 0.5.351 QA: the person pressed "Add anyway" on a flagged Mac voice and has not yet confirmed it. Only then can the forced assignment be sent.
@@ -9604,6 +9619,7 @@ final class ControllerModel: ObservableObject {
         pendingIntervalWordName = nil
         intervalWordRecoveryArmed = false
         intervalOriginalViewArmed = false
+        resetVoiceDisplayState()
         openReview = nil
         mergeInFlight = false
         lastReviewSession = sessionId
@@ -9643,6 +9659,8 @@ final class ControllerModel: ObservableObject {
                 reviewError = "This review does not match the selected meeting. Reopen the saved meeting."; return
             }
             openReview = review
+            probeVoiceSuggestions(review: review, generation: generation)
+            Task { [weak self] in await self?.loadVoiceBatches(review: review, generation: generation) }
             // 0.5.340 Rename voice: open straight onto naming the voice the meeting's Rename voice picked.
             if let wanted = pendingNameVoice, review.voices.contains(where: { $0.label == wanted && $0.canRename }) { namingVoice = wanted }
             pendingNameVoice = nil
@@ -9732,6 +9750,7 @@ final class ControllerModel: ObservableObject {
         pendingIntervalWordName = nil
         intervalWordRecoveryArmed = false
         intervalOriginalViewArmed = false
+        resetVoiceDisplayState()
         reviewError = nil
         lastReviewSession = nil
         selectedReviewRecordID = nil
@@ -10316,7 +10335,7 @@ final class ControllerModel: ObservableObject {
                       openReview?.sourceRevision == revision, openReview?.groupScopes.contains(scope) == true else { return }
                 guard let preview = PendingSpeakerGroupName(scope: scope, review: review, rawChunkIndices: rawChunkIndices,
                                                             to: name, response: response) else {
-                    reviewError = response.details["result"]?.object?["message"]?.string
+                    reviewError = SpeakerRefusal.text(response.details["result"]?.object)
                         ?? "The server could not verify that exact group. Refresh the meeting and try again."; return
                 }
                 pendingSpeakerGroupName = preview; namingVoice = nil; reviewError = nil
@@ -10349,7 +10368,7 @@ final class ControllerModel: ObservableObject {
                 guard response.details["state"]?.string == "applied", result?["confirmed"]?.bool == true,
                       result?["enrollmentAllowed"]?.bool == false else {
                     pendingSpeakerGroupName = nil
-                    reviewError = result?["message"]?.string
+                    reviewError = SpeakerRefusal.text(result)
                         ?? "The name was not saved. Refresh this meeting before trying again."; return
                 }
                 pendingSpeakerGroupName = nil
@@ -10390,7 +10409,7 @@ final class ControllerModel: ObservableObject {
                     reviewError = "These words changed. Review the refreshed meeting and preview again."; return
                 }
                 guard let preview = PendingIntervalWordName(scope: scope, review: review, memberIds: memberIds, to: name, response: response) else {
-                    let reason = response.details["result"]?.object?["message"]?.string ?? "The exact words changed. Review the refreshed meeting before trying again."
+                    let reason = SpeakerRefusal.text(response.details["result"]?.object) ?? "The exact words changed. Review the refreshed meeting before trying again."
                     await fetchReview(sessionId: review.sessionId)
                     guard reviewSelectionGeneration == generation else { return }
                     reviewError = reason; return
@@ -10432,7 +10451,7 @@ final class ControllerModel: ObservableObject {
                    SpeakerGroupScope.exactInt(correction["members"]) == preview.memberIds.count,
                    SpeakerGroupScope.exactInt(correction["fields"]) == preview.fields {
                     notice = "Saved \(preview.to) for \(preview.memberIds.count) reviewed words"
-                } else { message = result?["message"]?.string ?? "The name was not confirmed. Review the refreshed meeting before trying again." }
+                } else { message = SpeakerRefusal.text(result) ?? "The name was not confirmed. Review the refreshed meeting before trying again." }
             } catch { message = "Check the refreshed meeting before retrying: \(error.localizedDescription)" }
             guard reviewSelectionGeneration == generation, lastReviewSession == preview.sessionId else { return }
             pendingIntervalWordName = nil
@@ -10468,7 +10487,7 @@ final class ControllerModel: ObservableObject {
                     notice = correction["undone"]?.bool == true
                         ? "Undid naming for \(action.memberIds.count) reviewed words"
                         : "This word naming was already undone"
-                } else { message = result?["message"]?.string ?? "Undo was not confirmed. Review the refreshed meeting." }
+                } else { message = SpeakerRefusal.text(result) ?? "Undo was not confirmed. Review the refreshed meeting." }
             } catch { message = "Check the refreshed meeting before retrying Undo: \(error.localizedDescription)" }
             guard reviewSelectionGeneration == generation, lastReviewSession == review.sessionId else { return }
             await fetchReview(sessionId: review.sessionId)
@@ -10499,7 +10518,7 @@ final class ControllerModel: ObservableObject {
                    result?["confirmed"]?.bool == true, result?["enrollmentAllowed"]?.bool == false,
                    result?["sourceRevision"]?.string.map(SpeakerGroupScope.validHash) == true {
                     notice = "Finished interrupted word naming"
-                } else { message = result?["message"]?.string ?? "The interrupted naming could not be confirmed. Review the refreshed meeting." }
+                } else { message = SpeakerRefusal.text(result) ?? "The interrupted naming could not be confirmed. Review the refreshed meeting." }
             } catch { message = "Check the refreshed meeting before trying recovery again: \(error.localizedDescription)" }
             guard reviewSelectionGeneration == generation, lastReviewSession == review.sessionId else { return }
             await fetchReview(sessionId: review.sessionId)
@@ -10533,7 +10552,7 @@ final class ControllerModel: ObservableObject {
                    result?["confirmed"]?.bool == true, result?["enrollmentAllowed"]?.bool == false,
                    result?["sourceRevision"]?.string.map(SpeakerGroupScope.validHash) == true {
                     notice = "Using original recording view"
-                } else { message = result?["message"]?.string ?? "The original view was not confirmed. Review the refreshed meeting." }
+                } else { message = SpeakerRefusal.text(result) ?? "The original view was not confirmed. Review the refreshed meeting." }
             } catch { message = "Check the refreshed meeting before trying the original view again: \(error.localizedDescription)" }
             guard reviewSelectionGeneration == generation, lastReviewSession == review.sessionId else { return }
             await fetchReview(sessionId: review.sessionId)
@@ -10568,6 +10587,7 @@ final class ControllerModel: ObservableObject {
         // 0.5.351: only an existing enrolled person can receive a Mac voice's samples; the exact stored name is what the server matches.
         let assigned = assignVoiceProfile && review.isMacRecording && MacVoiceLabel.isVoice(from) ? voiceProfiles.first { $0.name == to && !$0.isOwner }?.name : nil
         forceAssignArmed = false
+        pendingVoiceGroupName = nil
         mergeInFlight = true
         Task { [weak self] in
             guard let self else { return }
@@ -11026,5 +11046,332 @@ final class ControllerModel: ObservableObject {
         pendingCorrection = nil
         forceAssignArmed = false
         correctionScope = .thisMeeting
+    }
+
+    // MARK: - 0.5.357 Speakers display and Suggest names (server 6.96.3)
+
+    private func resetVoiceDisplayState() {
+        pendingVoiceGroupName = nil
+        voiceGroupNamingProgress = nil
+        voiceGroupNamingOutcome = nil
+        voiceDisplayExpandedRows = []
+        voiceDisplayShortExpanded = false
+        voiceSuggestionTask?.cancel()
+        voiceSuggestionTask = nil
+        voiceSuggestions = VoiceSuggestionState()
+        voiceBatch = VoiceBatchState()
+    }
+
+    /// Preview naming a merged row: the same `meeting-relabel` dry run a single VoiceRow sends, once per member, all at the revision
+    /// on screen. Reads only. The first refusal ends it with nothing named.
+    func previewVoiceGroupName(_ row: VoiceDisplayLayout.MergedRow, to rawName: String, assignVoiceProfile: Bool) {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !mergeInFlight, name.count >= 2, let review = openReview, review.canNameTogether(row),
+              selectedReviewRecordID == nil || (review.identityVersion == 1 && review.sourceRevision?.count == 64) else {
+            reviewError = "This voice group changed. Reopen the meeting before naming it."; return
+        }
+        guard !PhoneMeetingCapture.protected(review.sessionId) else { reviewError = PhoneMeetingCapture.anonymousNote; return }
+        let session = review.sessionId, generation = reviewSelectionGeneration, labels = row.labels
+        // Only an existing person other than the wearer can receive samples, exactly as previewRename decides for one voice.
+        let assigned = assignVoiceProfile && voiceProfiles.contains { $0.name == name && !$0.isOwner }
+        mergeInFlight = true
+        pendingCorrection = nil
+        pendingVoiceGroupName = nil
+        voiceGroupNamingOutcome = nil
+        Task { [weak self] in
+            guard let self else { return }
+            defer { if reviewSelectionGeneration == generation { mergeInFlight = false; voiceGroupNamingProgress = nil } }
+            var corrections: [PendingCorrection] = []
+            for (index, voice) in row.members.enumerated() {
+                voiceGroupNamingProgress = "Checking \(voice.label), \(index + 1) of \(labels.count)"
+                let args = ["meeting-relabel", "--session", session, "--record-id", review.recordId, "--from", voice.label, "--to", name]
+                    + reviewRevisionArgs(review) + (assigned ? ["--assign-voice-profile"] : [])
+                do {
+                    let response = try await helper.run(args)
+                    guard reviewSelectionGeneration == generation, lastReviewSession == session else { return }
+                    let correction = Self.correction(from: voice.label, to: name, scope: .thisMeeting, response: response,
+                                                     isNameAssignment: voice.isNameAssignment, assignRequested: assigned)
+                    let state = response.details["state"]?.string ?? ""
+                    guard !correction.refused, state == "preview" else {
+                        let reason = correction.refused ? correction.message : Self.groupStepRefusal(state: state, response: response)
+                        voiceGroupNamingOutcome = VoiceGroupNamingOutcome(to: name, labels: labels, namedCount: 0, stoppedAt: voice.label, reason: reason)
+                        return
+                    }
+                    corrections.append(correction)
+                } catch {
+                    guard reviewSelectionGeneration == generation, lastReviewSession == session else { return }
+                    voiceGroupNamingOutcome = VoiceGroupNamingOutcome(to: name, labels: labels, namedCount: 0, stoppedAt: voice.label, reason: error.localizedDescription)
+                    return
+                }
+            }
+            guard openReview?.sourceRevision == review.sourceRevision else {
+                voiceGroupNamingOutcome = VoiceGroupNamingOutcome(to: name, labels: labels, namedCount: 0, stoppedAt: nil, reason: "This meeting changed while it was being checked.")
+                return
+            }
+            namingVoice = nil
+            reviewError = nil
+            pendingVoiceGroupName = PendingVoiceGroupName(rowId: row.id, sessionId: session, recordId: review.recordId, revision: review.sourceRevision, to: name, corrections: corrections)
+        }
+    }
+
+    /// Save a previewed group, one label at a time, through the route and flags a single row's Save uses. Each write changes the source
+    /// revision, so the review is read again between writes and the next call binds to what that read returned. The first refusal stops
+    /// the run, and the outcome says which labels were named and which were not.
+    func confirmVoiceGroupName(_ plan: PendingVoiceGroupName) {
+        guard !mergeInFlight, pendingVoiceGroupName?.rowId == plan.rowId, pendingVoiceGroupName?.to == plan.to,
+              let start = openReview, start.mutable, start.sessionId == plan.sessionId, start.recordId == plan.recordId,
+              start.sourceRevision == plan.revision, !PhoneMeetingCapture.protected(start.sessionId),
+              selectedReviewRecordID == nil || (start.identityVersion == 1 && start.sourceRevision?.count == 64) else {
+            pendingVoiceGroupName = nil
+            reviewError = "This voice group changed. Reopen the meeting before saving a name."; return
+        }
+        let session = start.sessionId, generation = reviewSelectionGeneration, selectedRecord = selectedReviewRecordID, labels = plan.labels
+        mergeInFlight = true
+        pendingVoiceGroupName = nil
+        voiceGroupNamingOutcome = nil
+        Task { [weak self] in
+            guard let self else { return }
+            defer { if reviewSelectionGeneration == generation { mergeInFlight = false; voiceGroupNamingProgress = nil } }
+            var review = start, namedCount = 0, samples = 0
+            var stop: String?
+            steps: for (index, correction) in plan.corrections.enumerated() {
+                guard review.voices.contains(where: { $0.label == correction.from && $0.canRename }) else {
+                    stop = "It is no longer in this meeting."; break steps
+                }
+                voiceGroupNamingProgress = "Naming \(correction.from), \(index + 1) of \(labels.count)"
+                var args = ["meeting-relabel", "--session", session, "--record-id", review.recordId,
+                            "--from", correction.from, "--to", plan.to, "--confirm"]
+                args += plan.saveFlags(for: correction)
+                args += reviewRevisionArgs(review)
+                do {
+                    let response = try await helper.run(args)
+                    let state = response.details["state"]?.string ?? ""
+                    guard state == "applied" else {
+                        stop = Self.groupStepRefusal(state: state, response: response); break steps
+                    }
+                    namedCount += 1
+                    samples += response.details["result"]?.object?["enrolment"]?.object?["enrolled"]?.int ?? 0
+                    guard index < plan.corrections.count - 1 else { break steps }
+                    guard reviewSelectionGeneration == generation, lastReviewSession == session else {
+                        stop = "Another meeting was opened, so the rest were left."; break steps
+                    }
+                    var reread = ["meeting-speakers", "--session", session]
+                    if let selectedRecord { reread += ["--record-id", selectedRecord] }
+                    let fresh = try await helper.run(reread)
+                    guard reviewSelectionGeneration == generation, lastReviewSession == session else {
+                        stop = "Another meeting was opened, so the rest were left."; break steps
+                    }
+                    guard let next = SpeakerReview(fresh.details["review"]), next.sessionId == session, next.mutable,
+                          selectedRecord == nil || next.recordId == selectedRecord || next.blendedRecordId == selectedRecord else {
+                        stop = "The meeting could not be read again after that name."; break steps
+                    }
+                    review = next
+                    openReview = next
+                } catch {
+                    stop = error.localizedDescription; break steps
+                }
+            }
+            let outcome = VoiceGroupNamingOutcome(to: plan.to, labels: labels, namedCount: namedCount, stoppedAt: stop == nil ? nil : labels[namedCount], reason: stop)
+            // The person moved to another meeting while this ran. What happened still has to reach them.
+            guard reviewSelectionGeneration == generation, lastReviewSession == session else { notice = outcome.line; return }
+            if namedCount > 0 {
+                for key in [review.recordId, review.blendedRecordId ?? ""].filter({ !$0.isEmpty }) {
+                    workMeetingPeople.removeValue(forKey: key)
+                    workMeetingPeopleFailed.remove(key)
+                    workMeetingPeopleGeneration[key] = UUID()
+                    workMeetingPeopleLoading.remove(key)
+                }
+                await loadVoiceProfiles()
+                await fetchReview(sessionId: session)
+                await loadVoiceDirectory(refresh: true)
+                guard reviewSelectionGeneration == generation else { notice = outcome.line; return }
+            }
+            if stop == nil {
+                notice = outcome.line + (samples > 0 ? " \(samples) voice sample\(samples == 1 ? "" : "s") added." : "")
+            } else {
+                voiceGroupNamingOutcome = outcome
+            }
+        }
+    }
+
+    /// Why one label's save did not apply, using the same words the single row's card uses.
+    private static func groupStepRefusal(state: String, response: HelperResponse) -> String {
+        let result = response.details["result"]?.object
+        let detail = MacVoiceCopy.withoutForceJargon(SpeakerRefusal.text(result) ?? response.details["message"]?.string, fallback: "")
+        switch state {
+        case "route_missing": return "This needs a newer COS server. Use Update Server."
+        case "pending_correction": return MacVoiceCopy.earlierCorrectionNote
+        case "meeting_finalizing": return "This meeting is still being saved. Try again in a minute."
+        default: return detail.isEmpty ? "The server did not apply that (\(state))." : detail
+        }
+    }
+
+    /// The suggestions this row holds and may use. A Mac voice is never offered the wearer's own profile.
+    func voiceNameSuggestions(heldBy labels: [String]) -> [VoiceNameSuggestion] {
+        guard let review = openReview else { return [] }
+        return voiceSuggestions.suggestions(heldBy: labels, in: review).filter { suggestion in
+            !voiceProfiles.contains { $0.name == suggestion.name && $0.isOwner }
+        }
+    }
+
+    /// Use this name: exactly the suggestion's labels, never the rest of a merged row. From here it is the normal naming path, so
+    /// nothing is saved until that card's Save.
+    func useVoiceNameSuggestion(_ suggestion: VoiceNameSuggestion, rowLabels: [String]) {
+        guard voiceNameSuggestions(heldBy: rowLabels).contains(suggestion), let review = openReview else { return }
+        let members = suggestion.labels.compactMap { label in review.voices.first { $0.label == label } }
+        guard members.count == suggestion.labels.count, let first = members.first else { return }
+        if members.count == 1 {
+            previewRename(from: first.label, to: suggestion.name, scope: .thisMeeting, isNameAssignment: first.isNameAssignment, assignVoiceProfile: true)
+        } else {
+            previewVoiceGroupName(VoiceDisplayLayout.MergedRow(id: "suggestion:" + suggestion.id, members: members, seconds: nil), to: suggestion.name, assignVoiceProfile: true)
+        }
+    }
+
+    /// What the batch offers right now. Empty as soon as the suggestions behind it are bound to another revision.
+    var voiceBatchCandidates: [VoiceBatchCandidate] {
+        guard let review = openReview, voiceBatch.showsControls(for: review) else { return [] }
+        return voiceSuggestions.batchCandidates(for: review, excluding: Set(voiceProfiles.filter(\.isOwner).map(\.name)))
+    }
+
+    /// Which batches can still be undone, asked on every review so the Undo survives closing and reopening. A 404 hides the controls.
+    private func loadVoiceBatches(review: SpeakerReview, generation: Int) async {
+        guard review.canSuggestNames else { return }
+        guard let response = try? await helper.run(["meeting-voice-batch", "--session", review.sessionId]),
+              reviewSelectionGeneration == generation, lastReviewSession == review.sessionId else { return }
+        voiceBatch = voiceBatch.applyingList(response.details)
+    }
+
+    /// Confirm: the ticked rows and nothing else. The server does the whole batch, so this path never loops a relabel from here.
+    func confirmVoiceBatch() {
+        let candidates = voiceBatchCandidates
+        guard !mergeInFlight, voiceBatch.previewOpen, let review = openReview,
+              !PhoneMeetingCapture.protected(review.sessionId), let body = voiceBatch.applyBody(candidates, review: review) else { return }
+        let session = review.sessionId, generation = reviewSelectionGeneration
+        mergeInFlight = true
+        pendingCorrection = nil
+        pendingVoiceGroupName = nil
+        voiceBatch.previewOpen = false
+        voiceBatch.result = nil
+        voiceBatch.undoResult = nil
+        voiceBatch.note = nil
+        Task { [weak self] in
+            guard let self else { return }
+            defer { if reviewSelectionGeneration == generation { mergeInFlight = false } }
+            var result: VoiceBatchResult?, note: String?, routeGone = false
+            do {
+                let response = try await helper.run(["meeting-voice-batch-apply"], stdinData: body)
+                guard reviewSelectionGeneration == generation, lastReviewSession == session else {
+                    notice = VoiceBatchResult(response.details["result"])?.line ?? VoiceDisplayCopy.batchLostReply
+                    return
+                }
+                routeGone = response.details["unavailable"]?.string == "route_absent"
+                result = VoiceBatchResult(response.details["result"])
+                if result == nil && !routeGone { note = VoiceDisplayCopy.batchLostReply }
+            } catch {
+                // A lost reply may follow a batch that ran. The refresh below shows the truth, and nothing offers to repeat it blind.
+                guard reviewSelectionGeneration == generation, lastReviewSession == session else { return }
+                note = VoiceDisplayCopy.batchLostReply
+            }
+            voiceBatch.result = result
+            voiceBatch.note = note
+            if routeGone { voiceBatch.routeAbsent = true; voiceBatch.batches = [] }
+            await refreshAfterVoiceBatch(session: session, generation: generation)
+        }
+    }
+
+    /// Undo these names: the batch the server last said can be undone, and it reports what it could not put back.
+    func undoVoiceBatch() {
+        guard !mergeInFlight, let review = openReview, voiceBatch.showsControls(for: review), let batch = voiceBatch.undoableBatch else { return }
+        let session = review.sessionId, generation = reviewSelectionGeneration
+        mergeInFlight = true
+        voiceBatch.result = nil
+        voiceBatch.undoResult = nil
+        voiceBatch.note = nil
+        Task { [weak self] in
+            guard let self else { return }
+            defer { if reviewSelectionGeneration == generation { mergeInFlight = false } }
+            var undo: VoiceBatchUndoResult?, note: String?
+            do {
+                let response = try await helper.run(["meeting-voice-batch-undo", "--session", session, "--batch", batch.batchId])
+                guard reviewSelectionGeneration == generation, lastReviewSession == session else {
+                    notice = VoiceBatchUndoResult(response.details["result"])?.line ?? VoiceDisplayCopy.batchLostReply
+                    return
+                }
+                undo = VoiceBatchUndoResult(response.details["result"])
+                if undo == nil { note = VoiceDisplayCopy.batchLostReply }
+            } catch {
+                guard reviewSelectionGeneration == generation, lastReviewSession == session else { return }
+                note = VoiceDisplayCopy.batchLostReply
+            }
+            voiceBatch.undoResult = undo
+            voiceBatch.note = note
+            await refreshAfterVoiceBatch(session: session, generation: generation)
+        }
+    }
+
+    /// Both Confirm and Undo end here: names, samples and the source revision may all have moved. Suggestions bound to the old revision drop.
+    private func refreshAfterVoiceBatch(session: String, generation: Int) async {
+        await loadVoiceProfiles()
+        guard reviewSelectionGeneration == generation, lastReviewSession == session else { return }
+        await fetchReview(sessionId: session)
+        await loadVoiceDirectory(refresh: true)
+    }
+
+    /// Read the check's state when a review lands. An older server's 404 hides the button, silently.
+    private func probeVoiceSuggestions(review: SpeakerReview, generation: Int) {
+        guard review.canSuggestNames else { return }
+        // A check already being followed keeps its own loop; the reread after a name must not start a second one.
+        guard voiceSuggestionTask == nil else { return }
+        let session = review.sessionId
+        voiceSuggestionTask = Task { [weak self] in
+            guard let self else { return }
+            await readVoiceSuggestions(["meeting-voice-suggestions", "--session", session], session: session, generation: generation)
+        }
+    }
+
+    /// Suggest names: the click that starts the check. It reads shared profiles and writes nothing to this meeting.
+    func startVoiceSuggestions() {
+        guard !mergeInFlight, let review = openReview, voiceSuggestions.showsButton(for: review), !voiceSuggestions.isRunning else { return }
+        let session = review.sessionId, generation = reviewSelectionGeneration
+        voiceSuggestionTask?.cancel()
+        voiceSuggestions.note = nil
+        voiceSuggestions.job = nil
+        voiceSuggestionTask = Task { [weak self] in
+            guard let self else { return }
+            await readVoiceSuggestions(["meeting-voice-suggestions", "--session", session, "--start"], session: session, generation: generation)
+        }
+    }
+
+    /// One read, then polling while the server says running. Bound to the meeting that asked: a late answer for another meeting is dropped.
+    private func readVoiceSuggestions(_ first: [String], session: String, generation: Int) async {
+        var args = first, failures = 0
+        // 30 minutes at the default interval, and three misses in a row, so a dead server cannot poll forever. Progress standing still
+        // is not a miss: dictation pauses a job.
+        for _ in 0..<1200 {
+            guard !Task.isCancelled, reviewSelectionGeneration == generation, lastReviewSession == session else { return }
+            do {
+                let response = try await helper.run(args)
+                guard !Task.isCancelled, reviewSelectionGeneration == generation, lastReviewSession == session else { return }
+                failures = 0
+                let next = voiceSuggestions.applying(response.details)
+                if next != voiceSuggestions { voiceSuggestions = next }
+                guard next.isRunning else { voiceSuggestionTask = nil; return }
+            } catch {
+                guard !Task.isCancelled, reviewSelectionGeneration == generation, lastReviewSession == session else { return }
+                failures += 1
+                guard failures >= 3 else { try? await Task.sleep(for: voiceSuggestionPollInterval); continue }
+                // Quiet when nothing has been asked yet: only a check the person started owes them a sentence.
+                if voiceSuggestions.probed { voiceSuggestions.note = VoiceDisplayCopy.didNotFinish; voiceSuggestions.job = nil }
+                voiceSuggestionTask = nil
+                return
+            }
+            args = ["meeting-voice-suggestions", "--session", session]
+            try? await Task.sleep(for: voiceSuggestionPollInterval)
+        }
+        guard !Task.isCancelled, reviewSelectionGeneration == generation else { return }
+        // Stop asking, but never call a job that may only be paused a failure. A second click picks the same job back up.
+        voiceSuggestions.note = VoiceDisplayCopy.stillChecking
+        voiceSuggestions.job = nil
+        voiceSuggestionTask = nil
     }
 }

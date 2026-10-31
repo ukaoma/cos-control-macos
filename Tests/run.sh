@@ -118,6 +118,9 @@ zsh "$ROOT/Tests/run-speaker-groups.sh" --helper "$TMP/cos-control-helper"
 zsh "$ROOT/Tests/run-interval-word-naming.sh" --helper "$TMP/cos-control-helper"
 # Final word-backed acoustic groups, unresolved speech and malformed-metadata fences.
 zsh "$ROOT/Tests/run-effective-speaker-review.sh" "$TMP/effective-speaker-review"
+# 0.5.357 (server 6.96.3): merged Speakers rows, the Short voices fold and Suggest names. Hand-run: Tests/mutate-voice-display.py
+# (the mutation lane, serial, green baseline first) and Tests/run-voice-display-render.sh (offscreen PNGs at the panel width).
+zsh "$ROOT/Tests/run-voice-display.sh" --helper "$TMP/cos-control-helper"
 # 0.5.340 (server 6.90.0): Mac recording Voice N, wired. The rules run in ModelsContract and ActivityTodayChecks.
 /usr/bin/python3 "$ROOT/Tests/mac-voice-pins.py" "$ROOT" --selftest
 python3 "$ROOT/Tests/mac-recording-helper-checks.py" "$TMP/cos-control-helper"

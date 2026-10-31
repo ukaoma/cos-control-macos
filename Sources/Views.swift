@@ -4620,6 +4620,8 @@ private struct ConfidenceRamp: View {
 private struct VoiceRow: View {
     @ObservedObject var model: ControllerModel
     let voice: ReviewVoice
+    /// 0.5.357: time from the display hint, for a row whose own speakingMs is 0.
+    var hintSeconds: Double? = nil
     @State private var typed = ""
 
     private var matches: [VoiceProfileOption] {
@@ -4678,6 +4680,11 @@ private struct VoiceRow: View {
                             .font(.system(size: 10, weight: .medium, design: .monospaced))
                             .foregroundStyle(.primary)
                     }
+                }
+                if let hintSeconds {
+                    Text("· \(VoiceDisplayCopy.duration(hintSeconds))")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
                 }
                 if voice.intervalKind == nil {
                     ConfidenceRamp(value: voice.meanSimilarity, unreliable: voice.reliability == .unreliable)
@@ -4756,6 +4763,11 @@ private struct VoiceRow: View {
                model.playingVoice == nil {
                 Text(note.text).font(.system(size: 10.5)).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // 0.5.357: a suggestion only ever opens this row's own naming card. A row on an exact-segment or exact-word path has none.
+            ForEach(model.voiceNameSuggestions(heldBy: [voice.label])) { suggestion in
+                VoiceSuggestionLine(model: model, suggestion: suggestion, rowSize: 1) { model.useVoiceNameSuggestion(suggestion, rowLabels: [voice.label]) }
             }
 
             if let scope = model.openReview?.intervalGroupScopes.first(where: { $0.matches(voice) }) {
@@ -4888,6 +4900,353 @@ private struct VoiceRow: View {
     }
 }
 
+/// 0.5.357: "Suggested: <name>", its score, and the one click that can act on it. Never says who a voice is.
+private struct VoiceSuggestionLine: View {
+    @ObservedObject var model: ControllerModel
+    let suggestion: VoiceNameSuggestion
+    let rowSize: Int
+    let use: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(VoiceDisplayCopy.suggestedName(suggestion.name, covering: suggestion.labels.count, of: rowSize))
+                .font(.system(size: 11, weight: .medium))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(VoiceDisplayCopy.score(suggestion.score))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .fixedSize()
+            Button("Use this name", action: use)
+                .font(.system(size: 11))
+                .controlSize(.small)
+                .fixedSize()
+                .disabled(model.mergeInFlight)
+        }
+    }
+}
+
+/// 0.5.357: one row for a machine grouping. Its members are the original VoiceRows, one click away, with their words and their own
+/// correction paths. Naming here sends each member through the plain rename its own row would use (ControllerModel).
+private struct MergedVoiceRow: View {
+    @ObservedObject var model: ControllerModel
+    let row: VoiceDisplayLayout.MergedRow
+    let seconds: [String: Double]
+    @State private var typed = ""
+
+    private var expanded: Bool { model.voiceDisplayExpandedRows.contains(row.id) }
+    private var matches: [VoiceProfileOption] {
+        let q = typed.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return [] }
+        return model.voiceProfiles.filter { $0.name.lowercased().contains(q) && !$0.isOwner }.prefix(4).map { $0 }
+    }
+    private var typedNewName: String? {
+        let name = typed.trimmingCharacters(in: .whitespaces)
+        guard name.count >= 2 else { return nil }
+        return model.voiceProfiles.contains { $0.name.lowercased() == name.lowercased() } ? nil : name
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                if expanded { model.voiceDisplayExpandedRows.remove(row.id) } else { model.voiceDisplayExpandedRows.insert(row.id) }
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 10)
+                    Text(row.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(row.members.count) labels")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    if let time = row.timeText {
+                        Text("· \(time)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(expanded ? "Hide the voices in this group" : "Show the voices and words in this group")
+
+            Text(VoiceDisplayCopy.machineGrouping)
+                .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // Every suggestion the row holds, two names included: that is useful to see. Each names only its own labels.
+            ForEach(model.voiceNameSuggestions(heldBy: row.labels)) { suggestion in
+                VoiceSuggestionLine(model: model, suggestion: suggestion, rowSize: row.members.count) { model.useVoiceNameSuggestion(suggestion, rowLabels: row.labels) }
+            }
+
+            if model.openReview?.canNameTogether(row) == true {
+                if model.namingVoice == row.id {
+                    naming
+                } else {
+                    Button("Name this group") { model.namingVoice = row.id }
+                        .font(.system(size: 11))
+                        .controlSize(.small)
+                        .disabled(model.mergeInFlight)
+                }
+            } else if model.openReview?.mutable == true {
+                Text(VoiceDisplayCopy.groupNoteOwnRows)
+                    .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(row.members.enumerated()), id: \.element.id) { index, voice in
+                        VoiceRow(model: model, voice: voice, hintSeconds: seconds[voice.label])
+                        if index < row.members.count - 1 { Divider() }
+                    }
+                }
+                .padding(.leading, 12)
+                .overlay(alignment: .leading) {
+                    Rectangle().fill(COSPalette.line).frame(width: 1)
+                }
+            }
+        }
+        .padding(.vertical, 9)
+    }
+
+    /// The same choice a VoiceRow offers: a person from the profiles, or a typed name that stays text only.
+    @ViewBuilder private var naming: some View {
+        TextField("Type a name", text: $typed)
+            .textFieldStyle(.plain)
+            .cosField()
+        Text(MacVoiceCopy.renameNote + " Applies to each of the \(row.members.count) labels.")
+            .font(.system(size: 10.5)).foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+        ForEach(matches) { option in
+            Button {
+                model.previewVoiceGroupName(row, to: option.name, assignVoiceProfile: true)
+            } label: {
+                HStack {
+                    Text(option.name).font(.system(size: 12))
+                    Spacer()
+                    if model.mergeInFlight {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Text("\(option.embeddings) samples")
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(model.mergeInFlight)
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 5))
+        }
+        if let newName = typedNewName {
+            Button {
+                model.previewVoiceGroupName(row, to: newName, assignVoiceProfile: false)
+            } label: {
+                HStack {
+                    Text("Use \u{201C}\(newName)\u{201D}").font(.system(size: 12))
+                    Spacer()
+                    Text("text only")
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(model.mergeInFlight)
+            .padding(.horizontal, 6).padding(.vertical, 3)
+            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 5))
+        }
+        Button("Cancel") { model.namingVoice = nil; typed = "" }
+            .font(.system(size: 11)).buttonStyle(.plain).foregroundStyle(.secondary)
+    }
+}
+
+/// 0.5.357: the list when a display hint applies. Merged rows, then singles and the rows that sit where they did, then one fold.
+private struct VoiceDisplayList: View {
+    @ObservedObject var model: ControllerModel
+    let layout: VoiceDisplayLayout
+
+    var body: some View {
+        ForEach(Array(layout.rows.enumerated()), id: \.element.id) { index, row in
+            Group {
+                switch row {
+                case .merged(let merged):
+                    MergedVoiceRow(model: model, row: merged, seconds: layout.seconds)
+                case .voice(let voice):
+                    VoiceRow(model: model, voice: voice, hintSeconds: layout.seconds[voice.label])
+                }
+            }
+            .padding(.horizontal, 16)
+            if index < layout.rows.count - 1 { Divider() }
+        }
+        if !layout.short.isEmpty {
+            Divider()
+            DisclosureGroup(isExpanded: $model.voiceDisplayShortExpanded) {
+                ForEach(Array(layout.short.enumerated()), id: \.element.id) { index, voice in
+                    VoiceRow(model: model, voice: voice, hintSeconds: layout.seconds[voice.label])
+                    if index < layout.short.count - 1 { Divider() }
+                }
+            } label: {
+                Text(VoiceDisplayCopy.shortVoices(layout.short.count))
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .padding(.horizontal, 16).padding(.vertical, 10)
+        }
+    }
+}
+
+/// 0.5.357: Suggest names, on saved Mac calls a server can answer for. An older server's 404 hides all of this.
+private struct VoiceSuggestBar: View {
+    @ObservedObject var model: ControllerModel
+    let review: SpeakerReview
+
+    var body: some View {
+        if model.voiceSuggestions.showsButton(for: review) {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    Button("Suggest names") { model.startVoiceSuggestions() }
+                        .font(.system(size: 11))
+                        .controlSize(.small)
+                        .disabled(model.voiceSuggestions.isRunning || model.mergeInFlight)
+                    if model.voiceSuggestions.isRunning { ProgressView().controlSize(.mini) }
+                    Spacer()
+                }
+                if let line = model.voiceSuggestions.line(for: review) {
+                    Text(line)
+                        .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 9)
+            Divider()
+        }
+        VoiceBatchBar(model: model, review: review)
+    }
+}
+
+/// 0.5.357: name every high-confidence row in one click, inline. Nothing writes until Confirm, and the server does the whole batch.
+/// A server without the route shows none of this.
+private struct VoiceBatchBar: View {
+    @ObservedObject var model: ControllerModel
+    let review: SpeakerReview
+
+    var body: some View {
+        if model.voiceBatch.showsControls(for: review) {
+            let candidates = model.voiceBatchCandidates
+            let ticked = model.voiceBatch.ticked(candidates)
+            let undoable = model.voiceBatch.undoableBatch != nil
+            if !candidates.isEmpty || undoable || model.voiceBatch.result != nil || model.voiceBatch.undoResult != nil || model.voiceBatch.note != nil {
+                VStack(alignment: .leading, spacing: 7) {
+                    if model.voiceBatch.previewOpen, !candidates.isEmpty {
+                        Text(VoiceDisplayCopy.batchPreviewNote)
+                            .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        ForEach(candidates) { candidate in
+                            Toggle(isOn: Binding(
+                                get: { model.voiceBatch.isTicked(candidate) },
+                                set: { on in
+                                    if on { model.voiceBatch.unticked.remove(candidate.id) } else { model.voiceBatch.unticked.insert(candidate.id) }
+                                })) {
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(candidate.title).font(.system(size: 11, weight: .medium))
+                                        Text(candidate.name).font(.system(size: 11)).foregroundStyle(.secondary)
+                                    }
+                                    Spacer(minLength: 4)
+                                    Text(VoiceDisplayCopy.score(candidate.score))
+                                        .font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
+                                }
+                            }
+                            .toggleStyle(COSCheckStyle())
+                            .disabled(model.mergeInFlight)
+                        }
+                        HStack(spacing: 8) {
+                            Button(VoiceDisplayCopy.nameVoices(ticked.count)) { model.confirmVoiceBatch() }
+                                .buttonStyle(COSPrimaryButtonStyle())
+                                .disabled(ticked.isEmpty || model.mergeInFlight)
+                            Button("Cancel") { model.voiceBatch.previewOpen = false }
+                                .disabled(model.mergeInFlight)
+                            if model.mergeInFlight { ProgressView().controlSize(.mini) }
+                            Spacer()
+                        }
+                        .font(.system(size: 11))
+                    } else if !candidates.isEmpty {
+                        Button(VoiceDisplayCopy.nameVoices(candidates.count)) {
+                            model.voiceBatch.unticked = []
+                            model.voiceBatch.previewOpen = true
+                        }
+                        .font(.system(size: 11))
+                        .controlSize(.small)
+                        .disabled(model.mergeInFlight)
+                    }
+                    if let line = model.voiceBatch.result?.line ?? model.voiceBatch.undoResult?.line ?? model.voiceBatch.note {
+                        Text(line)
+                            .font(.system(size: 11))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if undoable {
+                        Button(VoiceDisplayCopy.undoNames) { model.undoVoiceBatch() }
+                            .font(.system(size: 11))
+                            .controlSize(.small)
+                            .disabled(model.mergeInFlight)
+                    }
+                }
+                .padding(.horizontal, 16).padding(.vertical, 9)
+                Divider()
+            }
+        }
+    }
+}
+
+/// 0.5.357: the one Save for a whole merged row. Inline, under the list, like the other naming cards.
+private struct VoiceGroupNameConfirmationView: View {
+    @ObservedObject var model: ControllerModel
+    let plan: PendingVoiceGroupName
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(plan.title).font(.system(size: 12, weight: .semibold))
+            Text("Saves each label in this meeting, one at a time. The grouping is a machine estimate, so check its words first.")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if plan.segments > 0 {
+                Text("\(plan.segments) segment(s)" + (plan.transcriptLines > 0 ? " · \(plan.transcriptLines) transcript line(s)" : ""))
+                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(.tertiary)
+            }
+            if plan.assignmentRequested {
+                if plan.labelsAddingSamples > 0 {
+                    note("\(plan.labelsAddingSamples) of \(plan.labels.count) labels add voice samples to \(plan.to)'s profile.")
+                }
+                if plan.labelsFlagged > 0 {
+                    note("\(plan.labelsFlagged) were flagged by the voice checks and stay text only. To add those anyway, name them on their own rows.")
+                }
+                if plan.corrections.contains(where: \.macAssignUnsupported) { note(MacVoiceAssignment.unsupported) }
+            } else {
+                note(MacVoiceCopy.typedNote)
+            }
+            HStack(spacing: 8) {
+                Button("Save") { model.confirmVoiceGroupName(plan) }
+                    .buttonStyle(COSPrimaryButtonStyle())
+                    .disabled(model.mergeInFlight)
+                Button("Cancel") { model.pendingVoiceGroupName = nil }
+                    .disabled(model.mergeInFlight)
+                Spacer()
+            }
+            .font(.system(size: 11))
+        }
+        .padding(14)
+        .background(COSPalette.card)
+    }
+
+    private func note(_ text: String) -> some View {
+        Text(text).font(.system(size: 10.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 /// Rows shown in the review card. The helper over-requests so this many
 /// actually render — asking the server for exactly this count returned fewer,
 /// because rows without a G2 sessionId are filtered out.
@@ -4961,7 +5320,9 @@ struct SpeakerReviewPane: View {
                                 Text(note).font(.system(size: 10.5, design: .monospaced)).foregroundStyle(COSPalette.amber)
                             }
                         } else if !review.intervalViewReadOnly && review.unnamedVoiceCount > 0 {
-                            Text(review.unnamedVoiceCount == 1
+                            Text(review.voiceDisplayLayout != nil
+                                 ? "\(review.unnamedVoiceCount) voice label\(review.unnamedVoiceCount == 1 ? " has" : "s have") no name yet"
+                                 : review.unnamedVoiceCount == 1
                                  ? "1 voice still needs a name"
                                  : "\(review.unnamedVoiceCount) voices still need names")
                                 .font(.system(size: 10.5, design: .monospaced))
@@ -5120,6 +5481,10 @@ struct SpeakerReviewPane: View {
                         }
 
                         Divider()
+                        VoiceSuggestBar(model: model, review: review)
+                        if let layout = review.voiceDisplayLayout {
+                            VoiceDisplayList(model: model, layout: layout)
+                        } else {
                         let displayRows = review.displayVoiceRows
                         ForEach(Array(displayRows.main.enumerated()), id: \.element.id) { index, voice in
                             VoiceRow(model: model, voice: voice)
@@ -5138,6 +5503,7 @@ struct SpeakerReviewPane: View {
                                     .font(.system(size: 12, weight: .semibold))
                             }
                             .padding(.horizontal, 16).padding(.vertical, 10)
+                        }
                         }
 
                         // The write-up, BELOW the voice rows. Measured with
@@ -5227,6 +5593,30 @@ struct SpeakerReviewPane: View {
             if let preview = model.pendingIntervalWordName {
                 Divider()
                 IntervalWordNameConfirmationView(model: model, preview: preview)
+            }
+
+            if let plan = model.pendingVoiceGroupName {
+                Divider()
+                VoiceGroupNameConfirmationView(model: model, plan: plan)
+            }
+            if let progress = model.voiceGroupNamingProgress {
+                Divider()
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.mini)
+                    Text(progress).font(.system(size: 11)).foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 14).padding(.vertical, 9)
+            }
+            if let outcome = model.voiceGroupNamingOutcome {
+                Divider()
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(outcome.line).font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+                    Button("Dismiss") { model.voiceGroupNamingOutcome = nil }.font(.system(size: 10))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+                .background(COSPalette.amber.opacity(0.14))
             }
             if model.openReview?.intervalHumanRecoveryRequired == true {
                 Divider()
