@@ -669,6 +669,8 @@ import Foundation
         for action in serverChanges { check(SA.gate(action, mac) == .held(SA.Held.recording), "[a Mac recording holds]", "\(action)") }
         var saving = base; saving.meetingWorkBlockingRestart = true
         for action in serverChanges { check(SA.gate(action, saving) == .held(SA.Held.saving), "[a meeting still saving holds]", "\(action)") }
+        var unanswered = saving; unanswered.meetingSyncUnconfirmed = true
+        for action in serverChanges { check(SA.gate(action, unanswered) == .held(SA.Held.unconfirmed), "[a server that does not answer holds in its own words]", "\(action)") }
 
         // The recording reason wins over the job count: it is the one the person can act on first.
         var both = recording; both.activeJobs = 2
@@ -1058,6 +1060,7 @@ import Foundation
         var h = g; h.helperBusy = true; fixtures.append(h)
         var i = g; i.activeTranscriptionSessions = 1; fixtures.append(i)
         var j = g; j.meetingWorkBlockingRestart = true; fixtures.append(j)
+        j.meetingSyncUnconfirmed = true; fixtures.append(j)
         var k = g; k.activeJobs = 1; fixtures.append(k)
         var l = healthy(); l.runtimeState = "managedInPlace"; l.safeToRestart = false; l.appUpdate.available = true; l.appUpdate.installing = true
         fixtures.append(l)
@@ -1073,7 +1076,7 @@ import Foundation
                 if case .held(let reason) = SA.gate(action, s) { texts.append(reason); heldSeen.insert(reason) }
             }
         }
-        let everyHeld = [SA.Held.busy, SA.Held.ownerConflict, SA.Held.recording, SA.Held.saving, SA.Held.interruptedUpdate,
+        let everyHeld = [SA.Held.busy, SA.Held.ownerConflict, SA.Held.recording, SA.Held.saving, SA.Held.unconfirmed, SA.Held.interruptedUpdate,
                          SA.Held.unprovenIdle, SA.Held.installing, SA.Held.jobs(1)]
         check(Set(everyHeld).isSubset(of: heldSeen), "[copy rules]", "the scan reads every held line: missing \(Set(everyHeld).subtracting(heldSeen))")
         texts += everyHeld + [SA.Held.jobs(3)]

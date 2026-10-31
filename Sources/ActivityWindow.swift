@@ -9386,6 +9386,7 @@ extension ActivityWindow {
         s.activeJobs = status.activeJobs ?? 0
         s.activeTranscriptionSessions = status.activeTranscriptionSessions ?? 0
         s.meetingWorkBlockingRestart = status.meetingWorkBlockingRestart
+        s.meetingSyncUnconfirmed = status.meetingSyncUnconfirmed
         s.macRecordingActive = model.macRecordingActive
         s.whisperReady = status.whisperReady
         s.whisperCircuitOpen = status.whisperCircuitOpen

@@ -82,6 +82,8 @@ enum SetupAssistant {
         var activeJobs = 0
         var activeTranscriptionSessions = 0
         var meetingWorkBlockingRestart = false
+        /// A running server did not answer, so what holds Restart and Update is not known to be a save.
+        var meetingSyncUnconfirmed = false
         /// A Mac recording in COS Control (recordingCount > 0).
         var macRecordingActive = false
         var whisperReady = false
@@ -200,6 +202,7 @@ enum SetupAssistant {
         static let ownerConflict = "Another server owns the COS ports, so COS Control will not touch it."
         static let recording = "A meeting is recording. Save or end it first."
         static let saving = "A meeting is still saving. This comes back when it is done."
+        static let unconfirmed = "The server is not answering, so COS cannot tell whether a save is running. This comes back when it answers or stops."
         static let interruptedUpdate = "An interrupted server update needs Repair first."
         static let unprovenIdle = "This server cannot prove it is idle. Restart in Settings asks first."
         static let installing = "The update is already installing."
@@ -219,7 +222,7 @@ enum SetupAssistant {
             // Views.swift controls: Restart is disabled while activeJobs + activeTranscriptionSessions > 0, a transaction is
             // pending, or meetingWorkBlockingRestart; Update Server while meetingWorkBlockingRestart.
             if s.activeTranscriptionSessions > 0 || s.macRecordingActive { return .held(Held.recording) }
-            if s.meetingWorkBlockingRestart { return .held(Held.saving) }
+            if s.meetingWorkBlockingRestart { return .held(s.meetingSyncUnconfirmed ? Held.unconfirmed : Held.saving) }
             if s.activeJobs > 0 { return .held(Held.jobs(s.activeJobs)) }
         }
         switch action {
