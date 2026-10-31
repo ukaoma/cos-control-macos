@@ -41,7 +41,7 @@ import Foundation
         let window = CosCostRules.window(now: Date(), timeZone: .current)
         let codex = report.buckets.filter { window.contains($0.day) && $0.provider == "OpenAI" }
         let tokens = codex.reduce(Int64(0)) { $0 + $1.counts.total }, usd = codex.reduce(0.0) { $0 + $1.estimatedUSD }
-        FileHandle.standardError.write(Data(String(format: "usage after %d passes: %d pending, %d unreadable, Codex (OpenAI) %d tokens, $%.2f over %@...%@\n", pass, report.pendingFiles, report.unreadableFiles, tokens, usd, window.lowerBound, window.upperBound).utf8))
+        FileHandle.standardError.write(Data(String(format: "usage after %d passes: %d pending, %d unreadable, Codex (OpenAI) %lld tokens, $%.2f over %@...%@\n", pass, report.pendingFiles, report.unreadableFiles, tokens, usd, window.lowerBound, window.upperBound).utf8))
     }
     /// The rate card against what the command line itself reported, on every real gist row. inputTokens is all cache
     /// writes and reads together, and these runs write a one-hour cache, so that is what the card is asked to price.

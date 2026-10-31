@@ -5,10 +5,11 @@ SERIAL: one small three-file compile at a time through Tests/compile-guard.sh, o
 never mutated). A green baseline is required first; each mutant must land exactly once, must make the checks FAIL,
 and must fail on the check named for it. A failure on any other check is MISATTRIBUTED: the rule is not the thing
 its own test pins. A busy shared compile lock (exit 70) or a memory headroom refusal (75) waits and retries; it is
-never counted as a kill.
+never counted as a kill. COS_MUTATE_MINUTES stops starting mutants after that long, baseline included, and the summary
+counts what was not run.
 Usage: python3 Tests/mutate-session-usage.py <repo root> [regular expressions over mutant names, several with |, run in that order]
 """
-import pathlib, re, shutil, subprocess, sys, tempfile, time
+import os, pathlib, re, shutil, subprocess, sys, tempfile, time
 
 sys.stdout.reconfigure(line_buffering=True)  # progress reaches a log file as each mutant finishes
 root = pathlib.Path(sys.argv[1]).resolve()
@@ -690,7 +691,7 @@ MUTANTS += [
     ("cos: a key file joins the list", 'static let dataFiles = ["claude-runs.jsonl",', 'static let dataFiles = ["subq-key.json", "claude-runs.jsonl",', "no file on the helper's list is a key file"),
     ("cos: the door opens anything", "list.contains(name) && !name.lowercased().contains(\"key\")", "true", "the door refuses a key file"),
     ("cos: the door trusts the list about keys", "list.contains(name) && !name.lowercased().contains(\"key\")", "list.contains(name)", "a key file is refused even if someone lists it"),
-    ("cos: a slice reads another session's rows", 'guard row["sessionId"] as? String == target.id, let event', 'guard let event', "a slice keeps one fragment per message, adds subagents and leaves another session's rows out", COLLECTOR),
+    ("cos: a slice reads another session's rows", 'guard row["sessionId"] as? String == target.id else { return }\n', '', "a slice keeps one fragment per message, adds subagents and leaves another session's rows out", COLLECTOR),
     ("cos: a subagent log is missed", "found[target, default: []].append(agents.appendingPathComponent(agent))\n", "", "a slice keeps one fragment per message, adds subagents and leaves another session's rows out", COLLECTOR),
     ("cos: a pass ignores its time", "let deadline = Date().addingTimeInterval(seconds)\n        // Compressed", "let deadline = Date().addingTimeInterval(3600)\n        // Compressed", "no time budget reads nothing and says the sessions are still to read", COLLECTOR),
     ("cos: a pass ignores its per-file budget", "var budget = min(remaining, fileBytes)", "var budget = remaining", "a byte budget stops a pass part way through a log", COLLECTOR),
@@ -714,7 +715,7 @@ MUTANTS += [
     ("cos zst: a pass out of time starts the decoder anyway", "guard Date() < deadline else { open.insert(entry.item.target); continue }\n", "", "a pass with no time left starts no decoder", COLLECTOR),
     ("cos zst: a pass out of time forgets the log", "guard Date() < deadline else { open.insert(entry.item.target); continue }", "guard Date() < deadline else { continue }", "a pass with no time left leaves compressed logs still being read", COLLECTOR),
     ("cos zst: a hung decoder lives on", "let timeUp = DispatchWorkItem { kill(child, SIGKILL) }", "let timeUp = DispatchWorkItem { }", "a hung decoder is killed at the pass's deadline", COLLECTOR),
-    ("cos zst: a stuck log is tried forever", "if (saved.compressedStalls ?? 0) >= Self.compressedStallLimit { saved.compressedEnd = \"failed\" }\n                try store(saved)\n                if saved.compressedEnd == nil { open.insert(target) }", "try store(saved)\n                if saved.compressedEnd == nil { open.insert(target) }", "a compressed log that never moves stops being tried, and says so", COLLECTOR),
+    ("cos zst: a stuck log is tried forever", "if let stalls = saved.compressedStalls, stalls >= Self.compressedStallLimit { saved.compressedEnd = \"failed\" }\n", "", "a compressed log that never moves stops being tried, and says so", COLLECTOR),
     ("cos zst: one stall gives up", "saved.compressedStalls = saved.offset == start.offset && hadTheTime ? (saved.compressedStalls ?? 0) + 1 : nil", "saved.compressedStalls = saved.offset == start.offset && hadTheTime ? 3 : nil", "a stalled compressed log gets more than one try", COLLECTOR),
     # 0.5.359: what the denominator may lean on.
     ("cos: paused is read from the report", "guard tracking else { return .paused }\n", "", "paused comes from the switch, whatever the last report said"),
@@ -757,6 +758,8 @@ def compile_and_run(work):
     sys.exit("shared compile lock stayed busy for 30 minutes")
 
 
+limit_minutes = float(os.environ.get("COS_MUTATE_MINUTES", "0"))
+time_up = time.time() + limit_minutes * 60 if limit_minutes else None
 work = pathlib.Path(tempfile.mkdtemp(prefix="cos-usage-mutants-", dir="/private/tmp"))
 try:
     (work / "Sources").mkdir()
@@ -767,10 +770,12 @@ try:
     code, output = compile_and_run(work)
     if code != 0: sys.exit("baseline is not green:\n" + output[-2000:])
     print("GREEN BASELINE: unmutated usage checks pass")
-    survivors, misattributed = [], []
+    survivors, misattributed, not_run = [], [], []
     chosen = MUTANTS
     for mutant in chosen:
         name, old, new, label = mutant[:4]
+        if time_up and time.time() > time_up:
+            not_run.append(name); print(f"{'NOT RUN':24} {name}"); continue
         target = mutant[4] if len(mutant) > 4 else CORE
         original = originals[target]
         if original.count(old) != 1: sys.exit(f"mutant '{name}' targets {original.count(old)} sites")
@@ -785,9 +790,10 @@ try:
             name += f" (failed: {failed[0].split('Fatal error:', 1)[1].strip() if failed else 'no check label'})"
         print(f"{verdict:24} {name}")
         (work / target).write_text(original)
-    killed = len(chosen) - len(survivors) - len(misattributed)
-    print(f"SUMMARY: {killed} killed, {len(survivors)} survived, {len(misattributed)} misattributed of {len(chosen)} mutants")
+    killed = len(chosen) - len(survivors) - len(misattributed) - len(not_run)
+    print(f"SUMMARY: {killed} killed, {len(survivors)} survived, {len(misattributed)} misattributed, {len(not_run)} not run of {len(chosen)} mutants")
     if survivors or misattributed: sys.exit(f"survivors: {survivors}; misattributed: {misattributed}")
+    if not_run: sys.exit(f"not run, so not proven: {not_run}")
     print(f"PASS usage slicing mutation gate: {len(chosen)} mutants, all killed by their named checks, green baseline")
 finally:
     shutil.rmtree(work, ignore_errors=True)

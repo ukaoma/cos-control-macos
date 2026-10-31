@@ -1795,7 +1795,8 @@ struct CosCostView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onGeometryChange(for: Bool.self) { $0.size.width < 944 } action: { narrow = $0 }
-        .task { await store.keepFresh(usage: usage) }
+        // Starts over when tracking changes, from here or anywhere else, so a resume does not wait out the paused pace.
+        .task(id: usage.enabled) { await store.keepFresh(usage: usage) }
         .task { if usage.report == nil { await usage.refresh(importNew: usage.enabled) } }
     }
 
@@ -1839,11 +1840,8 @@ struct CosCostView: View {
                 HStack(spacing: 10) {
                     Text(note).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
                     if usageState == .paused {
-                        // The same way back as Usage's own bar, so both pages read at once.
-                        Button("Resume tracking") {
-                            usage.resume()
-                            Task { await store.refresh(importSessions: true) }
-                        }.buttonStyle(COSQuietButtonStyle()).fixedSize()
+                        // The same way back as Usage's own bar. keepFresh hears it and reads COS cost at once too.
+                        Button("Resume tracking") { usage.resume() }.buttonStyle(COSQuietButtonStyle()).fixedSize()
                     } else if usageState == .unavailable {
                         Button("Read Usage") { Task { await usage.refresh(importNew: usage.enabled) } }.buttonStyle(COSQuietButtonStyle()).fixedSize()
                     }

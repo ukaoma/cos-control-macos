@@ -1008,7 +1008,7 @@ extension SessionUsageCollector {
                 // most of a pass to itself stops being tried, so it cannot hold the page in a hurry forever.
                 try Self.execute(db, "ROLLBACK")
                 saved.compressedStalls = saved.offset == start.offset && hadTheTime ? (saved.compressedStalls ?? 0) + 1 : nil
-                if (saved.compressedStalls ?? 0) >= Self.compressedStallLimit { saved.compressedEnd = "failed" }
+                if let stalls = saved.compressedStalls, stalls >= Self.compressedStallLimit { saved.compressedEnd = "failed" }
                 try store(saved)
                 if saved.compressedEnd == nil { open.insert(target) } else { progress.compressed += 1 }
             }
