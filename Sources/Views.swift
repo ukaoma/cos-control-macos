@@ -4951,7 +4951,7 @@ private struct MergedVoiceRow: View {
             Button {
                 if expanded { model.voiceDisplayExpandedRows.remove(row.id) } else { model.voiceDisplayExpandedRows.insert(row.id) }
             } label: {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                HStack(alignment: .center, spacing: 8) {
                     Image(systemName: expanded ? "chevron.down" : "chevron.right")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
