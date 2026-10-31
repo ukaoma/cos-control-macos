@@ -1883,14 +1883,14 @@ struct CosCostView: View {
                     }
                 }
             }
+            if let wider = P.workWider(report) {
+                Text(wider).font(COSType.body(13, weight: .medium)).monospacedDigit().fixedSize(horizontal: false, vertical: true)
+            }
             if report.work.handoffsFound && report.work.runs > 0 {
                 Text(P.workMethod).font(COSType.body(12.5)).foregroundStyle(COSPalette.subtle).fixedSize(horizontal: false, vertical: true)
             }
             if let background = P.workBackground(report) {
                 Text(background).font(COSType.body(12.5)).foregroundStyle(COSPalette.subtle).monospacedDigit()
-            }
-            if let wider = P.workWider(report) {
-                Text(wider).font(COSType.body(13, weight: .medium)).monospacedDigit().fixedSize(horizontal: false, vertical: true)
             }
             if let unproven = P.workUnproven(report.work) {
                 Text(unproven).font(COSType.body(12.5)).foregroundStyle(COSPalette.subtle).monospacedDigit().fixedSize(horizontal: false, vertical: true)
