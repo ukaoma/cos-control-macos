@@ -1397,6 +1397,8 @@ struct CosRun: Equatable, Sendable {
 }
 
 struct CosSliceEvent: Equatable, Sendable {
+    /// The message itself. A resume or fork can copy a message into a second session, and it still happened once.
+    var id = ""
     var session: String
     var at: Double
     var provider: String
@@ -1461,10 +1463,20 @@ struct CosCostAccumulator {
             runIndexByID[run.runID] = index
             if !run.session.isEmpty { runsBySession[run.session, default: []].append(index) }
         }
-        for event in events where window.contains(CosCostRules.dayKey(epoch: event.at, timeZone: timeZone)) {
+        // A message copied into a second session counts once, and which session was read first must not decide where.
+        // Work goes first because it owns a session from the run's start, then events in file-independent order.
+        func workOwns(_ event: CosSliceEvent) -> Bool { workStarts[event.session].map { event.at >= $0 - Self.runLeadSeconds } ?? false }
+        let ordered = events.filter { window.contains(CosCostRules.dayKey(epoch: $0.at, timeZone: timeZone)) }.sorted {
+            let a = workOwns($0), b = workOwns($1)
+            if a != b { return a }
+            return $0.session == $1.session ? $0.at < $1.at : $0.session < $1.session
+        }
+        var counted = Set<String>()
+        for event in ordered {
             let usd = CosCostRates.usd(provider: event.provider, model: event.model, counts: event.counts, oneHour: event.oneHour)
             let extra = SessionUsagePricing.estimate(provider: event.provider, model: event.model, counts: event.counts, oneHour: event.oneHour) == nil ? usd ?? 0 : 0
             if let start = workStarts[event.session], event.at >= start - Self.runLeadSeconds {
+                if !event.id.isEmpty && !counted.insert(event.id).inserted { continue }
                 work.measuredUSD += usd ?? 0
                 work.measuredTokens += event.counts.total
                 work.addsToTotalUSD += extra
@@ -1475,6 +1487,7 @@ struct CosCostAccumulator {
             guard let index = runsBySession[event.session]?.first(where: {
                 event.at >= self.runs[$0].start - Self.runLeadSeconds && event.at <= self.runs[$0].end + Self.runTailSeconds
             }) else { continue }
+            if !event.id.isEmpty && !counted.insert(event.id).inserted { continue }
             runHasEvents[index] = true
             runUSD[index] += usd ?? 0
             runAdds[index] += extra

@@ -891,6 +891,16 @@ extension Checks {
         finished = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
         check(abs(finished.work.measuredUSD - 0.2) < 1e-9 && abs(finished.work.addsToTotalUSD - 0.2) < 1e-9, "a slice priced only by a new rate adds to the total, because Usage has no price for it")
         check(finished.work.unpricedEvents == 1, "a slice with no rate is counted as unpriced")
+        // A message copied into a second session happened once, whichever session is read first.
+        var copyA = event("2026-10-30T12:00:30Z", session: "claude:s1"); copyA.id = "same-message"
+        var copyB = event("2026-10-30T12:00:30Z", session: "claude:s2"); copyB.id = "same-message"
+        a = make(runs: [run("r1"), run("r2", session: "claude:s2")], events: [copyA, copyB]); rows = finish(&a)
+        let firstOrder = rows[.answers]?.measuredTokens
+        a = make(runs: [run("r1"), run("r2", session: "claude:s2")], events: [copyB, copyA]); rows = finish(&a)
+        check(firstOrder == 1000 && rows[.answers]?.measuredTokens == 1000, "a message copied into a second session counts once in either order")
+        a = make(runs: [run("r2", session: "claude:s2")], work: ["claude:s1": R.epoch("2026-10-30T12:00:00Z")!], events: [copyB, copyA])
+        finished = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
+        check(finished.work.measuredTokens == 1000 && !finished.rows.contains { $0.category == .answers }, "a copied message goes to Work over a G2 run")
         // Day ledgers add tokens and dollars, never calls.
         a = make()
         a.addDailyTokens(1_000_000, category: .liveAndUpkeep, priced: true, day: "2026-10-30")

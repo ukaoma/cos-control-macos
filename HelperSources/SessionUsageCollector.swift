@@ -503,7 +503,7 @@ extension SessionUsageCollector {
     }
 
     private func cosPrepareTables() throws {
-        try Self.execute(db, "CREATE TABLE IF NOT EXISTS cos_slice_files(path TEXT PRIMARY KEY, session TEXT NOT NULL, size INTEGER NOT NULL, modified REAL NOT NULL, state TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cos_slice_events(id TEXT PRIMARY KEY, session TEXT NOT NULL, at REAL NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL, output INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL, one_hour INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS cos_slice_at ON cos_slice_events(at);")
+        try Self.execute(db, "CREATE TABLE IF NOT EXISTS cos_slice_files(path TEXT PRIMARY KEY, session TEXT NOT NULL, size INTEGER NOT NULL, modified REAL NOT NULL, state TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cos_slice_events(id TEXT PRIMARY KEY, event TEXT NOT NULL, session TEXT NOT NULL, at REAL NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL, output INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL, one_hour INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS cos_slice_at ON cos_slice_events(at);")
     }
 
     /// Lines of an append-only file, without holding it. Returns the count of lines that were not valid JSON objects. A
@@ -595,10 +595,10 @@ extension SessionUsageCollector {
         guard event.counts.total > 0, let at = CosCostRules.epoch(event.timestamp), at >= retainFrom else { return }
         let c = event.counts
         try run("""
-            INSERT INTO cos_slice_events VALUES(?,?,CAST(? AS REAL),?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+            INSERT INTO cos_slice_events VALUES(?,?,?,CAST(? AS REAL),?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
             input=excluded.input, output=excluded.output, cache_read=excluded.cache_read, cache_write=excluded.cache_write, one_hour=excluded.one_hour
             WHERE excluded.input+excluded.output+excluded.cache_read+excluded.cache_write > cos_slice_events.input+cos_slice_events.output+cos_slice_events.cache_read+cos_slice_events.cache_write
-            """, [event.id, sessionKey, String(at), event.provider, event.model, String(c.input), String(c.output), String(c.cacheRead), String(c.cacheWrite), String(oneHour)])
+            """, [Self.digest(sessionKey + "|" + event.id), event.id, sessionKey, String(at), event.provider, event.model, String(c.input), String(c.output), String(c.cacheRead), String(c.cacheWrite), String(oneHour)])
     }
 
     /// One usage row out of a session log. Only rows whose own session id matches count: a fork or a resume copies its
@@ -790,9 +790,9 @@ extension SessionUsageCollector {
         let lowerEpoch = (CosCostRules.epoch(window.lowerBound + "T00:00:00Z") ?? 0) - 86_400
         let keyed = Dictionary(targets.map { (Self.digest($0.provider + ":" + $0.id), $0) }, uniquingKeysWith: { a, _ in a })
         var events: [CosSliceEvent] = []
-        for row in try query("SELECT session,at,provider,model,input,output,cache_read,cache_write,one_hour FROM cos_slice_events WHERE at >= CAST(? AS REAL)", [String(lowerEpoch)]) {
+        for row in try query("SELECT session,at,provider,model,input,output,cache_read,cache_write,one_hour,event FROM cos_slice_events WHERE at >= CAST(? AS REAL)", [String(lowerEpoch)]) {
             guard let target = keyed[row[0]] else { continue }
-            events.append(CosSliceEvent(session: target.provider + ":" + target.id, at: Double(row[1]) ?? 0, provider: row[2], model: row[3],
+            events.append(CosSliceEvent(id: row[9], session: target.provider + ":" + target.id, at: Double(row[1]) ?? 0, provider: row[2], model: row[3],
                 counts: SessionUsageCounts(input: Int64(row[4]) ?? 0, output: Int64(row[5]) ?? 0, cacheRead: Int64(row[6]) ?? 0, cacheWrite: Int64(row[7]) ?? 0), oneHour: Int64(row[8]) ?? 0))
         }
 

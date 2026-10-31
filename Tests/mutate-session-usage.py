@@ -333,6 +333,8 @@ MUTANTS += [
     ("cos: a real row in a Work slice counts twice", "if category == .work && workSliceHolds(sessionID: row.sessionID, at: at) { return }\n", "", "a real row inside a Work session's slice is not counted twice"),
     ("cos: a dispatch with no log is lost", "if workSessionsWithEvents.contains(runs[match.index].session) { return }\n                category = .work", "return", "a dispatch has no log, so its real row and late result are what Work has"),
     ("cos: Work counts the whole session", "if let start = workStarts[event.session], event.at >= start - Self.runLeadSeconds {", "if workStarts[event.session] != nil {", "Work counts only from the moment the run started"),
+    ("cos: a copied message counts in each session", "if !event.id.isEmpty && !counted.insert(event.id).inserted { continue }\n            runHasEvents[index] = true", "runHasEvents[index] = true", "a message copied into a second session counts once in either order"),
+    ("cos: reading order decides a copied message", "if a != b { return a }\n", "", "a copied message goes to Work over a G2 run"),
     ("cos: a turn outside a run counts", "event.at >= self.runs[$0].start - Self.runLeadSeconds && event.at <= self.runs[$0].end + Self.runTailSeconds", "event.at > 0", "a turn outside any run in the same session is not COS's"),
     ("cos: a new-rate slice does not add", "== nil ? usd ?? 0 : 0\n", "== nil ? 0 : 0\n", "a slice priced only by a new rate adds to the total, because Usage has no price for it"),
     ("cos: Cursor spend always adds", "(cursorFeedOn ? 0 : $1.addsUnlessCursorFeedUSD)", "$1.addsUnlessCursorFeedUSD", "with the feed on, Usage already holds Cursor spend"),
