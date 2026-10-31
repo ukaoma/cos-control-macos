@@ -34,7 +34,7 @@ Words and files:
 Not verified:
 
 - The ⌘K and Today changes are proven on fixtures, the compiled engine checks and source pins, not by use on a live Mac. The view's `perform` and the draft rules are held by pins and by the engine's `draftAfterRun`, because the panel's own state cannot be reached from a test.
-- The full suite, signing and install receipts are separate from these notes.
+- No full app compile was run for these fixes. `ActivityWindow.swift`, `SessionUsageView.swift`, `Models.swift` and `SetupAssistant.swift` each type-check as the primary file against the other sources, and the engine, Today and Usage lanes compile and pass. The full suite, signing and install receipts are separate from these notes.
 
 ## 0.5.359 (build 413), ⌘K command center, COS cost, compressed Codex logs, Update Server only moves forward
 

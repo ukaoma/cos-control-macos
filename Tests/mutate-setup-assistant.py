@@ -294,7 +294,7 @@ MUTANTS = [
     # 0.5.360: Return goes to the command or the session the words point at, and a row that ran leaves nothing armed
     ("center: Return skips the command row", C, "            if let top = listing.rows.first, case .command = top.kind, top.selectable { return .move(top.id) }\n", "", "[Return moves to the command row]"),
     ("center: Return skips Stop", C, "case .command = top.kind, top.selectable {", "case .command(let command) = top.kind, command != .stopRecording, top.selectable {", "[Return moves to Stop, not to a Work run]"),
-    ("center: Return skips Doctor", C, "case .command = top.kind, top.selectable {", "case .command(let command) = top.kind, command != .runDoctor, top.selectable {", "[Return moves to Doctor, not to a Work run]"),
+    ("center: Return skips Doctor", C, "case .command = top.kind, top.selectable {", "case .command(let command) = top.kind, command != .runDoctor, top.selectable {", "[Return moves to the command row]"),
     ("center: Return moves to a held command", C, "case .command = top.kind, top.selectable {", "case .command = top.kind {", "[a held command moves to Ask]"),
     ("center: a session row comes before the command row", C, "case .command = top.kind, top.selectable {", "case .command = top.kind, top.selectable, !listing.rows.contains(where: { $0.group == .sessions }) {", "[a command row comes before a session row]"),
     ("center: a session match starts a run", C, "            if let session = listing.rows.first(where: { $0.group == .sessions && $0.selectable }) { return .move(session.id) }\n", "", "[a session match moves to the session]"),
