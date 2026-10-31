@@ -1359,6 +1359,7 @@ PY
 # Activity Today home (plan v2, opt-in): the shared predicates and the plan's five pin tests against fixture rows
 # (Tests/run-activity-today.sh), then the wiring pins. Hand-run: Tests/mutate-activity-today.py (the mutation lane) and
 # Tests/run-activity-today-render.sh (PNGs against activity-canvas).
+# Tests/run-command-center-render.sh (the ⌘K panel: PNGs of every state, by hand, never a gate).
 "$ROOT/Tests/run-activity-today.sh"
 /usr/bin/python3 "$ROOT/Tests/activity-today-pins.py" "$ROOT"
 # Settings hub (Miles, 2026-10-27, the A treatment with B's On this page rail): the catalog's rules (every inventory row

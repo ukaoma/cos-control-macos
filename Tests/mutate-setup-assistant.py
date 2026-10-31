@@ -16,6 +16,7 @@ import mutate_bounded as bounded
 
 LIMIT = 900
 C = "Sources/SetupAssistant.swift"
+W = "Sources/ActivityWindow.swift"
 R = "scripts/build-release.sh"
 S = "Tests/run.sh"
 MUTANTS = [
@@ -129,7 +130,7 @@ MUTANTS = [
     ("confirm: the cap misquoted", C, "    static let dailyRuns = 20\n", "    static let dailyRuns = 25\n", "dailyRuns equals"),
     # Troubleshoot
     ("troubleshoot: no gate", C, "        guard gate(.troubleshoot, s) == .ready else { return nil }\n", "", "[troubleshoot needs the server]"),
-    ("troubleshoot: no ask-first rule", C, "        - Ask before you run anything that changes this Mac: installs, restarts, deleting files, System Settings.\n", "", "[troubleshoot asks first]"),
+    ("troubleshoot: no ask-first rule", C, "    - Ask before you run anything that changes this Mac: installs, restarts, deleting files, System Settings.\n", "", "[troubleshoot asks first]"),
     ("troubleshoot: the packet not redacted", C, "report.map { scrubbed(String($0.prefix(maxPacket))) }", "report.map { String($0.prefix(maxPacket)) }", "[troubleshoot redacts]"),
     ("troubleshoot: the packet unbounded", C, "report.map { scrubbed(String($0.prefix(maxPacket))) }", "report.map { scrubbed($0) }", "[troubleshoot is bounded]"),
     ("troubleshoot: the question unbounded", C, "        let words = String(question.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxQuestion))\n",
@@ -138,6 +139,133 @@ MUTANTS = [
     # Copy
     ("copy: an em dash in a held line", C, '"A meeting is still saving. This comes back when it is done."', '"A meeting is still saving \u2014 this comes back when it is done."', "[copy rules]"),
     ("copy: a hedge word in an answer", C, '"Repair Whisper restarts the COS server and local Whisper together,', '"Repair Whisper might restart the COS server and local Whisper together,', "[copy rules]"),
+    # The command center: auto-highlight
+    ("center: Stop highlights itself", C, "                case .stopRecording, .runDoctor: return false\n", "                case .runDoctor: return false\n", "[auto-highlight never Stop]"),
+    ("center: Doctor highlights itself", C, "                case .stopRecording, .runDoctor: return false\n", "                case .stopRecording: return false\n", "[auto-highlight never Doctor]"),
+    ("center: part of a phrase highlights", C, "if rank == 0, command.autoHighlights, row.selectable, result.autoHighlight == nil", "if command.autoHighlights, row.selectable, result.autoHighlight == nil",
+     "[longer text never auto-highlights]"),
+    ("center: a held row highlights", C, "if rank == 0, command.autoHighlights, row.selectable, result.autoHighlight == nil", "if rank == 0, command.autoHighlights, result.autoHighlight == nil",
+     "[a held row never highlights]"),
+    ("center: an exact command still shows the answer", C, "            let saved = result.autoHighlight == nil ? answer(words, s) : nil\n", "            let saved = answer(words, s)\n", "[an exact command skips the answer]"),
+    # The command center: Return
+    ("center: a saved answer starts a run", C, "            let cautious = listing.hasAnswer || listing.nearCommand\n", "            let cautious = listing.nearCommand\n", "[a saved answer moves to Ask]"),
+    ("center: a near-command starts a run", C, "            let cautious = listing.hasAnswer || listing.nearCommand\n", "            let cautious = listing.hasAnswer\n", "[a near-command moves to Ask]"),
+    ("center: a short text starts a run", C, "if askable != nil, !cautious, longEnough { return .startRun }", "if askable != nil, !cautious { return .startRun }", "[under three words moves to Ask]"),
+    ("center: Option-Return stops filing", C, "            if option { return listing.words.isEmpty ? .nothing : .file }\n", "", "[Option-Return always files]"),
+    ("center: Option-Return files nothing", C, "            if option { return listing.words.isEmpty ? .nothing : .file }\n", "            if option { return .file }\n", "[Option-Return with no words]"),
+    ("center: Return ignores the highlight", C, "            if let id = effective(chosen, listing) { return .activate(id) }\n", "", "[Return runs the highlight]"),
+    ("center: Return ignores the confirm", C, "            if confirming { return .confirm }\n", "", "[Return confirms]"),
+    ("center: Return accepts the notice", C, "            if noticeShowing { return .nothing }\n", "", "[Return never accepts the notice]"),
+    ("center: Start Work off stops filing", C, "            if !s.workRunsOn, !cautious { return .file }\n", "", "[Start Work off files]"),
+    ("center: Return runs a held Ask", C, "            let askable = listing.rows.first { $0.kind == .ask && $0.selectable }\n", "            let askable = listing.rows.first { $0.kind == .ask }\n", "[Start Work off: an answer moves to File]"),
+    ("center: a stale highlight still runs", C, "            if let chosen, listing.rows.contains(where: { $0.id == chosen && $0.selectable }) { return chosen }\n", "            if let chosen { return chosen }\n",
+     "[a stale highlight is none]"),
+    ("center: near-command at any length", C, "            if parts.count <= 4, parts.contains(where: commandWords.contains) { return true }\n", "            if parts.contains(where: commandWords.contains) { return true }\n", "[a long sentence is a run]"),
+    ("center: a phrase in a sentence is no near-command", C, "            return Command.allCases.contains { $0.phrases.contains { $0.contains(\" \") && padded.contains(\" \" + plain($0) + \" \") } }\n", "            return false\n",
+     "[a near-command moves to Ask]"),
+    ("center: the hint lies", C, '"Return moves to \\(name). Return again runs it."', '"Return runs it."', "[the hint says what Return does]"),
+    # The command center: keys
+    ("center: Down wraps", C, "            return next < 0 ? nil : ids[min(next, ids.count - 1)]\n", "            return ids[(next + ids.count) % ids.count]\n", "[Up from the first clears]"),
+    ("center: Esc closes at once", C, "            return hasWords ? .clearWords : .close\n", "            return .close\n", "[Esc clears, then closes]"),
+    ("center: Esc leaves a confirm open", C, "            if confirming { return .cancelConfirm }\n", "", "[Esc order]"),
+    ("center: keys stop on words", C, "                case .savedAnswer, .info: return false\n                default: return held == nil\n", "                default: return held == nil\n", "[keys skip words]"),
+    ("center: keys stop on a held row", C, "                case .savedAnswer, .info: return false\n                default: return held == nil\n", "                case .savedAnswer, .info: return false\n                default: return true\n",
+     "[a held row never highlights]"),
+    # The command center: the list
+    ("center: waiting caps at four", C, "        static let waitingCap = 3\n", "        static let waitingCap = 4\n", "[waiting caps at three]"),
+    ("center: running caps at four", C, "        static let runningCap = 3\n", "        static let runningCap = 4\n", "[running caps at three]"),
+    ("center: fix caps at three", C, "        static let fixCap = 2\n", "        static let fixCap = 3\n", "[fix caps at two]"),
+    ("center: waiting not by tier", C, "            items.enumerated().sorted { ($0.element.tier, $0.offset) < ($1.element.tier, $1.offset) }.map(\\.element)\n", "            items\n", "[tier 1 first]"),
+    ("center: not loaded says nothing waits", C, 'rows.append(inputs.waitingKnown ? info("no-waiting"', 'rows.append(true ? info("no-waiting"', "[overview not loaded]"),
+    ("center: running not loaded says nothing runs", C, 'rows.append(inputs.runningKnown ? info("no-running"', 'rows.append(true ? info("no-running"', "[overview not loaded]"),
+    ("center: sessions off ignored", C, "                if inputs.sessionsOff {\n", "                if false {\n", "[sessions off]"),
+    ("center: sessions off says nothing waits", C, 'inputs.sessionsOff ? "Nothing else is waiting on you." : "Nothing is waiting on you."', '"Nothing is waiting on you."', "[sessions off never says nothing waits]"),
+    ("center: extras listed as fixes", C, "board(s).suggestions.filter({ $0.tier == .repair }).prefix(fixCap)", "board(s).suggestions.prefix(fixCap)", "[fix only when broken]"),
+    ("center: two fixes share an id", C, 'fixes.append(Row(id: "fix:" + suggestion.id, kind: .action(action),', 'fixes.append(Row(id: "action:" + action.rawValue, kind: .action(action),', "[server down]"),
+    ("center: the server fix comes last", C, "            return s.serverReachable ? rows + fixes : fixes + rows\n", "            return rows + fixes\n", "[server down lists the fix first]"),
+    ("center: Doctor listed twice", C, "if !fixes.contains(where: { $0.kind == .action(.runDoctor) }), let doctor", "if let doctor", "[Doctor listed once]"),
+    ("center: the started run is not first", C, "            let running = startedFirst(inputs.running, inputs.startedRunID)\n", "            let running = inputs.running\n", "[a row opens the started run]"),
+    ("center: a miss says nothing", C, '                rows.append(info("no-answer", .answer, "No saved answer for this."))\n', "                _ = ranked\n", "[a miss says so]"),
+    ("center: a saved answer is not labelled", C, 'detail: saved.text, state: "Saved answer"))', "detail: saved.text))", "[saved answers are labelled]"),
+    ("center: an offer says only Start", C, "group: .answer, title: rowTitle(offer.action), held: offer.held))", "group: .answer, title: offer.title, held: offer.held))", "[a row says what it starts]"),
+    ("center: Ask listed before the answer", C, '            rows.append(Row(id: "file", kind: .file, group: .asking, title: "File to Work", detail: "Saves your words to the Work inbox. No run.", trailing: "Option-Return"))\n', "", "[ask and file are last]"),
+    ("center: troubleshoot offered with the gate shut", C, "            if gate(.troubleshoot, s) == .ready, !rows.contains(where: { $0.kind == .action(.troubleshoot) }) {\n", "            if !rows.contains(where: { $0.kind == .action(.troubleshoot) }) {\n", "[Start Work off]"),
+    ("center: Ask never holds for Start Work off", C, '            if !s.workRunsOn { return "Work runs from Today is off in Settings." }\n', "", "[Start Work off]"),
+    ("center: Ask never holds for the server", C, '            return s.serverReachable ? nil : "Asking needs the COS server."\n', "            return nil\n", "[server down]"),
+    # The command center: recording
+    ("center: Stop keys on any recording", C, "                guard r.stoppable else { return nil }\n", "                guard r.stoppable || r.glassesLive > 0 else { return nil }\n", "[Stop never keys on a G2 recording]"),
+    ("center: Start stays while recording", C, "                if r.stoppable { return nil }\n", "", "[Stop while recording]"),
+    ("center: a glasses meeting is captured twice", C, "            if r.busy {\n", "            if r.busy, r.glassesLive == 0 {\n", "[G2 recording holds Start]"),
+    ("center: an old Mac is not told", C, "            if !r.osSupported { return RecordingHeld.os }\n", "", "[macOS under 14.2]"),
+    ("center: two starts at once", C, "            if r.inFlight { return RecordingHeld.starting }\n", "", "[a held row never highlights]"),
+    ("center: server down still offers Start", C, "            return s.serverReachable ? nil : RecordingHeld.server\n", "            return nil\n", "[server down holds Start]"),
+    ("center: saving says nothing", C, 'if r.occupied && !r.stoppable, let line = r.saveLine { rows.append(info("saving", .doing, line, state: "Saving")) }', "if false, let line = r.saveLine { _ = line }", "[saving shows a line]"),
+    # The command center: session titles
+    ("center: a title keeps its newline", C, "                if CharacterSet.whitespacesAndNewlines.contains(scalar) {\n", '                if scalar == " " {\n', "[titles are one line]"),
+    ("center: a title keeps its direction marks", C, "                } else if CharacterSet.controlCharacters.contains(scalar) || CharacterSet.illegalCharacters.contains(scalar) {\n", "                } else if false {\n", "[titles lose bidi and control]"),
+    ("center: a title is unbounded", C, "            return String(String(out).trimmingCharacters(in: .whitespaces).prefix(titleCap))\n", "            return String(out).trimmingCharacters(in: .whitespaces)\n", "[titles are bounded]"),
+    ("center: a waiting title is not cleaned", C, 'Row(id: "waiting:" + item.id, kind: .waiting(item.id), group: .waiting, title: clean(item.title),', 'Row(id: "waiting:" + item.id, kind: .waiting(item.id), group: .waiting, title: item.title,',
+     "[titles are cleaned on the row]"),
+    ("center: a title match highlights itself", C, "                sessions.append(row)\n", "                sessions.append(row); result.autoHighlight = result.autoHighlight ?? row.id\n", "[a title never takes the command's place]"),
+    ("center: a session lists twice", C, "                if let session = item.sessionID { guard seen.insert(session).inserted else { return } }\n", "", "[a session lists once]"),
+    ("center: the search is uncapped", C, "                guard sessions.count < sessionCap, typed.count >= 2,", "                guard typed.count >= 2,", "[the search is capped]"),
+    # The command center: confirms
+    ("center: Doctor runs at once", C, "            case .command(.runDoctor), .action(.runDoctor): return doctorConfirm\n", "", "[Doctor always confirms]"),
+    ("center: Stop runs at once", C, "            case .command(.stopRecording): return stopConfirm\n", "", "[the hint says what Return does]"),
+    ("center: the report spends a question unasked", C, "            case .action(.copyReport): return reportConfirm\n", "", "[the report spends the same question]"),
+    ("center: a change runs at once", C, "            case .action(let action): return SetupAssistant.confirmation(action, s)\n", "", "[every change confirms]"),
+    ("center: the confirm skips the gate", C, '                case .held(let reason): return reason\n                case .notApplicable: return "This does not apply any more."\n', "                case .held, .notApplicable: return nil\n", "[confirm re-checks the gate]"),
+    ("center: Doctor's confirm skips the gate", C, "                if case .held(let reason) = gate(.runDoctor, s) { return reason }\n                return nil\n", "                return nil\n", "[confirm re-checks Doctor]"),
+    ("center: Stop skips its check", C, '                return r.stoppable ? nil : "Nothing is recording on this Mac now."\n', "                return nil\n", "[Stop re-checks]"),
+    # The command center: Ask COS and the result line
+    ("center: Ask without its gate", C, "            guard askHeld(s) == nil else { return nil }\n", "", "[Ask needs Work runs]"),
+    ("center: Ask without its words", C, "            guard !words.isEmpty else { return nil }\n", "", "[Ask needs words]"),
+    ("center: Ask drops the saved answer", C, "            \\(saved)\n\n", "", "[Ask carries the saved answer]"),
+    ("center: Ask drops the rules", C, "            \\(runRules)\n            - If you cannot tell", "            - If you cannot tell", "[Ask carries the rules]"),
+    ("center: Ask drops the snapshot", C, '            \\(seen(s).map { "- " + $0 }.joined(separator: "\\n"))\n            """\n            return Troubleshoot(target: "today:ask:"', '            """\n            return Troubleshoot(target: "today:ask:"', "[Ask carries a short snapshot]"),
+    ("center: Ask outside the in-flight check", C, 'return Troubleshoot(target: "today:ask:" + id,', 'return Troubleshoot(target: "ask:" + id,', "[Ask stays under Today's in-flight check]"),
+    ("center: Ask spends Doctor", C, '            What COS Control sees now:\n            \\(seen(s)', '            Doctor packet: none.\n            What COS Control sees now:\n            \\(seen(s)', "[Ask spends no Doctor]"),
+    ("center: a failure hides", C, "            if let line = text(r.error) ?? text(r.recordingError) { return ResultLine(text: line, tone: .problem) }\n", "", "[a failure comes first]"),
+    ("center: old news beats a run", C, '            if let line = text(r.helperProgress) { return ResultLine(text: line, tone: .progress) }\n', "", "[what runs now comes next]"),
+    # Saved answers beat parakeet-install on their own words
+    ("knowledge: set up parakeet loses to will not install", C, 'phrases: ["set up parakeet", "setup parakeet", "parakeet setup", "install parakeet",', 'phrases: ["setup parakeet",', "[knowledge base: parakeet-setup]"),
+    ("knowledge: a failure reads as setup", C, '              phrases: ["cant install parakeet", "wont install parakeet", "cant download parakeet", "parakeet install failed", "parakeet setup failed"],\n', "", "[knowledge base: parakeet-install]"),
+    ("knowledge: start recording misses", C, 'phrases: ["start recording", "start a recording", "stop recording",', 'phrases: ["start a recording", "stop recording",', "[knowledge base: mac-recording]"),
+    ("knowledge: a transcript that never finished misses", C, 'phrases: ["transcript never finished", "transcript never finishes",', 'phrases: ["transcript never finishes",', "[knowledge base: transcript-unfinished]"),
+    ("knowledge: how to use dictation misses", C, 'phrases: ["how do i use dictation", "how does dictation work",', 'phrases: ["how does dictation work",', "[knowledge base: dictation-use]"),
+    ("knowledge: rename a voice misses", C, 'phrases: ["rename a voice", "rename voice",', 'phrases: ["rename voice",', "[knowledge base: voice-rename]"),
+    ("knowledge: speaker names wrong misses", C, '"speaker names wrong", "speaker name wrong",', '"speaker name wrong",', "[knowledge base: voice-rename]"),
+    # The command center's view half (Sources/ActivityWindow.swift), held by the pins
+    ("view: ⌘K goes Home", W, 'Button("") { toggleCommandCenter() }', 'Button("") { goHome(); toggleCommandCenter() }', "⌘K never navigates"),
+    ("view: opening it navigates", W, "        commandKeys.keepOpen = false\n        commandOpen = true\n", "        goHome()\n        commandKeys.keepOpen = false\n        commandOpen = true\n", "⌘K never navigates"),
+    ("view: Esc goes back past the panel", W, "        if commandOpen {\n            if commandKeys.escape?() != true { closeCommandCenter() }\n            return true\n        }\n", "", "Esc reaches the panel"),
+    ("view: the field is disabled", W, ".onSubmit { pressReturn() }\n", ".onSubmit { pressReturn() }\n                    .disabled(base.snapshot.helperBusy)\n", "never disabled"),
+    ("view: the box takes words again", W, "            Button { openCommandCenter() } label: {\n", "            Button { openCommandCenter() } label: {\n                TextField(\"\", text: .constant(\"\"))\n", "the Today box is a button"),
+    ("view: the panel moves", W, ".onSubmit { pressReturn() }\n", ".onSubmit { pressReturn() }\n                    .animation(.default, value: words)\n", "nothing moves"),
+    ("view: Option-Return left to the field", W, "            if event.keyCode == 36 || event.keyCode == 76, flags == .option {\n                return coordinator.optionReturn?() == true ? nil : event\n            }\n", "", "Option-Return goes through the monitor"),
+    ("center: a long paste is cut", C, "            let words = raw.trimmingCharacters(in: .whitespacesAndNewlines)\n            var result = Listing()\n", "            let words = String(raw.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxQuestion))\n            var result = Listing()\n", "[a long text stays whole]"),
+    ("view: a stale frame", W, "if commandOpen { commandCenter(frame: frame, now: timeline.date,", "if commandOpen { commandCenter(frame: todayFrame(now: Date()), now: timeline.date,", "reads that tick's frame"),
+    ("view: a dispatch default", W, "        case .openMemories: select(.memories)\n", "        default: break\n", "no default"),
+    ("view: an action not dispatched", W, "        case .openSpeakers:\n            select(.speakers)\n", "        default:\n            select(.speakers)\n", "no default"),
+    ("view: typed words as a helper argument", W, 'model.runHelper(["report", "--current-version",', 'model.runHelper(["report", words, "--current-version",', "fixed arguments"),
+    ("view: troubleshoot spends Doctor before the guard", W, "        if let refusal = today.runRefusal(target: SetupAssistant.targetPrefix + id, handoff: handoffStore) {\n", "        if let refusal = Optional<String>.none {\n", "guard first"),
+    ("view: troubleshoot twice", W, "        guard !today.gatheringReport, !today.runBusy, SetupAssistant.gate", "        guard SetupAssistant.gate", "one at a time"),
+    ("view: Ask spends Doctor", W, "        guard let run = SetupAssistant.Center.askRun(question: listing.words,", '        Task { _ = try? await model.runHelper(["report"], timeout: 90) }\n        guard let run = SetupAssistant.Center.askRun(question: listing.words,', "Ask COS spends no Doctor"),
+    ("view: Stop keys on the count", W, "        r.stoppable = store.isRecording || r.starting\n", "        r.stoppable = model.recordingCount > 0\n", "Stop keys on the Mac capture"),
+    ("view: the card's busy rule skipped", W, "        r.busy = MeetingDetectedCard.recordingBusy(macOccupied: store.occupied, macCanStart: store.canStart, liveRecordings: model.recordingCount)\n", "        r.busy = !store.canStart\n", "one busy rule"),
+    ("view: the notice skipped", W, "        guard MacRecordingNotice.step(acknowledged: model.macRecording.noticeAcknowledged) == .start else { return .notice }\n", "", "the notice comes first"),
+    ("view: no in-flight flag", W, "        today.recordInFlight = true\n", "", "in-flight flag"),
+    ("view: a confirm with stale state", W, "        if let held = C.recheck(row, snapshot(), recording()) {\n", "        if let held = Optional<String>.none {\n", "re-checks fresh state"),
+    ("view: a change without its confirm", W, "        if C.confirmation(row, snapshot()) != nil { confirming = id; return }\n", "", "opens its confirm"),
+    ("view: a held row runs", W, "        guard let row = listing.rows.first(where: { $0.id == id }), row.selectable else { return }\n", "        guard let row = listing.rows.first(where: { $0.id == id }) else { return }\n", "a held row never runs"),
+    ("view: a title parsed as markdown", W, "Text(verbatim: row.title).font(COSType.body(13.5, weight: .semibold)).foregroundStyle(row.held == nil ? TodayInk.ink : TodayInk.sub)", "Text(row.title).font(COSType.body(13.5, weight: .semibold)).foregroundStyle(row.held == nil ? TodayInk.ink : TodayInk.sub)", "drawn verbatim"),
+    ("view: a breadcrumb with the title", W, 'todayLog.info("command center: \\(row.logName, privacy: .public)")', 'todayLog.info("command center: \\(row.title, privacy: .public)")', "a breadcrumb names a kind"),
+    ("view: quiet hours skipped", W, "TodayHome.fold(frame.needs, quiet: TodayHome.isQuiet(now: now, enabled: TodayHome.quietHoursOn(.standard)))", "TodayHome.fold(frame.needs, quiet: false)", "quiet-hours fold"),
+    ("view: a question's words reach the panel", W, "inputs.waiting = folded.now.map { Item(id: $0.id, title: $0.title,", "inputs.waiting = folded.now.map { Item(id: $0.id, title: $0.quote ?? $0.title,", "a question's words never reach"),
+    ("view: a stale session opens", W, "        guard let row = todayFrame(now: Date()).needs.first(where: { $0.id == id }) else {\n", "        guard let row = frameNeeds.first(where: { $0.id == id }) else {\n", "looked up again at open"),
+    ("view: an error covers the panel", W, "get: { model.error != nil && !commandOpen },", "get: { model.error != nil },", "shows in place"),
+    ("view: the result line loses progress", W, "        r.helperProgress = model.busy ? model.operationProgress : nil\n", "", "operationProgress"),
+    ("view: VoiceOver hears nothing", W, "AccessibilityNotification.Announcement(C.announcement(", "_ = (C.announcement(", "VoiceOver hears the highlight"),
     # Pins (the files the compiled checks cannot see)
     ("pins: the release build leaves the file out", R, ' "$ROOT/Sources/SetupAssistant.swift" \\\n', " \\\n", "leaves out SetupAssistant.swift"),
     ("pins: an action names a missing command", C, '            case .repairWhisper: return "restart-whisper"\n', '            case .repairWhisper: return "repair-whisper"\n', "command switch has a case"),
@@ -149,8 +277,13 @@ MUTANTS = [
 
 def suite(copy):
     started = time.time()
-    result = bounded.run(["zsh", "Tests/run-setup-assistant.sh"], LIMIT, cwd=copy)
-    out = result.stdout + result.stderr
+    # The compile lock is shared with whoever else is building: waiting for it is not a kill.
+    for _ in range(60):
+        result = bounded.run(["zsh", "Tests/run-setup-assistant.sh"], LIMIT, cwd=copy)
+        out = result.stdout + result.stderr
+        if "shared compile lock busy" not in out:
+            break
+        time.sleep(30)
     if "compile-guard: STOPPED" in out:
         sys.exit("compile-guard stopped a compile (memory); ending the mutation lane. " + out[-400:])
     return result.returncode, out, time.time() - started, result.timed_out

@@ -85,10 +85,7 @@ import Foundation
 
     typealias C = SA.Center
 
-    static func recordable() -> C.Recording {
-        var r = C.Recording(); r.noticeAcknowledged = true
-        return r
-    }
+    static func recordable() -> C.Recording { C.Recording() }
 
     /// A healthy Mac with the overview loaded and nothing else going on.
     static func center(_ build: (inout C.Inputs) -> Void = { _ in }) -> C.Inputs {
@@ -184,12 +181,16 @@ import Foundation
         let off = C.listing(center { $0.sessionsOff = true }, words: "")
         check(row(off, "command:openSessions")?.title == "Session tracking is off" && row(off, "command:openSessions")?.selectable == true, "[sessions off]", "\(rowIDs(off))")
         check(row(off, "info:no-running") == nil, "[sessions off]", "")
+        check(row(off, "info:no-waiting")?.title == "Nothing else is waiting on you.", "[sessions off never says nothing waits]", "")
 
         // Fix rows only when something is broken, at most two.
         check(!clear.rows.contains { $0.group == .fixing }, "[fix only when broken]", "\(rowIDs(clear))")
         var extras = healthy(); extras.checks = []
         check(!C.listing(center { $0.snapshot = extras }, words: "").rows.contains { $0.group == .fixing }, "[fix only when broken]", "the checkup extra is not a fix")
         var broken = healthy(); broken.whisperCircuitOpen = true; failing(&broken, SA.CheckName.recovery); failing(&broken, SA.CheckName.integrity)
+        var twoRepairs = healthy(); twoRepairs.transactionPending = true; failing(&twoRepairs, SA.CheckName.recovery)
+        let sameAction = C.listing(center { $0.snapshot = twoRepairs }, words: "").rows.filter { $0.group == .fixing }
+        check(Set(sameAction.map(\.id)).count == sameAction.count && sameAction.count == 2, "[row ids are unique]", "two fixes can share an action: \(sameAction.map(\.id))")
         let fixes = C.listing(center { $0.snapshot = broken }, words: "").rows.filter { $0.group == .fixing }
         check(fixes.count == C.fixCap && C.fixCap == 2, "[fix caps at two]", "\(fixes.map(\.id))")
         check(fixes.first?.kind == .action(.repairRuntime), "[fix ranks by the board]", "\(fixes.map(\.id))")
@@ -198,10 +199,11 @@ import Foundation
         var down = healthy(); down.serverReachable = false; down.runtimeState = "stopped"
         let serverDown = C.listing(center { $0.snapshot = down }, words: "")
         check(row(serverDown, "info:server-down")?.title == "The COS server is not answering.", "[server down]", "\(rowIDs(serverDown))")
-        check(row(serverDown, "action:startServer")?.trailing == "Start", "[server down]", "")
+        check(row(serverDown, "fix:server-stopped")?.trailing == "Start" && row(serverDown, "fix:server-stopped")?.kind == .action(.startServer), "[server down]", "")
+        check(serverDown.rows.first?.id == "info:server-down" && serverDown.rows[1].id == "fix:server-stopped", "[server down lists the fix first]", "\(rowIDs(serverDown))")
         var failedDownload = healthy(); failedDownload.appUpdate.downloadFailed = true
         let steps = C.listing(center { $0.snapshot = failedDownload }, words: "")
-        check(row(steps, "action:openUnstuck") != nil && row(steps, "action:retryAppUpdate")?.title == "Update", "[a suggestion's second button stays]", "\(rowIDs(steps))")
+        check(row(steps, "fix:app-update-failed")?.kind == .action(.openUnstuck) && row(steps, "fix:app-update-failed:second")?.kind == .action(.retryAppUpdate), "[a suggestion's second button stays]", "\(rowIDs(steps))")
         // Doctor appears once when the board already offers it.
         var unknownServer = SA.Snapshot(); unknownServer.runtimeState = "unknown"
         let once = C.listing(center { $0.snapshot = unknownServer }, words: "").rows.filter { $0.kind == .action(.runDoctor) || $0.kind == .command(.runDoctor) }
@@ -236,13 +238,17 @@ import Foundation
         let serverDown = C.listing(center { $0.snapshot = down }, words: "server is offline")
         check(serverDown.hasAnswer && row(serverDown, "ask")?.held == "Asking needs the COS server.", "[server down]", "\(rowIDs(serverDown))")
         check(row(serverDown, "action:troubleshoot") == nil, "[server down]", "")
+        check(row(serverDown, "action:startServer")?.title == "Start the COS server", "[a row says what it starts]", "\(rowIDs(serverDown))")
         // Helper busy: a helper action is held with the reason, an opener is not.
         var busy = healthy(); busy.helperBusy = true
         let held = C.listing(center { $0.snapshot = busy }, words: "doctor")
         check(row(held, "command:runDoctor")?.held == SA.Held.busy, "[helper busy]", "\(rowIDs(held))")
         check(row(C.listing(center { $0.snapshot = busy }, words: "work"), "command:openWork")?.selectable == true, "[helper busy]", "")
-        // Bounded.
-        check(C.listing(center(), words: String(repeating: "word ", count: 400)).words.count <= SA.maxQuestion, "[typed words are bounded]", "")
+        // A long paste stays whole for Return and File to Work. Matching reads only a bounded start of it.
+        let longText = String(repeating: "word ", count: 400) + "whisper stalled"
+        let long = C.listing(center(), words: longText)
+        check(long.words == longText, "[a long text stays whole]", "\(long.words.count)")
+        check(!long.hasAnswer && C.plain(longText).count <= SA.maxQuestion, "[matching reads a bounded start]", "\(C.plain(longText).count)")
     }
 
     /// What Return does, on the words and the list.
@@ -267,6 +273,8 @@ import Foundation
         for phrase in ["restart server", "update", "update the deck", "stop recording the demo", "please start recording the call with Dana right now", "run doctor please"] {
             check(returned(phrase) == .move("ask"), "[a near-command moves to Ask]", "\(phrase): \(returned(phrase))")
         }
+        // A command in the list, still being typed, never starts a run either.
+        check(returned("go to se") == .move("ask"), "[a command in the list moves to Ask]", "\(returned("go to se"))")
         // The whole phrase runs at once; a highlight runs what it highlights.
         check(returned("start recording") == .activate("command:startRecording"), "[Return runs the highlight]", "")
         check(returned("sessions") == .activate("command:openSessions"), "[Return runs the highlight]", "")
@@ -354,9 +362,13 @@ import Foundation
         check(row(glassesList, "command:startRecording")?.held == C.RecordingHeld.glasses, "[G2 recording holds Start]", "\(rowIDs(glassesList))")
         check(row(glassesList, "command:startRecording")?.selectable == false, "[G2 recording holds Start]", "")
         check(row(glassesList, "command:stopRecording") == nil, "[Stop never keys on a G2 recording]", "")
-        check(row(glassesList, "info:glasses")?.detail == "Stop it on the glasses.", "[G2 only says to stop it on the glasses]", "")
+        check(row(glassesList, "info:glasses")?.title == "Stop it on the glasses.", "[G2 only says to stop it on the glasses]", "")
         let stopWords = C.listing(glasses, words: "stop recording")
-        check(row(stopWords, "command:stopRecording") == nil && row(stopWords, "info:glasses")?.detail == "Stop it on the glasses.", "[G2 only says to stop it on the glasses]", "\(rowIDs(stopWords))")
+        check(row(stopWords, "command:stopRecording") == nil && row(stopWords, "info:glasses")?.title == C.glassesLine, "[G2 only says to stop it on the glasses]", "\(rowIDs(stopWords))")
+        // Both at once: Stop stops the Mac's, and the line says where the other one stops.
+        let both = center { $0.recording.stoppable = true; $0.recording.occupied = true; $0.recording.busy = true; $0.recording.glassesLive = 1 }
+        let bothList = C.listing(both, words: "")
+        check(row(bothList, "command:stopRecording") != nil && row(bothList, "info:glasses")?.title == C.glassesLine, "[G2 and Mac both recording]", "\(rowIDs(bothList))")
 
         // A Mac capture not saved yet, an old Mac, no server, a start on its way: each says why.
         let unsaved = center { $0.recording.busy = true }
@@ -504,7 +516,8 @@ import Foundation
     static func centerCopy() {
         var texts: [String] = C.Command.allCases.map(\.title)
         for confirm in [C.stopConfirm, C.doctorConfirm, C.reportConfirm] { texts += [confirm.question, confirm.consequence, confirm.confirm] }
-        texts += [C.RecordingHeld.starting, C.RecordingHeld.os, C.RecordingHeld.saving, C.RecordingHeld.unsaved, C.RecordingHeld.glasses, C.RecordingHeld.server]
+        texts += [C.RecordingHeld.starting, C.RecordingHeld.os, C.RecordingHeld.saving, C.RecordingHeld.unsaved, C.RecordingHeld.glasses, C.RecordingHeld.server, C.glassesLine, C.noticeHint]
+        texts += SA.Action.allCases.map(C.rowTitle)
         var off = healthy(); off.workRunsOn = false
         var down = healthy(); down.serverReachable = false; down.runtimeState = "stopped"
         let fixtures: [C.Inputs] = [
@@ -515,6 +528,7 @@ import Foundation
         for inputs in fixtures {
             for words in ["", "hello", "set up parakeet", "start recording", "stop recording", "my transcript never finished", "how do i use dictation", "rename a voice", "doctor"] {
                 let listing = C.listing(inputs, words: words)
+                check(Set(listing.rows.map(\.id)).count == listing.rows.count, "[row ids are unique]", "\(rowIDs(listing))")
                 for row in listing.rows { texts += [row.title, row.detail ?? "", row.state ?? "", row.trailing ?? "", row.held ?? ""] }
                 for outcome in [C.ReturnOutcome.nothing, .confirm, .startRun, .file, .move("ask"), .move("file")] + listing.rows.filter(\.selectable).map({ C.ReturnOutcome.activate($0.id) }) {
                     texts.append(C.hint(outcome, listing, inputs.snapshot))

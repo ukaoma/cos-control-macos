@@ -11,6 +11,12 @@
   - Every explicit full-app compile list names SetupAssistant.swift (Tests/kit-compile.py builds the shared kit from every
     Sources file, so a list without it would silently stop matching its kit).
   - The full suite runs this lane.
+  - The ⌘K command center's view half (Sources/ActivityWindow.swift, the Command center extension and CommandCenterPanel), which
+    the compiled checks cannot see: ⌘K stays on its tab, Esc reaches the panel first, the field is never disabled, Return and
+    Option-Return keep their meanings, every command and action has a dispatch case with no default, typed words reach only a
+    run or a filed task, recording goes through the store's gates, a confirm checks fresh state, session titles are drawn
+    verbatim and open only their own row, breadcrumbs carry no words, and nothing moves.
+The engine has no way to run anything, and nothing a person types becomes a command. The views run it through closed switches.
 Comments are stripped before a code pin, so a comment can never satisfy one.
 """
 import pathlib, re, sys
@@ -101,6 +107,130 @@ pin(release.count('"$ROOT/Sources/SetupAssistant.swift"') == 1, "the release bui
 
 # 8. The suite runs the lane.
 pin(read("Tests/run.sh").count('zsh "$ROOT/Tests/run-setup-assistant.sh"') == 1, "Tests/run.sh runs the setup assistant lane once")
+
+# 9. The command center's view half.
+window = code(read("Sources/ActivityWindow.swift"))
+ext = block(window, "    func commandSnapshot() -> SetupAssistant.Snapshot {", "struct CommandCenterKeyHint: View {")
+panel = window[window.index("struct CommandCenterPanel: View {"):]
+frame = block(window, "    var todayFrameView: some View {", "    func todayResetExpansions()")
+
+# Placement: at frame level, in the TimelineView closure, above the clipped content, with this tick's rows.
+pin("let frame = todayFrame(now: timeline.date)" in frame and frame.index(".clipped()") < frame.index("if commandOpen { commandCenter(frame: frame, now: timeline.date, windowSize: geometry.size, mode: mode) }"),
+    "the panel sits in the TimelineView closure, above the clipped content, and reads that tick's frame")
+pin("CommandCenterPanel(" in window and window.count("CommandCenterPanel(") == 1, "one panel in the window")
+pin("@State private var words" in panel and "@State private var commandQuery" not in window, "typing is the panel's own state, so it never composes the window")
+pin(".sheet(" not in panel and ".popover(" not in panel, "the panel is inline, never a sheet or a popover")
+
+# ⌘K opens it where you are. Tests/activity-today-pins.py holds the same rule for the Today suite.
+pin('Button("") { toggleCommandCenter() }' in frame and "goHome" not in block(window, "    func toggleCommandCenter() {", "    func commandSectionChanged() {")
+    and "goHome" not in block(window, "    func openCommandCenter() {", "    func closeCommandCenter() {"), "⌘K never navigates")
+
+# The box only opens it. The field is never disabled: Return guards instead.
+box = block(window, "    var todayAskBox: some View {", "    func todaySubmitAsk(")
+pin("Button { openCommandCenter() } label:" in box and "TextField(" not in box, "the Today box is a button that opens the panel")
+pin(".disabled(" not in panel, "the panel's field and rows are never disabled")
+pin("today.runBusy || today.captureBusy" not in window and ".disabled(today.runBusy || today.captureBusy)" not in window, "the old disabled Ask field is gone")
+submit = block(window, "    func todaySubmitAsk(", "    func todayNeedsPanel(")
+pin("guard !text.isEmpty, !today.runBusy, !today.captureBusy else { return }" in submit, "Return guards while a run or a capture is on its way")
+
+# Keys.
+escape = block(window, "    private func handleActivityEscape() -> Bool {", "    private func goBack()")
+pin(escape.index("if commandOpen {") < escape.index("if showingSettings {") and [l.strip() for l in escape.split("\n") if l.strip()][1] == "if commandOpen {",
+    "Esc reaches the panel before anything else")
+pin("if commandKeys.escape?() != true { closeCommandCenter() }" in escape, "Esc undoes one thing in the panel, then closes it")
+pin("keys.escape = { pressEscape() }" in panel and "keys.escape = nil" in panel, "the panel owns its Esc while it is mounted")
+monitor = block(window, "private struct CommandCenterKeyMonitor: NSViewRepresentable {", "struct CommandCenterPanel: View {")
+pin("event.keyCode == 125 || event.keyCode == 126" in monitor and "hasMarkedText() != true" in monitor and "window.isKeyWindow, window.attachedSheet == nil" in monitor,
+    "Up and Down go through a local monitor scoped to this window, and text being composed keeps them")
+pin("NSEvent.removeMonitor(monitor)" in monitor and "CommandCenterKeyMonitor(onMove: { move($0) }, onOptionReturn: {" in panel, "the monitor lives only while the panel is mounted")
+press = block(panel, "    private func pressReturn(", "    private func activate(")
+pin("private func pressReturn(option: Bool = false) {" in press and "C.onReturn(option: option," in press, "Return reaches the engine's one rule")
+pin("event.keyCode == 36 || event.keyCode == 76, flags == .option" in monitor and "pressReturn(option: true)" in panel,
+    "Option-Return goes through the monitor: a single-line field types a line break for it and never submits")
+pin("case .startRun: submit(listing.words, false)" in press and "case .file: submit(listing.words, true)" in press and "case .move(let id): chosen = id" in press,
+    "Return with no highlight still runs Work, Option-Return files, and a near-command only moves the highlight")
+pin("submit: { words, file in todaySubmitAsk(words, file: file) }" in ext, "Return reaches today's own submit")
+pin(".onTapGesture { closeCommandCenter() }" in ext, "a click outside closes it")
+
+# Every command and action has a dispatch case, with no default.
+for fn, enum in (("func commandRun(_ command: SetupAssistant.Center.Command) -> CommandEffect {", "enum Command: String, CaseIterable, Sendable {"),
+                 ("func commandRun(_ action: SetupAssistant.Action, words: String) -> CommandEffect {", "enum Action: String, Sendable, CaseIterable {")):
+    run = block(ext, fn, "\n    }\n")
+    pin("default:" not in run, f"{fn}: no default, so a new case will not compile")
+    declared = block(core, enum, "            var title: String {" if "Command" in enum else "        var helperCommand: String? {")
+    names = [n for line in declared.split("\n") if line.strip().startswith("case ") for n in re.findall(r"\b(\w+)\b", line.split("case ", 1)[1])]
+    pin(len(names) >= 10, f"{enum}: read the cases: {names}")
+    for name in names:
+        pin(re.search(r"\." + name + r"\b", run) is not None, f"{fn}: dispatches .{name}")
+row_run = block(ext, "    func commandRun(_ row: SetupAssistant.Center.Row, _ listing: SetupAssistant.Center.Listing) -> CommandEffect {", "\n    }\n")
+pin("default:" not in row_run, "every kind of row is dispatched, with no default")
+
+# Typed words reach only a run or a filed task, never a helper argument or an opener.
+pin('model.perform(command)' in ext and ext.count("model.perform(") == 1 and "guard let command = action.helperCommand" in ext, "a helper command comes only from the closed action")
+helpers = re.findall(r"model\.runHelper\(\[([^\]]*)\]", ext)
+pin(len(helpers) == 1 and helpers[0].startswith('"report", "--current-version", ControllerModel.currentVersion'), f"the one helper call has fixed arguments: {helpers}")
+pin("words" not in helpers[0] and "listing" not in helpers[0], "typed words are never a helper argument")
+pin("commandRun(.runDoctor, words: \"\")" in ext, "Doctor from the list carries no words")
+
+# Recording: the store's gates, the same busy rule as the meeting card, Stop on the Mac capture only.
+recording = block(ext, "    func commandRecording() -> SetupAssistant.Center.Recording {", "\n    }\n")
+pin("r.stoppable = store.isRecording || r.starting" in recording and 'r.starting = store.phase == "starting"' in recording, "Stop keys on the Mac capture")
+pin("r.stoppable" in recording and "recordingCount" not in recording.split("r.stoppable")[1].split("\n")[0], "Stop never keys on recordingCount")
+pin("MeetingDetectedCard.recordingBusy(macOccupied: store.occupied, macCanStart: store.canStart, liveRecordings: model.recordingCount)" in recording,
+    "Start uses the one busy rule, which counts a glasses meeting")
+now = block(ext, "    func commandRecordNow() {", "\n    }\n")
+pin("guard !today.recordInFlight, SetupAssistant.Center.recordingHold(commandRecording(), commandSnapshot()) == nil else { return }" in now, "one start at a time, and the hold is checked again at the click")
+pin(now.index("today.recordInFlight = true") < now.index("store.record(title:") and "today.recordInFlight = false" in now, "the start has an in-flight flag")
+pin("if id == nil {" in now and "select(.meetings)" in now and "commandKeys.recordFailed = true" in now, "a failed start says why and opens Meetings")
+pin("words" not in now and "listing" not in now, "the words in the box never name the recording")
+pin("MacRecordingNoticeCard(onRecord:" in panel and "recordAfterNotice()" in panel, "the notice shows in the panel")
+start = block(ext, "    func commandStartRecording() -> CommandEffect {", "\n    }\n")
+pin("guard MacRecordingNotice.step(acknowledged: model.macRecording.noticeAcknowledged) == .start else { return .notice }" in start, "the notice comes first")
+pin("Task { await model.macRecording.stop() }" in block(ext, "    func commandRun(_ command: SetupAssistant.Center.Command) -> CommandEffect {", "\n    }\n"), "Stop stops the Mac capture")
+
+# A confirm checks fresh state and has no force path.
+confirm = block(panel, "    private func confirmOpen(_ listing: C.Listing) {", "    private func perform(")
+pin(confirm.index("C.recheck(row, snapshot(), recording())") < confirm.index("perform(row, listing)") and "return\n" in confirm.split("perform(row, listing)")[0], "a confirm re-checks fresh state, and a held row runs nothing")
+activate = block(panel, "    private func activate(", "    private func confirmOpen(")
+pin(activate.index("C.confirmation(row, snapshot()) != nil") < activate.index("perform(row, listing)"), "a change opens its confirm instead of running")
+pin("row.selectable else { return }" in activate, "a held row never runs")
+
+# Asking: troubleshoot's order, and no Doctor for Ask.
+trouble = block(ext, "    func commandTroubleshoot(_ words: String) {", "    func commandStartRun(")
+order = ["SetupAssistant.gate(.troubleshoot, commandSnapshot()) == .ready", "today.runRefusal(", "today.gatheringReport = true", "model.runHelper([", "commandStartRun(run)"]
+pin(all(p in trouble for p in order) and [trouble.index(p) for p in order] == sorted(trouble.index(p) for p in order), "troubleshoot: guard first, in-flight flag, then Doctor, then the run")
+pin("guard !today.gatheringReport, !today.runBusy," in trouble, "troubleshoot: one at a time")
+ask = block(ext, "    func commandAsk(_ listing: SetupAssistant.Center.Listing) {", "    func commandTroubleshoot(")
+pin("SetupAssistant.Center.askRun(" in ask and "runHelper" not in ask and "perform(" not in ask, "Ask COS spends no Doctor")
+
+# Sessions: the fold, looked up again at open, the Cursor fallback kept, no question words, verbatim.
+inputs = block(ext, "    func commandInputs(frame: TodayHome.Frame, now: Date) -> SetupAssistant.Center.Inputs {", "\n    }\n")
+pin("TodayHome.fold(frame.needs, quiet: TodayHome.isQuiet(now: now, enabled: TodayHome.quietHoursOn(.standard)))" in inputs and "folded.now.map" in inputs, "Waiting uses the quiet-hours fold")
+pin(".quote" not in ext and ".why" not in ext and "waitingQuestion" not in ext, "a question's words never reach the panel")
+pin("inputs.waitingKnown = frame.line != .loading" in inputs, "a list not loaded yet never says nothing is waiting")
+opener = block(ext, "    func commandOpenWaiting(_ id: String) -> CommandEffect {", "\n    }\n")
+pin("todayFrame(now: Date()).needs.first(where: { $0.id == id })" in opener and "todayOpenNeed(row)" in opener, "a waiting row is looked up again at open, and todayOpenNeed keeps the Cursor fallback")
+pin("todayFrame(now: Date()).running.first(where: { $0.id == id })" in block(ext, "    func commandOpenRunning(_ id: String) -> CommandEffect {", "\n    }\n"), "a running row is looked up again at open")
+pin("Text(verbatim: row.title)" in panel and "Text(row.title)" not in panel and "Text(row.detail" not in panel, "row text is drawn verbatim")
+pin("AttributedString" not in panel and "markdown" not in panel.lower(), "a title is never parsed as anything")
+
+# Breadcrumbs carry no typed words and no titles.
+logs = [line for line in (ext + panel).split("\n") if "todayLog." in line]
+pin(len(logs) >= 3, f"the command center leaves breadcrumbs: {logs}")
+for line in logs:
+    pin("\\(" not in line or "row.logName" in line, f"a breadcrumb names a kind, never words: {line.strip()}")
+
+# VoiceOver and no motion.
+pin("AccessibilityNotification.Announcement(C.announcement(" in panel and ".accessibilityHint(hint)" in panel, "VoiceOver hears the highlight and what Return will do")
+pin(".accessibilityAddTraits(highlighted ? .isSelected : [])" in panel, "VoiceOver hears which row is highlighted")
+for motion in ("withAnimation", ".animation(", ".transition(", "TodayPulse", "TimelineView"):
+    pin(motion not in panel, f"nothing moves in the panel: {motion}")
+
+# Result line and the alert.
+pin("get: { model.error != nil && !commandOpen }," in window, "a failure shows in place while the panel is open, not over it")
+results = block(ext, "    func commandResultInputs() -> SetupAssistant.Center.ResultInputs {", "\n    }\n")
+for name in ("today.notice", "model.platformOpenNotice", "model.operationProgress", "model.error", "today.runNote"):
+    pin(name in results, f"the result line reads {name}")
 
 if failures:
     for failure in failures:

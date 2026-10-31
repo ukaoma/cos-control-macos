@@ -711,9 +711,9 @@ enum SetupAssistant {
               phrases: ["how do i use dictation", "how does dictation work", "how to use dictation", "how do i dictate", "how to dictate", "use dictation", "start dictation",
                         "start dictating", "turn on dictation", "set up dictation", "setup dictation", "dictation shortcut", "dictate into apps"]),
         Entry(id: "voice-rename", title: "Rename a voice",
-              answer: "Speakers has three lists: Meetings to review, Samples to review and Voices. To fix a name in one meeting, open it under Meetings to review and choose Rename voice. For a voice not named yet, choose Name this voice, which previews the labels before anything changes. Undo labels puts them back. Voice names are suggestions, never certainties.",
+              answer: "Speakers has three lists: Meetings to review, Samples to review and Voices. To fix a name, open the meeting under Meetings to review and choose Actually someone else on that voice, or Name this voice if it was never named. It asks whether to change this meeting or everywhere before it renames anything. A saved Mac recording has Rename voice in Meetings. Voice names are suggestions, never certainties.",
               actions: [.openSpeakers],
-              source: "cos-starter control/docs/index.html:686 (Three lists); Sources/ActivityWindow.swift SpeakerSubview, Name this voice; Sources/Models.swift menuTitle (Rename voice); Sources/Views.swift voice rows",
+              source: "cos-starter control/docs/index.html:686 (Three lists); Sources/ActivityWindow.swift SpeakerSubview; Sources/Views.swift voice rows (Name this voice, Actually someone else, the rename confirm); Sources/ActivityMeetings.swift and Sources/Models.swift menuTitle (Rename voice)",
               groups: [],
               phrases: ["rename a voice", "rename voice", "rename a speaker", "rename speaker", "rename the speaker", "speaker names wrong", "speaker name wrong", "speaker name is wrong",
                         "speaker names are wrong", "wrong speaker", "wrong speaker name", "wrong name on a voice", "fix a speaker name", "fix speaker name", "name a voice",
@@ -984,7 +984,6 @@ enum SetupAssistant {
             var saveLine: String? = nil
             /// Glasses meetings live right now, Mac capture left out.
             var glassesLive = 0
-            var noticeAcknowledged = false
             /// A start from the panel is on its way.
             var inFlight = false
         }
@@ -1083,6 +1082,8 @@ enum SetupAssistant {
             return row
         }
 
+        static let glassesLine = "A glasses meeting is recording. Stop it on the glasses."
+
         private static func info(_ id: String, _ group: Group, _ title: String, detail: String? = nil, state: String? = nil) -> Row {
             Row(id: "info:" + id, kind: .info, group: group, title: title, detail: detail, state: state)
         }
@@ -1095,6 +1096,18 @@ enum SetupAssistant {
         private static func runningRow(_ item: Item) -> Row {
             Row(id: "running:" + item.id, kind: .running(item.id), group: .running, title: clean(item.title), detail: item.detail.map(clean),
                 state: "Running", trailing: item.openLabel)
+        }
+
+        /// A button's word beside its question reads fine ("Start"). Alone on a row it has to say what it starts.
+        static func rowTitle(_ action: Action) -> String {
+            switch action {
+            case .setUp: return "Set up COS"
+            case .startServer: return "Start the COS server"
+            case .restartServer: return "Restart the COS server"
+            case .repairRuntime: return "Repair the COS server"
+            case .retryAppUpdate: return "Update COS Control"
+            default: return action.title
+            }
         }
 
         /// Tier 1 first, otherwise in the order given.
@@ -1121,7 +1134,8 @@ enum SetupAssistant {
                 rows.append(info("more-waiting", .waiting, more == 1 ? "1 more is waiting on you." : "\(more) more are waiting on you."))
             }
             if waiting.isEmpty {
-                rows.append(inputs.waitingKnown ? info("no-waiting", .waiting, "Nothing is waiting on you.", detail: inputs.foldedLine)
+                // Session tracking off: sessions cannot be seen, so this cannot say nothing is waiting.
+                rows.append(inputs.waitingKnown ? info("no-waiting", .waiting, inputs.sessionsOff ? "Nothing else is waiting on you." : "Nothing is waiting on you.", detail: inputs.foldedLine)
                                                 : info("waiting-unknown", .waiting, "Waiting on you: not loaded yet."))
             }
 
@@ -1145,23 +1159,25 @@ enum SetupAssistant {
                                   detail: "What is listed here runs on this Mac without it. Typed questions still get saved answers."))
             }
             for suggestion in board(s).suggestions.filter({ $0.tier == .repair }).prefix(fixCap) {
+                // By the suggestion's id: two suggestions can share an action (Repair, for an interrupted update and for the recovery controller).
                 if let action = suggestion.action {
-                    fixes.append(Row(id: "action:" + action.rawValue, kind: .action(action), group: .fixing, title: suggestion.line, detail: suggestion.why,
+                    fixes.append(Row(id: "fix:" + suggestion.id, kind: .action(action), group: .fixing, title: suggestion.line, detail: suggestion.why,
                                      trailing: suggestion.actionTitle))
                 } else {
-                    fixes.append(Row(id: "info:" + suggestion.id, kind: .info, group: .fixing, title: suggestion.line, detail: suggestion.why, held: suggestion.held))
+                    fixes.append(Row(id: "fix:" + suggestion.id, kind: .info, group: .fixing, title: suggestion.line, detail: suggestion.why, held: suggestion.held))
                 }
                 if let secondary = suggestion.secondary {
-                    fixes.append(Row(id: "action:" + secondary.rawValue, kind: .action(secondary), group: .fixing, title: secondary.title))
+                    fixes.append(Row(id: "fix:" + suggestion.id + ":second", kind: .action(secondary), group: .fixing, title: rowTitle(secondary)))
                 }
             }
 
             let r = inputs.recording
             rows += [Command.startRecording, .stopRecording].compactMap { commandRow($0, inputs, group: .doing) }
             if r.occupied && !r.stoppable, let line = r.saveLine { rows.append(info("saving", .doing, line, state: "Saving")) }
-            if r.glassesLive > 0 { rows.append(info("glasses", .doing, "A glasses meeting is recording.", detail: "Stop it on the glasses.")) }
+            if r.glassesLive > 0 { rows.append(info("glasses", .doing, r.stoppable ? glassesLine : "Stop it on the glasses.")) }
             if !fixes.contains(where: { $0.kind == .action(.runDoctor) }), let doctor = commandRow(.runDoctor, inputs, group: .doing) { rows.append(doctor) }
-            return rows + fixes
+            // With the server down the fix comes first: most of the rest leans on it.
+            return s.serverReachable ? rows + fixes : fixes + rows
         }
 
         /// How a command matches the words: 0 is the whole phrase, 1 a start of a phrase or of one of its words, 2 a phrase
@@ -1199,7 +1215,7 @@ enum SetupAssistant {
 
         struct Listing: Equatable, Sendable {
             var rows: [Row] = []
-            /// Trimmed, as typed.
+            /// Trimmed and whole, as typed: Return and File to Work take all of it. Matching reads a bounded start of it.
             var words = ""
             /// Runs on Return with nothing else highlighted. Only a full exact phrase of a command that allows it.
             var autoHighlight: String? = nil
@@ -1210,7 +1226,7 @@ enum SetupAssistant {
 
         /// Everything the panel shows for these words.
         static func listing(_ inputs: Inputs, words raw: String) -> Listing {
-            let words = String(raw.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxQuestion))
+            let words = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             var result = Listing()
             result.words = words
             guard !words.isEmpty else {
@@ -1227,7 +1243,7 @@ enum SetupAssistant {
                     if rank == 0, command.autoHighlights, row.selectable, result.autoHighlight == nil { result.autoHighlight = row.id }
                     rows.append(row)
                 } else if command == .stopRecording, inputs.recording.glassesLive > 0 {
-                    rows.append(info("glasses", .commands, "A glasses meeting is recording.", detail: "Stop it on the glasses."))
+                    rows.append(info("glasses", .commands, glassesLine))
                 }
             }
 
@@ -1256,7 +1272,7 @@ enum SetupAssistant {
                 result.entry = saved.entry
                 rows.append(Row(id: "answer", kind: .savedAnswer, group: .answer, title: saved.entry.title, detail: saved.text, state: "Saved answer"))
                 for offer in saved.offers {
-                    rows.append(Row(id: "action:" + offer.action.rawValue, kind: .action(offer.action), group: .answer, title: offer.title, held: offer.held))
+                    rows.append(Row(id: "action:" + offer.action.rawValue, kind: .action(offer.action), group: .answer, title: rowTitle(offer.action), held: offer.held))
                 }
             } else if result.autoHighlight == nil, ranked.isEmpty, sessions.isEmpty {
                 rows.append(info("no-answer", .answer, "No saved answer for this."))
@@ -1273,7 +1289,8 @@ enum SetupAssistant {
             rows.append(Row(id: "file", kind: .file, group: .asking, title: "File to Work", detail: "Saves your words to the Work inbox. No run.", trailing: "Option-Return"))
 
             result.rows = rows
-            result.nearCommand = nearCommand(words)
+            // Any command in the list counts: "go to se" shows Open Sessions, and Return must not spend a run on it.
+            result.nearCommand = !ranked.isEmpty || nearCommand(words)
             return result
         }
 
@@ -1345,6 +1362,9 @@ enum SetupAssistant {
                 }
             }
         }
+
+        /// While the one-time notice shows: its Record is a click, so a quick second Return can never accept it.
+        static let noticeHint = "Choose Record on the card to start. Esc goes back."
 
         /// What VoiceOver hears when the highlight moves.
         static func announcement(_ row: Row?, _ outcome: ReturnOutcome, _ listing: Listing, _ s: Snapshot) -> String {
