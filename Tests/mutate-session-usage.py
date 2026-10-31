@@ -6,7 +6,7 @@ never mutated). A green baseline is required first; each mutant must land exactl
 and must fail on the check named for it. A failure on any other check is MISATTRIBUTED: the rule is not the thing
 its own test pins. A busy shared compile lock (exit 70) or a memory headroom refusal (75) waits and retries; it is
 never counted as a kill.
-Usage: python3 Tests/mutate-session-usage.py <repo root> [only mutants whose name starts with this]
+Usage: python3 Tests/mutate-session-usage.py <repo root> [only mutants whose name starts with this, or several with |]
 """
 import pathlib, shutil, subprocess, sys, tempfile, time
 
@@ -385,7 +385,8 @@ MUTANTS += [
     ("cos: a row past the window is stored", "let at = CosCostRules.epoch(event.timestamp), at >= retainFrom else { return }", "let at = CosCostRules.epoch(event.timestamp) else { return }", "a row older than the window is not stored", COLLECTOR),
 ]
 if len(sys.argv) > 2:
-    MUTANTS = [m for m in MUTANTS if m[0].startswith(sys.argv[2])]
+    # One name prefix, or several with | to run in that order, for when the compile lock is busy and only some can run.
+    MUTANTS = [m for wanted in sys.argv[2].split("|") for m in MUTANTS if m[0].startswith(wanted)]
 
 
 def compile_and_run(work):
