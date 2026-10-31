@@ -649,7 +649,7 @@ extension Checks {
         check(R.epoch("2026-10-30T17:00:00.500Z") == 1_793_379_600.5, "a stamp keeps its fraction")
         check(R.epoch("2026-10-30T12:00:00.250-0500") == 1_793_379_600.25, "a fraction before a zone is read")
         check(R.epoch("2026-10-30T22:30:00+0530") == 1_793_379_600, "a positive offset is that instant")
-        check(R.epoch("2026-10-30T12:00:00") == nil, "a stamp with no zone names no instant")
+        check(R.epoch("2026-10-30T12:00:00") == nil && R.epoch("2026-10-30T12:00:00.500") == nil, "a stamp with no zone names no instant")
         check(R.epoch("") == nil && R.epoch("yesterday afternoon at 3pm") == nil && R.epoch("2026-13-30T12:00:00Z") == nil && R.epoch("2026-10-30T12:00:00Zjunk") == nil && R.epoch("2026-10-30T25:00:00Z") == nil, "a stamp that is not a date is nil")
         check(R.dayKey(epoch: R.epoch("2026-10-31T00:30:00Z")!, timeZone: chicago) == "2026-10-30", "the day is the reporting zone's day")
         check(R.dayKey(epoch: R.epoch("2026-10-31T00:30:00-0500")!, timeZone: chicago) == "2026-10-31", "a -0500 stamp after local midnight is the next day")
@@ -674,12 +674,19 @@ extension Checks {
         check(R.category(source: "cos-script", caller: "memory-tier-judge", day: "2026-10-25") == .memoryIndexing, "a memory job is memory indexing")
         check(R.category(source: "meeting-ask", caller: "work_chat_summary", day: "2026-10-25") == .work, "Work chat is Work even with an Ask source")
         check(R.category(source: "jev", caller: "work-intake-jev", day: "2026-10-25") == .work, "Work intake is Work")
+        check(R.category(source: "g2-query", caller: "dispatch_task", day: "2026-10-25") == .work && R.category(source: "g2-query", caller: "work_review", day: "2026-10-25") == .work, "dispatch and review are Work even with a G2 source")
+        check(R.category(source: "g2-attached", caller: "attached_turn", day: "2026-10-25") == .work && R.category(source: "g2-attached", caller: "attached_turn:timeout", day: "2026-10-25") == .work, "an attached turn is Work, failed or not")
+        check(R.category(source: "g2-fork", caller: "fork_thread", day: "2026-10-25") == .work && R.category(source: "g2-fork", caller: "fork_thread:denied", day: "2026-10-25") == .work, "a fork is Work, failed or not")
         check(R.category(source: "cos-script", caller: "", day: "2026-04-01") == .other, "a blank caller goes to Other")
         check(R.category(source: "brand-new-source", caller: "brand_new_caller", day: "2026-10-25") == .other, "an unknown source goes to Other")
         // Session-log flags. These decide what the total adds, so a row cannot be in the total twice.
         check(R.inSessionLogs(source: "g2-query", caller: "full_query") && R.inSessionLogs(source: "g2-prewarm", caller: "prewarm") && R.inSessionLogs(source: "g2-archive", caller: "chat_summary"), "G2, prewarm and archive are in session logs")
         check(!R.inSessionLogs(source: "g2-dictation-autoclean", caller: "dictation_autoclean_message") && !R.inSessionLogs(source: "g2-lens-gist", caller: "lens_gist")
               && !R.inSessionLogs(source: "meeting-ask", caller: "meeting_ask") && !R.inSessionLogs(source: "cos-script", caller: "lightrag"), "polish, gist, Ask and scripts are not in session logs")
+        check(!R.inSessionLogs(source: "g2-query", caller: "dispatch_task"), "a dispatch keeps no session log even with a G2 source")
+        check(R.inSessionLogs(source: "g2-attached", caller: "attached_turn") && R.inSessionLogs(source: "g2-fork", caller: "fork_thread"), "attached and fork turns are in session logs")
+        check(!R.inSessionLogs(source: "g2-query", caller: "work_review", model: "claude-opus-5-5") && R.inSessionLogs(source: "g2-query", caller: "work_review", model: "gpt-6.1-sol"), "a Claude review keeps no session log and a Codex one does")
+        check(R.baseCaller("full_query:late_result") == "full_query" && R.baseCaller("routine:morning-brief") == "routine:morning-brief" && R.isLate("full_query:late_result") && !R.isLate("full_query"), "only the late suffix comes off a caller")
         check(R.runsThroughCursor(model: "cursor-grok") && R.runsThroughCursor(model: "cursor:grok-4.7-low-fast") && R.runsThroughCursor(model: "luna-5.6-fast") && !R.runsThroughCursor(model: "claude:claude-sonnet-5-5"), "Cursor and Luna run through Cursor")
         // Rates. Unknown is No price, never $0, and an alias maps through one table.
         let rates = CosCostRates.self
@@ -706,8 +713,9 @@ extension Checks {
         check(R.envValue("OTHER=1\nCOS_SCRIPTS_DIR=\n", key: "COS_SCRIPTS_DIR") == nil, "an empty .env value is no value")
         check(R.dailyLedgers.allSatisfy { $0.file.hasSuffix("-usage.json") }, "the day ledgers are named usage files, never a key file")
         check(R.dataFiles.allSatisfy { !$0.lowercased().contains("key") }, "no file on the helper's list is a key file")
-        check(R.dataFiles.allSatisfy(R.dataFileAllowed), "every file on the helper's list is allowed")
+        check(R.dataFiles.allSatisfy { R.dataFileAllowed($0) }, "every file on the helper's list is allowed")
         check(!R.dataFileAllowed("subq-key.json") && !R.dataFileAllowed("jev-key.json") && !R.dataFileAllowed("some-new-key.json"), "the door refuses a key file")
+        check(!R.dataFileAllowed("subq-key.json", list: ["subq-key.json"]), "a key file is refused even if someone lists it")
         check(!R.dataFileAllowed("anything-else.json") && !R.dataFileAllowed("../.env") && !R.dataFileAllowed(".cos-profile.json"), "the door refuses anything not on the list")
 
         // The accumulator.
@@ -805,6 +813,66 @@ extension Checks {
         a = make(runs: [run("r1")], events: [event("2026-10-30T12:00:30Z")])
         a.add(audit("2026-10-30T12:01:00Z", source: "g2-query", caller: "routine:morning-brief", model: "opus")); rows = finish(&a)
         check(rows[.liveAndUpkeep]?.measuredCalls == 1 && rows[.answers] == nil, "a routine's run lands on the routine's row")
+        // 6.97 rows. A real row wins for its run, and the slice is for older rows only.
+        func real(_ stamp: String, source: String = "g2-query", caller: String = "full_query", model: String = "opus", resolved: String = "", run: String = "", session: String = "", usd: Double? = nil, input: Int64 = 1000, output: Int64 = 0, read: Int64 = 0, write: Int64 = 0, oneHour: Int64? = nil) -> CosAuditRow {
+            var json: [String: Any] = ["ts": stamp, "source": source, "caller": caller, "model": model, "est_input_tokens": 1, "est_output_tokens": 1, "usage_kind": "provider_final", "input_tokens": input, "output_tokens": output, "cache_read_tokens": read, "cache_write_tokens": write]
+            if !resolved.isEmpty { json["resolved_model"] = resolved }
+            if !run.isEmpty { json["run_id"] = run }
+            if !session.isEmpty { json["cli_session_id"] = session }
+            if let usd { json["cost_usd"] = usd }
+            if let oneHour { json["cache_write_1h_tokens"] = oneHour }
+            return CosAuditRow(json: json)
+        }
+        let parsedReal = real("2026-10-30T12:00:00Z", resolved: "claude-opus-5-5", run: "r9", session: "s9", usd: 1.5, input: 1, output: 2, read: 3, write: 4, oneHour: 2)
+        check(parsedReal.real == SessionUsageCounts(input: 1, output: 2, cacheRead: 3, cacheWrite: 4) && parsedReal.realOneHour == 2 && parsedReal.realUSD == 1.5 && parsedReal.resolvedModel == "claude-opus-5-5" && parsedReal.runID == "r9" && parsedReal.sessionID == "s9", "a real row's fields are read by name")
+        var legacySession = CosAuditRow(json: ["session_id": "older", "usage_kind": "estimated", "input_tokens": 5])
+        check(legacySession.sessionID == "older" && legacySession.real == nil, "an estimated row is not real whatever else it carries")
+        legacySession = CosAuditRow(json: ["session_id": "cos", "cli_session_id": "provider"])
+        check(legacySession.sessionID == "provider", "the provider's session id wins over COS's")
+        check(real("2026-10-30T12:00:00Z", input: 0).isMeasured, "a real zero is still a measurement")
+        a = make(runs: [run("r1")], events: [event("2026-10-30T12:00:30Z", input: 500_000)])
+        a.add(real("2026-10-30T12:01:00Z", run: "r1", usd: 2)); rows = finish(&a)
+        check(rows[.answers]?.calls == 1 && rows[.answers]?.measuredUSD == 2, "a real G2 row is not counted again from its session slice")
+        check(rows[.answers]?.measuredTokens == 1000 && rows[.answers]?.addsToTotalUSD == 0, "a real G2 row's tokens stand alone and Usage already holds its dollars")
+        a = make(runs: [run("r1")], events: [event("2026-10-30T12:00:30Z")])
+        a.add(real("2026-10-30T12:01:00Z", run: "r1", usd: 2))
+        a.add(real("2026-10-30T12:01:01Z", caller: "full_query:late_result", run: "r1", usd: 3, input: 500)); rows = finish(&a)
+        check(rows[.answers]?.calls == 1 && rows[.answers]?.measuredCalls == 1, "a late result is not another call")
+        check(rows[.answers]?.measuredUSD == 5 && rows[.answers]?.measuredTokens == 1500, "a late result sums into its run")
+        a = make(runs: [run("r1")], events: [event("2026-10-30T12:00:30Z")])
+        a.add(g2Row)
+        a.add(real("2026-10-30T12:01:01Z", caller: "full_query:late_result", run: "r1", usd: 3, input: 500)); rows = finish(&a)
+        check(abs((rows[.answers]?.measuredUSD ?? 0) - 0.004) < 1e-12 && rows[.answers]?.calls == 1, "a slice already holding a run's late result does not add it twice")
+        a = make(); a.add(real("2026-10-30T12:01:01Z", caller: "full_query:late_result", run: "gone", usd: 3)); rows = finish(&a)
+        check(rows[.answers]?.calls == 0 && rows[.answers]?.measuredUSD == 3 && rows[.answers]?.unpricedMeasuredCalls == 0, "a late result whose first row aged out adds dollars and no call")
+        var lateEstimate = audit("2026-10-30T12:01:01Z", source: "g2-query", caller: "full_query:late_result", model: "opus", input: 1, output: 1); lateEstimate.runID = "gone"
+        a = make(); a.add(lateEstimate); rows = finish(&a)
+        check(rows[.answers] == nil, "a late result with no real numbers adds nothing")
+        // Attached and fork: no run id, the provider's name as model.
+        a = make(); a.add(real("2026-10-30T12:00:00Z", source: "g2-attached", caller: "attached_turn", model: "claude", resolved: "claude-sonnet-5-5", session: "s-other")); rows = finish(&a)
+        check(rows[.work]?.measuredCalls == 1 && abs((rows[.work]?.measuredUSD ?? 0) - 0.002) < 1e-12, "an attached turn is priced from its resolved model")
+        check(rows[.work]?.addsToTotalUSD == 0, "an attached turn is in session logs, so the total does not add it")
+        var attachedEstimate = audit("2026-10-30T12:00:00Z", source: "g2-attached", caller: "attached_turn", model: "codex"); attachedEstimate.resolvedModel = ""
+        a = make(); a.add(attachedEstimate); rows = finish(&a)
+        check(rows[.work]?.estimatedCalls == 1 && rows[.work]?.estimatedUSD == 0, "an estimated attached turn has only a provider name, so no price")
+        let workStartAttached = R.epoch("2026-10-30T11:00:00Z")!
+        a = make(work: ["claude:s-w": workStartAttached], events: [event("2026-10-30T12:00:00Z", session: "claude:s-w")])
+        a.add(real("2026-10-30T12:00:00Z", source: "g2-attached", caller: "attached_turn", model: "claude", resolved: "claude-opus-5-5", session: "s-w", usd: 9))
+        var attachedFinish = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
+        check(attachedFinish.rows.isEmpty && abs(attachedFinish.work.measuredUSD - 0.004) < 1e-12, "a real row inside a Work session's slice is not counted twice")
+        a = make(runs: [run("rd", session: "claude:s-d", start: "2026-10-30T12:00:00Z")], work: ["claude:s-d": workStartAttached])
+        a.add(real("2026-10-30T12:01:00Z", caller: "dispatch_task", model: "sonnet", resolved: "claude-sonnet-5-5", run: "rd", session: "s-d", usd: 4))
+        a.add(real("2026-10-30T12:01:01Z", caller: "dispatch_task:late_result", model: "sonnet", run: "rd", session: "s-d", usd: 1))
+        attachedFinish = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
+        check(attachedFinish.rows.first { $0.category == .work }?.measuredUSD == 5 && attachedFinish.rows.first { $0.category == .work }?.calls == 1, "a dispatch has no log, so its real row and late result are what Work has")
+        check(attachedFinish.rows.first { $0.category == .work }?.addsToTotalUSD == 5, "a dispatch adds to the total, because no log holds it")
+        // Gist and Ask real rows are the only record: no session is ever opened for them.
+        a = make(); a.add(real("2026-10-30T12:00:00Z", source: "meeting-ask", caller: "meeting_ask", model: "claude:claude-sonnet-5-5", session: "ask-session", usd: 0.5)); rows = finish(&a)
+        check(rows[.answers]?.measuredUSD == 0.5 && rows[.answers]?.addsToTotalUSD == 0.5, "a real Ask row is measured and adds to the total")
+        a = make(gist: [gistRun("2026-10-30T12:00:00Z")]); a.add(real("2026-10-30T12:00:00.010Z", source: "g2-lens-gist", caller: "lens_gist", model: "claude:claude-sonnet-5-5", session: "gist-session", usd: 0.25)); rows = finish(&a)
+        check(rows[.liveAndUpkeep]?.calls == 1 && rows[.liveAndUpkeep]?.measuredUSD == 0.25, "a real gist row and its run are one call")
+        a = make(); a.add(real("2026-10-30T12:00:00Z", source: "g2-lens-gist", caller: "lens_gist", model: "claude:claude-sonnet-5-5", session: "gist-session", usd: 0.25)); rows = finish(&a)
+        check(rows[.liveAndUpkeep]?.measuredUSD == 0.25 && rows[.liveAndUpkeep]?.addsToTotalUSD == 0.25, "a real gist row with no run in the ledger still counts")
         // Work starts own the session from then on, and a dollar is in one place.
         let workStart = R.epoch("2026-10-30T12:10:00Z")!
         a = make(runs: [run("r1")], work: ["claude:s1": workStart], events: [event("2026-10-30T12:00:30Z"), event("2026-10-30T12:05:00Z"), event("2026-10-30T12:20:00Z", input: 2000)])
@@ -887,7 +955,9 @@ extension Checks {
         let estimatedLine = P.rowLine(e)
         check(estimatedLine.evidence == .estimated && estimatedLine.figure == "Estimated" && estimatedLine.detail == "at least $0.44" && estimatedLine.count == "1,685 dictations", "an estimated row says Estimated, at least, with its noun")
         var mix = CosCostRow(category: .liveAndUpkeep); mix.calls = 1433; mix.measuredCalls = 694; mix.measuredUSD = 4.31; mix.measuredTokens = 989_491; mix.estimatedCalls = 739; mix.estimatedUSD = 1.1
-        check(P.rowLine(mix).mix == "Measured on 694 of 1,433 calls, plus at least $1.10 estimated for the rest.", "a row with a mix says how many calls were measured")
+        check(P.rowLine(mix).mix == "694 measured, at least $1.10 estimated for the rest.", "a row with a mix says how many calls were measured")
+        var mixNoRate = mix; mixNoRate.estimatedUSD = 0
+        check(P.rowLine(mixNoRate).mix == "694 measured, no verified price for the rest.", "a mix with no rate for the rest says so")
         var noRate = CosCostRow(category: .other); noRate.calls = 8; noRate.estimatedCalls = 8; noRate.estimatedTokens = 12_000
         check(P.rowLine(noRate).evidence == .noPrice && P.rowLine(noRate).figure == "No price" && P.rowLine(noRate).detail == "12.0K tokens", "a model with no rate shows tokens and No price")
         check(P.rowLine(CosCostRow(category: .transcription)).count == "None in the last 30 days" && P.rowLine(CosCostRow(category: .transcription)).evidence == .none, "an empty row says none")
@@ -904,10 +974,21 @@ extension Checks {
         // Notes and the Work words.
         var progress = report([m]); progress.sessions = CosSliceProgress(tracked: 9, stillReading: 2, noLogs: 1, compressed: 3, busy: true); progress.undatedCalls = 4; progress.unreadableRows = 1
         let notes = P.sessionNotes(progress)
-        check(notes.contains { $0.hasPrefix("Still reading 2 sessions") } && notes.contains { $0.hasPrefix("3 sessions are compressed") } && notes.contains { $0.hasPrefix("1 session has no log") }, "the page says what is not in yet")
+        check(P.stillReadingNote(progress).hasPrefix("Still reading 2 sessions") && notes.contains { $0.hasPrefix("3 sessions are compressed") } && notes.contains { $0.hasPrefix("1 session has no log") }, "the page says what is not in yet")
+        check(P.headlineParts(report: report([m, e]), ran: 18_612, usage: .ready).caveat == " 1,685 more calls have only character counts, so the real figure is higher.", "the caveat is its own part of the headline")
+        check(P.showsDollars(report([m])) && P.showsDollars(report([e])) && !P.showsDollars(report([one])), "the page says what the dollars are only when it shows some")
+        check(P.compareHint(share: nil, price: nil).contains("never sent") && P.compareHint(share: nil, price: 20).contains("needs a current Usage total") && P.compareHint(share: nil, price: nil, measured: false).hasPrefix("Once this server measures"), "the price field says what it does and why it cannot yet")
+        var quietReport = report([]); quietReport.runLedgersFound = false
+        check(P.sessionNotes(quietReport).isEmpty && !P.sessionNotes({ var r = report([e]); r.runLedgersFound = false; return r }()).isEmpty, "the run record note appears only when there are calls for it to explain")
+        var approximate = report([m]); approximate.rows[0].approximateMatches = 3
+        check(P.method(approximate).contains { $0.hasPrefix("3 calls were matched") } && !P.method(report([m])).contains { $0.contains("matched to") }, "the method says how many matches are approximate")
         check(notes.contains { $0.hasPrefix("4 calls have no readable date") } && notes.contains { $0.hasPrefix("1 line could not") }, "undated and unreadable rows are said, not dropped")
         check(P.workCount(CosWorkSummary()) == "This Mac has no record of Work runs." && P.workCount(CosWorkSummary(handoffsFound: true, runs: 27)) == "27 runs you started", "the Work line says how many runs, or that there is no record")
-        for text in notes + [P.workMethod, P.headline(report: report([m, e]), ran: 1000, usage: .ready)] {
+        var workMeasured = CosCostRow(category: .work); workMeasured.measuredUSD = 2; workMeasured.measuredTokens = 10; workMeasured.calls = 5; workMeasured.estimatedCalls = 4; workMeasured.estimatedUSD = 0.6
+        var workReport = report([workMeasured]); workReport.work.measuredUSD = 300; workReport.work.measuredTokens = 100
+        check(P.workUSD(workReport) == 302 && P.workTokens(workReport) == 110 && P.workFigure(workReport) == "$302", "the Work line adds its slices and its real rows")
+        check(P.workBackground(workReport) == "Plus 4 background calls, at least $0.60 estimated.", "Work's character-count rows sit beside the figure, not in it")
+        for text in notes + P.method(approximate) + [P.workMethod, P.headline(report: report([m, e]), ran: 1000, usage: .ready), P.compareHint(share: 0.1, price: 20)] {
             check(!text.contains("\u{2014}") && !text.contains("\u{2192}") && !text.contains("->"), "page copy has no em dash or arrow")
         }
 
@@ -995,6 +1076,7 @@ extension Checks {
         check(full.sessions.noLogs == 1 && full.sessions.compressed == 1 && full.sessions.stillReading == 0, "the reader says which sessions have no log and which are compressed")
         check(full.work.runs == 2 && full.work.runsWithoutLogs == 1, "failed and old receipts are out, and a Cursor run has no log to read")
         check(full.work.measuredTokens == 1020, "a continued Work session counts from the run's start")
+        check(try collector.cosStoredEventCount() == 6, "a row older than the window is not stored")
         // A log that grows is read from where it stopped, and its rows are not counted twice.
         let again = try collector.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: true, now: now)
         check(row(.answers, again).measuredTokens == answers.measuredTokens, "a second pass over unchanged logs adds nothing")

@@ -1678,3 +1678,279 @@ struct SessionUsageCalendar: View {
         }
     }
 }
+
+// MARK: - COS cost (0.5.359): what COS itself used, on top of the sessions a person runs
+
+/// Which view the Sessions pane shows.
+enum SessionsPane: Hashable { case sessions, usage, cost }
+
+@MainActor
+final class CosCostStore: ObservableObject {
+    /// One store for the pane's view and the header's Refresh.
+    static let shared = CosCostStore()
+    @Published var report: CosUsageReport?
+    @Published var loading = false
+    @Published var error: String?
+    /// What the person pays a month for these tools. Stays in this Mac's preferences and is never sent.
+    @Published var monthlyPrice = UserDefaults.standard.string(forKey: CosCostStore.priceKey) ?? "" {
+        didSet { UserDefaults.standard.set(monthlyPrice, forKey: Self.priceKey) }
+    }
+    static let priceKey = "cosCostMonthlyPrice"
+    /// Offscreen renders set a report and must not start the helper.
+    var frozen = false
+    private let helper = HelperClient()
+    func refresh(importSessions: Bool) async {
+        guard !loading, !frozen else { return }
+        loading = true
+        defer { loading = false }
+        do {
+            let result = try await helper.run(importSessions ? ["cos-usage"] : ["cos-usage", "--read-only"], timeout: 45)
+            guard result.ok else { throw HelperClientError.commandFailed(result.message) }
+            report = try JSONDecoder().decode(CosUsageReport.self, from: JSONEncoder().encode(result.details))
+            error = nil
+        } catch { self.error = "COS cost could not refresh: \(error.localizedDescription)" }
+    }
+    /// While the view is open: quickly while sessions are still being read, then at Usage's pace. A hidden view reads nothing.
+    func keepFresh(usage: SessionUsageStore) async {
+        guard !frozen else { return }
+        while !Task.isCancelled {
+            await refresh(importSessions: usage.enabled)
+            let reading = usage.enabled && (report?.sessions.stillReading ?? 0) > 0 && error == nil
+            try? await Task.sleep(for: .seconds(reading ? 15 : 300))
+        }
+    }
+}
+
+struct CosCostView: View {
+    private typealias P = CosCostPresentation
+    @ObservedObject var usage: SessionUsageStore
+    @ObservedObject var store: CosCostStore
+    @State private var showNotes: Bool
+    @State private var narrow = false
+
+    init(usage: SessionUsageStore, store: CosCostStore = .shared, showNotes: Bool = false) {
+        self.usage = usage
+        self.store = store
+        _showNotes = State(initialValue: showNotes)
+    }
+
+    private var usageState: P.UsageState {
+        if !usage.enabled { return .paused }
+        guard let report = usage.report else { return .unavailable }
+        return report.pendingFiles > 0 ? .importing(files: report.pendingFiles) : .ready
+    }
+    private var ran: Double {
+        guard let report = store.report else { return 0 }
+        return P.ranUSD(usageBuckets: usage.report?.buckets ?? [], report: report, cursorFeedOn: usage.cursorEnabled)
+    }
+    private var share: Double? {
+        store.report.flatMap { P.share(measured: P.measuredUSD($0), ran: ran, usage: usageState) }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if let report = store.report {
+                    page(report)
+                } else if let error = store.error {
+                    Text(error).font(COSType.body(13)).foregroundStyle(COSPalette.danger)
+                    Button("Try again") { Task { await store.refresh(importSessions: usage.enabled) } }
+                        .buttonStyle(COSQuietButtonStyle()).padding(.top, 10)
+                } else {
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        Text("Reading what COS used.").font(COSType.display(narrow ? 22 : 26))
+                    }
+                }
+            }
+            .frame(maxWidth: 980, alignment: .leading)
+            .padding(.horizontal, 22).padding(.top, 12).padding(.bottom, 26)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .onGeometryChange(for: Bool.self) { $0.size.width < 944 } action: { narrow = $0 }
+        .task { await store.keepFresh(usage: usage) }
+        .task { if usage.report == nil { await usage.refresh(importNew: usage.enabled) } }
+    }
+
+    @ViewBuilder private func page(_ report: CosUsageReport) -> some View {
+        let parts = P.headlineParts(report: report, ran: ran, usage: usageState)
+        (Text(parts.answer).foregroundStyle(.primary) + Text(parts.caveat).foregroundStyle(COSPalette.subtle))
+            .font(COSType.display(narrow ? 24 : 29))
+            .lineSpacing(narrow ? 3 : 5)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: 800, alignment: .leading)
+            .accessibilityAddTraits(.isHeader)
+        if P.showsDollars(report) {
+            Text("These are API values: what the same calls would cost at standard API rates. They aren't your bill.")
+                .font(COSType.body(13)).foregroundStyle(COSPalette.subtle).padding(.top, 12)
+        }
+        statusLines(report).padding(.top, 10)
+        if P.calls(report) > 0 || report.rows.contains(where: { $0.measuredTokens > 0 }) {
+            rows(report).padding(.top, 24)
+        }
+        workBlock(report).padding(.top, P.calls(report) > 0 ? 22 : 28)
+        if P.calls(report) > 0 { compareBlock(report).padding(.top, 24) }
+        footer(report).padding(.top, 26)
+    }
+
+    /// What is moving right now, with the way out inside the pane.
+    @ViewBuilder private func statusLines(_ report: CosUsageReport) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let error = store.error {
+                HStack(spacing: 10) {
+                    Text(error).foregroundStyle(COSPalette.danger).fixedSize(horizontal: false, vertical: true)
+                    Button("Try again") { Task { await store.refresh(importSessions: usage.enabled) } }.buttonStyle(COSQuietButtonStyle()).fixedSize()
+                }
+            }
+            if report.sessions.stillReading > 0 {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.mini)
+                    Text(P.stillReadingNote(report)).foregroundStyle(COSPalette.subtle)
+                }
+            }
+            if let note = P.usageNote(usageState) {
+                HStack(spacing: 10) {
+                    Text(note).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+                    if usageState == .paused {
+                        Button("Turn Usage back on") {
+                            usage.enabled = true
+                            Task {
+                                await usage.refresh(importNew: true)
+                                await store.refresh(importSessions: true)
+                            }
+                        }.buttonStyle(COSQuietButtonStyle()).fixedSize()
+                    } else if usageState == .unavailable {
+                        Button("Read Usage") { Task { await usage.refresh(importNew: usage.enabled) } }.buttonStyle(COSQuietButtonStyle()).fixedSize()
+                    }
+                }
+            }
+        }
+        .font(COSType.body(13))
+    }
+
+    private func rows(_ report: CosUsageReport) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(P.rowLines(report)) { line in
+                Rectangle().fill(COSPalette.line).frame(height: 1)
+                row(line).padding(.vertical, 13)
+            }
+            Rectangle().fill(COSPalette.line).frame(height: 1)
+        }
+    }
+
+    private func row(_ line: P.RowLine) -> some View {
+        HStack(alignment: .center, spacing: narrow ? 14 : 22) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(line.title).font(COSType.body(14, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                Text(line.count).font(COSType.body(12.5)).foregroundStyle(COSPalette.subtle).monospacedDigit()
+                if let mix = line.mix {
+                    Text(mix).font(COSType.body(12)).foregroundStyle(COSPalette.subtle).monospacedDigit().fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(width: narrow ? 290 : 340, alignment: .leading)
+            CosCostBar(measured: line.measuredFraction, estimated: line.estimatedFraction)
+                .frame(maxWidth: .infinity)
+            VStack(alignment: .trailing, spacing: 3) {
+                if !line.figure.isEmpty {
+                    Text(line.figure)
+                        .font(line.evidence == .measured ? COSType.display(19, weight: .medium) : COSType.body(14, weight: .medium))
+                        .foregroundStyle(line.evidence == .measured ? Color.primary : COSPalette.subtle)
+                        .monospacedDigit()
+                }
+                if !line.detail.isEmpty {
+                    Text(line.detail).font(COSType.body(12)).foregroundStyle(COSPalette.subtle).monospacedDigit()
+                }
+            }
+            .frame(width: narrow ? 138 : 170, alignment: .trailing)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Work a person chose, so it sits under the figure rather than inside it.
+    private func workBlock(_ report: CosUsageReport) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 16) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Work").font(COSType.display(19, weight: .medium))
+                    Text(P.workCount(report.work)).font(COSType.body(12.5)).foregroundStyle(COSPalette.subtle).monospacedDigit()
+                }
+                Spacer(minLength: 12)
+                VStack(alignment: .trailing, spacing: 3) {
+                    Text(P.workFigure(report)).font(COSType.display(19, weight: .medium)).monospacedDigit()
+                    if P.workTokens(report) > 0 {
+                        Text(SessionUsagePresentation.shortTokens(P.workTokens(report)) + " tokens, measured").font(COSType.body(12)).foregroundStyle(COSPalette.subtle).monospacedDigit()
+                    }
+                }
+            }
+            if report.work.handoffsFound && report.work.runs > 0 {
+                Text(P.workMethod).font(COSType.body(12.5)).foregroundStyle(COSPalette.subtle).fixedSize(horizontal: false, vertical: true)
+            }
+            if let background = P.workBackground(report) {
+                Text(background).font(COSType.body(12.5)).foregroundStyle(COSPalette.subtle).monospacedDigit()
+            }
+            if report.work.runsWithoutLogs > 0 {
+                Text(P.workWithoutLogs(report.work)).font(COSType.body(12.5)).foregroundStyle(COSPalette.subtle).monospacedDigit()
+            }
+        }
+    }
+
+    /// One local field. Share times price, because API value against a subscription would compare two different things.
+    private func compareBlock(_ report: CosUsageReport) -> some View {
+        let price = P.monthlyPrice(store.monthlyPrice)
+        return VStack(alignment: .leading, spacing: 10) {
+            Rectangle().fill(COSPalette.line).frame(height: 1)
+            HStack(alignment: .center, spacing: 12) {
+                Text("What do you pay a month for these tools?").font(COSType.body(14, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                TextField("$200", text: $store.monthlyPrice)
+                    .textFieldStyle(.plain).cosField().frame(width: 104)
+                    .monospacedDigit().accessibilityLabel("What you pay a month for these tools")
+            }
+            if let line = P.compareLine(share: share, price: price) {
+                Text(line).font(COSType.display(narrow ? 19 : 21)).fixedSize(horizontal: false, vertical: true)
+            }
+            Text(P.compareHint(share: share, price: price, measured: P.measuredUSD(report) > 0)).font(COSType.body(12.5)).foregroundStyle(COSPalette.subtle).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func footer(_ report: CosUsageReport) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(P.sessionNotes(report), id: \.self) { note in
+                Text(note).font(COSType.body(12)).foregroundStyle(COSPalette.subtle).fixedSize(horizontal: false, vertical: true)
+            }
+            DisclosureGroup("How this is counted", isExpanded: $showNotes) {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(P.method(report), id: \.self) { Text($0) }
+                }
+                .font(COSType.body(12)).foregroundStyle(COSPalette.subtle)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 680, alignment: .leading)
+                .padding(.top, 8)
+            }
+            .font(COSType.body(12)).tint(COSPalette.accent)
+        }
+    }
+}
+
+/// Measured fills solid. An estimated floor is paler and sits after it, because it is a floor and not a measurement.
+private struct CosCostBar: View {
+    let measured: Double
+    let estimated: Double
+    var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            let solid = measured > 0 ? max(3, width * min(measured, 1)) : 0
+            let pale = estimated > 0 ? max(3, width * min(estimated, 1)) : 0
+            ZStack(alignment: .leading) {
+                Capsule().fill(COSPalette.line.opacity(0.55))
+                HStack(spacing: 0) {
+                    Rectangle().fill(COSPalette.accent).frame(width: min(solid, width))
+                    Rectangle().fill(COSPalette.accent.opacity(0.28)).frame(width: min(pale, max(0, width - solid)))
+                }
+                .clipShape(Capsule())
+                .frame(width: min(solid + pale, width), alignment: .leading)
+            }
+        }
+        .frame(height: 7)
+        .accessibilityHidden(true)
+    }
+}

@@ -1195,7 +1195,7 @@ enum CosCostRules {
     /// and a routine with a G2 source. Anything not named here is Other, in plain sight.
     static func category(source: String, caller: String, day: String) -> CosCostCategory {
         let c = caller.lowercased(), s = source.lowercased()
-        if c.hasPrefix("work_") || c.hasPrefix("work-") || c == "attached" || c == "fork" || c == "dispatch" { return .work }
+        if c.hasPrefix("work_") || c.hasPrefix("work-") || c == "dispatch_task" || c.hasPrefix("attached_turn") || c.hasPrefix("fork_thread") || s == "g2-attached" || s == "g2-fork" { return .work }
         if c == "dictation_autoclean" { return day < splitDay ? .dictationBeforeSplit : .dictation }
         if c == "dictation_autoclean_meeting" || c.hasPrefix("transcript-cleanup") || c.hasPrefix("transcript_cleanup") || c.hasPrefix("whisper") { return .transcription }
         if c.hasPrefix("dictation_autoclean_") || c == "prompt_edit" { return .dictation }
@@ -1212,11 +1212,21 @@ enum CosCostRules {
     }
     /// Whether a source's spend lands in the session logs Usage reads. These run with a saved session; polish, gist, Ask,
     /// cleanup, cues, Work chat, summaries and `llm_client` run with --no-session-persistence, so Usage cannot see them.
-    static func inSessionLogs(source: String, caller: String) -> Bool {
-        let c = caller.lowercased(), s = source.lowercased()
-        if ["full_query", "voice_query", "prewarm", "chat_summary", "day_summary", "attached", "fork", "proof"].contains(c) { return true }
-        return ["g2-query", "g2-voice", "g2-prewarm", "g2-archive"].contains(s)
+    static func inSessionLogs(source: String, caller: String, model: String = "") -> Bool {
+        let c = baseCaller(caller).lowercased(), s = source.lowercased()
+        // Dispatch runs with a G2 source but --no-session-persistence, so the caller has to win. A Claude review runs
+        // the same restricted way (work-review-runtime.ts); a Codex one keeps its rollout.
+        if c == "dispatch_task" { return false }
+        if c == "work_review" { return model.lowercased().hasPrefix("codex") || model.lowercased().hasPrefix("gpt-") }
+        if ["full_query", "voice_query", "prewarm", "chat_summary", "day_summary", "proof"].contains(c) { return true }
+        if c.hasPrefix("attached_turn") || c.hasPrefix("fork_thread") { return true }
+        return ["g2-query", "g2-voice", "g2-prewarm", "g2-archive", "g2-attached", "g2-fork"].contains(s)
     }
+    /// A steer can yield several results. The extra usage is written as `<caller>:late_result` under the same run: more
+    /// usage on a call already counted, never another call.
+    static let lateSuffix = ":late_result"
+    static func isLate(_ caller: String) -> Bool { caller.hasSuffix(lateSuffix) }
+    static func baseCaller(_ caller: String) -> String { isLate(caller) ? String(caller.dropLast(lateSuffix.count)) : caller }
     /// Cursor bills these, including Luna polish, which runs through the Cursor command line. With the Cursor feed on,
     /// the feed already put them in Usage's total, so adding them again would count them twice. With it off, Usage has no
     /// sight of them and the total has to add them. The numerator counts them once either way.
@@ -1304,8 +1314,8 @@ enum CosCostRules {
     ]
     /// Every file `cos-usage` may open in the server's data folder. Nothing outside this list is ever read there.
     static let dataFiles = ["claude-runs.jsonl", "codex-runs.jsonl", "lens-gist-runs.jsonl"] + dailyLedgers.map(\.file)
-    static func dataFileAllowed(_ name: String) -> Bool {
-        dataFiles.contains(name) && !name.lowercased().contains("key")
+    static func dataFileAllowed(_ name: String, list: [String] = dataFiles) -> Bool {
+        list.contains(name) && !name.lowercased().contains("key")
     }
 }
 
@@ -1334,16 +1344,18 @@ struct CosAuditRow: Sendable {
         usageKind = text("usage_kind"); runID = text("run_id")
         sessionID = text("cli_session_id").isEmpty ? text("session_id") : text("cli_session_id")
         resolvedModel = text("resolved_model")
-        if usageKind == "provider_final" {
-            let counts = SessionUsageCounts(input: n(json["input_tokens"]), output: n(json["output_tokens"]),
-                                            cacheRead: n(json["cache_read_tokens"]), cacheWrite: n(json["cache_write_tokens"]))
-            if counts.total > 0 { real = counts }
+        // 6.97 says provider_final only over real numbers, and writes all four. A real zero is still a measurement.
+        if usageKind == "provider_final", json["input_tokens"] != nil {
+            real = SessionUsageCounts(input: n(json["input_tokens"]), output: n(json["output_tokens"]),
+                                      cacheRead: n(json["cache_read_tokens"]), cacheWrite: n(json["cache_write_tokens"]))
             realOneHour = n(json["cache_write_1h_tokens"])
         }
         if let cost = (json["cost_usd"] as? NSNumber ?? json["usd"] as? NSNumber)?.doubleValue, cost.isFinite, cost >= 0 { realUSD = cost }
     }
     /// A keyed row's dollars are real even when its tokens are not there.
     var isMeasured: Bool { real != nil || realUSD != nil }
+    /// Attached and fork rows write the provider's name as `model`, so what actually ran is in `resolved_model`.
+    var pricedModel: String { resolvedModel.isEmpty ? model : resolvedModel }
 }
 
 struct CosGistRun: Equatable, Sendable {
@@ -1418,6 +1430,10 @@ struct CosCostAccumulator {
     private var runTokens: [Int64]
     private var runHasEvents: [Bool]
     private var runUnpriced: [Bool]
+    /// The run's own audit row is real, so its slice is not counted: audit real wins, slices are for older rows.
+    private var runRealAudit: [Bool]
+    private let workStarts: [String: Double]
+    private var workSessionsWithEvents = Set<String>()
     private var runIndexByID: [String: Int] = [:]
     private var runsBySession: [String: [Int]] = [:]
     private var work = CosWorkSummary()
@@ -1438,6 +1454,8 @@ struct CosCostAccumulator {
         runTokens = Array(repeating: 0, count: count)
         runHasEvents = Array(repeating: false, count: count)
         runUnpriced = Array(repeating: false, count: count)
+        runRealAudit = Array(repeating: false, count: count)
+        self.workStarts = workStarts
         runOwnedByWork = runs.map { run in workStarts[run.session].map { run.start >= $0 - Self.runLeadSeconds } ?? false }
         for (index, run) in runs.enumerated() {
             runIndexByID[run.runID] = index
@@ -1451,6 +1469,7 @@ struct CosCostAccumulator {
                 work.measuredTokens += event.counts.total
                 work.addsToTotalUSD += extra
                 if usd == nil { work.unpricedEvents += 1 }
+                workSessionsWithEvents.insert(event.session)
                 continue
             }
             guard let index = runsBySession[event.session]?.first(where: {
@@ -1469,31 +1488,42 @@ struct CosCostAccumulator {
         r.calls += 1
         r.estimatedCalls += 1
         r.estimatedTokens += row.estimatedInput + row.estimatedOutput
-        if let usd = CosCostRates.estimateUSD(ledgerModel: row.model, input: row.estimatedInput, output: row.estimatedOutput) {
+        if let usd = CosCostRates.estimateUSD(ledgerModel: row.pricedModel, input: row.estimatedInput, output: row.estimatedOutput) {
             r.estimatedUSD += usd
             r.estimatedPricedCalls += 1
         }
         rows[category] = r
     }
-    private mutating func addMeasured(_ row: CosAuditRow, category: CosCostCategory) {
+    private mutating func addMeasured(_ row: CosAuditRow, category: CosCostCategory, isCall: Bool = true) {
         var r = rows[category] ?? CosCostRow(category: category)
-        r.calls += 1
-        r.measuredCalls += 1
+        if isCall {
+            r.calls += 1
+            r.measuredCalls += 1
+        }
         let counts = row.real ?? SessionUsageCounts()
         r.measuredTokens += counts.total
-        let named = row.resolvedModel.isEmpty ? row.model : row.resolvedModel
+        let named = row.pricedModel
         var usd = row.realUSD
         if usd == nil, let resolved = CosCostRates.resolve(named) {
             usd = CosCostRates.usd(provider: resolved.provider, model: resolved.model, counts: counts, oneHour: row.realOneHour)
         }
         if let usd {
             r.measuredUSD += usd
-            if !CosCostRules.inSessionLogs(source: row.source, caller: row.caller) {
+            if !CosCostRules.inSessionLogs(source: row.source, caller: row.caller, model: named) {
                 if CosCostRules.runsThroughCursor(model: row.model) || CosCostRules.runsThroughCursor(model: named) { r.addsUnlessCursorFeedUSD += usd }
                 else { r.addsToTotalUSD += usd }
             }
-        } else { r.unpricedMeasuredCalls += 1 }
+        } else if isCall { r.unpricedMeasuredCalls += 1 }
         rows[category] = r
+    }
+    /// Whether a Work session's log already holds this row, so its dollars are on the Work line. A dispatch keeps no log,
+    /// so its session has no events, and its real row is the only record there is.
+    private func workSliceHolds(sessionID: String, at: Double) -> Bool {
+        guard !sessionID.isEmpty else { return false }
+        for key in ["claude:" + sessionID, "codex:" + sessionID] where workSessionsWithEvents.contains(key) {
+            if let start = workStarts[key], at >= start - Self.runLeadSeconds { return true }
+        }
+        return false
     }
     /// The gist run nearest in time with the same engine and model, not already taken.
     private mutating func takeGist(at: Double, ledgerModel: String) -> Bool {
@@ -1533,11 +1563,27 @@ struct CosCostAccumulator {
         guard let at = CosCostRules.epoch(row.stamp) else { undated += 1; return }
         let day = CosCostRules.dayKey(epoch: at, timeZone: zone)
         guard window.contains(day) else { return }
-        let category = CosCostRules.category(source: row.source, caller: row.caller, day: day)
+        var category = CosCostRules.category(source: row.source, caller: CosCostRules.baseCaller(row.caller), day: day)
+        if CosCostRules.isLate(row.caller) {
+            if let index = runIndexByID[row.runID] {
+                if runOwnedByWork[index] && workSessionsWithEvents.contains(runs[index].session) { return }
+                // An estimated run measured from its slice already holds this usage. A real one needs it added.
+                if runHasEvents[index] && !runRealAudit[index] { return }
+                if runOwnedByWork[index] { category = .work }
+            }
+            if workSliceHolds(sessionID: row.sessionID, at: at) { return }
+            if row.isMeasured { addMeasured(row, category: category, isCall: false) }
+            return
+        }
         if row.caller == "lens_gist" || row.source == "g2-lens-gist", takeGist(at: at, ledgerModel: row.model) { return }
         if row.source == "g2-query" || row.source == "g2-voice", let match = takeRun(row, at: at) {
-            if runOwnedByWork[match.index] { return } // the run's dollars are on the Work line
-            if runHasEvents[match.index] {
+            if runOwnedByWork[match.index] {
+                // The run's dollars are on the Work line. With no log there, the row is all Work has.
+                if workSessionsWithEvents.contains(runs[match.index].session) { return }
+                category = .work
+            } else if row.isMeasured {
+                runRealAudit[match.index] = true
+            } else if runHasEvents[match.index] {
                 var r = rows[category] ?? CosCostRow(category: category)
                 r.calls += 1
                 r.measuredCalls += 1
@@ -1547,6 +1593,7 @@ struct CosCostAccumulator {
                 return
             }
         }
+        if category == .work && workSliceHolds(sessionID: row.sessionID, at: at) { return }
         if row.isMeasured { addMeasured(row, category: category); return }
         addEstimate(row, category: category)
     }
@@ -1582,7 +1629,7 @@ struct CosCostAccumulator {
             if let usd { r.measuredUSD += usd; r.addsToTotalUSD += usd } else { r.unpricedMeasuredCalls += 1 }
             rows[.liveAndUpkeep] = r
         }
-        for index in runs.indices where runHasEvents[index] {
+        for index in runs.indices where runHasEvents[index] && !runRealAudit[index] {
             let category = runCategory[index] ?? .answers
             var r = rows[category] ?? CosCostRow(category: category)
             // A run whose audit row is missing, or was written by a server that wrote none, is still a call.
@@ -1634,12 +1681,13 @@ enum CosCostPresentation {
         if p > 0 && p < 0.1 { return "under 0.1%" }
         return String(format: p < 10 ? "%.1f%%" : "%.0f%%", p)
     }
-    static func headline(report: CosUsageReport, ran: Double, usage: UsageState) -> String {
+    /// The answer, then what it leaves out. The two read as one sentence pair, in two tones.
+    static func headlineParts(report: CosUsageReport, ran: Double, usage: UsageState) -> (answer: String, caveat: String) {
         let total = calls(report), measured = measuredCalls(report), estimated = estimatedCalls(report), usd = measuredUSD(report)
-        if !report.auditFound && total == 0 { return "COS has no record of its calls on this Mac yet. The record starts with its first one." }
-        if total == 0 { return "COS made no calls in the last 30 days." }
+        if !report.auditFound && total == 0 { return ("COS has no record of its calls on this Mac yet.", " The record starts with its first one.") }
+        if total == 0 { return ("COS made no calls in the last 30 days.", "") }
         let callWord = total == 1 ? "call" : "calls"
-        guard measured > 0 else { return "COS made \(total.formatted()) \(callWord) in the last 30 days. This server doesn't measure their cost yet." }
+        guard measured > 0 else { return ("COS made \(total.formatted()) \(callWord) in the last 30 days.", " This server doesn't measure their cost yet.") }
         let lead = report.sessions.stillReading > 0 ? "Measured so far: COS used " : "Measured: COS used "
         var sentence: String
         if usd <= 0 {
@@ -1651,10 +1699,19 @@ enum CosCostPresentation {
         } else {
             sentence = lead + money(usd) + " of the " + money(ran) + " you ran in the last 30 days."
         }
+        var caveat = ""
         if estimated > 0 && usd > 0 {
-            sentence += " \(estimated.formatted()) more \(estimated == 1 ? "call has" : "calls have") only character counts, so the real figure is higher."
+            caveat = " \(estimated.formatted()) more \(estimated == 1 ? "call has" : "calls have") only character counts, so the real figure is higher."
         }
-        return sentence
+        return (sentence, caveat)
+    }
+    static func headline(report: CosUsageReport, ran: Double, usage: UsageState) -> String {
+        let parts = headlineParts(report: report, ran: ran, usage: usage)
+        return parts.answer + parts.caveat
+    }
+    /// Dollars appear on the page, so the page says once what kind of dollars they are.
+    static func showsDollars(_ report: CosUsageReport) -> Bool {
+        report.rows.contains { $0.measuredUSD > 0 || $0.estimatedUSD > 0 } || report.work.measuredUSD > 0
     }
     /// Plain words for why there is no comparison, with the way out in the pane.
     static func usageNote(_ usage: UsageState) -> String? {
@@ -1689,8 +1746,8 @@ enum CosCostPresentation {
         }
         var mix: String?
         if row.measuredCalls > 0 && row.estimatedCalls > 0 {
-            let floor = row.estimatedUSD > 0 ? ", plus at least \(money(row.estimatedUSD)) estimated for the rest" : ""
-            mix = "Measured on \(row.measuredCalls.formatted()) of \(row.calls.formatted()) calls\(floor)."
+            let floor = row.estimatedUSD > 0 ? ", at least \(money(row.estimatedUSD)) estimated for the rest" : ", no verified price for the rest"
+            mix = "\(row.measuredCalls.formatted()) measured\(floor)."
         }
         if row.measuredUSD > 0 {
             return RowLine(id: row.category, title: row.category.title, count: count, evidence: .measured, figure: money(row.measuredUSD), detail: tokens + ", measured", mix: mix)
@@ -1739,24 +1796,67 @@ enum CosCostPresentation {
         guard let share, let price else { return nil }
         return "About \(percent(share)) of your usage, roughly \(money(share * price)) of your \(money(price))."
     }
-    static func workFigure(_ work: CosWorkSummary) -> String {
-        if work.measuredUSD > 0 { return money(work.measuredUSD) }
-        return work.measuredTokens > 0 ? "No price" : ""
+    /// The Work line: session slices from each run's start, plus real rows for work no log holds.
+    static func workUSD(_ report: CosUsageReport) -> Double {
+        report.work.measuredUSD + (report.rows.first { $0.category == .work }?.measuredUSD ?? 0)
+    }
+    static func workTokens(_ report: CosUsageReport) -> Int64 {
+        report.work.measuredTokens + (report.rows.first { $0.category == .work }?.measuredTokens ?? 0)
+    }
+    static func workFigure(_ report: CosUsageReport) -> String {
+        if workUSD(report) > 0 { return money(workUSD(report)) }
+        return workTokens(report) > 0 ? "No price" : ""
+    }
+    /// Intake checks and Work chat keep only character counts, so they sit beside the measured figure, not in it.
+    static func workBackground(_ report: CosUsageReport) -> String? {
+        guard let row = report.rows.first(where: { $0.category == .work }), row.estimatedCalls > 0 else { return nil }
+        let floor = row.estimatedUSD > 0 ? ", at least \(money(row.estimatedUSD)) estimated" : ", no verified price"
+        return "Plus " + row.category.count(row.estimatedCalls) + floor + "."
+    }
+    static func workWithoutLogs(_ work: CosWorkSummary) -> String {
+        "\(work.runsWithoutLogs.formatted()) \(work.runsWithoutLogs == 1 ? "run" : "runs") used a tool that keeps no log COS can read."
     }
     static func workCount(_ work: CosWorkSummary) -> String {
         guard work.handoffsFound else { return "This Mac has no record of Work runs." }
         return work.runs == 0 ? "No Work runs in the last 30 days" : "\(work.runs.formatted()) \(work.runs == 1 ? "run" : "runs") you started"
     }
     static let workMethod = "Counted from each run's session log, from the moment the run started. Later turns in that session count too. Not part of the figure above."
-    /// Sessions whose numbers are not in yet, in plain words.
+    static func stillReadingNote(_ report: CosUsageReport) -> String {
+        let n = report.sessions.stillReading
+        return "Still reading \(n.formatted()) \(n == 1 ? "session" : "sessions"). These figures will grow until it finishes."
+    }
+    /// The line under the price field. It says what the field does, or why it cannot yet.
+    static func compareHint(share: Double?, price: Double?, measured: Bool = true) -> String {
+        if !measured { return "Once this server measures its calls, this shows COS's share of what you pay. Your price stays on this Mac." }
+        if price == nil { return "Add it to see COS's share of what you pay. It stays on this Mac and is never sent." }
+        if share == nil { return "The comparison needs a current Usage total and a measured figure. Your price stays on this Mac." }
+        return "COS's share of your usage, times what you pay. Your price stays on this Mac and is never sent."
+    }
+    /// The disclosure's words, written for someone who has never read a ledger.
+    static func method(_ report: CosUsageReport) -> [String] {
+        var lines = [
+            "Measured means the provider reported the tokens, in a session log or a record COS keeps. Estimated means COS only has the length of the text, so it divides characters by four and uses the model's plain rate. Cache reads and system prompts aren't in that, which is why an estimate says at least.",
+            "Estimated figures stay out of every measured total. Rates are standard API rates, checked \(ratesCheckedOnWords(report)). A model with no verified rate shows tokens and No price, never $0.",
+            "The total you ran is what Usage counted in these 30 days, plus COS calls Usage can't see because they keep no session log.",
+        ]
+        let approximate = report.rows.reduce(0) { $0 + $1.approximateMatches }
+        if approximate > 0 { lines.append("\(approximate.formatted()) \(approximate == 1 ? "call was" : "calls were") matched to \(approximate == 1 ? "its run" : "their runs") by time and model, because older servers write no id. Newer rows carry one.") }
+        lines.append("Only counts, dates and model names are read from these logs. Nothing here leaves this Mac.")
+        return lines
+    }
+    private static func ratesCheckedOnWords(_ report: CosUsageReport) -> String {
+        guard let day = SessionUsageDay(report.ratesCheckedOn) else { return report.ratesCheckedOn }
+        let months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+        return "\(months[day.month - 1]) \(day.day), \(day.year)"
+    }
+    /// Sessions whose numbers are not in yet, in plain words. Still reading sits at the top of the page, so not here.
     static func sessionNotes(_ report: CosUsageReport) -> [String] {
         var notes: [String] = []
         let s = report.sessions
-        if s.stillReading > 0 { notes.append("Still reading \(s.stillReading.formatted()) \(s.stillReading == 1 ? "session" : "sessions"). These figures will grow until it finishes.") }
         if s.compressed > 0 { notes.append("\(s.compressed.formatted()) \(s.compressed == 1 ? "session is" : "sessions are") compressed and not read yet, so their cost is not in these figures.") }
         if s.noLogs > 0 { notes.append("\(s.noLogs.formatted()) \(s.noLogs == 1 ? "session has" : "sessions have") no log left on this Mac, so their cost is not in these figures.") }
         if s.busy { notes.append("The usage history was busy, so this pass read nothing new. The next one will.") }
-        if !report.runLedgersFound { notes.append("This server has no run records, so answers stay estimated.") }
+        if !report.runLedgersFound && calls(report) > 0 { notes.append("This server has no run records, so answers stay estimated.") }
         if report.undatedCalls > 0 { notes.append("\(report.undatedCalls.formatted()) \(report.undatedCalls == 1 ? "call has" : "calls have") no readable date, so \(report.undatedCalls == 1 ? "it isn't" : "they aren't") in these 30 days.") }
         if report.unreadableRows > 0 { notes.append("\(report.unreadableRows.formatted()) \(report.unreadableRows == 1 ? "line" : "lines") could not be read at all.") }
         return notes

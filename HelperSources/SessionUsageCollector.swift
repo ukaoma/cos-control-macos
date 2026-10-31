@@ -490,9 +490,9 @@ final class SessionUsageCollector {
 extension SessionUsageCollector {
     /// Long enough for the ledgers plus a real slice of logs, inside the 45 seconds Control waits.
     static let cosPassSeconds: TimeInterval = 20
-    static let cosPassBytes = 2*1024*1024*1024
-    /// So one huge log cannot take a whole pass from the others.
-    static let cosFileBytesPerPass = 512*1024*1024
+    static let cosPassBytes = 4*1024*1024*1024
+    /// So one huge log cannot take a whole pass from the others. Time bounds the pass whatever this says.
+    static let cosFileBytesPerPass = 1536*1024*1024
     private static let cosChunk = 8*1024*1024
     /// A little past the window, so a window edge never moves onto rows already thrown away.
     private static let cosRetentionSeconds = 32.0*86_400
@@ -560,6 +560,11 @@ extension SessionUsageCollector {
             }
         }
         return found
+    }
+
+    /// For the tests: how many session rows the table holds, so a row past the window can be seen not to be stored.
+    func cosStoredEventCount() throws -> Int {
+        Int(try query("SELECT COUNT(*) FROM cos_slice_events").first?.first ?? "") ?? 0
     }
 
     /// THE COMPRESSED LOG HOOK. Codex keeps most rollouts as `.jsonl.zst`, and `claude/usage-qa-fixes` brings the reader

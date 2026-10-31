@@ -5312,6 +5312,13 @@ need("stats: showingSessionUsage ? [] : sessionsStats" in sessions_pane,
      "Sessions keeps its session stat strip; Usage shows its own token totals instead")
 need("if showingSessionUsage {\n                SessionUsageView(store: model.sessionUsage)" in sessions_pane,
      "the Usage selection must render its own totals and history")
+need('COSViewOption(.sessions, "Sessions"), COSViewOption(.usage, "Usage"), COSViewOption(.cost, "COS cost")' in sessions_pane,
+     "Sessions, Usage and COS cost are the pane's three views")
+need("if sessionsPane == .cost {\n                CosCostView(usage: model.sessionUsage)" in sessions_pane,
+     "the COS cost selection must render its own page")
+need("if sessionsPane == .cost { await CosCostStore.shared.refresh(" in sessions_pane,
+     "Refresh on COS cost must refresh COS cost, not Usage")
+need("@State private var sessionsPane: SessionsPane = .sessions" in activity, "the pane's view is an enum, not a Bool")
 # The Cursor feed reads a sign-in and the network, so it is opt-in at both ends and a read-only pass never reaches it.
 usage_view_src = (root / "Sources/SessionUsageView.swift").read_text()
 helper_src = (root / "HelperSources/main.swift").read_text()
