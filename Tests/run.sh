@@ -1607,11 +1607,15 @@ views = (root / "Sources/Views.swift").read_text(encoding="utf-8")
 start = views.index("    private var syncedPanel: some View {")
 if ".cosControlTheme()" not in views[start:views.index("        .onAppear {", start)]:
     sys.exit("the menu-bar panel root lost .cosControlTheme()")
-# Every Toggle names a COS style, except the pet's right-click menu items, which the system menu draws.
+# Every Toggle names a COS style, except items in a system menu: the pet's right-click menu and, from 0.5.358, the Usage
+# settings and Columns menus.
 sources = {p.name: code(p.read_text(encoding="utf-8")) for p in (root / "Sources").glob("*.swift") if p.name != COMPONENTS}
 toggles = sum(len(re.findall(r"(?<![A-Za-z0-9_])Toggle\(", text)) for text in sources.values())
 pet = sources["SessionPet.swift"]
 menu = pet[pet.index("@ViewBuilder private var spriteMenu: some View {"):pet.index("private func handleSpriteClick()")].count("Toggle(")
+usage = sources["SessionUsageView.swift"]
+menu += usage[usage.index("private var filterRow: some View {"):usage.index("@ViewBuilder private var statusLines: some View {")].count("Toggle(")
+menu += usage[usage.index("private var usageTable: some View {"):usage.index("private func toolRow(")].count("Toggle(")
 styled = sum(len(re.findall(r"\.toggleStyle\(COS(?:Switch|Check|ChipToggle)Style\(\)\)", text)) for text in sources.values())
 if styled != toggles - menu:
     sys.exit(f"{toggles} Toggles, {menu} in the pet's menu, but {styled} name a COS toggle style")

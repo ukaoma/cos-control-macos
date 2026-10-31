@@ -62,6 +62,7 @@ import SwiftUI
             var modelSort: SessionUsageModelSort = .tokens
             var daySort: SessionUsageDaySort = .date
             var loading = false
+            var columns: [SessionUsageView.TableColumn]? = nil
         }
         let cases: [PageCase] = [
             PageCase(name: "range"),
@@ -77,6 +78,11 @@ import SwiftUI
             PageCase(name: "history", period: "All history", inspection: "2026-08"),
             PageCase(name: "custom", period: "Custom dates", inspection: month + "-24"),
             PageCase(name: "90days", period: "Last 90 days"),
+            PageCase(name: "30days-value", cost: true),
+            PageCase(name: "columns-none", minimumOnly: true, columns: []),
+            PageCase(name: "columns-all", minimumOnly: true, columns: SessionUsageView.TableColumn.allCases),
+            PageCase(name: "unpriced-model", period: "Last 90 days", cost: true, minimumOnly: true, provider: "OpenAI", model: ProcessInfo.processInfo.environment["COS_USAGE_RENDER_BUCKETS"] == nil ? "unpriced-model" : "gpt-5.5"),
+            PageCase(name: "history-value", period: "All history", cost: true),
             PageCase(name: "empty", empty: true, minimumOnly: true),
             PageCase(name: "empty-cost", cost: true, empty: true, minimumOnly: true),
             PageCase(name: "error", failed: true, minimumOnly: true),
@@ -92,9 +98,12 @@ import SwiftUI
             PageCase(name: "cost-categories", cost: true, minimumOnly: true, series: .categories),
             PageCase(name: "first-load", empty: true, minimumOnly: true, loading: true),
         ]
+        // Hand-run only: name the cases to render instead of all of them.
+        let only = ProcessInfo.processInfo.environment["COS_USAGE_RENDER_ONLY"].map { Set($0.split(separator: ",").map(String.init)) }
+        if let only, !only.isSubset(of: Set(cases.map(\.name))) { fatalError("COS_USAGE_RENDER_ONLY names a case that does not exist: \(only)") }
         for width in [1200.0, 800.0, 760.0] {
             for dark in [false, true] {
-              for fixture in cases where !fixture.minimumOnly || width == 760 {
+              for fixture in cases where (!fixture.minimumOnly || width == 760) && (only?.contains(fixture.name) ?? true) {
                 let pageStore = SessionUsageStore()
                 // The Cursor states are about a Mac with no Cursor rows yet, so they stay on the invented fixture.
                 var report = fixture.name.hasPrefix("cursor-") || fixture.name == "notes" ? plainReport : fixtureReport
@@ -113,7 +122,7 @@ import SwiftUI
                     initialDayBreakdownExpanded: fixture.expanded, initialTimeScale: fixture.scale,
                     initialMeasure: fixture.measure, initialSeries: fixture.series,
                     initialLineChart: fixture.lineChart, initialProvider: fixture.provider, initialModel: fixture.model,
-                    initialModelSort: fixture.modelSort, initialDaySort: fixture.daySort, initialShowNotes: fixture.notes)
+                    initialModelSort: fixture.modelSort, initialDaySort: fixture.daySort, initialShowNotes: fixture.notes, initialColumns: fixture.columns)
                 let host = NSHostingView(rootView: page.cosControlTheme().frame(width: width, height: height).background(COSPalette.panel))
                 let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: height), styleMask: [.borderless], backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false
@@ -121,6 +130,10 @@ import SwiftUI
                 host.appearance = window.appearance
                 window.contentView = host
                 host.frame = NSRect(x: 0, y: 0, width: width, height: height)
+                if only != nil {
+                    let started = Date(); host.layoutSubtreeIfNeeded()
+                    print("first layout \(Int(width)) \(fixture.name): \(Int(Date().timeIntervalSince(started) * 1000)) ms")
+                }
                 let until = Date().addingTimeInterval(1)
                 while Date() < until { RunLoop.main.run(until: Date().addingTimeInterval(0.05)); host.layoutSubtreeIfNeeded() }
                 guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds), let data = {
@@ -148,7 +161,7 @@ import SwiftUI
         let calendar = SessionUsagePresentation.reportingCalendar(zone)
         let chartRows = rows.filter { $0.day.hasPrefix(month) }
         let chartPoints = chartRows.map { row in
-            SessionUsageView.Point(date: SessionUsagePresentation.noon(of: row.day, calendar: calendar)!, series: row.model, tokens: row.counts.total, usd: row.estimatedUSD)
+            SessionUsageView.Point(date: SessionUsagePresentation.noon(of: row.day, calendar: calendar)!, series: row.model, tokens: row.counts.total, usd: row.estimatedUSD, key: row.day)
         }
         for dark in [false, true] {
           // Pointer x in the 756 pt chart: the right-edge case must flip the padded card left of the pointer.

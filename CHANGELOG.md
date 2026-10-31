@@ -1,3 +1,14 @@
+## 0.5.358 (build 412), Usage: figures, calendar and honest partial bars
+
+Private candidate paired with server 6.96.3 (no server change). Built on installed 357/411 (52e2659). No change to the helper's usage command or the usage database. Not published.
+
+- New on the page by default: figures row with a month estimate, day-by-day calendar with weekday averages, average line, lighter partial weeks and months (bars only), share bars, hover breakdown by series, and tokens against API value strips in the inspector.
+- Returns some of what 0.5.356 removed, at Miles's ask for every detail a user would want: per-day value, per-model records, Cache read % (in Columns) and the API value mix.
+- Changed or removed: the whole-period inspector headline, Models list and new-token note; the in-page "Updating usage history" line (a small spinner now); underlines on chart menus; Cache read's gold; ISO dates in Daily breakdown; tracking and Cursor switches moved from "How this is counted" to a gear menu, and the Cursor item now names Keychain. Price wording is one form: "+" and "No price".
+- Fix: the section header's Refresh ran a full import while tracking was paused. It now reads only.
+- Fix: a custom range running past today compared against a longer prior window.
+- A day or period with no price never counts as $0 in the value a day, weekday averages or the average line.
+
 ## 0.5.357 (build 411), Saved Mac speaker review, merged rows and suggested names
 
 Private candidate paired with server 6.96.3. Built on installed 356/410, including the Usage inspector and opt-in Cursor feed. No signed bytes exist at this number.

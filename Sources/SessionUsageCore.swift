@@ -334,8 +334,8 @@ enum SessionUsagePresentation {
     }
     static func costLabel(_ rows: [SessionUsageBucket]) -> String {
         let priced = rows.reduce(0) { $0 + $1.pricedEvents }, events = rows.reduce(0) { $0 + $1.events }
-        guard priced > 0 else { return "Unavailable" }
-        return rows.reduce(0) { $0 + $1.estimatedUSD }.formatted(.currency(code: "USD")) + (priced < events ? " + unknown" : "")
+        guard priced > 0 else { return "No price" }
+        return rows.reduce(0) { $0 + $1.estimatedUSD }.formatted(.currency(code: "USD")) + (priced < events ? "+" : "")
     }
     static func selectPeriod(_ rows: [SessionUsageBucket], period: String, now: Date, timeZone: TimeZone, customStart: Date? = nil, customEnd: Date? = nil) -> [SessionUsageBucket] {
         if period == allHistory { return rows }
@@ -454,8 +454,8 @@ enum SessionUsagePresentation {
         let pricedEvents: Int
         let estimatedUSD: Double
         var costLabel: String {
-            guard pricedEvents > 0 else { return "Unavailable" }
-            return estimatedUSD.formatted(.currency(code: "USD")) + (pricedEvents < events ? " + unknown" : "")
+            guard pricedEvents > 0 else { return "No price" }
+            return estimatedUSD.formatted(.currency(code: "USD")) + (pricedEvents < events ? "+" : "")
         }
     }
     static func summarize(_ rows: [SessionUsageBucket], by key: KeyPath<SessionUsageBucket, String>, excludingCacheReads: Bool = false) -> [Summary] {
@@ -529,8 +529,8 @@ enum SessionUsagePresentation {
     /// A table cell's value for rows that may be partly or wholly unpriced.
     static func costCell(_ rows: [SessionUsageBucket]) -> String {
         let priced = rows.reduce(0) { $0 + $1.pricedEvents }, events = rows.reduce(0) { $0 + $1.events }
-        guard priced > 0 else { return "No verified price" }
-        return dollars(rows.reduce(0) { $0 + $1.estimatedUSD }) + (priced < events ? " + unknown" : "")
+        guard priced > 0 else { return "No price" }
+        return dollars(rows.reduce(0) { $0 + $1.estimatedUSD }) + (priced < events ? "+" : "")
     }
     /// "Oct 19" for a chart axis, "Oct" for a month key.
     static func axisLabel(for key: String) -> String {
@@ -564,6 +564,132 @@ enum SessionUsagePresentation {
         for step in [1.0, 1.2, 1.6, 2, 2.4, 3.2, 4, 6, 8, 10] where step * magnitude >= target { return step * magnitude }
         return 10 * magnitude
     }
+    /// "Oct 30" for a compact column, with the year when it is not the year named.
+    static func shortDay(_ key: String, thisYear: Int) -> String {
+        guard let day = SessionUsageDay(key) else { return key }
+        return short(day) + (day.year == thisYear ? "" : ", \(day.year)")
+    }
+    /// "Sat, Oct 24" for a row that has to scan, with the year when it is not the year named.
+    static func weekdayDay(_ key: String, thisYear: Int) -> String {
+        guard let day = SessionUsageDay(key) else { return key }
+        return String(weekdayNames[day.weekdayFromMonday].prefix(3)) + ", " + shortDay(key, thisYear: thisYear)
+    }
+    /// The typical bar, leaving out partial ones. Under four full periods an average says nothing a glance does not.
+    static func periodAverage(_ totals: [String: Double], partial: Set<String>) -> Double? {
+        let full = totals.filter { !partial.contains($0.key) }.map(\.value)
+        return full.count >= 4 ? full.reduce(0, +) / Double(full.count) : nil
+    }
+    /// API value for an average day. A day with no price is left out, never counted as $0, and + says some of the
+    /// days counted have unpriced records.
+    static func dailyValueLabel(_ rows: [SessionUsageBucket]) -> String {
+        let days = summarize(rows, by: \.day).filter { $0.pricedEvents > 0 }
+        guard !days.isEmpty else { return "No price" }
+        return dollars(days.reduce(0.0) { $0 + $1.estimatedUSD } / Double(days.count)) + (days.contains { $0.pricedEvents < $0.events } ? "+" : "")
+    }
+    /// The last day each model has a record, keyed like `lastUsedKey`. Built once for a table.
+    static func lastUsed(_ rows: [SessionUsageBucket]) -> [String: String] {
+        var days: [String: String] = [:]
+        for row in rows {
+            let key = lastUsedKey(row)
+            if row.day > days[key, default: ""] { days[key] = row.day }
+        }
+        return days
+    }
+    static func lastUsedKey(_ row: SessionUsageBucket) -> String { row.provider + "|" + row.model }
+    /// A partial first or last bar is not a drop in use. Weeks and months that the selection or today cuts short.
+    static func partialPeriods(_ keys: [String], scale: SessionUsageTimeScale, firstDay: String?, lastDay: String) -> Set<String> {
+        guard scale != .daily, let firstDay else { return [] }
+        return Set(keys.filter { key in
+            let start: SessionUsageDay?, end: SessionUsageDay?
+            if scale == .weekly { start = SessionUsageDay(key); end = start?.adding(6) }
+            else { start = SessionUsageDay(periodStart(key)); end = start?.monthEnd }
+            guard let start, let end else { return false }
+            return start.key < firstDay || end.key > lastDay
+        })
+    }
+    /// Value at list rates for each million new tokens. A row counts only when every record has a price: a row holds
+    /// one set of counts, so a partly priced row would divide part of its value by all of its tokens.
+    static func valuePerMillionNew(_ rows: [SessionUsageBucket]) -> String {
+        let priced = rows.filter { $0.events > 0 && $0.pricedEvents == $0.events }
+        let new = priced.reduce(Int64(0)) { $0 + tokenCount($1.counts, excludingCacheReads: true) }
+        guard new > 0 else { return "No price" }
+        return (priced.reduce(0.0) { $0 + $1.estimatedUSD } / Double(new) * 1e6).formatted(.currency(code: "USD").precision(.fractionLength(2)))
+    }
+
+    /// One calendar column, Monday to Sunday. A day outside the selection stays blank; a day inside it with no
+    /// summary has no logs, which is different from zero.
+    struct CalendarDay: Identifiable, Sendable {
+        let id: String
+        let inRange: Bool
+        let summary: Summary?
+    }
+    struct CalendarWeek: Identifiable, Sendable {
+        let id: String
+        let monthLabel: String?
+        let days: [CalendarDay]
+    }
+    static func calendarWeeks(_ rows: [SessionUsageBucket], bounds: ClosedRange<String>?, today: String) -> [CalendarWeek] {
+        guard let lower = SessionUsageDay(bounds?.lowerBound ?? rows.map(\.day).min() ?? ""),
+              let upper = SessionUsageDay(min(bounds?.upperBound ?? today, today)), lower <= upper else { return [] }
+        let summaries = Dictionary(uniqueKeysWithValues: summarize(rows, by: \.day).map { ($0.id, $0) })
+        var weeks: [CalendarWeek] = []
+        var monday = lower.monday
+        // A calendar over a year long repeats month names, so its first column and each January carry the year.
+        let spansYears = upper.serial - lower.serial > 366
+        while monday <= upper {
+            // A column is labelled by the month of its first day inside the selection.
+            let first = monday < lower ? lower : monday
+            let label = String(monthNames[first.month - 1].prefix(3)) + (spansYears && (weeks.isEmpty || first.month == 1) ? " \(first.year)" : "")
+            let previous = weeks.last.flatMap { $0.days.first { $0.inRange }?.id }.flatMap { SessionUsageDay($0) }
+            let days = (0..<7).map { offset -> CalendarDay in
+                let day = monday.adding(offset)
+                return CalendarDay(id: day.key, inRange: day >= lower && day <= upper, summary: summaries[day.key])
+            }
+            weeks.append(CalendarWeek(id: monday.key, monthLabel: previous?.month == first.month ? nil : label, days: days))
+            monday = monday.adding(7)
+        }
+        // A stub first column would run its label into the next month's. A column of four days or more has room.
+        if weeks.count > 1, weeks[1].monthLabel != nil, weeks[0].days.filter(\.inRange).count < 4 {
+            weeks[0] = CalendarWeek(id: weeks[0].id, monthLabel: nil, days: weeks[0].days)
+        }
+        return weeks
+    }
+    /// The average for each weekday, Monday first, across the days `counted` accepts. Measuring value, that leaves out
+    /// a day with no price, which would otherwise read as a $0 day and pull the average down.
+    static func weekdayAverages(_ rows: [SessionUsageBucket], counted: (Summary) -> Bool, value: (Summary) -> Double) -> [Double] {
+        var sums = [Double](repeating: 0, count: 7), days = [Int](repeating: 0, count: 7)
+        for summary in summarize(rows, by: \.day) where counted(summary) {
+            guard let index = SessionUsageDay(summary.id)?.weekdayFromMonday else { continue }
+            sums[index] += value(summary)
+            days[index] += 1
+        }
+        return zip(sums, days).map { $1 > 0 ? $0 / Double($1) : 0 }
+    }
+    struct MonthPace: Sendable {
+        let month: String
+        let usd: Double
+        let hasPrice: Bool
+        let complete: Bool
+        /// Straight line from the first day with usage this month. Nil until three days have passed since it, and on the
+        /// last day, when nothing is left to project.
+        let projectedUSD: Double?
+        let lastDay: String
+    }
+    /// This calendar month so far, for the tool and model in view.
+    static func monthPace(_ rows: [SessionUsageBucket], now: Date, timeZone: TimeZone) -> MonthPace? {
+        guard let today = SessionUsageDay(dayFormatter(timeZone: timeZone).string(from: now)) else { return nil }
+        let month = rows.filter { $0.day.hasPrefix(today.monthKey) }
+        let usd = month.reduce(0.0) { $0 + $1.estimatedUSD }
+        let priced = month.reduce(0) { $0 + $1.pricedEvents }, events = month.reduce(0) { $0 + $1.events }
+        let total = today.monthEnd.day
+        // A tool or model that started mid-month is projected from its start, not from the 1st.
+        let start = month.compactMap { SessionUsageDay($0.day)?.day }.min() ?? today.day
+        let elapsed = today.day - start + 1
+        let projected = elapsed >= 3 && today.day < total && priced > 0 ? usd + usd / Double(elapsed) * Double(total - today.day) : nil
+        return MonthPace(month: monthNames[today.month - 1], usd: usd, hasPrice: priced > 0, complete: priced == events,
+            projectedUSD: projected, lastDay: short(today.monthEnd))
+    }
+
     /// A cost table cell's share of the priced total.
     static func valueShare(_ rows: [SessionUsageBucket], of total: Double) -> String {
         rows.reduce(0) { $0 + $1.pricedEvents } == 0 ? "Unavailable" : costShare(rows.reduce(0) { $0 + $1.estimatedUSD }, of: total)
@@ -765,7 +891,13 @@ enum SessionUsagePresentation {
             return (bounds, s.adding(-days).key...e.adding(-days).key)
         }
         if period == lastWeekend, let bounds = dayBounds(period: period, now: now, timeZone: timeZone) { return shifted(bounds, by: 7) }
-        if period == customDates { return customBounds(customStart, customEnd, timeZone: timeZone).flatMap { shifted($0) } }
+        if period == customDates {
+            // A range running past today compares only the dates that have happened, or the prior window would be longer.
+            guard let bounds = customBounds(customStart, customEnd, timeZone: timeZone) else { return nil }
+            let today = dayFormatter(timeZone: timeZone).string(from: now)
+            guard bounds.lowerBound <= today else { return nil }
+            return shifted(bounds.lowerBound...min(bounds.upperBound, today))
+        }
         if let bounds = dayBounds(period: period, now: now, timeZone: timeZone) { return shifted(bounds) }
         guard let first = SessionUsageDay(period + "-01"), let today = SessionUsageDay(dayFormatter(timeZone: timeZone).string(from: now)) else { return nil }
         let previous = first.adding(-1).monthStart

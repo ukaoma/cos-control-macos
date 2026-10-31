@@ -85,7 +85,7 @@ struct SessionUsageSplitLayout: Layout {
         if sideBySide(bounds.width) {
             // The chart takes the inspector's height, so the two columns end together.
             subviews[0].place(at: bounds.origin, proposal: ProposedViewSize(width: bounds.width - inspectorWidth - gap, height: bounds.height))
-            subviews[1].place(at: CGPoint(x: bounds.maxX - inspectorWidth, y: bounds.minY), proposal: ProposedViewSize(width: inspectorWidth, height: nil))
+            subviews[1].place(at: CGPoint(x: bounds.maxX - inspectorWidth, y: bounds.minY), proposal: ProposedViewSize(width: inspectorWidth, height: bounds.height))
         } else {
             subviews[0].place(at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: chartHeight))
             subviews[1].place(at: CGPoint(x: bounds.minX, y: bounds.minY + chartHeight + gap), proposal: ProposedViewSize(width: bounds.width, height: nil))
@@ -122,6 +122,28 @@ struct SessionUsageView: View {
     /// The scale in use before Busiest day or a daily row jumped to Daily, restored by Show the whole period.
     @State private var scaleBeforeDayJump: SessionUsageTimeScale?
     @State private var exportStatus: String?
+    /// Which optional table columns show. Remembered, because someone who wants them wants them every time.
+    @State private var extraColumns: [TableColumn] = TableColumn.remembered
+    @State private var narrow = false
+
+    /// Table detail beyond the core four. Records and Last used start on, because they differ most from row to row.
+    enum TableColumn: String, CaseIterable, Identifiable {
+        case records = "Records", cacheReads = "Cache reads", perMillion = "Per 1M new", lastUsed = "Last used"
+        var id: String { rawValue }
+        var help: String {
+            switch self {
+            case .records: return "Usage records, about one for each model response."
+            case .cacheReads: return "How much of all tokens was context read again from cache."
+            case .perMillion: return "API value for each million new tokens, priced records only."
+            case .lastUsed: return "The last day with a record in this selection."
+            }
+        }
+        static let storageKey = "sessionUsageTableColumns"
+        static var remembered: [TableColumn] {
+            guard let names = UserDefaults.standard.stringArray(forKey: storageKey) else { return [.records, .lastUsed] }
+            return allCases.filter { names.contains($0.rawValue) }
+        }
+    }
 
     init(store: SessionUsageStore, initialPeriod: String? = nil, initialInspection: String? = nil,
          initialDates: (Date, Date)? = nil, initialCostChart: Bool = false,
@@ -129,8 +151,10 @@ struct SessionUsageView: View {
          initialTimeScale: SessionUsageTimeScale? = nil, initialMeasure: SessionUsageMeasure? = nil,
          initialSeries: SessionUsageSeries = .providers, initialLineChart: Bool = false,
          initialProvider: String = SessionUsagePresentation.allProviders, initialModel: String = SessionUsagePresentation.allModels,
-         initialModelSort: SessionUsageModelSort = .tokens, initialDaySort: SessionUsageDaySort = .date, initialShowNotes: Bool = false) {
+         initialModelSort: SessionUsageModelSort = .tokens, initialDaySort: SessionUsageDaySort = .date, initialShowNotes: Bool = false,
+         initialColumns: [TableColumn]? = nil) {
         self.store = store
+        if let initialColumns { _extraColumns = State(initialValue: initialColumns) }
         let period = initialPeriod ?? "Last 30 days"
         let scale = initialTimeScale ?? P.defaultScale(for: period)
         let chartMeasure = initialMeasure ?? (initialCostChart ? .cost : .tokens)
@@ -294,6 +318,7 @@ struct SessionUsageView: View {
                 } else {
                     if month == P.customDates { customDates.padding(.top, 12) }
                     statusLines
+                    if !selected.isEmpty { figures.padding(.top, 22) }
                     if selected.isEmpty {
                         Text("No recorded usage for this selection. A missing tool is not zero usage.")
                             .frame(maxWidth: .infinity, minHeight: 160).foregroundStyle(COSPalette.subtle)
@@ -301,14 +326,17 @@ struct SessionUsageView: View {
                         SessionUsageSplitLayout {
                             chartSection
                             inspector
-                        }.padding(.top, 22)
-                        usageTable.padding(.top, 30)
+                        }.padding(.top, 26)
+                        dayByDay.padding(.top, 34)
+                        usageTable.padding(.top, 34)
                         dayBreakdown.padding(.top, 20)
                     }
                 }
                 footer.padding(.top, 20)
-            }.padding(22)
+            }
+            .padding(22)
         }
+        .onGeometryChange(for: Bool.self) { $0.size.width < 944 } action: { narrow = $0 }
         .onChange(of: slice) { _, _ in showWholePeriod() }
         .onChange(of: month) { _, value in
             if scalePicked {
@@ -350,20 +378,37 @@ struct SessionUsageView: View {
     private var filterRow: some View {
         HStack(alignment: .center, spacing: 8) {
             COSDropdown("Period", selection: $month, options: (P.periods + months).map { COSDropdownOption($0, $0) }, showsLabel: false)
-                .frame(width: 150)
+                .frame(width: narrow ? 142 : 150)
             COSDropdown("Tool", selection: Binding(get: { slice.provider }, set: { value in
                 slice.choose(provider: value)
                 if slice.model != P.allModels && !models.contains(slice.model) { slice.choose(model: P.allModels) }
             }), options: [COSDropdownOption(P.allProviders, P.allProviders)] + providers.map { COSDropdownOption($0, P.toolName($0)) }, showsLabel: false)
-                .frame(width: 150)
+                .frame(width: narrow ? 108 : 150)
             COSDropdown("Model", selection: Binding(get: { slice.model }, set: { slice.choose(model: $0) }),
                         options: [COSDropdownOption(P.allModels, P.allModels)] + models.map { COSDropdownOption($0, P.modelName($0)) }, showsLabel: false)
-                .frame(width: 190)
+                .frame(width: narrow ? 132 : 190)
             if hasFilter {
                 Button("Clear filters") { slice.reset(); showWholePeriod() }
                     .buttonStyle(.plain).font(COSType.body(12)).foregroundStyle(COSPalette.accent)
             }
             Spacer(minLength: 8)
+            if let updatedTime, !(narrow && hasFilter) {
+                Text("Updated \(updatedTime)").font(COSType.body(12)).foregroundStyle(COSPalette.subtle).monospacedDigit().lineLimit(1).fixedSize()
+            }
+            if store.loading { ProgressView().controlSize(.mini).accessibilityLabel("Refreshing usage") }
+            Menu {
+                Toggle("Track session usage on this Mac", isOn: $store.enabled)
+                if store.offersCursor {
+                    // Turning this on reads Keychain at once, so the item says so.
+                    Toggle("Count Cursor tokens (reads your sign-in from Keychain)", isOn: Binding(get: { store.cursorEnabled }, set: { on in
+                        if on { store.countCursorTokens() } else { store.cursorEnabled = false }
+                    }))
+                }
+            } label: {
+                Image(systemName: "gearshape").font(.system(size: 12, weight: .medium))
+            }
+            .cosMenu().fixedSize()
+            .help("Usage settings").accessibilityLabel("Usage settings")
             Menu {
                 Button("Copy as CSV") { copySlice(json: false) }
                 Button("Copy as JSON") { copySlice(json: true) }
@@ -381,9 +426,6 @@ struct SessionUsageView: View {
     }
 
     @ViewBuilder private var statusLines: some View {
-        if store.loading {
-            ProgressView("Updating usage history…").controlSize(.small).padding(.top, 10)
-        }
         if let error = store.error {
             Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger).padding(.top, 10)
         }
@@ -433,6 +475,16 @@ struct SessionUsageView: View {
         !buckets.isEmpty && !selected.isEmpty && provider == P.allProviders && !providers.contains("Cursor") && store.offersCursor
     }
 
+    /// Names what the + is leaving out, instead of only counting it.
+    private var unpricedNote: String? {
+        guard unpriced > 0 else { return nil }
+        var missing: [String: Int] = [:]
+        for row in selected where row.pricedEvents < row.events { missing[P.modelName(row.model), default: 0] += row.events - row.pricedEvents }
+        let names = missing.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.map(\.key)
+        let listed = names.prefix(2).joined(separator: " and ") + (names.count > 2 ? " and \(names.count - 2) more" : "")
+        return "A + means a figure leaves out \(unpriced.formatted()) records with no verified price: \(listed)."
+    }
+
     private var cursorCheckedTime: String? {
         guard store.cursorEnabled, let stamp = store.report?.cursorFeed?.lastSuccessAt, let date = ISO8601DateFormatter().date(from: stamp) else { return nil }
         let f = DateFormatter(); f.timeStyle = .short; f.dateStyle = .none
@@ -451,9 +503,9 @@ struct SessionUsageView: View {
             Divider()
             if let report = store.report {
                 ChipFlowLayout(spacing: 14) {
-                    if let updatedTime { Text("Updated \(updatedTime) from \(report.filesIndexed.formatted()) log files on this Mac.") }
+                    Text("Read from \(report.filesIndexed.formatted()) log files on this Mac.")
                     if report.unreadableFiles > 0 { Text("\(report.unreadableFiles.formatted()) could not be read.") }
-                    if unpriced > 0 { Text("\(unpriced.formatted()) records have no verified price.") }
+                    if let unpricedNote { Text(unpricedNote) }
                     if let checked = cursorCheckedTime { Text("Cursor checked \(checked).") }
                     // While the table's Cursor row is showing, it already says this.
                     if let feed = report.cursorFeed, feed.isProblem, !cursorRowVisible, let message = feed.message {
@@ -465,11 +517,7 @@ struct SessionUsageView: View {
             }
             DisclosureGroup("How this is counted", isExpanded: $showNotes) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Toggle("Track session usage on this Mac", isOn: $store.enabled).toggleStyle(COSCheckStyle())
                     if store.offersCursor {
-                        Toggle("Count Cursor tokens", isOn: Binding(get: { store.cursorEnabled }, set: { on in
-                            if on { store.countCursorTokens() } else { store.cursorEnabled = false }
-                        })).toggleStyle(COSCheckStyle())
                         Text("Counting Cursor reads your Cursor sign-in from this Mac's Keychain and asks Cursor for your usage. Only counts, dates, model names and each request's reported cost are stored. Turning it off keeps what was already counted.")
                     }
                     Text("While COS Control is running it refreshes every five minutes. Pausing keeps existing history. Only counts, dates, model names and file checkpoints are stored. Local logs are never uploaded.")
@@ -526,7 +574,10 @@ struct SessionUsageView: View {
                 Button(option.0, action: option.1)
             }
         } label: {
-            Text(title).font(COSType.body(15, weight: .medium)).foregroundStyle(COSPalette.accent).underline()
+            HStack(spacing: 3) {
+                Text(title).font(COSType.body(15, weight: .medium))
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+            }.foregroundStyle(COSPalette.accent)
         }
         .cosWordMenu().fixedSize()
         .accessibilityLabel(label)
@@ -549,7 +600,7 @@ struct SessionUsageView: View {
     }
 
     private var chartSentence: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
+        HStack(alignment: .center, spacing: 6) {
             sentenceWord(sentenceMeasure.rawValue, label: "Measure", options: SentenceMeasure.allCases.map { value in (value.rawValue, { choose(value) }) })
             Text("by").font(COSType.body(15, weight: .medium))
             sentenceWord(stackWord, label: "Stack by", options: [
@@ -587,9 +638,110 @@ struct SessionUsageView: View {
             } else {
                 SessionUsageChart(points: points, rows: selected, scale: timeScale, measure: measure,
                     excludeCacheReads: excludeCacheReads, timeZone: reportingZone, inspectedPeriod: inspectedBinding,
-                    lineChart: lineChart, bounds: selectionBounds, seriesColors: seriesMode == .models ? modelColors : [:])
+                    lineChart: lineChart, bounds: selectionBounds, seriesColors: seriesMode == .models ? modelColors : [:],
+                    partialPeriods: partialPeriods)
             }
             legend
+        }
+    }
+
+    private var partialPeriods: Set<String> {
+        let today = dateFormatter.string(from: Date())
+        let firstRecord = selected.map(\.day).min()
+        return P.partialPeriods(periodKeys, scale: timeScale, firstDay: [selectionBounds?.lowerBound, firstRecord].compactMap { $0 }.max(),
+                                lastDay: min(selectionBounds?.upperBound ?? today, today))
+    }
+
+    // MARK: Figures
+
+    private struct Figure: Identifiable {
+        let title: String
+        let value: String
+        var note: String? = nil
+        let help: String
+        var id: String { title }
+    }
+
+    private func priorNote(_ delta: String, _ current: P.PeriodComparison, pricedOnly: Bool = false) -> String? {
+        guard current.hasPriorBaseline, !current.partialPriorHistory, delta != "Unavailable" else { return nil }
+        return delta + " on the period before" + (pricedOnly ? ", priced records" : "")
+    }
+
+    /// The answers people open this page for, before any chart. Tool and model filters apply; a clicked bar does not
+    /// change them, the panel beside the chart covers that bar.
+    private var figures: some View {
+        let compare = { (excluding: Bool) in
+            P.comparePeriod(allRows: buckets, selectedRows: selected, period: month, provider: provider, model: model, measure: .tokens,
+                excludingCacheReads: excluding, now: Date(), timeZone: reportingZone, customStart: customStart, customEnd: customEnd)
+        }
+        let all = compare(false), new = compare(true)
+        let days = Set(selected.map(\.day)).count
+        let matching = buckets.filter { (provider == P.allProviders || $0.provider == provider) && (model == P.allModels || $0.model == model) }
+        let pace = P.monthPace(matching, now: Date(), timeZone: reportingZone)
+        var list = [
+            Figure(title: "API value", value: P.costCell(selected), note: priorNote(all.costDeltaLabel, all, pricedOnly: all.costDeltaPartial),
+                   help: "What these tokens would cost at standard API rates. Not your subscription bill."),
+            Figure(title: "New tokens", value: P.shortTokens(P.tokenCount(counts, excludingCacheReads: true)), note: priorNote(new.tokenDeltaLabel, new),
+                   help: "Input, output and cache writes."),
+            Figure(title: "All tokens", value: P.shortTokens(counts.total), note: P.share(counts.cacheRead, of: counts.total) + " read again from cache",
+                   help: "New tokens plus context read again from cache."),
+            Figure(title: "API value a day", value: P.dailyValueLabel(selected), note: "\(days.formatted()) \(days == 1 ? "day" : "days") with usage",
+                   help: "Average across days with a price. Days without logs or a price are left out, not counted as zero.")
+        ]
+        if let pace, pace.hasPrice {
+            list.append(Figure(title: "\(pace.month) so far", value: P.dollars(pace.usd) + (pace.complete ? "" : "+"),
+                note: pace.projectedUSD.map { "About \(P.dollars($0)) by \(pace.lastDay)" },
+                help: "This calendar month for the tool and model in view, whatever period is selected. The estimate is a straight line from the days so far."))
+        }
+        return HStack(alignment: .top, spacing: 16) {
+            ForEach(Array(list.enumerated()), id: \.element.id) { index, figure in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(figure.value).font(COSType.display(index == 0 ? 32 : 24)).monospacedDigit()
+                        .lineLimit(1).minimumScaleFactor(0.7)
+                        .frame(height: 40, alignment: .bottomLeading)
+                    Text(figure.title).font(COSType.body(12, weight: .medium))
+                    if let note = figure.note {
+                        Text(note).font(COSType.body(11)).foregroundStyle(COSPalette.subtle).monospacedDigit()
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .help(figure.help)
+                .accessibilityElement(children: .combine)
+            }
+        }
+    }
+
+    // MARK: Day by day
+
+    private func dayValue(_ summary: P.Summary) -> Double {
+        measure == .cost ? summary.estimatedUSD : Double(measured(summary.counts))
+    }
+    private func dayFigure(_ value: Double) -> String {
+        measure == .cost ? P.dollars(value) : P.shortTokens(Int64(value))
+    }
+    /// Measuring value, a day with no price has no figure to show or average.
+    private func dayCounted(_ summary: P.Summary) -> Bool { measure != .cost || summary.pricedEvents > 0 }
+    private var thisYear: Int { Int(dateFormatter.string(from: Date()).prefix(4)) ?? 0 }
+
+    @ViewBuilder private var dayByDay: some View {
+        let today = dateFormatter.string(from: Date())
+        let weeks = P.calendarWeeks(selected, bounds: selectionBounds, today: today)
+        // Under three columns the bars above already say all of this.
+        if weeks.count >= 3 {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("\(sentenceMeasure.rawValue) day by day").font(COSType.body(15, weight: .medium))
+                SessionUsageCalendar(weeks: weeks, averages: P.weekdayAverages(selected, counted: dayCounted, value: dayValue), inspectedDay: timeScale == .daily ? inspectedPeriod : nil,
+                    counted: dayCounted, value: dayValue, figure: dayFigure,
+                    cellFigure: { summary in dayFigure(dayValue(summary)) + (measure == .cost && summary.pricedEvents < summary.events ? "+" : "") },
+                    emptyWords: hasFilter ? "no records for this selection" : "no logs",
+                    detail: { summary in
+                        "\(P.periodTitle(for: summary.id, scale: .daily)): \(summary.costLabel), \(P.shortTokens(summary.counts.total)) tokens, \(P.shortTokens(P.tokenCount(summary.counts, excludingCacheReads: true))) new, \(summary.events.formatted()) records"
+                    },
+                    onPick: { day in
+                        if timeScale == .daily && inspectedPeriod == day { showWholePeriod() } else { inspectDay(day) }
+                    })
+            }
         }
     }
 
@@ -609,6 +761,10 @@ struct SessionUsageView: View {
                     RoundedRectangle(cornerRadius: 2).strokeBorder(COSPalette.subtle, style: StrokeStyle(lineWidth: 1, dash: [2, 2])).frame(width: 9, height: 9)
                     Text("Cursor not counted yet")
                 }
+            }
+            if !lineChart && !partialPeriods.isEmpty {
+                // The chart draws an average only from four full periods.
+                Text("Lighter bars cover part of a \(scaleWord)" + (periodKeys.count - partialPeriods.count >= 4 ? " and are left out of the average." : "."))
             }
         }
         .font(COSType.body(12)).foregroundStyle(COSPalette.subtle)
@@ -690,48 +846,114 @@ struct SessionUsageView: View {
         return P.share(measured(rows.reduce(SessionUsageCounts()) { $0 + $1.counts }), of: measured(counts))
     }
     private func newTokens(_ counts: SessionUsageCounts) -> String { P.shortTokens(P.tokenCount(counts, excludingCacheReads: true)) }
+    /// The same share as a length, so the table scans without reading every number.
+    private func shareBar(_ rows: [SessionUsageBucket], color: Color) -> some View {
+        let fraction: Double
+        if measure == .cost {
+            let whole = selected.reduce(0.0) { $0 + $1.estimatedUSD }
+            fraction = whole > 0 ? rows.reduce(0.0) { $0 + $1.estimatedUSD } / whole : 0
+        } else {
+            let whole = measured(counts)
+            fraction = whole > 0 ? Double(measured(rows.reduce(SessionUsageCounts()) { $0 + $1.counts })) / Double(whole) : 0
+        }
+        let cell = shareCell(rows)
+        return HStack(spacing: 8) {
+            // A narrow window with every column on keeps the numbers and gives up the bars.
+            if !(narrow && extraColumns.count > 2) {
+                // An unpriced row has no share of value, and an empty track would read as zero.
+                Capsule().fill(cell == "Unavailable" ? Color.clear : COSPalette.line).frame(width: 56, height: 5)
+                    .overlay(alignment: .leading) {
+                        Capsule().fill(color).frame(width: fraction > 0 ? max(2, 56 * fraction) : 0, height: 5)
+                    }
+            }
+            // The API value column beside it already says No price.
+            Text(cell == "Unavailable" ? "" : cell).lineLimit(1).fixedSize().frame(minWidth: 40, alignment: .trailing)
+        }
+    }
+
+    private func toggleColumn(_ column: TableColumn) {
+        if extraColumns.contains(column) { extraColumns.removeAll { $0 == column } }
+        else { extraColumns = TableColumn.allCases.filter { extraColumns.contains($0) || $0 == column } }
+        UserDefaults.standard.set(extraColumns.map(\.rawValue), forKey: TableColumn.storageKey)
+    }
+
+    @ViewBuilder private func extraCells(_ rows: [SessionUsageBucket], lastUsed: [String: String]) -> some View {
+        ForEach(extraColumns) { column in
+            switch column {
+            case .records: Text(rows.reduce(0) { $0 + $1.events }.formatted())
+            case .cacheReads:
+                let total = rows.reduce(SessionUsageCounts()) { $0 + $1.counts }
+                Text(P.share(total.cacheRead, of: total.total))
+            case .perMillion: Text(P.valuePerMillionNew(rows))
+            case .lastUsed:
+                Text(rows.compactMap { lastUsed[P.lastUsedKey($0)] }.max().map { P.shortDay($0, thisYear: thisYear) } ?? "")
+            }
+        }
+    }
 
     private var usageTable: some View {
         // The columns name their own counts, so All tokens sorts by all tokens whatever the chart is showing.
         let groups = P.toolGroups(selected, by: modelSort, ascending: modelSortAscending)
-        return Grid(alignment: .trailing, horizontalSpacing: 18, verticalSpacing: 0) {
+        let lastUsed = P.lastUsed(selected)
+        return VStack(alignment: .leading, spacing: 12) {
+          HStack {
+            // The inspector can show one bar. The table always covers the whole selection, so it says which.
+            Text(inspectedPeriod == nil ? "Tool and model" : "Tool and model, \(wholePeriodTitle)").font(COSType.body(15, weight: .medium))
+            Spacer()
+            Menu {
+                ForEach(TableColumn.allCases) { column in
+                    Toggle(column.rawValue, isOn: Binding(get: { extraColumns.contains(column) }, set: { _ in toggleColumn(column) }))
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Text("Columns").font(COSType.body(12, weight: .medium))
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)).foregroundStyle(COSPalette.accent)
+                }
+            }
+            .cosMenu().fixedSize()
+            .help("Choose which details the table shows")
+          }
+          Grid(alignment: .trailing, horizontalSpacing: 18, verticalSpacing: 0) {
             GridRow {
-                // The inspector can show one bar. The table always covers the whole selection, so it says which.
-                sortHeader(inspectedPeriod == nil ? "Tool and model" : "Tool and model, \(wholePeriodTitle)", .model, help: "Sort models by name").gridColumnAlignment(.leading)
+                sortHeader("Name", .model, help: "Sort models by name").gridColumnAlignment(.leading)
                 sortHeader("All tokens", .tokens, help: "Sort by all tokens")
                 sortHeader("New tokens", .newTokens, help: "Sort by input, output and cache writes")
+                ForEach(extraColumns) { column in
+                    Text(column.rawValue).foregroundStyle(COSPalette.subtle).help(column.help)
+                }
                 Text("Share").foregroundStyle(COSPalette.subtle).help("Share of the selected \(measure == .cost ? "API value" : "tokens"). Never your subscription allowance.")
                 sortHeader("API value", .cost, help: "Sort by API value; unpriced models stay last")
             }
             .font(COSType.body(11, weight: .medium)).padding(.bottom, 8)
             Divider()
             ForEach(groups) { group in
-                toolRow(group)
+                toolRow(group, lastUsed: lastUsed)
                 Divider()
                 let open = expandedTools.contains(group.id) || model != P.allModels
                 let shown = open ? group.models : Array(group.models.prefix(5))
                 ForEach(shown) { row in
-                    modelRow(row)
+                    modelRow(row, lastUsed: lastUsed)
                     Divider()
                 }
                 if group.models.count > shown.count {
-                    moreRow(group, hidden: Array(group.models.dropFirst(shown.count)))
+                    moreRow(group, hidden: Array(group.models.dropFirst(shown.count)), lastUsed: lastUsed)
                     Divider()
                 } else if group.models.count > 5 && model == P.allModels {
                     GridRow {
                         Button("Show fewer") { expandedTools.remove(group.id) }
                             .buttonStyle(.plain).foregroundStyle(COSPalette.accent).padding(.leading, 17).gridColumnAlignment(.leading)
-                        Color.clear.gridCellColumns(4).frame(height: 1)
+                        Color.clear.gridCellColumns(4 + extraColumns.count).frame(height: 1)
                     }.padding(.vertical, 8)
                     Divider()
                 }
             }
             if provider == P.allProviders && !providers.contains("Cursor") && store.offersCursor { cursorRow; Divider() }
+          }
+          .font(COSType.body(13)).monospacedDigit()
         }
-        .font(COSType.body(13)).monospacedDigit()
     }
 
-    private func toolRow(_ group: P.ToolGroup) -> some View {
+    private func toolRow(_ group: P.ToolGroup, lastUsed: [String: String]) -> some View {
         let isFiltered = provider == group.id
         return GridRow {
             Button { slice.toggleProvider(group.id) } label: {
@@ -745,13 +967,14 @@ struct SessionUsageView: View {
             .gridColumnAlignment(.leading)
             Text(P.shortTokens(group.summary.counts.total))
             Text(newTokens(group.summary.counts))
-            Text(shareCell(group.models))
+            extraCells(group.models, lastUsed: lastUsed)
+            shareBar(group.models, color: SessionUsageChart.seriesColor(group.tool))
             Text(P.costCell(group.models))
         }
         .font(COSType.body(14, weight: .semibold)).padding(.top, 13).padding(.bottom, 9)
     }
 
-    private func modelRow(_ row: SessionUsageBucket) -> some View {
+    private func modelRow(_ row: SessionUsageBucket, lastUsed: [String: String]) -> some View {
         let isFiltered = model == row.model && provider == row.provider
         return GridRow {
             Button { slice.toggleModel(provider: row.provider, model: row.model) } label: {
@@ -764,13 +987,14 @@ struct SessionUsageView: View {
             .gridColumnAlignment(.leading)
             Text(P.shortTokens(row.counts.total))
             Text(newTokens(row.counts))
-            Text(shareCell([row]))
+            extraCells([row], lastUsed: lastUsed)
+            shareBar([row], color: SessionUsageChart.seriesColor(P.toolName(row.provider)))
             modelCost(row)
         }
         .foregroundStyle(COSPalette.subtle).padding(.vertical, 8)
     }
 
-    private func moreRow(_ group: P.ToolGroup, hidden: [SessionUsageBucket]) -> some View {
+    private func moreRow(_ group: P.ToolGroup, hidden: [SessionUsageBucket], lastUsed: [String: String]) -> some View {
         let total = hidden.reduce(SessionUsageCounts()) { $0 + $1.counts }
         return GridRow {
             Button("\(hidden.count) more \(hidden.count == 1 ? "model" : "models")") { expandedTools.insert(group.id) }
@@ -778,7 +1002,8 @@ struct SessionUsageView: View {
                 .gridColumnAlignment(.leading)
             Text(P.shortTokens(total.total))
             Text(newTokens(total))
-            Text(shareCell(hidden))
+            extraCells(hidden, lastUsed: lastUsed)
+            shareBar(hidden, color: COSPalette.subtle)
             Text(P.costCell(hidden))
         }
         .foregroundStyle(COSPalette.subtle).padding(.vertical, 8)
@@ -796,7 +1021,7 @@ struct SessionUsageView: View {
             Text(words)
                 .font(COSType.body(12)).foregroundStyle(feed?.isProblem == true ? COSPalette.amber : COSPalette.subtle)
                 .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
-                .gridCellColumns(3)
+                .gridCellColumns(3 + extraColumns.count)
             if on {
                 if feed?.state == .signIn || feed?.state == .expired {
                     copySignInButton
@@ -839,7 +1064,7 @@ struct SessionUsageView: View {
                         if isInspected { showWholePeriod() } else { inspectDay(row.id) }
                     } label: {
                         HStack {
-                            Text(row.id).fontWeight(isInspected ? .semibold : .regular)
+                            Text(P.weekdayDay(row.id, thisYear: thisYear)).fontWeight(isInspected ? .semibold : .regular).help(row.id)
                             Spacer()
                             Text(P.shortTokens(rowTokens))
                             Text(P.share(rowTokens, of: measured(counts)))
@@ -882,6 +1107,7 @@ struct SessionUsageChart: View {
     let lineChart: Bool
     let bounds: ClosedRange<String>?
     let seriesColors: [String: Color]
+    let partialPeriods: Set<String>
     @Binding var inspectedPeriod: String?
     @State private var hoveredPeriod: String?
     @State private var hoverX: CGFloat = 0
@@ -891,10 +1117,11 @@ struct SessionUsageChart: View {
     private let periodKeys: [String]
     private let periodKeySet: Set<String>
     private let axisTop: Double
+    private let average: Double?
 
     init(points: [SessionUsageView.Point], rows: [SessionUsageBucket], scale: SessionUsageTimeScale, measure: SessionUsageMeasure,
          excludeCacheReads: Bool, timeZone: TimeZone, inspectedPeriod: Binding<String?>, initialHover: String? = nil, lineChart: Bool = false,
-         bounds: ClosedRange<String>? = nil, initialHoverX: CGFloat = 0, seriesColors: [String: Color] = [:]) {
+         bounds: ClosedRange<String>? = nil, initialHoverX: CGFloat = 0, seriesColors: [String: Color] = [:], partialPeriods: Set<String> = []) {
         self.points = points; self.rows = rows; self.scale = scale; self.measure = measure
         self.excludeCacheReads = excludeCacheReads; self.timeZone = timeZone; self._inspectedPeriod = inspectedPeriod
         self._hoveredPeriod = State(initialValue: initialHover)
@@ -902,6 +1129,7 @@ struct SessionUsageChart: View {
         self.lineChart = lineChart
         self.bounds = bounds
         self.seriesColors = seriesColors
+        self.partialPeriods = partialPeriods
         calendar = SessionUsagePresentation.reportingCalendar(timeZone)
         keyByDay = SessionUsagePresentation.periodKeyMap(rows, scale: scale)
         periodKeySet = Set(keyByDay.values)
@@ -923,6 +1151,10 @@ struct SessionUsageChart: View {
             peak = totals.values.max() ?? 0
         }
         axisTop = SessionUsagePresentation.niceAxisTop(peak)
+        var periodTotals: [String: Double] = [:]
+        // A period with no price is not a $0 period.
+        for point in points where !point.key.isEmpty && (measure != .cost || point.pricedEvents > 0) { periodTotals[point.key, default: 0] += plotted(point) }
+        average = lineChart ? nil : SessionUsagePresentation.periodAverage(periodTotals, partial: partialPeriods)
     }
 
     init(points: [SessionUsageView.Point], rows: [SessionUsageBucket], monthly: Bool, costChart: Bool,
@@ -947,7 +1179,8 @@ struct SessionUsageChart: View {
         case "Ollama", "Codex (Ollama)": return Color(red: 0.53, green: 0.40, blue: 0.77)
         case "Uncached input", "Input": return Color(red: 0.20, green: 0.49, blue: 0.78)
         case "Output": return Color(red: 0.86, green: 0.43, blue: 0.16)
-        case "Cache read", "Read from cache": return COSPalette.gold
+        // Repeated context, so it recedes, and it no longer shares a colour with Claude Code.
+        case "Cache read", "Read from cache": return Color(red: 0.61, green: 0.58, blue: 0.53)
         case "Cache write", "Written to cache": return Color(red: 0.53, green: 0.40, blue: 0.77)
         case "Other models": return .gray
         default:
@@ -1007,8 +1240,10 @@ struct SessionUsageChart: View {
     }
 
     private func dimmed(_ point: SessionUsageView.Point) -> Double {
-        guard let inspectedPeriod, !point.key.isEmpty else { return 1 }
-        return point.key == inspectedPeriod ? 1 : 0.32
+        let partial = partialPeriods.contains(point.key) ? 0.42 : 1
+        guard let inspectedPeriod, !point.key.isEmpty else { return partial }
+        // The chosen bar stands out even when it is a partial one.
+        return point.key == inspectedPeriod ? 1 : 0.32 * partial
     }
 
     private var axisDates: [Date] {
@@ -1025,7 +1260,20 @@ struct SessionUsageChart: View {
         case .records: figure = group.reduce(0) { $0 + $1.events }.formatted() + " records"
         case .tokens: figure = SessionUsagePricing.tokens(P.tokenCount(counts, excludingCacheReads: excludeCacheReads)) + " tokens"
         }
-        return periodTitle(key) + ": " + figure
+        return periodTitle(key) + (partialPeriods.contains(key) ? " (part of a \(scale == .weekly ? "week" : "month"))" : "") + ": " + figure
+    }
+    /// Each series in the hovered bar, largest first, so a bar answers without a click.
+    private func hoverRows(_ key: String) -> [(name: String, figure: String)] {
+        let members = points.filter { $0.key == key }
+        guard members.count > 1 else { return [] }
+        return orderedSeries.compactMap { name in
+            guard let point = members.first(where: { $0.series == name }) else { return nil }
+            switch measure {
+            case .cost: return (name, point.pricedEvents > 0 ? P.dollars(point.usd) : "No price")
+            case .records: return (name, point.events.formatted())
+            case .tokens: return (name, P.shortTokens(point.tokens))
+            }
+        }
     }
 
     var body: some View {
@@ -1046,6 +1294,16 @@ struct SessionUsageChart: View {
                         .accessibilityLabel("\(P.dayKey(for: point.date, calendar: calendar)), \(point.series)")
                         .accessibilityValue(accessibleValue(point))
                 }
+            }
+            if let average {
+                RuleMark(y: .value("Average", average))
+                    .foregroundStyle(COSPalette.subtle.opacity(0.75)).lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 4]))
+                    .annotation(position: .top, alignment: .trailing, spacing: 2) {
+                        Text("Average \(axisLabel(average))").font(COSType.body(11)).monospacedDigit().foregroundStyle(COSPalette.subtle)
+                            .padding(.horizontal, 4).background(COSPalette.panel.opacity(0.88), in: RoundedRectangle(cornerRadius: 3))
+                    }
+                    .accessibilityLabel("Average")
+                    .accessibilityValue(axisLabel(average))
             }
             if lineChart || hoveredPeriod != nil, let key = hoveredPeriod ?? inspectedPeriod, let date = P.noon(of: P.periodStart(key), calendar: calendar) {
                 RuleMark(x: .value("Inspect", date, unit: calendarUnit))
@@ -1103,9 +1361,20 @@ struct SessionUsageChart: View {
                         if let key = hoveredPeriod {
                             let cardWidth = min(CGFloat(320), geometry.size.width - 16)
                             let x = P.tooltipX(pointer: Double(hoverX), cardWidth: Double(cardWidth), containerWidth: Double(geometry.size.width))
-                            Text(hoverLine(key))
-                                .font(COSType.body(12, weight: .medium)).monospacedDigit()
-                                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(hoverLine(key)).font(COSType.body(12, weight: .medium))
+                                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                                ForEach(hoverRows(key), id: \.name) { row in
+                                    HStack(spacing: 6) {
+                                        RoundedRectangle(cornerRadius: 2).fill(color(row.name)).frame(width: 8, height: 8)
+                                        Text(row.name).lineLimit(1)
+                                        Spacer(minLength: 8)
+                                        Text(row.figure)
+                                    }
+                                    .font(COSType.body(12)).foregroundStyle(COSPalette.subtle)
+                                }
+                            }
+                                .monospacedDigit()
                                 .frame(width: cardWidth - 20, alignment: .leading)
                                 .padding(10).background(COSPalette.card, in: RoundedRectangle(cornerRadius: 8))
                                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(COSPalette.border))
@@ -1171,15 +1440,35 @@ struct SessionUsageInspector: View {
     private func heading(_ title: String) -> some View {
         Text(title).font(COSType.body(12, weight: .semibold)).padding(.top, 16).padding(.bottom, 3)
     }
-    private func row(_ color: Color, _ name: String, _ first: String, _ second: String, help: String? = nil) -> some View {
+    private func row(_ color: Color?, _ name: String, _ first: String, _ second: String, help: String? = nil) -> some View {
         HStack(spacing: 6) {
-            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 9, height: 9)
+            if let color { RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 9, height: 9) }
             Text(name).lineLimit(1).truncationMode(.middle).help(help ?? name)
             Spacer(minLength: 6)
             Text(first)
             Text(second).foregroundStyle(COSPalette.subtle).frame(minWidth: 52, alignment: .trailing)
         }
         .font(COSType.body(12)).monospacedDigit().padding(.vertical, 3)
+    }
+    /// Where the tokens went against where the value went. Reading the two together is the point: most tokens are
+    /// cheap repeats and a small share of writes and output carries much of the value.
+    private func mixStrip(_ title: String, _ parts: [(id: String, amount: Double)]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(COSType.body(11)).foregroundStyle(COSPalette.subtle)
+            GeometryReader { geometry in
+                let spacing = 2.0
+                let widths = P.segmentWidths(parts.map(\.amount), total: Double(geometry.size.width), spacing: spacing, minimum: 3)
+                HStack(spacing: spacing) {
+                    ForEach(Array(parts.enumerated()), id: \.element.id) { index, part in
+                        if widths[index] > 0 {
+                            RoundedRectangle(cornerRadius: 2).fill(SessionUsageChart.seriesColor(part.id)).frame(width: widths[index])
+                        }
+                    }
+                }
+            }.frame(height: 10)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
     }
     private func stepButton(_ symbol: String, _ label: String, enabled: Bool, delta: Int) -> some View {
         Button { onStep(delta) } label: {
@@ -1199,10 +1488,18 @@ struct SessionUsageInspector: View {
                 stepButton("chevron.left", "Earlier period", enabled: canGoEarlier, delta: -1)
                 stepButton("chevron.right", "Later period", enabled: canGoLater, delta: 1)
             }
-            Text(headline).font(COSType.display(28)).monospacedDigit().padding(.top, 10)
-                .fixedSize(horizontal: false, vertical: true)
-            Text(subline).font(COSType.body(13)).foregroundStyle(COSPalette.subtle).monospacedDigit().padding(.top, 4)
-                .fixedSize(horizontal: false, vertical: true)
+            // The figures above the chart already give the whole period's totals.
+            if isPeriod {
+                Text(headline).font(COSType.display(28)).monospacedDigit().padding(.top, 10)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(subline).font(COSType.body(13)).foregroundStyle(COSPalette.subtle).monospacedDigit().padding(.top, 4)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            let mix = P.tokenMix(counts, excludingCacheReads: false, rows: rows).sorted { $0.count > $1.count }
+            VStack(alignment: .leading, spacing: 9) {
+                mixStrip("Share of tokens", mix.map { ($0.id, Double($0.count)) })
+                if P.costSplit(rows).splitUSD > 0 { mixStrip("Share of API value", mix.map { ($0.id, $0.estimatedUSD) }) }
+            }.padding(.top, 14)
 
             let tools = P.summarize(rows, by: \.provider, excludingCacheReads: excludingCacheReads)
             if tools.count > 1 {
@@ -1213,13 +1510,16 @@ struct SessionUsageInspector: View {
             }
 
             let models = P.aggregate(rows, excludingCacheReads: excludingCacheReads)
-            heading("Models")
-            ForEach(Array(models.prefix(modelLimit))) { model in
-                row(modelColors[P.modelName(model.model)] ?? SessionUsageChart.seriesColor(P.toolName(model.provider)), P.modelName(model.model),
-                    P.shortTokens(measured(model.counts)), model.pricedEvents == 0 ? "No price" : dollars(model.estimatedUSD) + (model.pricedEvents < model.events ? "+" : ""), help: model.model)
-            }
-            if models.count > modelLimit {
-                Text("\(models.count - modelLimit) more in the table below").font(COSType.body(11)).foregroundStyle(COSPalette.subtle).padding(.top, 3)
+            // The table below names every model for the whole period, so only a chosen bar needs its own list.
+            if isPeriod {
+                heading("Models")
+                ForEach(Array(models.prefix(modelLimit))) { model in
+                    row(modelColors[P.modelName(model.model)], P.modelName(model.model),
+                        P.shortTokens(measured(model.counts)), model.pricedEvents == 0 ? "No price" : dollars(model.estimatedUSD) + (model.pricedEvents < model.events ? "+" : ""), help: model.model)
+                }
+                if models.count > modelLimit {
+                    Text("\(models.count - modelLimit) more not listed here").font(COSType.body(11)).foregroundStyle(COSPalette.subtle).padding(.top, 3)
+                }
             }
 
             let split = P.costSplit(rows)
@@ -1235,17 +1535,24 @@ struct SessionUsageInspector: View {
             }
 
             Divider().padding(.top, 14).padding(.bottom, 10)
-            Text(newTokenNote).font(COSType.body(12)).foregroundStyle(COSPalette.subtle).monospacedDigit().fixedSize(horizontal: false, vertical: true)
+            if isPeriod {
+                Text(newTokenNote).font(COSType.body(12)).foregroundStyle(COSPalette.subtle).monospacedDigit().fixedSize(horizontal: false, vertical: true)
+            }
             if let comparison {
                 if let peak = comparison.peakDay {
                     Button { onInspectDay(peak.id) } label: {
                         Text("Busiest day: \(P.periodTitle(for: peak.id, scale: .daily)), \(peakFigure(peak))").underline()
                             .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
                     }
-                    .buttonStyle(.plain).font(COSType.body(12)).foregroundStyle(COSPalette.accent).padding(.top, 8)
+                    .buttonStyle(.plain).font(COSType.body(12)).foregroundStyle(COSPalette.accent)
                     .help("Show this day")
                 }
-                // A window that starts before the logs do would compare against almost nothing, so it says nothing.
+                // A window that starts before the logs do would compare against almost nothing, so it says so instead.
+                if comparison.priorRange != nil, !comparison.hasPriorBaseline || comparison.partialPriorHistory {
+                    Text(comparison.partialPriorHistory ? "History does not reach back a full period, so there is no comparison." : "No usage in the period before.")
+                        .font(COSType.body(12)).foregroundStyle(COSPalette.subtle).padding(.top, 8)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if comparison.hasPriorBaseline, !comparison.partialPriorHistory, let prior = comparison.priorRange {
                     Text("Compared with \(P.dateRangeTitle(prior)): tokens \(comparison.tokenDeltaLabel), API value \(comparison.costDeltaLabel)\(comparison.costDeltaPartial ? " (priced records only)" : "").")
                         .font(COSType.body(12)).foregroundStyle(COSPalette.subtle).monospacedDigit().padding(.top, 8)
@@ -1258,8 +1565,116 @@ struct SessionUsageInspector: View {
             }
         }
         .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line))
+    }
+}
+
+/// A calendar and its margin read as one figure: each weekday row runs left to right through the weeks and ends in
+/// that weekday's average. Wide enough, a square carries its own number and reads like a ledger; narrow, it is a heat
+/// map and the number moves to the tooltip. Days with no logs stay hollow, because no record is not zero.
+struct SessionUsageCalendar: View {
+    private typealias P = SessionUsagePresentation
+    let weeks: [SessionUsagePresentation.CalendarWeek]
+    let averages: [Double]
+    let inspectedDay: String?
+    let counted: (SessionUsagePresentation.Summary) -> Bool
+    let value: (SessionUsagePresentation.Summary) -> Double
+    let figure: (Double) -> String
+    let cellFigure: (SessionUsagePresentation.Summary) -> String
+    let emptyWords: String
+    let detail: (SessionUsagePresentation.Summary) -> String
+    let onPick: (String) -> Void
+    @State private var carriesNumbers = false
+    @Environment(\.colorScheme) private var colorScheme
+    private static let names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    private static let spacing: CGFloat = 3
+    private static let marginWidth: CGFloat = 150
+
+    /// Too many squares to tab through or read aloud. The Daily breakdown list reaches every day instead.
+    private var long: Bool { weeks.count > 26 }
+    private var rowHeight: CGFloat { carriesNumbers ? 26 : 16 }
+    private var peak: Double {
+        weeks.flatMap(\.days).compactMap { $0.summary }.filter(counted).map(value).max() ?? 0
+    }
+
+    var body: some View {
+        let top = peak
+        let topAverage = averages.max() ?? 0
+        VStack(alignment: .leading, spacing: Self.spacing) {
+            HStack(alignment: .bottom, spacing: 8) {
+                Color.clear.frame(width: 26, height: 14)
+                HStack(spacing: Self.spacing) {
+                    ForEach(weeks) { week in
+                        Color.clear.frame(maxWidth: .infinity, minHeight: 14, maxHeight: 14)
+                            .overlay(alignment: .leading) {
+                                if let label = week.monthLabel { Text(label).fixedSize() }
+                            }
+                    }
+                }
+                .onGeometryChange(for: Bool.self) { $0.size.width / CGFloat(max(1, weeks.count)) - Self.spacing >= 44 } action: { carriesNumbers = $0 }
+                Text("Daily average").frame(width: Self.marginWidth, alignment: .leading)
+            }
+            .font(COSType.body(11)).foregroundStyle(COSPalette.subtle)
+            ForEach(0..<7, id: \.self) { weekday in
+                HStack(spacing: 8) {
+                    Text(Self.names[weekday]).font(COSType.body(11)).foregroundStyle(COSPalette.subtle).frame(width: 26, alignment: .leading)
+                    HStack(spacing: Self.spacing) {
+                        ForEach(weeks) { week in cell(week.days[weekday], top: top) }
+                    }
+                    HStack(spacing: 8) {
+                        RoundedRectangle(cornerRadius: 2).fill(COSPalette.gold)
+                            .frame(width: topAverage > 0 ? max(averages[weekday] > 0 ? 2 : 0, 88 * averages[weekday] / topAverage) : 0, height: min(rowHeight, 14))
+                            .frame(width: 88, alignment: .leading)
+                        Text(averages[weekday] > 0 ? figure(averages[weekday]) : "").font(COSType.body(11)).monospacedDigit().foregroundStyle(COSPalette.subtle)
+                            .lineLimit(1).fixedSize()
+                    }
+                    .frame(width: Self.marginWidth, alignment: .leading)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(Self.names[weekday]) average")
+                    .accessibilityValue(averages[weekday] > 0 ? figure(averages[weekday]) : "No records")
+                }
+                .frame(height: rowHeight)
+            }
+        }
+        .accessibilityElement(children: long ? .ignore : .contain)
+        .accessibilityLabel(long ? "Calendar of \(weeks.count) weeks. Daily breakdown lists each day." : "")
+    }
+
+    @ViewBuilder private func cell(_ day: SessionUsagePresentation.CalendarDay, top: Double) -> some View {
+        if !day.inRange {
+            Color.clear.frame(maxWidth: .infinity)
+        } else if let summary = day.summary, counted(summary) {
+            // Square root, so one huge day does not wash out every ordinary one.
+            let level = top > 0 ? (value(summary) / top).squareRoot() : 0
+            Button { onPick(day.id) } label: {
+                RoundedRectangle(cornerRadius: 3).fill(COSPalette.gold.opacity(0.12 + 0.82 * level))
+                    .overlay {
+                        if carriesNumbers {
+                            Text(cellFigure(summary)).font(COSType.body(11)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.8)
+                                .foregroundStyle(colorScheme == .light || level > 0.65 ? COSPalette.ink : Color.primary)
+                        }
+                    }
+                    .overlay {
+                        if inspectedDay == day.id { RoundedRectangle(cornerRadius: 3).stroke(Color.primary, lineWidth: 1.5) }
+                    }
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .focusable(!long)
+            .frame(maxWidth: .infinity)
+            .help(detail(summary))
+            .accessibilityLabel(detail(summary))
+            .accessibilityAddTraits(inspectedDay == day.id ? .isSelected : [])
+        } else {
+            Group {
+                if long { RoundedRectangle(cornerRadius: 2).fill(COSPalette.line.opacity(0.45)) }
+                else { RoundedRectangle(cornerRadius: 3).strokeBorder(COSPalette.line) }
+            }
+                .frame(maxWidth: .infinity)
+                .help("\(P.periodTitle(for: day.id, scale: .daily)): \(day.summary == nil ? emptyWords : "no price")")
+                .accessibilityLabel("\(P.periodTitle(for: day.id, scale: .daily)): \(day.summary == nil ? emptyWords : "no price")")
+        }
     }
 }

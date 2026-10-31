@@ -1,8 +1,20 @@
 {
-  "version": "0.5.357",
+  "version": "0.5.358",
   "whatsNew": {
-    "summary": "Saved Mac calls in Speakers now start with machine groupings, then single voices, then one Short voices row, with every original voice and its words one click away. Suggest names shows a name and score for matching rows, and nothing is named until you click. One button names every high-confidence row at once, with a preview and Undo these names. Pairs with server 6.96.3. Plus everything in 0.5.356: Usage is easier to read, with a chart beside a panel that follows the bar you pick and one table for every tool and model. You can now count Cursor tokens too.",
+    "summary": "Usage now opens with the answers: API value, new and all tokens, value a day and the month so far, with changes from the period before. A calendar shows every day, with each weekday's average at the end of its row. Hover a bar to see what is in it. Partial weeks are lighter so they no longer look like a drop, and the table gains share bars and a Columns menu. Plus everything in 0.5.357: saved Mac calls in Speakers start with machine groupings, then single voices, then one Short voices row, with Suggest names and one button to name every high-confidence row, with Undo. Pairs with server 6.96.3.",
     "sections": [
+      {
+        "title": "0.5.358",
+        "items": [
+          "Usage opens with five figures: API value, new tokens, all tokens, API value a day, and this month so far with an estimate for the month. Each period figure shows its change from the period before when your history reaches that far.",
+          "A calendar shows every day in the period, and each weekday row ends in that weekday's average. Click a day to look at it. A hollow square means no logs, or no records when a tool or model is selected, and that is not the same as zero.",
+          "Hover a bar to see what is in it, by tool, model or token type. Weeks and months that are only partly over are lighter and stay out of the new average line, so the last bar no longer looks like a drop.",
+          "The panel beside the chart compares where the tokens went with where the value went. It lists models and a headline only for a bar you pick, because the figures and the table cover the whole period.",
+          "The table has share bars and a Columns menu. Records and Last used show by default, and Cache reads and Per 1M new are one click away. Your choice is remembered.",
+          "Refreshing while tracking is paused no longer reads new logs, and the tracking and Cursor switches moved to the gear menu at the top. A + on a figure means some records have no verified price, and the footer names those models. A day with no price is left out of averages and never counts as $0.",
+          "Cache reads have their own grey instead of sharing Claude Code's gold, and the chart's words now show a small arrow to say they are menus."
+        ]
+      },
       {
         "title": "0.5.357",
         "items": [
