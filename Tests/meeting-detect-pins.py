@@ -82,13 +82,25 @@ records = [(name, m.group(0)) for name, src in sources.items() for m in re.findi
 again = body(recording, "    func tryAgainAfterCannotHear(bridge: @escaping Bridge) async -> String? {")
 need(len(re.findall(r"await record\(title:", again)) == 1 and "sourceID: MacAudioSource.allMacAudioID" in again,
      "Try again records All Mac audio through record(), once")
-need(len(records) == 3, f"record() is reached from Meetings' Record, the card and Try again only, found {records}")
+# 2026-10-31: plus Start recording in the ⌘K command center, behind the same notice (raised by one on purpose).
+need(len(records) == 4, f"record() is reached from Meetings' Record, the card, Try again and the command center only, found {records}")
+command_record = body(read("Sources/ActivityWindow.swift"), "    func commandRecordNow() {")
+need("store.record(title: title, sourceID: MacAudioSource.allMacAudioID, bridge: model.macRecordingBridge)" in command_record
+     and 'MacRecordingNotice.title(typed: "", meetingApp: MeetingDetectorStore.shared.current?.app.title, at: Date())' in command_record,
+     "the command center records All Mac audio with the automatic title, never the words in the box")
+command_start = body(read("Sources/ActivityWindow.swift"), "    func commandStartRecording() -> CommandEffect {")
+need(command_start.index("guard MacRecordingNotice.step(acknowledged: model.macRecording.noticeAcknowledged) == .start else { return .notice }") < command_start.index("commandRecordNow()"),
+     "the command center shows the notice first, in the panel")
+need("recordSuggested" not in read("Sources/ActivityWindow.swift"), "the command center never uses the detector store's recordSuggested")
 need(sum(src.count("startFromMeetingSuggestion(") for src in sources.values()) == 2
      and "model.macRecording.startFromMeetingSuggestion(title: MeetingDetectedCard.title(source, at: Date()), bridge: model.macRecordingBridge)" in app,
      "the card's start is called only from the meeting card's record closure")
 for alert in (".confirmationDialog(", "NSAlert", ".alert(", "Record this Mac’s audio?"):
     need(alert not in recording, f"no stock alert for a recording start: {alert}")
-need(sum(src.count('"Record this Mac') for src in sources.values()) == 1 and 'static let title = "Record this Mac\'s audio"' in core,
+# 2026-10-31: plus the ⌘K row's own line, "Record this Mac's audio. Microphone off." (raised by one on purpose). It is the
+# row's description, not the notice: the notice's words still live only in MacRecordingNotice.
+need(sum(src.count('"Record this Mac') for src in sources.values()) == 2 and 'static let title = "Record this Mac\'s audio"' in core
+     and '"Record this Mac\'s audio. Microphone off."' in sources["SetupAssistant.swift"],
      "the notice's words live in one place")
 panel = body(recording, "struct MacRecordingPanel: View {")
 need('Button("Record") { record() }.buttonStyle(COSPrimaryButtonStyle())' in panel and "Start recording" not in panel and "Set up recording" not in panel,
@@ -103,8 +115,12 @@ need(panel_record.index("guard MacRecordingNotice.step(acknowledged: store.notic
      < panel_record.index("store.record(title:")
      and "MacRecordingNotice.title(typed: store.title, meetingApp: meetings.current?.app.title, at: Date())" in panel_record,
      "Meetings' Record shows the notice first time, and titles the recording automatically")
-need(sum(src.count("acknowledgeNotice()") for src in sources.values()) == 3
+# 2026-10-31: plus the command center's notice card (raised by one on purpose): commandAcknowledgeAndRecord, called only from it.
+need(sum(src.count("acknowledgeNotice()") for src in sources.values()) == 4
      and "store.acknowledgeNotice(); showingNotice = false; record()" in panel
+     and "        model.macRecording.acknowledgeNotice()\n        commandRecordNow()\n" in sources["ActivityWindow.swift"]
+     and sources["ActivityWindow.swift"].count("commandAcknowledgeAndRecord()") == 2
+     and "recordAfterNotice: { commandAcknowledgeAndRecord() }" in sources["ActivityWindow.swift"]
      and "meetings.acknowledgeNotice = { [weak model] in model?.macRecording.acknowledgeNotice() }" in app,
      "the notice is acknowledged only by its own Record (panel and pet)")
 need("acknowledgeNotice?()" in body(detector, "    func recordAfterNotice() {") and detector.count("acknowledgeNotice?()") == 1,
@@ -121,7 +137,8 @@ can_start = next(line for line in recording.splitlines() if line.strip().startsw
 need("guard available, canStart else {" in gate and "recoverable" not in gate.split("guard available, canStart else {")[1].split("}")[0]
      and "recoverable" not in can_start and "!occupied && deliveryTask == nil" in can_start,
      "Record never starts over a pending recording, and a retained (recoverable) capture never blocks it (QA 2026-10-15)")
-need(sum(src.count("MacRecordingNotice.reminder") for src in sources.values()) == 3, "Recording · let people know on the panel, menu and pet-panel rows")
+# 2026-10-31: plus the ⌘K command center's result line once its Start recording succeeds (raised by one on purpose).
+need(sum(src.count("MacRecordingNotice.reminder") for src in sources.values()) == 4, "Recording · let people know on the panel, menu, pet-panel rows and the command center")
 settings = body(recording, "struct MeetingSuggestSettings: View {")
 need("if let recording { recording.resetNotice() } else { acknowledged = false }" in settings
      and sum(src.count(".resetNotice()") for src in sources.values()) == 1,

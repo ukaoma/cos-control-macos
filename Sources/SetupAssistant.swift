@@ -1,22 +1,26 @@
 import Foundation
 
-// Ask COS as a setup and repair assistant (Miles, 2026-10-27: "turn this into the setup widget that can run the commands
-// necessary to get things running ... I can repair X, Y or Z or set up X, Y or Z"). This file is the logic half. The
-// views are not built yet: Miles picks a layout from design/ask-cos-setup-mock.html first. Wiring plan:
-// docs/setup-assistant/PLAN.md.
+// Ask COS as a setup and repair assistant, and the logic half of the ⌘K command center (Miles, 2026-10-27: "turn this into
+// the setup widget that can run the commands necessary to get things running ... I can repair X, Y or Z or set up X, Y or
+// Z"; 2026-10-31: "a main operation center rather than just ... a task creation system"). The views live in
+// Sources/ActivityWindow.swift (the extension marked Command center), so they can reach the window's private openers.
+// Wiring plan and what each piece reads: docs/setup-assistant/PLAN.md.
 //
 // HARD RULES
 //   1. Local first. Every suggestion comes from a Snapshot of state COS Control already holds. No model call, no network,
 //      no shell, so it answers when the server is down, which is when people need it most.
-//   2. Actions are the closed enum below. Each maps to an existing helper command (HelperSources/main.swift, the command
-//      switch) or an existing opener in the app. Text a person types picks a knowledge-base entry by keyword and never
-//      becomes a command or an argument.
+//   2. Actions and Center.Command are closed enums. Each maps to an existing helper command (HelperSources/main.swift, the
+//      command switch) or an existing opener in the app. Text a person types picks a knowledge-base entry or a command by
+//      keyword and never becomes a command or an argument.
 //   3. A change is confirmed inline first, with one consequence line read from the code that runs it. The restart gates
 //      COS Control already has hold here too (a job, a recording, a meeting still saving, an ownership conflict, an
-//      interrupted update). There is no force path.
+//      interrupted update). There is no force path. Doctor changes nothing but spends a real question, so the panel
+//      confirms it too (Center.confirmation).
 //   4. "Ask COS to troubleshoot" is offered only while the server answers and Start Work runs from Today is on. It
 //      starts one Work run through the Today cap with a redacted Doctor packet, and the prompt says to ask before
-//      changing anything.
+//      changing anything. "Ask COS" is the same run without Doctor.
+//   5. Session titles are untrusted. They are cleaned to one line, drawn verbatim, only open their own session, are never
+//      matched for dispatch and never go into a prompt.
 //
 // Imports Foundation only and needs no other source file: Tests/run-setup-assistant.sh compiles it alone with
 // Tests/SetupAssistantChecks.swift. Everything lives inside `enum SetupAssistant`, so it cannot collide with app types.
@@ -107,7 +111,8 @@ enum SetupAssistant {
         // In the app.
         case retryAppUpdate, resetAccessibility
         // Openers: they change nothing.
-        case openUnstuck, openSetupGuide, openPermissions, openSettings, openDictationSettings, openMicrophoneSettings, openTailscale
+        case openUnstuck, openSetupGuide, openPermissions, openSettings, openDictationSettings, openMicrophoneSettings, openTailscale,
+             openTranscriptionSettings, openMeetings, openSpeakers
         // One Work run (only with the server up and Work runs on).
         case troubleshoot
 
@@ -172,6 +177,9 @@ enum SetupAssistant {
             case .openDictationSettings: return "Open Dictation settings"
             case .openMicrophoneSettings: return "Open Microphone settings"
             case .openTailscale: return "Open Tailscale"
+            case .openTranscriptionSettings: return "Open Transcription and voice"
+            case .openMeetings: return "Open Meetings"
+            case .openSpeakers: return "Open Speakers"
             case .troubleshoot: return "Ask COS to troubleshoot"
             }
         }
@@ -236,7 +244,7 @@ enum SetupAssistant {
     static func applies(_ action: Action, _ s: Snapshot) -> Bool {
         switch action {
         case .runDoctor, .copyReport, .openSetupGuide, .openPermissions, .openSettings, .openDictationSettings,
-             .openMicrophoneSettings, .openTailscale, .openUnstuck, .resetAccessibility:
+             .openMicrophoneSettings, .openTailscale, .openUnstuck, .resetAccessibility, .openTranscriptionSettings, .openMeetings, .openSpeakers:
             return true
         case .setUp:
             // main.swift "setup": refuses an existing service or an unfinished setup, and needs an AI app first.
@@ -621,9 +629,19 @@ enum SetupAssistant {
               groups: [["restart", "restarting", "reboot", "relaunch"]], boosts: ["server", "cos server"], namesRestartHold: true),
         Entry(id: "parakeet-install", title: "Parakeet will not install",
               answer: "Parakeet needs 1.5 GB free. Free some space, then choose Check again. It installs only after a recording ends, and Use Whisper keeps dictation working meanwhile.",
-              actions: [.openDictationSettings],
+              actions: [.openTranscriptionSettings, .openDictationSettings],
               source: "cos-starter control/docs/index.html:1229 (Parakeet will not install)",
-              groups: [Terms.parakeet, Terms.setUp], boosts: ["parakeet"]),
+              groups: [Terms.parakeet, Terms.setUp],
+              // A failure named in the words stays here: these beat the same words in parakeet-setup by the boost.
+              phrases: ["cant install parakeet", "wont install parakeet", "cant download parakeet", "parakeet install failed", "parakeet setup failed"],
+              boosts: ["parakeet"]),
+        Entry(id: "parakeet-setup", title: "Set up Parakeet and choose an engine",
+              answer: "Parakeet Ultra is the local dictation engine. In Settings, Transcription and voice, Models, choose Install Parakeet (654 MB). It needs 1.5 GB free, installs after any recording ends, and dictation uses Whisper until it is ready. Then choose the engine in Settings, Dictation, Dictation engine. Automatic uses Parakeet Ultra once it is ready. Test on this Mac compares the engines.",
+              actions: [.openTranscriptionSettings, .openDictationSettings],
+              source: "cos-starter control/docs/index.html:760-761 (Engines), :516 (Test on this Mac); Sources/SettingsHubCatalog.swift TR-01, TR-07, SG-06 (Dictation engine, Parakeet engine, Test engines); Sources/MeetingAskCore.swift installTitle; Sources/ProviderConnectViews.swift (Test on this Mac)",
+              groups: [],
+              phrases: ["set up parakeet", "setup parakeet", "parakeet setup", "install parakeet", "get parakeet", "use parakeet", "turn on parakeet", "download parakeet",
+                        "choose an engine", "choose the engine", "pick an engine", "change the engine", "dictation engine", "which engine", "switch engine"]),
         Entry(id: "update-stuck", title: "Update stuck, or COS Control is very old",
               answer: "If an update times out or will not finish, update by hand: download the current COS Control from gotcos.com, quit the old copy and drag the new one into Applications. It takes a few minutes, and your settings and meetings stay where they are. If it sits on Installing, finish any meeting first.",
               actions: [.openUnstuck, .retryAppUpdate],
@@ -669,6 +687,37 @@ enum SetupAssistant {
               actions: [.startServer, .repairRuntime, .setUp, .runDoctor],
               source: "cos-starter control/docs/index.html:1212 (Server setup fails); Sources/Views.swift:1823-1838 (Restart, Stop, Start); HelperSources/main.swift:4089 (Run Repair instead of forcing Start)",
               groups: [Terms.server, Terms.connect + Terms.fail + Terms.stuck], boosts: ["cos server", "running"]),
+        Entry(id: "mac-recording", title: "Start or stop a Mac recording",
+              answer: "COS records what this Mac plays and your microphone stays off, so let people know. Use Start recording here, or Record under Record on Mac in Meetings. Stop and save ends it, and the meeting opens in Meetings once it is saved. A recording stops at two hours and keeps everything up to then. Mac recording needs macOS 14.2 or later.",
+              actions: [.openMeetings],
+              source: "cos-starter control/docs/index.html:884 (needs macOS 14.2), :890 (Record under Record on Mac), :916 (Stop and save), :923 (two hours); Sources/MacRecording.swift MacRecordingPanel, MacRecordingNotice",
+              groups: [],
+              phrases: ["start recording", "start a recording", "stop recording", "stop a recording", "stop the recording", "record this meeting", "record a meeting",
+                        "record my meeting", "record the meeting", "how do i record", "how to record", "record on mac", "record this mac", "record my mac"]),
+        Entry(id: "transcript-unfinished", title: "A transcript never finished",
+              answer: "Saving can take a while after a long meeting. In Meetings, if it says Saved meeting not found yet, wait for it to finish and choose Refresh. Audio that never became a meeting stays on this Mac under Unsaved recordings, with Recover. If Whisper has stopped, Repair Whisper restarts the COS server and Whisper together.",
+              actions: [.openMeetings, .repairWhisper],
+              source: "cos-starter control/docs/index.html:919, :1206 (A saved Mac recording is not in Meetings); Sources/ActivityMeetings.swift unsavedCaptureBanner (Unsaved recordings, Recover), Saved meeting not found yet",
+              groups: [],
+              phrases: ["transcript never finished", "transcript never finishes", "transcript didnt finish", "transcript did not finish", "transcript not finished",
+                        "transcript isnt finished", "transcript is missing", "transcript missing", "no transcript", "where is my transcript", "meeting never saved",
+                        "meeting never finished", "meeting did not save", "meeting didnt save", "recording never saved", "recording did not save", "recording didnt save",
+                        "still saving", "stuck saving"]),
+        Entry(id: "dictation-use", title: "Use dictation",
+              answer: "Turn on Dictate into Mac apps in Settings, Dictation, then set a shortcut. Push to talk listens while you hold the key and transcribes when you let go. Start and stop takes one press to start and one to stop. Allow typing in apps lets COS type for you. Dictation uses your microphone and runs on this Mac.",
+              actions: [.openDictationSettings],
+              source: "cos-starter control/docs/index.html:730-741 (Turn it on and pick a shortcut); Sources/SettingsHubCatalog.swift DI-01, DI-05, DI-06, DI-08; Sources/MacDictationCore.swift shortcut names",
+              groups: [],
+              phrases: ["how do i use dictation", "how does dictation work", "how to use dictation", "how do i dictate", "how to dictate", "use dictation", "start dictation",
+                        "start dictating", "turn on dictation", "set up dictation", "setup dictation", "dictation shortcut", "dictate into apps"]),
+        Entry(id: "voice-rename", title: "Rename a voice",
+              answer: "Speakers has three lists: Meetings to review, Samples to review and Voices. To fix a name, open the meeting under Meetings to review and choose Actually someone else on that voice, or Name this voice if it was never named. It asks whether to change this meeting or everywhere before it renames anything. A saved Mac recording has Rename voice in Meetings. Voice names are suggestions, never certainties.",
+              actions: [.openSpeakers],
+              source: "cos-starter control/docs/index.html:686 (Three lists); Sources/ActivityWindow.swift SpeakerSubview; Sources/Views.swift voice rows (Name this voice, Actually someone else, the rename confirm); Sources/ActivityMeetings.swift and Sources/Models.swift menuTitle (Rename voice)",
+              groups: [],
+              phrases: ["rename a voice", "rename voice", "rename a speaker", "rename speaker", "rename the speaker", "speaker names wrong", "speaker name wrong", "speaker name is wrong",
+                        "speaker names are wrong", "wrong speaker", "wrong speaker name", "wrong name on a voice", "fix a speaker name", "fix speaker name", "name a voice",
+                        "name a speaker", "name this voice"]),
     ]
 
     /// Lower case, accents folded, apostrophes dropped ("won't" is "wont"), everything else a single space, padded so a
@@ -747,6 +796,37 @@ enum SetupAssistant {
     static func troubleshoot(question: String, _ s: Snapshot, report: String?, id: String, asked: String) -> Troubleshoot? {
         guard gate(.troubleshoot, s) == .ready else { return nil }
         let words = String(question.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxQuestion))
+        let packet = report.map { scrubbed(String($0.prefix(maxPacket))) } ?? "The redacted report could not be read."
+        let prompt = """
+        Someone needs help with COS on their own Mac. Diagnose the problem and propose a fix. Do not change anything yet.
+
+        Their words: "\(words)"
+
+        Rules:
+        - Read what COS Control sees and the Doctor packet below first. Paths and names in the packet are redacted.
+        - Say what is wrong in two or three short sentences, then propose the smallest fix.
+        \(runRules)
+        - If you cannot tell, say what you would check next and why.
+
+        What COS Control sees now:
+        \(seen(s).map { "- " + $0 }.joined(separator: "\n"))
+
+        Doctor packet (redacted):
+        \(packet)
+        """
+        return Troubleshoot(target: targetPrefix + id, title: "Troubleshoot: " + String(words.prefix(48)), prompt: prompt,
+                            context: "Asked from Ask COS setup help on \(asked).")
+    }
+
+    /// The rules every run this assistant starts carries (troubleshoot and Ask COS).
+    static let runRules = """
+    - Ask before you run anything that changes this Mac: installs, restarts, deleting files, System Settings.
+    - Never use sudo, pkill or killall. Never restart the COS server while a meeting is recording or a job is running.
+    - Prefer COS Control's own buttons when one fits: Run Doctor, Repair Managed Runtime, Repair Whisper, Restart, Update Server, Reset and add again.
+    """
+
+    /// What COS Control sees now, as short lines for a prompt.
+    static func seen(_ s: Snapshot) -> [String] {
         let errors = s.checks.filter { $0.state == "error" }.map(\.name)
         let warnings = s.checks.filter { $0.state == "warning" }.map(\.name)
         var seen: [String] = [
@@ -762,32 +842,685 @@ enum SetupAssistant {
             seen.append("Doctor: \(s.checks.count - errors.count - warnings.count) ok, \(warnings.count) warnings, \(errors.count) errors")
             seen += errors.map { "Doctor error: " + $0 } + warnings.map { "Doctor warning: " + $0 }
         }
-        let packet = report.map { scrubbed(String($0.prefix(maxPacket))) } ?? "The redacted report could not be read."
-        let prompt = """
-        Someone needs help with COS on their own Mac. Diagnose the problem and propose a fix. Do not change anything yet.
-
-        Their words: "\(words)"
-
-        Rules:
-        - Read what COS Control sees and the Doctor packet below first. Paths and names in the packet are redacted.
-        - Say what is wrong in two or three short sentences, then propose the smallest fix.
-        - Ask before you run anything that changes this Mac: installs, restarts, deleting files, System Settings.
-        - Never use sudo, pkill or killall. Never restart the COS server while a meeting is recording or a job is running.
-        - Prefer COS Control's own buttons when one fits: Run Doctor, Repair Managed Runtime, Repair Whisper, Restart, Update Server, Reset and add again.
-        - If you cannot tell, say what you would check next and why.
-
-        What COS Control sees now:
-        \(seen.map { "- " + $0 }.joined(separator: "\n"))
-
-        Doctor packet (redacted):
-        \(packet)
-        """
-        return Troubleshoot(target: targetPrefix + id, title: "Troubleshoot: " + String(words.prefix(48)), prompt: prompt,
-                            context: "Asked from Ask COS setup help on \(asked).")
+        return seen
     }
 
     /// Any "/Users/<name>" left in the packet becomes "~".
     static func scrubbed(_ text: String) -> String {
         text.replacingOccurrences(of: "/Users/[^/\"\\s]+", with: "~", options: .regularExpression)
+    }
+
+    // MARK: - The command center (⌘K)
+
+    /// What the ⌘K panel lists and what each key does, from plain values the window builds on each frame. No views and no
+    /// app types: Tests/SetupAssistantChecks.swift runs every rule here against fixtures. Only the view knows how to run a
+    /// row (ActivityWindow's Command center extension), and its switches have no default, so a new case will not compile
+    /// until it is dispatched.
+    enum Center {
+
+        // MARK: Commands
+
+        /// The closed command list. Typed words choose one by phrase; nothing typed reaches it any other way.
+        enum Command: String, CaseIterable, Sendable {
+            case startRecording, stopRecording, openSessions, openMeetings, openWork, openSpeakers, openDictation, openMemories, openSettings, runDoctor
+
+            var title: String {
+                switch self {
+                case .startRecording: return "Start recording"
+                case .stopRecording: return "Stop and save"
+                case .openSessions: return "Open Sessions"
+                case .openMeetings: return "Open Meetings"
+                case .openWork: return "Open Work"
+                case .openSpeakers: return "Open Speakers"
+                case .openDictation: return "Open Dictation"
+                case .openMemories: return "Open Memories"
+                case .openSettings: return "Open Settings"
+                case .runDoctor: return "Run Doctor"
+                }
+            }
+
+            /// The words that name it, in full. A row is highlighted on its own only when the whole text is one of these.
+            var phrases: [String] {
+                func opener(_ name: String) -> [String] { [name, "open " + name, "go to " + name, "show " + name] }
+                switch self {
+                case .startRecording:
+                    return ["start recording", "start a recording", "record", "record this mac", "record on mac", "record this meeting", "record a meeting", "start mac recording"]
+                case .stopRecording:
+                    return ["stop recording", "stop a recording", "stop the recording", "stop and save", "stop mac recording", "end recording", "save recording"]
+                case .openSessions: return opener("sessions")
+                case .openMeetings: return opener("meetings")
+                case .openWork: return opener("work")
+                case .openSpeakers: return opener("speakers") + opener("voices")
+                case .openDictation: return opener("dictation")
+                case .openMemories: return opener("memories")
+                case .openSettings: return opener("settings")
+                case .runDoctor: return ["doctor", "run doctor", "checkup", "run a checkup", "run a full checkup"]
+                }
+            }
+
+            /// Return may run it straight from an exact phrase: the openers and Start recording. Never Stop, never Doctor,
+            /// and an Action is never a Command, so nothing in `changesSomething` can get here.
+            var autoHighlights: Bool {
+                switch self {
+                case .stopRecording, .runDoctor: return false
+                default: return true
+                }
+            }
+        }
+
+        // MARK: Rows
+
+        enum Kind: Equatable, Sendable {
+            /// Opens by id: the window looks the row up again at open, so a session that went away never opens stale.
+            case recording(String), waiting(String), running(String), session(String)
+            case command(Command), action(Action)
+            case ask, file
+            /// Words only: the saved answer, and lines like "Nothing is running."
+            case savedAnswer, info
+        }
+
+        /// What a row is. A rule between groups is the only section marking.
+        enum Group: Int, Sendable { case recording, waiting, running, doing, fixing, commands, sessions, answer, asking }
+
+        struct Row: Identifiable, Equatable, Sendable {
+            var id: String
+            var kind: Kind
+            var group: Group
+            var title: String
+            var detail: String? = nil
+            /// The word on the row itself: Waiting, Running, Saved answer.
+            var state: String? = nil
+            /// What running it does (Open in Claude, Repair Whisper).
+            var trailing: String? = nil
+            /// Why it waits. A held row has no action.
+            var held: String? = nil
+
+            var selectable: Bool {
+                switch kind {
+                case .savedAnswer, .info: return false
+                default: return held == nil
+                }
+            }
+            /// For a log line: never a title or anything typed.
+            var logName: String {
+                switch kind {
+                case .recording: return "recording"
+                case .waiting: return "waiting"
+                case .running: return "running"
+                case .session: return "session"
+                case .command(let command): return "command." + command.rawValue
+                case .action(let action): return "action." + action.rawValue
+                case .ask: return "ask"
+                case .file: return "file"
+                case .savedAnswer: return "answer"
+                case .info: return "info"
+                }
+            }
+        }
+
+        /// A waiting, running or listed session, as plain values. Titles are cleaned where the row is made.
+        struct Item: Equatable, Sendable {
+            var id: String
+            var title: String
+            var detail: String? = nil
+            var openLabel: String? = nil
+            /// 1 blocks an agent; waiting rows list by tier.
+            var tier = 1
+            /// The session behind the row, so one session lists once.
+            var sessionID: String? = nil
+            var state: String? = nil
+        }
+
+        /// One live recording, for the rows above everything else. Stop and save reaches only this Mac's own capture.
+        struct LiveRecording: Equatable, Sendable {
+            var id: String
+            var title: String
+            var detail: String
+            var isMac = false
+            var canStop = false
+            /// Where it stops when Stop and save cannot reach it.
+            var stopNote: String? = nil
+        }
+
+        /// The Mac recording, as plain values. `busy` is MeetingDetectedCard.recordingBusy, which also counts a glasses
+        /// meeting (`canStart` alone does not, and `recordingCount` must never decide Stop).
+        struct Recording: Equatable, Sendable {
+            /// macOS 14.2 or later.
+            var osSupported = true
+            /// Recording or starting: the only time Stop and save is offered.
+            var stoppable = false
+            var starting = false
+            var occupied = false
+            var busy = false
+            /// Saving… from Stop until it has saved. Nil once it has, or once the save stopped on an error (Meetings has Retry).
+            var saveLine: String? = nil
+            /// Glasses meetings live right now, Mac capture left out.
+            var glassesLive = 0
+            /// A start from the panel is on its way.
+            var inFlight = false
+        }
+
+        struct Inputs: Equatable, Sendable {
+            var snapshot = Snapshot()
+            /// What is recording now: the first rows on an empty box.
+            var live: [LiveRecording] = []
+            /// What the quiet-hours fold leaves now.
+            var waiting: [Item] = []
+            /// False while the overview has not loaded: "not loaded", never "nothing waiting".
+            var waitingKnown = false
+            /// "For tomorrow: N more things", from the fold.
+            var foldedLine: String? = nil
+            var running: [Item] = []
+            var runningKnown = false
+            /// Listed sessions, searched by title only once words are typed.
+            var sessions: [Item] = []
+            /// Settings: session tracking is off, so waiting and running sessions cannot show.
+            var sessionsOff = false
+            var recording = Recording()
+            /// The run started from here, listed first so a row opens it.
+            var startedRunID: String? = nil
+        }
+
+        static let waitingCap = 3
+        static let runningCap = 3
+        static let fixCap = 2
+        static let commandCap = 4
+        static let sessionCap = 5
+        static let titleCap = 160
+
+        /// One line, control and direction characters gone, whitespace collapsed, bounded. Session titles come from outside
+        /// the app: a title must not fake a second row, reorder what is drawn or carry a hidden instruction.
+        static func clean(_ text: String) -> String {
+            var out = String.UnicodeScalarView()
+            var space = true
+            for scalar in text.unicodeScalars {
+                if CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                    if !space { out.append(" "); space = true }
+                } else if CharacterSet.controlCharacters.contains(scalar) || CharacterSet.illegalCharacters.contains(scalar) {
+                    continue
+                } else {
+                    out.append(scalar); space = false
+                }
+            }
+            return String(String(out).trimmingCharacters(in: .whitespaces).prefix(titleCap))
+        }
+
+        /// The words without the padding `normalized` adds.
+        static func plain(_ text: String) -> String {
+            normalized(String(text.prefix(maxQuestion))).trimmingCharacters(in: .whitespaces)
+        }
+
+        // MARK: Recording gates
+
+        enum RecordingHeld {
+            static let starting = "Starting the recording…"
+            static let os = "Mac recording needs macOS 14.2 or later."
+            static let saving = "The last recording is still saving."
+            static let unsaved = "The last recording has not saved yet. Meetings shows it."
+            static let glasses = "A glasses meeting is recording, so this Mac does not record it twice."
+            static let server = "Recording needs the COS server. Start it first."
+        }
+
+        /// Why Start recording waits, or nil. Refused System Audio is not here: it still records, as today.
+        static func recordingHold(_ r: Recording, _ s: Snapshot) -> String? {
+            if r.inFlight { return RecordingHeld.starting }
+            if !r.osSupported { return RecordingHeld.os }
+            if r.busy {
+                if r.occupied || r.saveLine != nil { return RecordingHeld.saving }
+                return r.glassesLive > 0 ? RecordingHeld.glasses : RecordingHeld.unsaved
+            }
+            return s.serverReachable ? nil : RecordingHeld.server
+        }
+
+        // MARK: The rows
+
+        private static func commandRow(_ command: Command, _ inputs: Inputs, group: Group) -> Row? {
+            let s = inputs.snapshot
+            let r = inputs.recording
+            var row = Row(id: "command:" + command.rawValue, kind: .command(command), group: group, title: command.title)
+            switch command {
+            case .startRecording:
+                if r.stoppable { return nil }
+                row.detail = "Record this Mac's audio. Microphone off."
+                row.held = recordingHold(r, s)
+            case .stopRecording:
+                guard r.stoppable else { return nil }
+                row.detail = "Stops this Mac's recording and saves the meeting."
+                // Under its recording's own row the word is already on the line above.
+                row.state = r.starting ? "Starting" : (group == .recording ? nil : "Recording")
+            case .runDoctor:
+                row.detail = "Checks the server, Whisper and your AI apps."
+                if case .held(let reason) = gate(.runDoctor, s) { row.held = reason }
+            case .openSessions, .openMeetings, .openWork, .openSpeakers, .openDictation, .openMemories, .openSettings:
+                break
+            }
+            return row
+        }
+
+        static let glassesLine = "A glasses meeting is recording. Stop it on the glasses."
+
+        private static func info(_ id: String, _ group: Group, _ title: String, detail: String? = nil, state: String? = nil) -> Row {
+            Row(id: "info:" + id, kind: .info, group: group, title: title, detail: detail, state: state)
+        }
+
+        private static func waitingRow(_ item: Item) -> Row {
+            Row(id: "waiting:" + item.id, kind: .waiting(item.id), group: .waiting, title: clean(item.title), detail: item.detail.map(clean),
+                state: item.tier == 1 ? "Waiting" : nil, trailing: item.openLabel)
+        }
+
+        private static func runningRow(_ item: Item) -> Row {
+            Row(id: "running:" + item.id, kind: .running(item.id), group: .running, title: clean(item.title), detail: item.detail.map(clean),
+                state: "Running", trailing: item.openLabel)
+        }
+
+        /// A button's word beside its question reads fine ("Start"). Alone on a row it has to say what it starts.
+        static func rowTitle(_ action: Action) -> String {
+            switch action {
+            case .setUp: return "Set up COS"
+            case .startServer: return "Start the COS server"
+            case .restartServer: return "Restart the COS server"
+            case .repairRuntime: return "Repair the COS server"
+            case .retryAppUpdate: return "Update COS Control"
+            default: return action.title
+            }
+        }
+
+        /// Tier 1 first, otherwise in the order given.
+        private static func byTier(_ items: [Item]) -> [Item] {
+            items.enumerated().sorted { ($0.element.tier, $0.offset) < ($1.element.tier, $1.offset) }.map(\.element)
+        }
+
+        private static func startedFirst(_ items: [Item], _ started: String?) -> [Item] {
+            guard let started, let index = items.firstIndex(where: { $0.id == started }) else { return items }
+            var out = items
+            out.insert(out.remove(at: index), at: 0)
+            return out
+        }
+
+        /// An empty box: what waits, what runs, what to do, and what is broken.
+        private static func emptyRows(_ inputs: Inputs) -> [Row] {
+            let s = inputs.snapshot
+            var rows: [Row] = []
+
+            let waiting = byTier(inputs.waiting)
+            rows += waiting.prefix(waitingCap).map(waitingRow)
+            if waiting.count > waitingCap {
+                let more = waiting.count - waitingCap
+                rows.append(info("more-waiting", .waiting, more == 1 ? "1 more is waiting on you." : "\(more) more are waiting on you."))
+            }
+            if waiting.isEmpty {
+                // Session tracking off: sessions cannot be seen, so this cannot say nothing is waiting.
+                rows.append(inputs.waitingKnown ? info("no-waiting", .waiting, inputs.sessionsOff ? "Nothing else is waiting on you." : "Nothing is waiting on you.", detail: inputs.foldedLine)
+                                                : info("waiting-unknown", .waiting, "Waiting on you: not loaded yet."))
+            }
+
+            let running = startedFirst(inputs.running, inputs.startedRunID)
+            rows += running.prefix(runningCap).map(runningRow)
+            if running.count > runningCap {
+                rows.append(info("more-running", .running, "\(running.count - runningCap) more running."))
+            }
+            if running.isEmpty {
+                if inputs.sessionsOff {
+                    rows.append(Row(id: "command:openSessions", kind: .command(.openSessions), group: .running, title: "Session tracking is off",
+                                    detail: "Turn it on in Sessions to see agents here.", trailing: Command.openSessions.title))
+                } else {
+                    rows.append(inputs.runningKnown ? info("no-running", .running, "Nothing is running.") : info("running-unknown", .running, "Running: not loaded yet."))
+                }
+            }
+
+            var fixes: [Row] = []
+            if !s.serverReachable && !s.needsFirstRun {
+                fixes.append(info("server-down", .fixing, "The COS server is not answering.",
+                                  detail: "What is listed here runs on this Mac without it. Typed questions still get saved answers."))
+            }
+            for suggestion in board(s).suggestions.filter({ $0.tier == .repair }).prefix(fixCap) {
+                // By the suggestion's id: two suggestions can share an action (Repair, for an interrupted update and for the recovery controller).
+                if let action = suggestion.action {
+                    fixes.append(Row(id: "fix:" + suggestion.id, kind: .action(action), group: .fixing, title: suggestion.line, detail: suggestion.why,
+                                     trailing: suggestion.actionTitle))
+                } else {
+                    fixes.append(Row(id: "fix:" + suggestion.id, kind: .info, group: .fixing, title: suggestion.line, detail: suggestion.why, held: suggestion.held))
+                }
+                if let secondary = suggestion.secondary {
+                    fixes.append(Row(id: "fix:" + suggestion.id + ":second", kind: .action(secondary), group: .fixing, title: rowTitle(secondary)))
+                }
+            }
+
+            let r = inputs.recording
+
+            // What is recording comes first of all, each with its way to stop.
+            var live: [Row] = []
+            for item in inputs.live {
+                let saving = item.isMac && !r.stoppable
+                live.append(Row(id: "recording:" + item.id, kind: .recording(item.id), group: .recording, title: clean(item.title),
+                                detail: saving ? (r.saveLine ?? item.detail) : ([item.detail] + (item.stopNote.map { [$0] } ?? [])).joined(separator: ". "),
+                                state: saving ? "Saving" : nil, trailing: "Live view"))
+                if item.canStop, let stop = commandRow(.stopRecording, inputs, group: .recording) { live.append(stop) }
+            }
+            let macListed = inputs.live.contains { $0.isMac }
+            let glassesListed = inputs.live.contains { !$0.isMac }
+
+            if let start = commandRow(.startRecording, inputs, group: .doing) { rows.append(start) }
+            if !inputs.live.contains(where: \.canStop), let stop = commandRow(.stopRecording, inputs, group: .doing) { rows.append(stop) }
+            if !macListed, !r.stoppable, let line = r.saveLine { rows.append(info("saving", .doing, line, state: "Saving")) }
+            if !glassesListed, r.glassesLive > 0 { rows.append(info("glasses", .doing, r.stoppable ? glassesLine : "Stop it on the glasses.")) }
+            if !fixes.contains(where: { $0.kind == .action(.runDoctor) }), let doctor = commandRow(.runDoctor, inputs, group: .doing) { rows.append(doctor) }
+            // With the server down the fix comes next: most of the rest leans on it.
+            return live + (s.serverReachable ? rows + fixes : fixes + rows)
+        }
+
+        /// How a command matches the words: 0 is the whole phrase, 1 a start of a phrase or of one of its words, 2 a phrase
+        /// inside longer words. Nil: no match.
+        static func commandRank(_ command: Command, _ words: String) -> Int? {
+            let typed = plain(words)
+            guard !typed.isEmpty else { return nil }
+            let phrases = command.phrases.map(plain)
+            if phrases.contains(typed) { return 0 }
+            if typed.count >= 2, phrases.contains(where: { $0.hasPrefix(typed) || $0.split(separator: " ").contains { $0.hasPrefix(typed) } }) { return 1 }
+            let padded = " " + typed + " "
+            if phrases.contains(where: { $0.contains(" ") && padded.contains(" " + $0 + " ") }) { return 2 }
+            return nil
+        }
+
+        /// Words that read as a command when the text is short.
+        private static let commandWords: Set<String> = ["start", "stop", "record", "recording", "restart", "repair", "update", "upgrade", "install", "reset", "doctor", "checkup",
+                                                        "troubleshoot", "open", "settings", "sessions", "meetings", "speakers", "voices", "dictation", "memories", "setup"]
+
+        /// Close to a command without being one ("restart server", "update", "stop recording the demo"). Return never spends
+        /// a run on these: it moves to the Ask row first.
+        static func nearCommand(_ words: String) -> Bool {
+            let typed = plain(words)
+            let parts = typed.split(separator: " ").map(String.init)
+            if parts.count <= 4, parts.contains(where: commandWords.contains) { return true }
+            let padded = " " + typed + " "
+            return Command.allCases.contains { $0.phrases.contains { $0.contains(" ") && padded.contains(" " + plain($0) + " ") } }
+        }
+
+        /// Why Ask COS waits, or nil.
+        static func askHeld(_ s: Snapshot) -> String? {
+            if !s.workRunsOn { return "Work runs from Today is off in Settings." }
+            return s.serverReachable ? nil : "Asking needs the COS server."
+        }
+
+        struct Listing: Equatable, Sendable {
+            var rows: [Row] = []
+            /// Trimmed and whole, as typed: Return and File to Work take all of it. Matching reads a bounded start of it.
+            var words = ""
+            /// Runs on Return with nothing else highlighted. Only a full exact phrase of a command that allows it.
+            var autoHighlight: String? = nil
+            var hasAnswer = false
+            var nearCommand = false
+            var entry: Entry? = nil
+        }
+
+        /// Everything the panel shows for these words.
+        static func listing(_ inputs: Inputs, words raw: String) -> Listing {
+            let words = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            var result = Listing()
+            result.words = words
+            guard !words.isEmpty else {
+                result.rows = emptyRows(inputs)
+                return result
+            }
+            let s = inputs.snapshot
+            var rows: [Row] = []
+
+            // Commands, closest first. Only a whole phrase highlights itself, and only where the command allows it.
+            let ranked = Command.allCases.compactMap { command in commandRank(command, words).map { (command, $0) } }.sorted { $0.1 < $1.1 }
+            for (command, rank) in ranked.prefix(commandCap) {
+                if let row = commandRow(command, inputs, group: .commands) {
+                    if rank == 0, command.autoHighlights, row.selectable, result.autoHighlight == nil { result.autoHighlight = row.id }
+                    rows.append(row)
+                } else if command == .stopRecording, inputs.recording.glassesLive > 0 {
+                    rows.append(info("glasses", .commands, glassesLine))
+                }
+            }
+
+            // Sessions: what waits, what runs, then the list. Titles only filter here. They choose no command and no answer.
+            let typed = plain(words)
+            var seen = Set<String>()
+            var sessions: [Row] = []
+            func take(_ item: Item, _ make: (Item) -> Row) {
+                guard sessions.count < sessionCap, typed.count >= 2, plain(item.title).contains(typed) else { return }
+                if let session = item.sessionID { guard seen.insert(session).inserted else { return } }
+                var row = make(item)
+                row.group = .sessions
+                sessions.append(row)
+            }
+            for item in byTier(inputs.waiting) { take(item, waitingRow) }
+            for item in inputs.running { take(item, runningRow) }
+            for item in inputs.sessions {
+                take(item) { Row(id: "session:" + $0.id, kind: .session($0.id), group: .sessions, title: clean($0.title), detail: $0.detail.map(clean), state: $0.state, trailing: $0.openLabel) }
+            }
+            rows += sessions
+
+            // The saved answer, unless a whole-phrase command already runs on Return. A miss says so.
+            let saved = result.autoHighlight == nil ? answer(words, s) : nil
+            if let saved {
+                result.hasAnswer = true
+                result.entry = saved.entry
+                rows.append(Row(id: "answer", kind: .savedAnswer, group: .answer, title: saved.entry.title, detail: saved.text, state: "Saved answer"))
+                for offer in saved.offers {
+                    rows.append(Row(id: "action:" + offer.action.rawValue, kind: .action(offer.action), group: .answer, title: rowTitle(offer.action), held: offer.held))
+                }
+            } else if result.autoHighlight == nil, ranked.isEmpty, sessions.isEmpty {
+                rows.append(info("no-answer", .answer, "No saved answer for this."))
+            }
+
+            // Always last.
+            rows.append(Row(id: "ask", kind: .ask, group: .asking, title: "Ask COS",
+                            detail: saved != nil ? "One Work run with your words, this saved answer and what COS Control sees." : "One Work run with your words and what COS Control sees. It shows in Running.",
+                            held: askHeld(s)))
+            if gate(.troubleshoot, s) == .ready, !rows.contains(where: { $0.kind == .action(.troubleshoot) }) {
+                rows.append(Row(id: "action:troubleshoot", kind: .action(.troubleshoot), group: .asking, title: Action.troubleshoot.title,
+                                detail: "Runs Doctor first, then one Work run. It asks before it changes anything."))
+            }
+            rows.append(Row(id: "file", kind: .file, group: .asking, title: "File to Work", detail: "Saves your words to the Work inbox. No run.", trailing: "Option-Return"))
+
+            result.rows = rows
+            // Any command in the list counts: "go to se" shows Open Sessions, and Return must not spend a run on it.
+            result.nearCommand = !ranked.isEmpty || nearCommand(words)
+            return result
+        }
+
+        // MARK: Keys
+
+        /// The one highlight in force: what was chosen by key or click, else the whole-phrase command.
+        static func effective(_ chosen: String?, _ listing: Listing) -> String? {
+            if let chosen, listing.rows.contains(where: { $0.id == chosen && $0.selectable }) { return chosen }
+            return listing.autoHighlight
+        }
+
+        /// Down from nothing takes the first row and stops at the last. Up from the first goes back to nothing.
+        static func move(_ delta: Int, from current: String?, _ listing: Listing) -> String? {
+            let ids = listing.rows.filter(\.selectable).map(\.id)
+            guard let first = ids.first else { return nil }
+            guard let current, let index = ids.firstIndex(of: current) else { return delta > 0 ? first : nil }
+            let next = index + delta
+            return next < 0 ? nil : ids[min(next, ids.count - 1)]
+        }
+
+        enum ReturnOutcome: Equatable, Sendable {
+            case nothing
+            /// Run the row, or open its confirm first.
+            case activate(String)
+            /// The confirm that is open.
+            case confirm
+            case startRun
+            case file
+            /// Highlight this row. A second Return runs it.
+            case move(String)
+        }
+
+        /// What Return does now. Option-Return always files. A saved answer, a near-command or a short text never starts a
+        /// run: Return moves to the Ask row first, and a second Return runs it.
+        static func onReturn(option: Bool, chosen: String?, confirming: Bool, noticeShowing: Bool, _ listing: Listing, _ s: Snapshot) -> ReturnOutcome {
+            if option { return listing.words.isEmpty ? .nothing : .file }
+            if noticeShowing { return .nothing }
+            if confirming { return .confirm }
+            if let id = effective(chosen, listing) { return .activate(id) }
+            guard !listing.words.isEmpty else { return .nothing }
+            let askable = listing.rows.first { $0.kind == .ask && $0.selectable }
+            let cautious = listing.hasAnswer || listing.nearCommand
+            if !s.workRunsOn, !cautious { return .file }
+            let longEnough = plain(listing.words).split(separator: " ").count >= 3
+            if askable != nil, !cautious, longEnough { return .startRun }
+            if let target = askable ?? listing.rows.first(where: { $0.kind == .file }) { return .move(target.id) }
+            return .nothing
+        }
+
+        /// What Return will do, in words. The foot of the panel and VoiceOver both read it.
+        static func hint(_ outcome: ReturnOutcome, _ listing: Listing, _ s: Snapshot) -> String {
+            switch outcome {
+            case .nothing:
+                return "Up and Down choose. Esc closes."
+            case .confirm:
+                return "Return confirms. Esc cancels."
+            case .startRun:
+                return "Return starts one Work run. Option-Return files it."
+            case .file:
+                return "Return files it to the Work inbox."
+            case .move(let id):
+                let name = listing.rows.first { $0.id == id }?.title ?? ""
+                return "Return moves to \(name). Return again runs it."
+            case .activate(let id):
+                guard let row = listing.rows.first(where: { $0.id == id }) else { return "Up and Down choose. Esc closes." }
+                switch row.kind {
+                case .recording, .waiting, .running, .session: return "Return opens: \(row.title)"
+                default: return (confirmation(row, s) != nil ? "Return asks first: " : "Return runs: ") + row.title
+                }
+            }
+        }
+
+        /// While the one-time notice shows: its Record is a click, so a quick second Return can never accept it.
+        static let noticeHint = "Choose Record on the card to start. Esc goes back."
+
+        /// What VoiceOver hears when the highlight moves.
+        static func announcement(_ row: Row?, _ outcome: ReturnOutcome, _ listing: Listing, _ s: Snapshot) -> String {
+            let hint = hint(outcome, listing, s)
+            return row.map { $0.title + ". " + hint } ?? hint
+        }
+
+        enum EscapeStep: Equatable, Sendable { case cancelConfirm, dismissNotice, clearHighlight, clearWords, close }
+
+        /// Esc undoes one thing at a time and then closes. A highlight the words made on their own goes with the words.
+        static func onEscape(confirming: Bool, noticeShowing: Bool, chosen: String?, hasWords: Bool) -> EscapeStep {
+            if confirming { return .cancelConfirm }
+            if noticeShowing { return .dismissNotice }
+            if chosen != nil { return .clearHighlight }
+            return hasWords ? .clearWords : .close
+        }
+
+        // MARK: Confirms
+
+        static let stopConfirm = Confirmation(question: "Stop and save this recording?",
+                                              consequence: "COS stops this Mac's recording and saves the meeting. A glasses meeting keeps running.", confirm: "Stop and save")
+        /// main.swift doctorDetails: Query + playback proof asks the provider a real question, up to 60 s.
+        static let doctorConfirm = Confirmation(question: "Run Doctor?",
+                                                consequence: "Doctor checks the server, Whisper and your AI apps, and asks your AI app one real question. It can take a minute.", confirm: "Run Doctor")
+        /// The report runs Doctor too.
+        static let reportConfirm = Confirmation(question: "Copy a redacted report?",
+                                                consequence: "This runs Doctor first, which asks your AI app one real question, then copies the report.", confirm: "Copy report")
+
+        /// The inline confirm a row needs. Stop and Doctor always ask, as does anything in `changesSomething`. An opener,
+        /// Start recording, Ask COS and File to Work never do.
+        static func confirmation(_ row: Row, _ s: Snapshot) -> Confirmation? {
+            switch row.kind {
+            case .command(.stopRecording): return stopConfirm
+            case .command(.runDoctor), .action(.runDoctor): return doctorConfirm
+            case .action(.copyReport): return reportConfirm
+            case .action(let action): return SetupAssistant.confirmation(action, s)
+            default: return nil
+            }
+        }
+
+        /// Checked again on confirm, with fresh state: a recording can start between the two. Nil runs it; a line means it
+        /// waits now and nothing runs. There is no force path.
+        static func recheck(_ row: Row, _ s: Snapshot, _ r: Recording) -> String? {
+            switch row.kind {
+            case .command(.stopRecording):
+                return r.stoppable ? nil : "Nothing is recording on this Mac now."
+            case .command(.startRecording):
+                return recordingHold(r, s)
+            case .command(.runDoctor):
+                if case .held(let reason) = gate(.runDoctor, s) { return reason }
+                return nil
+            case .action(let action):
+                switch gate(action, s) {
+                case .ready: return nil
+                case .held(let reason): return reason
+                case .notApplicable: return "This does not apply any more."
+                }
+            default:
+                return nil
+            }
+        }
+
+        // MARK: The result line
+
+        enum Tone: Sendable { case progress, done, problem }
+        struct ResultLine: Equatable, Sendable {
+            var text: String
+            var tone: Tone
+        }
+        struct ResultInputs: Equatable, Sendable {
+            var error: String? = nil
+            var recordingError: String? = nil
+            var gatheringReport = false
+            var startingRecording = false
+            /// ControllerModel.operationProgress while the helper runs.
+            var helperProgress: String? = nil
+            var startingRun = false
+            var filing = false
+            var runNote: String? = nil
+            var notice: String? = nil
+            var platformNotice: String? = nil
+            /// model.notice, only for something this panel ran. It stays set long after, so it is not news otherwise.
+            var helperNotice: String? = nil
+        }
+
+        /// One line: a failure first, then what is running now, then the last result.
+        static func result(_ r: ResultInputs) -> ResultLine? {
+            func text(_ value: String?) -> String? {
+                guard let value, !value.isEmpty else { return nil }
+                return clean(value)
+            }
+            if let line = text(r.error) ?? text(r.recordingError) { return ResultLine(text: line, tone: .problem) }
+            if r.gatheringReport { return ResultLine(text: "Gathering the Doctor report…", tone: .progress) }
+            if r.startingRecording { return ResultLine(text: RecordingHeld.starting, tone: .progress) }
+            if let line = text(r.helperProgress) { return ResultLine(text: line, tone: .progress) }
+            if r.startingRun { return ResultLine(text: "Starting the run…", tone: .progress) }
+            if r.filing { return ResultLine(text: "Filing it to Work…", tone: .progress) }
+            if let line = text(r.runNote) ?? text(r.notice) ?? text(r.platformNotice) ?? text(r.helperNotice) { return ResultLine(text: line, tone: .done) }
+            return nil
+        }
+
+        // MARK: Ask COS
+
+        /// One Work run for the Ask row: the person's words quoted, the saved answer when there is one, a short snapshot and
+        /// the same rules as troubleshoot. No Doctor, so it spends no provider question before the run. Nil unless the server
+        /// answers and Work runs are on. Takes no session titles: they never reach a prompt.
+        static func askRun(question: String, entry: Entry?, _ s: Snapshot, id: String, asked: String) -> Troubleshoot? {
+            guard askHeld(s) == nil else { return nil }
+            let words = String(question.trimmingCharacters(in: .whitespacesAndNewlines).prefix(SetupAssistant.maxQuestion))
+            guard !words.isEmpty else { return nil }
+            let saved = entry.map { "Saved answer from the COS Control guide, \"\($0.title)\":\n\($0.answer)" } ?? "No saved answer matched."
+            let prompt = """
+            Someone asked COS Control a question on their own Mac. Answer it in a few short sentences, or propose the smallest fix.
+
+            Their words: "\(words)"
+
+            \(saved)
+
+            Rules:
+            - Start from the saved answer and what COS Control sees.
+            \(runRules)
+            - If you cannot tell, say what you would check next and why.
+
+            What COS Control sees now:
+            \(seen(s).map { "- " + $0 }.joined(separator: "\n"))
+            """
+            return Troubleshoot(target: "today:ask:" + id, title: String(words.prefix(60)), prompt: prompt, context: "Asked from the COS command center on \(asked).")
+        }
     }
 }

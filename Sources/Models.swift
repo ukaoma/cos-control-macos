@@ -13776,6 +13776,12 @@ enum TodayHome {
         let sessionId: String
         let start: Date?
         let isMac: Bool
+        /// The Mac recording's own title. The server names no title for a glasses meeting.
+        var title: String? = nil
+        /// Stopped and still saving: MacRecordingSaveStatus's words. Nil while it records.
+        var saving: String? = nil
+        /// This Mac's capture, recording or starting: the only recording Stop and save reaches. Never from recordingCount.
+        var canStop = false
         var isPhone: Bool { PhoneMeetingCapture.protected(sessionId) }
     }
     /// One in-flight job from GET /api/query-jobs/active (server 6.84.1).
@@ -13842,6 +13848,8 @@ enum TodayHome {
         var disambiguator: String? = nil
         /// 0.5.337 (loop audit W5): a Work run's server job, which the row's Stop cancels.
         var stopJobID: String? = nil
+        /// A live recording (Miles, 2026-10-31): it draws in its own section under the Today header, never in Running.
+        var recording: Recording? = nil
         /// VoiceOver: "Claude Code in Terminal, Holiday promo landing page, working 12 minutes, Open in Terminal".
         var voiceLabel: String {
             var spoken = detail
@@ -13914,10 +13922,11 @@ enum TodayHome {
             let start = recording.start
             var title = start.map { "Recording from " + clock($0, calendar: input.calendar) } ?? "Recording now"
             if let event = input.event, let start, abs(event.start.timeIntervalSince(start)) <= 15 * 60 { title = event.title }
+            else if let own = recording.title.flatMap({ guarded($0) }) { title = own }
             rows.append(RunRow(id: "recording:" + recording.sessionId, platform: .glasses, title: title,
                                detail: (recording.isPhone ? "iPhone microphone recording, live transcript" : recording.isMac ? "recording on this Mac, live transcript" : "glasses recording, live transcript")
                                    + (start.map { ", " + duration(input.now.timeIntervalSince($0)) } ?? ""),
-                               openLabel: "Live view", open: .liveView(recording.sessionId), working: true, finished: false, started: start))
+                               openLabel: "Live view", open: .liveView(recording.sessionId), working: true, finished: false, started: start, recording: recording))
         }
         let routineJobs = Set(input.routines.compactMap(\.jobId))
         for job in input.jobs ?? [] {
@@ -14371,7 +14380,8 @@ enum TodayHome {
         var agentsWorking = 0
         var finishedHour = 0
         var glassesQuestions = 0
-        var recording = false
+        /// Live recordings. They draw in their own section, so they are not in `running`.
+        var recordings = 0
         var routinesRunning = 0
         var voicesToName: Int?
         var memoriesToReview: Int?
@@ -14407,7 +14417,6 @@ enum TodayHome {
         c.running = running.count
         c.agentsWorking = running.filter { agentPlatforms.contains($0.platform) }.count
         c.glassesQuestions = running.filter { $0.platform == .question }.count
-        c.recording = running.contains { $0.platform == .glasses }
         c.routinesRunning = running.filter { $0.platform == .routine }.count
         c.finishedHour = finished.count
         return c
@@ -14451,6 +14460,8 @@ enum TodayHome {
         let line: NeedsLine
         let reachable: Bool
         let split: IntakeSplit?
+        /// Live recordings, for the section under the Today header. Never also in `running`.
+        var recordings: [RunRow] = []
     }
 
     /// The whole home from its inputs. Unreachable: Needs you keeps this Mac's sessions only. A source that has not answered
@@ -14479,9 +14490,14 @@ enum TodayHome {
         }
         if states[.work] != .answered { need.olderToSort = nil }
         let needs = things(need)
-        let running = inFlight(input.run)
+        // Recordings have their own section (Miles, 2026-10-31), so Running and its count are the rest. The brief does not repeat
+        // them: the section sits right above it.
+        let inFlightRows = inFlight(input.run)
+        let recordings = inFlightRows.filter { $0.recording != nil }
+        let running = inFlightRows.filter { $0.recording == nil }
         let finished = finishedRows(input.run)
         var c = counts(needs: needs, running: running, finished: finished)
+        c.recordings = recordings.count
         let facts = input.facts
         c.voicesToName = answered(.voices, states) && facts.voicesLoaded ? needs.filter { $0.kind == .voice || $0.kind == .meetingVoices || $0.kind == .heldVoices }.reduce(0) { $0 + ($1.kind == .voice ? 1 : $1.items) } : nil
         c.memoriesToReview = answered(.memories, states) ? facts.memoriesToReview : nil
@@ -14505,7 +14521,22 @@ enum TodayHome {
         c.failedSources = failed(states)
         return Frame(needs: needs, running: running, finished: finished, counts: c, states: states,
                      line: needsLine(rows: needs.count, states: states), reachable: reachable,
-                     split: reachable && states[.work] == .answered ? input.split : nil)
+                     split: reachable && states[.work] == .answered ? input.split : nil, recordings: recordings)
+    }
+
+    // MARK: Recording section (Miles, 2026-10-31: "those should be the top items ... a dedicated section near TODAY")
+
+    /// A live recording's second line: where it records and for how long, or that it is saving.
+    static func recordingLine(_ recording: Recording, now: Date) -> String {
+        if let saving = recording.saving { return saving }
+        let place = recording.isPhone ? "Recording on your iPhone" : (recording.isMac ? "Recording on this Mac" : "Recording on your glasses")
+        return recording.start.map { place + ", " + duration(now.timeIntervalSince($0)) } ?? place
+    }
+
+    /// Where a recording stops when Stop and save cannot reach it. Nil for this Mac's own capture.
+    static func recordingStopNote(_ recording: Recording) -> String? {
+        if recording.isMac { return nil }
+        return recording.isPhone ? PhoneMeetingCapture.stopNote : "Stop it on the glasses"
     }
 
     // MARK: Brief (zero LLM, fixed templates)
@@ -14566,7 +14597,6 @@ enum TodayHome {
             parts.append(c.glassesQuestions == 1 ? "COS is answering a question" : "COS is answering " + number(c.glassesQuestions) + " questions")
         }
         if c.routinesRunning > 0 { parts.append(c.routinesRunning == 1 ? "a routine is running" : number(c.routinesRunning) + " routines are running") }
-        if c.recording { parts.append("the glasses are recording") }
         var sentences: [String] = []
         if let first { sentences.append(first + ".") }
         if !parts.isEmpty { let second = list(parts); sentences.append(second.prefix(1).uppercased() + second.dropFirst() + ".") }
@@ -14593,6 +14623,10 @@ enum TodayHome {
             else if c.settled { needs = "Nothing needs you" }
             else { needs = c.failedSources.isEmpty ? "Reading" : "Couldn't read " + list(c.failedSources.map(\.name)) }
             let running = c.running > 0 ? "\(c.running) running" : nil
+            // A recording comes first, and what is left of the line has to fit without wrapping: what needs you, if anything does.
+            if c.recordings > 0 {
+                return Story(text: ["\(c.recordings) recording", c.needs > 0 ? needs : nil].compactMap { $0 }.joined(separator: ", "), hot: true)
+            }
             return Story(text: [needs, running].compactMap { $0 }.joined(separator: ", "), hot: c.needs > 0)
         case "messages":
             if let brief = c.morningBrief, calendar.isDate(brief, inSameDayAs: now) {

@@ -149,7 +149,11 @@ need("guard admission == .allowed else {" in start, "[cost guards] nothing start
 need("intentID: id)" in start and "handoff.receipts.first { $0.id == id }" in start, "[cost guards] the new receipt is matched by its own id")
 need("guard !runBusy else { return }" in start and 'switchOn: TodayHome.workRunsOn(.standard)' in start, "[cost guards] the switch and one at a time")
 need("TodayHome.pickRunModel(" in start, "[cost guards] runs from Today use the picked non-Opus model")
-need(today.count("today.startRun(") == 2, "[cost guards] only Prep me and the Ask box start Work runs")
+need(today.count("today.startRun(") == 3, "[cost guards] only Prep me, Return in the command center and its Ask and troubleshoot rows start Work runs")
+need("if let refusal = today.runRefusal(" in body(today, "    func commandTroubleshoot(", "\n    func commandStartRun("), "[cost guards] troubleshoot asks the guard before Doctor spends a question")
+refusal = body(store, "    func runRefusal(", "\n    @Published var stopping")
+need("guardrail.account(" not in refusal and "handoff.submit(" not in refusal and "TodayRunGuard(defaults: .standard).admission(" in refusal and "TodayRunGuard.preflight(" in refusal,
+     "[cost guards] the check before Doctor is read only: it records nothing and starts nothing")
 need("static let dailyCap = 20" in models and "static let breakerFailures = 3" in models and "static let breakerPause: TimeInterval = 15 * 60" in models,
      "[cost guards] 20 a day, 3 failures, 15 minutes")
 ask = body(today, "    func todaySubmitAsk(", "\n    func todayNeedsPanel(")
@@ -171,7 +175,10 @@ need("if row.working { TodayPulse() }" in today, "[reduce motion] only working r
 # Rail on every tab (D1), with ⌘0 Today, ⌘1 to ⌘9 tabs, ⌘K the Ask box, Settings in both rails.
 frame = body(today, "    var todayFrameView: some View {", "\n    func todayResetExpansions()")
 need("todayRail(mode: mode, frame: frame, now: timeline.date)" in frame and "activityContent(today: frame" in frame, "[rail] the rail sits beside every tab's content")
-need('.keyboardShortcut("k", modifiers: .command)' in frame and "todayAskFocused = true" in frame, "[keyboard] ⌘K focuses the Ask box from any tab")
+cmdk = frame[frame.index('Button("") { toggleCommandCenter() }'):frame.index('.keyboardShortcut("k", modifiers: .command)')]
+need('.keyboardShortcut("k", modifiers: .command)' in frame and cmdk.strip() == 'Button("") { toggleCommandCenter() }', "[keyboard] ⌘K opens the command center from any tab")
+toggle = body(today, "    func toggleCommandCenter() {", "\n    func commandSectionChanged() {") + body(today, "    func openCommandCenter() {", "\n    func closeCommandCenter() {")
+need("goHome" not in cmdk and "goHome" not in toggle and "select(" not in toggle and "section =" not in toggle, "[keyboard] ⌘K never navigates: it stays on the tab it was pressed on")
 need(".onAppear { todayResetExpansions() }" in frame and "todayResetExpansions()" in frame, "[reset] a reopened window or a new day starts folded")
 rail_item = body(today, "    func todayRailItem(", "\n    func todayHomeView(")
 need("if index <= 9 { button.keyboardShortcut(KeyEquivalent(Character(String(index))), modifiers: .command) } else { button }" in rail_item,

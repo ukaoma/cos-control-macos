@@ -2,6 +2,8 @@
 """Ask COS setup assistant mutation lane. Run by hand, never by a gate.
 
     python3 Tests/mutate-setup-assistant.py <worktree> <scratch dir> [name ...]
+    python3 Tests/mutate-setup-assistant.py <worktree> <scratch dir> --center     the command center's mutants, most dangerous first
+    COS_MUTATE_MINUTES=25 ...                                                     stop starting mutants after this long, baseline included
 
 Copies the worktree to <scratch dir>/copy, proves the UNMUTATED lane green first (Tests/run-setup-assistant.sh: the pins,
 then the compiled checks), then applies one mutant at a time: the target must appear exactly once, the mutant must make
@@ -9,13 +11,14 @@ the lane fail, and the failure must name the behaviour it breaks. The copy is re
 every mutant. A mutant that lands and survives is a finding. One lane run at a time; every compile goes through the guard,
 and a run that hangs is killed after LIMIT seconds (Tests/mutate_bounded.py) and counted as a kill by timeout.
 """
-import filecmp, pathlib, shutil, sys, time
+import filecmp, os, pathlib, shutil, sys, time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import mutate_bounded as bounded
 
 LIMIT = 900
 C = "Sources/SetupAssistant.swift"
+W = "Sources/ActivityWindow.swift"
 R = "scripts/build-release.sh"
 S = "Tests/run.sh"
 MUTANTS = [
@@ -61,7 +64,7 @@ MUTANTS = [
     ("applies: an app update with none offered", C, "            return s.appUpdate.available || s.appUpdate.downloadFailed\n", "            return true\n", "[installing]"),
     # The board
     ("board: the conflict offers more", C, "        if s.ownerConflict {\n            let only", "        if false {\n            let only", "[ownership conflict offers nothing]"),
-    ("board: a server row on first run", C, "        if !s.serverReachable && !s.needsFirstRun {\n", "        if !s.serverReachable {\n", "[first run]"),
+    ("board: a server row on first run", C, "        if !s.serverReachable && !s.needsFirstRun {\n            switch s.runtimeState {\n", "        if !s.serverReachable {\n            switch s.runtimeState {\n", "[first run]"),
     ("board: a stopped server is repaired", C, '"It is not running, so Work, meetings and the glasses cannot reach it.", .startServer)',
      '"It is not running, so Work, meetings and the glasses cannot reach it.", .repairRuntime)', "[ranking]"),
     ("board: a Terminal server is updated", C, '"Finish active work, then stop it in Terminal with Control-C. COS Control can then run the server for you.", nil)',
@@ -129,7 +132,7 @@ MUTANTS = [
     ("confirm: the cap misquoted", C, "    static let dailyRuns = 20\n", "    static let dailyRuns = 25\n", "dailyRuns equals"),
     # Troubleshoot
     ("troubleshoot: no gate", C, "        guard gate(.troubleshoot, s) == .ready else { return nil }\n", "", "[troubleshoot needs the server]"),
-    ("troubleshoot: no ask-first rule", C, "        - Ask before you run anything that changes this Mac: installs, restarts, deleting files, System Settings.\n", "", "[troubleshoot asks first]"),
+    ("troubleshoot: no ask-first rule", C, "    - Ask before you run anything that changes this Mac: installs, restarts, deleting files, System Settings.\n", "", "[troubleshoot asks first]"),
     ("troubleshoot: the packet not redacted", C, "report.map { scrubbed(String($0.prefix(maxPacket))) }", "report.map { String($0.prefix(maxPacket)) }", "[troubleshoot redacts]"),
     ("troubleshoot: the packet unbounded", C, "report.map { scrubbed(String($0.prefix(maxPacket))) }", "report.map { scrubbed($0) }", "[troubleshoot is bounded]"),
     ("troubleshoot: the question unbounded", C, "        let words = String(question.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxQuestion))\n",
@@ -138,6 +141,155 @@ MUTANTS = [
     # Copy
     ("copy: an em dash in a held line", C, '"A meeting is still saving. This comes back when it is done."', '"A meeting is still saving \u2014 this comes back when it is done."', "[copy rules]"),
     ("copy: a hedge word in an answer", C, '"Repair Whisper restarts the COS server and local Whisper together,', '"Repair Whisper might restart the COS server and local Whisper together,', "[copy rules]"),
+    # The command center: auto-highlight
+    ("center: Stop highlights itself", C, "                case .stopRecording, .runDoctor: return false\n", "                case .runDoctor: return false\n", "[auto-highlight never Stop]"),
+    ("center: Doctor highlights itself", C, "                case .stopRecording, .runDoctor: return false\n", "                case .stopRecording: return false\n", "[auto-highlight never Doctor]"),
+    ("center: part of a phrase highlights", C, "if rank == 0, command.autoHighlights, row.selectable, result.autoHighlight == nil", "if command.autoHighlights, row.selectable, result.autoHighlight == nil",
+     "[longer text never auto-highlights]"),
+    ("center: a held row highlights", C, "if rank == 0, command.autoHighlights, row.selectable, result.autoHighlight == nil", "if rank == 0, command.autoHighlights, result.autoHighlight == nil",
+     "[a held row never highlights]"),
+    ("center: an exact command still shows the answer", C, "            let saved = result.autoHighlight == nil ? answer(words, s) : nil\n", "            let saved = answer(words, s)\n", "[an exact command skips the answer]"),
+    # The command center: the closed list
+    ("center: a command's title changes", C, '                case .openSessions: return "Open Sessions"\n', '                case .openSessions: return "Sessions"\n', "[command list]"),
+    ("center: a phrase is not exact", C, "            if phrases.contains(typed) { return 0 }\n", "", "[a command's phrase is exact]"),
+    # The command center: Return
+    ("center: a saved answer starts a run", C, "            let cautious = listing.hasAnswer || listing.nearCommand\n", "            let cautious = listing.nearCommand\n", "[a saved answer moves to Ask]"),
+    ("center: a near-command starts a run", C, "            let cautious = listing.hasAnswer || listing.nearCommand\n", "            let cautious = listing.hasAnswer\n", "[a near-command moves to Ask]"),
+    ("center: a short text starts a run", C, "if askable != nil, !cautious, longEnough { return .startRun }", "if askable != nil, !cautious { return .startRun }", "[under three words moves to Ask]"),
+    ("center: Option-Return stops filing", C, "            if option { return listing.words.isEmpty ? .nothing : .file }\n", "", "[Option-Return always files]"),
+    ("center: Option-Return files nothing", C, "            if option { return listing.words.isEmpty ? .nothing : .file }\n", "            if option { return .file }\n", "[Option-Return with no words]"),
+    ("center: Return ignores the highlight", C, "            if let id = effective(chosen, listing) { return .activate(id) }\n", "", "[Return runs the highlight]"),
+    ("center: Return ignores the confirm", C, "            if confirming { return .confirm }\n", "", "[Return confirms]"),
+    ("center: Return accepts the notice", C, "            if noticeShowing { return .nothing }\n", "", "[Return never accepts the notice]"),
+    ("center: Start Work off stops filing", C, "            if !s.workRunsOn, !cautious { return .file }\n", "", "[Start Work off files]"),
+    ("center: Return runs a held Ask", C, "            let askable = listing.rows.first { $0.kind == .ask && $0.selectable }\n", "            let askable = listing.rows.first { $0.kind == .ask }\n", "[Start Work off: an answer moves to File]"),
+    ("center: a stale highlight still runs", C, "            if let chosen, listing.rows.contains(where: { $0.id == chosen && $0.selectable }) { return chosen }\n", "            if let chosen { return chosen }\n",
+     "[a stale highlight is none]"),
+    ("center: near-command at any length", C, "            if parts.count <= 4, parts.contains(where: commandWords.contains) { return true }\n", "            if parts.contains(where: commandWords.contains) { return true }\n", "[a long sentence is a run]"),
+    ("center: a phrase in a sentence is no near-command", C, "            return Command.allCases.contains { $0.phrases.contains { $0.contains(\" \") && padded.contains(\" \" + plain($0) + \" \") } }\n", "            return false\n",
+     "[a near-command moves to Ask]"),
+    ("center: the hint lies", C, '"Return moves to \\(name). Return again runs it."', '"Return runs it."', "[the hint says what Return does]"),
+    # The command center: keys
+    ("center: Down wraps", C, "            return next < 0 ? nil : ids[min(next, ids.count - 1)]\n", "            return ids[(next + ids.count) % ids.count]\n", "[Up from the first clears]"),
+    ("center: Esc closes at once", C, "            return hasWords ? .clearWords : .close\n", "            return .close\n", "[Esc clears, then closes]"),
+    ("center: Esc leaves a confirm open", C, "            if confirming { return .cancelConfirm }\n", "", "[Esc order]"),
+    ("center: keys stop on words", C, "                case .savedAnswer, .info: return false\n                default: return held == nil\n", "                default: return held == nil\n", "[keys skip words]"),
+    ("center: keys stop on a held row", C, "                case .savedAnswer, .info: return false\n                default: return held == nil\n", "                case .savedAnswer, .info: return false\n                default: return true\n",
+     "[a held row never highlights]"),
+    # The command center: the list
+    ("center: waiting caps at four", C, "        static let waitingCap = 3\n", "        static let waitingCap = 4\n", "[waiting caps at three]"),
+    ("center: running caps at four", C, "        static let runningCap = 3\n", "        static let runningCap = 4\n", "[running caps at three]"),
+    ("center: fix caps at three", C, "        static let fixCap = 2\n", "        static let fixCap = 3\n", "[fix caps at two]"),
+    ("center: waiting not by tier", C, "            items.enumerated().sorted { ($0.element.tier, $0.offset) < ($1.element.tier, $1.offset) }.map(\\.element)\n", "            items\n", "[tier 1 first]"),
+    ("center: not loaded says nothing waits", C, 'rows.append(inputs.waitingKnown ? info("no-waiting"', 'rows.append(true ? info("no-waiting"', "[overview not loaded]"),
+    ("center: running not loaded says nothing runs", C, 'rows.append(inputs.runningKnown ? info("no-running"', 'rows.append(true ? info("no-running"', "[overview not loaded]"),
+    ("center: sessions off ignored", C, "                if inputs.sessionsOff {\n", "                if false {\n", "[sessions off]"),
+    ("center: sessions off says nothing waits", C, 'inputs.sessionsOff ? "Nothing else is waiting on you." : "Nothing is waiting on you."', '"Nothing is waiting on you."', "[sessions off never says nothing waits]"),
+    ("center: extras listed as fixes", C, "board(s).suggestions.filter({ $0.tier == .repair }).prefix(fixCap)", "board(s).suggestions.prefix(fixCap)", "[fix only when broken]"),
+    ("center: two fixes share an id", C, 'fixes.append(Row(id: "fix:" + suggestion.id, kind: .action(action),', 'fixes.append(Row(id: "action:" + action.rawValue, kind: .action(action),', "[server down]"),
+    ("center: the server fix comes last", C, "            return live + (s.serverReachable ? rows + fixes : fixes + rows)\n", "            return live + rows + fixes\n", "[server down lists the fix first]"),
+    ("center: Doctor listed twice", C, "if !fixes.contains(where: { $0.kind == .action(.runDoctor) }), let doctor", "if let doctor", "[Doctor listed once]"),
+    ("center: the started run is not first", C, "            let running = startedFirst(inputs.running, inputs.startedRunID)\n", "            let running = inputs.running\n", "[a row opens the started run]"),
+    ("center: a miss says nothing", C, '                rows.append(info("no-answer", .answer, "No saved answer for this."))\n', "                _ = ranked\n", "[a miss says so]"),
+    ("center: a saved answer is not labelled", C, 'detail: saved.text, state: "Saved answer"))', "detail: saved.text))", "[saved answers are labelled]"),
+    ("center: an offer says only Start", C, "group: .answer, title: rowTitle(offer.action), held: offer.held))", "group: .answer, title: offer.title, held: offer.held))", "[a row says what it starts]"),
+    ("center: Ask listed before the answer", C, '            rows.append(Row(id: "file", kind: .file, group: .asking, title: "File to Work", detail: "Saves your words to the Work inbox. No run.", trailing: "Option-Return"))\n', "", "[ask and file are last]"),
+    ("center: troubleshoot offered with the gate shut", C, "            if gate(.troubleshoot, s) == .ready, !rows.contains(where: { $0.kind == .action(.troubleshoot) }) {\n", "            if !rows.contains(where: { $0.kind == .action(.troubleshoot) }) {\n", "[Start Work off]"),
+    ("center: Ask never holds for Start Work off", C, '            if !s.workRunsOn { return "Work runs from Today is off in Settings." }\n', "", "[Start Work off]"),
+    ("center: Ask never holds for the server", C, '            return s.serverReachable ? nil : "Asking needs the COS server."\n', "            return nil\n", "[server down]"),
+    # The command center: recording
+    ("center: Stop keys on any recording", C, "                guard r.stoppable else { return nil }\n", "                guard r.stoppable || r.glassesLive > 0 else { return nil }\n", "[Stop never keys on a G2 recording]"),
+    ("center: Start stays while recording", C, "                if r.stoppable { return nil }\n", "", "[Stop while recording]"),
+    ("center: a glasses meeting is captured twice", C, "            if r.busy {\n", "            if r.busy, r.glassesLive == 0 {\n", "[G2 recording holds Start]"),
+    ("center: an old Mac is not told", C, "            if !r.osSupported { return RecordingHeld.os }\n", "", "[macOS under 14.2]"),
+    ("center: two starts at once", C, "            if r.inFlight { return RecordingHeld.starting }\n", "", "[a held row never highlights]"),
+    ("center: server down still offers Start", C, "            return s.serverReachable ? nil : RecordingHeld.server\n", "            return nil\n", "[server down holds Start]"),
+    ("center: saving says nothing", C, 'if !macListed, !r.stoppable, let line = r.saveLine { rows.append(info("saving", .doing, line, state: "Saving")) }', "if false, let line = r.saveLine { _ = line }", "[saving shows a line]"),
+    # The command center: session titles
+    ("center: a title keeps its newline", C, "                if CharacterSet.whitespacesAndNewlines.contains(scalar) {\n", '                if scalar == " " {\n', "[titles are one line]"),
+    ("center: a title keeps its direction marks", C, "                } else if CharacterSet.controlCharacters.contains(scalar) || CharacterSet.illegalCharacters.contains(scalar) {\n", "                } else if false {\n", "[titles lose bidi and control]"),
+    ("center: a title is unbounded", C, "            return String(String(out).trimmingCharacters(in: .whitespaces).prefix(titleCap))\n", "            return String(out).trimmingCharacters(in: .whitespaces)\n", "[titles are bounded]"),
+    ("center: a waiting title is not cleaned", C, 'Row(id: "waiting:" + item.id, kind: .waiting(item.id), group: .waiting, title: clean(item.title),', 'Row(id: "waiting:" + item.id, kind: .waiting(item.id), group: .waiting, title: item.title,',
+     "[titles are cleaned on the row]"),
+    ("center: a title match highlights itself", C, "                sessions.append(row)\n", "                sessions.append(row); result.autoHighlight = result.autoHighlight ?? row.id\n", "[a title never takes the command's place]"),
+    ("center: a session lists twice", C, "                if let session = item.sessionID { guard seen.insert(session).inserted else { return } }\n", "", "[a session lists once]"),
+    ("center: the search is uncapped", C, "                guard sessions.count < sessionCap, typed.count >= 2,", "                guard typed.count >= 2,", "[the search is capped]"),
+    # The command center: confirms
+    ("center: Doctor runs at once", C, "            case .command(.runDoctor), .action(.runDoctor): return doctorConfirm\n", "", "[Doctor always confirms]"),
+    ("center: Stop runs at once", C, "            case .command(.stopRecording): return stopConfirm\n", "", "[the hint says what Return does]"),
+    ("center: the report spends a question unasked", C, "            case .action(.copyReport): return reportConfirm\n", "", "[the report spends the same question]"),
+    ("center: a change runs at once", C, "            case .action(let action): return SetupAssistant.confirmation(action, s)\n", "", "[every change confirms]"),
+    ("center: the confirm skips the gate", C, '                case .held(let reason): return reason\n                case .notApplicable: return "This does not apply any more."\n', "                case .held, .notApplicable: return nil\n", "[confirm re-checks the gate]"),
+    ("center: Doctor's confirm skips the gate", C, "                if case .held(let reason) = gate(.runDoctor, s) { return reason }\n                return nil\n", "                return nil\n", "[confirm re-checks Doctor]"),
+    ("center: Stop skips its check", C, '                return r.stoppable ? nil : "Nothing is recording on this Mac now."\n', "                return nil\n", "[Stop re-checks]"),
+    # The command center: Ask COS and the result line
+    ("center: Ask without its gate", C, "            guard askHeld(s) == nil else { return nil }\n", "", "[Ask needs Work runs]"),
+    ("center: Ask without its words", C, "            guard !words.isEmpty else { return nil }\n", "", "[Ask needs words]"),
+    ("center: Ask drops the saved answer", C, "            \\(saved)\n\n", "", "[Ask carries the saved answer]"),
+    ("center: Ask drops the rules", C, "            \\(runRules)\n            - If you cannot tell", "            - If you cannot tell", "[Ask carries the rules]"),
+    ("center: Ask drops the snapshot", C, '            \\(seen(s).map { "- " + $0 }.joined(separator: "\\n"))\n            """\n            return Troubleshoot(target: "today:ask:"', '            """\n            return Troubleshoot(target: "today:ask:"', "[Ask carries a short snapshot]"),
+    ("center: Ask outside the in-flight check", C, 'return Troubleshoot(target: "today:ask:" + id,', 'return Troubleshoot(target: "ask:" + id,', "[Ask stays under Today's in-flight check]"),
+    ("center: Ask spends Doctor", C, '            What COS Control sees now:\n            \\(seen(s)', '            Doctor packet: none.\n            What COS Control sees now:\n            \\(seen(s)', "[Ask spends no Doctor]"),
+    ("center: a failure hides", C, "            if let line = text(r.error) ?? text(r.recordingError) { return ResultLine(text: line, tone: .problem) }\n", "", "[a failure comes first]"),
+    ("center: old news beats a run", C, '            if let line = text(r.helperProgress) { return ResultLine(text: line, tone: .progress) }\n', "", "[what runs now comes next]"),
+    # Saved answers beat parakeet-install on their own words
+    ("knowledge: set up parakeet loses to will not install", C, 'phrases: ["set up parakeet", "setup parakeet", "parakeet setup", "install parakeet",', 'phrases: ["setup parakeet",', "[knowledge base: parakeet-setup]"),
+    ("knowledge: a failure reads as setup", C, '              phrases: ["cant install parakeet", "wont install parakeet", "cant download parakeet", "parakeet install failed", "parakeet setup failed"],\n', "", "[knowledge base: parakeet-install]"),
+    ("knowledge: start recording misses", C, 'phrases: ["start recording", "start a recording", "stop recording",', 'phrases: ["start a recording", "stop recording",', "[knowledge base: mac-recording]"),
+    ("knowledge: a transcript that never finished misses", C, 'phrases: ["transcript never finished", "transcript never finishes",', 'phrases: ["transcript never finishes",', "[knowledge base: transcript-unfinished]"),
+    ("knowledge: how to use dictation misses", C, 'phrases: ["how do i use dictation", "how does dictation work",', 'phrases: ["how does dictation work",', "[knowledge base: dictation-use]"),
+    ("knowledge: rename a voice misses", C, 'phrases: ["rename a voice", "rename voice",', 'phrases: ["rename voice",', "[knowledge base: voice-rename]"),
+    ("knowledge: speaker names wrong misses", C, '"speaker names wrong", "speaker name wrong",', '"speaker name wrong",', "[knowledge base: voice-rename]"),
+    # The command center's view half (Sources/ActivityWindow.swift), held by the pins
+    ("view: ⌘K goes Home", W, 'Button("") { toggleCommandCenter() }', 'Button("") { goHome(); toggleCommandCenter() }', "⌘K never navigates"),
+    ("view: opening it navigates", W, "        commandKeys.recordFailed = false\n        commandOpen = true\n", "        commandKeys.recordFailed = false\n        goHome()\n        commandOpen = true\n", "⌘K never navigates"),
+    ("view: Esc goes back past the panel", W, "        if commandOpen {\n            if commandKeys.escape?() != true { closeCommandCenter() }\n            return true\n        }\n", "", "Esc reaches the panel"),
+    ("view: the panel gives up its Esc", W, "        keys.escape = { pressEscape() }\n", "", "owns its Esc"),
+    ("view: the field is disabled", W, ".onSubmit { pressReturn() }\n", ".onSubmit { pressReturn() }\n                    .disabled(base.snapshot.helperBusy)\n", "never disabled"),
+    ("view: the box takes words again", W, "            Button { openCommandCenter() } label: {\n", "            Button { openCommandCenter() } label: {\n                TextField(\"\", text: .constant(\"\"))\n", "the Today box is a button"),
+    ("view: the panel moves", W, ".onSubmit { pressReturn() }\n", ".onSubmit { pressReturn() }\n                    .animation(.default, value: words)\n", "nothing moves"),
+    ("view: Option-Return left to the field", W, "            if event.keyCode == 36 || event.keyCode == 76, flags == .option {\n                return coordinator.optionReturn?() == true ? nil : event\n            }\n", "", "Option-Return goes through the monitor"),
+    ("center: a long paste is cut", C, "            let words = raw.trimmingCharacters(in: .whitespacesAndNewlines)\n            var result = Listing()\n", "            let words = String(raw.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxQuestion))\n            var result = Listing()\n", "[a long text stays whole]"),
+    ("view: a stale frame", W, "if commandOpen { commandCenter(frame: frame, now: timeline.date,", "if commandOpen { commandCenter(frame: todayFrame(now: Date()), now: timeline.date,", "reads that tick's frame"),
+    ("view: a dispatch default", W, "        case .openMemories: select(.memories)\n", "        default: break\n", "no default"),
+    ("view: an action not dispatched", W, "        case .openSpeakers:\n            select(.speakers)\n", "        default:\n            select(.speakers)\n", "no default"),
+    ("view: typed words as a helper argument", W, 'model.runHelper(["report", "--current-version",', 'model.runHelper(["report", words, "--current-version",', "fixed arguments"),
+    ("view: troubleshoot spends Doctor before the guard", W, "        if let refusal = today.runRefusal(target: SetupAssistant.targetPrefix + id, handoff: handoffStore) {\n", "        if let refusal = Optional<String>.none {\n", "guard first"),
+    ("view: troubleshoot twice", W, "        guard !today.gatheringReport, !today.runBusy, SetupAssistant.gate", "        guard SetupAssistant.gate", "one at a time"),
+    ("view: Ask spends Doctor", W, "        guard let run = SetupAssistant.Center.askRun(question: listing.words,", '        Task { _ = try? await model.runHelper(["report"], timeout: 90) }\n        guard let run = SetupAssistant.Center.askRun(question: listing.words,', "the one helper call"),
+    # The recording section under the Today header, and its rows in ⌘K
+    ("section: above the header", W, "                todayHeader(now: now)\n                // Miles, 2026-10-31: above everything but the header, and nothing at all when nothing records.\n                if !frame.recordings.isEmpty {\n                    TodayRecordingSection(rows: frame.recordings, now: now, store: model.macRecording, initialConfirm: commandFixture?.todayStopConfirm,\n                                          recording: { commandRecording() }, open: { todayOpen($0) }, stop: { commandStopRecording() })\n                }\n",
+     "                if !frame.recordings.isEmpty {\n                    TodayRecordingSection(rows: frame.recordings, now: now, store: model.macRecording, initialConfirm: commandFixture?.todayStopConfirm,\n                                          recording: { commandRecording() }, open: { todayOpen($0) }, stop: { commandStopRecording() })\n                }\n                todayHeader(now: now)\n", "sits under the header"),
+    ("section: drawn with nothing recording", W, "                if !frame.recordings.isEmpty {\n                    TodayRecordingSection(", "                if true {\n                    TodayRecordingSection(", "no recording, no section"),
+    ("section: Stop with no confirm", W, "Button(SetupAssistant.Center.stopConfirm.confirm) { confirming = row.id }", "Button(SetupAssistant.Center.stopConfirm.confirm) { stop() }", "opens its confirm"),
+    ("section: the confirm skips the store", W, "                    if recording().stoppable { stop() }\n", "                    stop()\n", "after checking the store again"),
+    ("section: Stop on a glasses row", W, "        row.recording?.canStop == true && live.stoppable\n", "        live.stoppable\n", "only for this Mac's own capture"),
+    ("section: Stop keys on the count", W, "        let stoppable = store.isRecording || starting\n", "        let stoppable = model.recordingCount > 0\n", "never recordingCount"),
+    ("section: glasses do not say where they stop", W, "            } else if !saving, let note = row.recording.flatMap({ TodayHome.recordingStopNote($0) }) {\n                Text(verbatim: note).font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).lineLimit(1)\n            }\n", "            }\n", "says where it stops"),
+    ("section: it pulses", W, "            LiveDot(live: !saving, size: 11)\n", "            LiveDot(live: !saving, size: 11).animation(.default, value: saving)\n", "no pulse"),
+    ("section: ⌘K reads its own list", W, "        inputs.live = frame.recordings.compactMap { row in\n", "        inputs.live = frame.running.compactMap { row in\n", "same recordings"),
+    ("section: a row opens something else", W, "        case .recording(let id):\n            todayOpen(.liveView(id))\n", "        case .recording(let id):\n            todayOpen(.inSessions(id))\n", "opens its live view"),
+    ("center: recordings below the rest", C, "            return live + (s.serverReachable ? rows + fixes : fixes + rows)\n", "            return (s.serverReachable ? rows + fixes : fixes + rows) + live\n", "[recordings are the first rows]"),
+    ("center: Stop on a glasses recording", C, "                if item.canStop, let stop = commandRow(.stopRecording, inputs, group: .recording) { live.append(stop) }\n", "                if let stop = commandRow(.stopRecording, inputs, group: .recording) { live.append(stop) }\n", "[Stop lists once]"),
+    ("center: Stop listed twice", C, "            if !inputs.live.contains(where: \\.canStop), let stop = commandRow(.stopRecording, inputs, group: .doing) { rows.append(stop) }\n", "            if let stop = commandRow(.stopRecording, inputs, group: .doing) { rows.append(stop) }\n", "[Stop lists once]"),
+    ("center: a second glasses line", C, "            if !glassesListed, r.glassesLive > 0 {", "            if r.glassesLive > 0 {", "[no second glasses line]"),
+    ("center: saving says recording", C, '                                state: saving ? "Saving" : nil, trailing: "Live view"))\n', '                                state: nil, trailing: "Live view"))\n', "[a stopped recording says it is saving]"),
+    ("center: a recording's title is not cleaned", C, 'group: .recording, title: clean(item.title),', 'group: .recording, title: item.title,', "[titles are cleaned on the row]"),
+    ("view: Stop keys on the count", W, "        r.stoppable = store.isRecording || r.starting\n", "        r.stoppable = model.recordingCount > 0\n", "Stop keys on the Mac capture"),
+    ("view: the card's busy rule skipped", W, "        r.busy = MeetingDetectedCard.recordingBusy(macOccupied: store.occupied, macCanStart: store.canStart, liveRecordings: model.recordingCount)\n", "        r.busy = !store.canStart\n", "one busy rule"),
+    ("view: the notice skipped", W, "        guard MacRecordingNotice.step(acknowledged: model.macRecording.noticeAcknowledged) == .start else { return .notice }\n", "", "the notice comes first"),
+    ("view: no in-flight flag", W, "        today.recordInFlight = true\n", "", "in-flight flag"),
+    ("view: a confirm with stale state", W, "        if let held = C.recheck(row, snapshot(), recording()) {\n", "        if let held = Optional<String>.none {\n", "re-checks fresh state"),
+    ("view: a change without its confirm", W, "        if C.confirmation(row, snapshot()) != nil { confirming = id; return }\n", "", "opens its confirm"),
+    ("view: a held row runs", W, "        guard let row = listing.rows.first(where: { $0.id == id }), row.selectable else { return }\n", "        guard let row = listing.rows.first(where: { $0.id == id }) else { return }\n", "a held row never runs"),
+    ("view: a title parsed as markdown", W, "Text(verbatim: row.title).font(COSType.body(13.5, weight: .semibold)).foregroundStyle(row.held == nil ? TodayInk.ink : TodayInk.sub)", "Text(row.title).font(COSType.body(13.5, weight: .semibold)).foregroundStyle(row.held == nil ? TodayInk.ink : TodayInk.sub)", "drawn verbatim"),
+    ("view: a breadcrumb with the title", W, 'todayLog.info("command center: \\(row.logName, privacy: .public)")', 'todayLog.info("command center: \\(row.title, privacy: .public)")', "a breadcrumb names a kind"),
+    ("view: quiet hours skipped", W, "TodayHome.fold(frame.needs, quiet: TodayHome.isQuiet(now: now, enabled: TodayHome.quietHoursOn(.standard)))", "TodayHome.fold(frame.needs, quiet: false)", "quiet-hours fold"),
+    ("view: a question's words reach the panel", W, "inputs.waiting = folded.now.map { Item(id: $0.id, title: $0.title,", "inputs.waiting = folded.now.map { Item(id: $0.id, title: $0.quote ?? $0.title,", "a question's words never reach"),
+    ("view: a stale session opens", W, "        guard let row = todayFrame(now: Date()).needs.first(where: { $0.id == id }) else {\n", "        guard let row = frameNeeds.first(where: { $0.id == id }) else {\n", "looked up again at open"),
+    ("view: an error covers the panel", W, "get: { model.error != nil && !commandOpen },", "get: { model.error != nil },", "shows in place"),
+    ("view: the result line loses progress", W, "        r.helperProgress = model.busy ? model.operationProgress : nil\n", "", "operationProgress"),
+    ("view: VoiceOver hears nothing", W, "AccessibilityNotification.Announcement(C.announcement(", "_ = (C.announcement(", "VoiceOver hears the highlight"),
     # Pins (the files the compiled checks cannot see)
     ("pins: the release build leaves the file out", R, ' "$ROOT/Sources/SetupAssistant.swift" \\\n', " \\\n", "leaves out SetupAssistant.swift"),
     ("pins: an action names a missing command", C, '            case .repairWhisper: return "restart-whisper"\n', '            case .repairWhisper: return "repair-whisper"\n', "command switch has a case"),
@@ -146,11 +298,57 @@ MUTANTS = [
     ("pins: the suite skips the lane", S, 'zsh "$ROOT/Tests/run-setup-assistant.sh"\n', "", "runs the setup assistant lane once"),
 ]
 
+# Most dangerous first: what would spend a run, record, or change something unasked, then the keys and the saved answers. The
+# view mutants come first of all, because a pin kills each before any compile. Whatever is not named here runs after these.
+CENTER_FIRST = [
+    # Miles's ask of 2026-10-31 first.
+    "section: above the header", "section: drawn with nothing recording", "section: Stop with no confirm", "section: the confirm skips the store", "section: Stop on a glasses row",
+    "section: Stop keys on the count", "section: glasses do not say where they stop", "section: it pulses", "section: ⌘K reads its own list", "section: a row opens something else",
+    "view: a change without its confirm", "view: a confirm with stale state", "view: a held row runs", "view: the notice skipped", "view: the card's busy rule skipped",
+    "view: Stop keys on the count", "view: no in-flight flag", "view: typed words as a helper argument", "view: troubleshoot spends Doctor before the guard", "view: troubleshoot twice",
+    "view: Ask spends Doctor", "view: ⌘K goes Home", "view: opening it navigates", "view: Esc goes back past the panel", "view: the panel gives up its Esc",
+    "view: Option-Return left to the field", "view: a dispatch default", "view: an action not dispatched", "view: the field is disabled", "view: the box takes words again",
+    "center: recordings below the rest", "center: Stop on a glasses recording", "center: Stop listed twice", "center: a second glasses line", "center: saving says recording",
+    "center: a saved answer starts a run", "center: a near-command starts a run", "center: a short text starts a run", "center: Return runs a held Ask",
+    "center: a phrase in a sentence is no near-command", "center: near-command at any length",
+    "center: Stop highlights itself", "center: Doctor highlights itself", "center: part of a phrase highlights", "center: a held row highlights",
+    "center: Return accepts the notice", "center: a glasses meeting is captured twice", "center: Stop keys on any recording", "center: two starts at once",
+    "center: an old Mac is not told", "center: server down still offers Start", "center: Start stays while recording", "center: saving says nothing",
+    "center: Doctor runs at once", "center: Stop runs at once", "center: a change runs at once", "center: the report spends a question unasked",
+    "center: the confirm skips the gate", "center: Doctor's confirm skips the gate", "center: Stop skips its check",
+    "center: Option-Return stops filing", "center: Return ignores the highlight", "center: Return ignores the confirm", "center: a stale highlight still runs",
+    "center: Start Work off stops filing", "center: a long paste is cut",
+    "center: Esc closes at once", "center: Esc leaves a confirm open",
+    "center: a command's title changes", "center: a phrase is not exact",
+    "knowledge: set up parakeet loses to will not install", "knowledge: a failure reads as setup", "knowledge: start recording misses", "knowledge: a transcript that never finished misses",
+    "knowledge: how to use dictation misses", "knowledge: rename a voice misses", "knowledge: speaker names wrong misses",
+    "center: a saved answer is not labelled", "center: a miss says nothing", "center: an exact command still shows the answer",
+    "center: a title match highlights itself", "center: a title keeps its newline", "center: a title keeps its direction marks", "center: a waiting title is not cleaned",
+    "center: Ask drops the rules", "center: Ask spends Doctor", "center: Ask without its gate", "troubleshoot: no ask-first rule", "board: a server row on first run",
+]
 
-def suite(copy):
+
+def center_mutants():
+    """CENTER_FIRST in its order, then every other command center mutant in file order."""
+    by_name = {m[0]: m for m in MUTANTS}
+    missing = [name for name in CENTER_FIRST if name not in by_name]
+    if missing:
+        sys.exit(f"CENTER_FIRST names mutants that do not exist: {missing}")
+    rest = [m for m in MUTANTS if m[0].split(":")[0] in ("section", "center", "view", "knowledge") and m[0] not in CENTER_FIRST]
+    return [by_name[name] for name in CENTER_FIRST] + rest
+
+
+def suite(copy, deadline=None):
     started = time.time()
-    result = bounded.run(["zsh", "Tests/run-setup-assistant.sh"], LIMIT, cwd=copy)
-    out = result.stdout + result.stderr
+    # The compile lock is shared with whoever else is building: waiting for it is not a kill.
+    for _ in range(60):
+        result = bounded.run(["zsh", "Tests/run-setup-assistant.sh"], LIMIT, cwd=copy)
+        out = result.stdout + result.stderr
+        if "shared compile lock busy" not in out:
+            break
+        if deadline and time.time() > deadline:
+            return None
+        time.sleep(30)
     if "compile-guard: STOPPED" in out:
         sys.exit("compile-guard stopped a compile (memory); ending the mutation lane. " + out[-400:])
     return result.returncode, out, time.time() - started, result.timed_out
@@ -158,7 +356,18 @@ def suite(copy):
 
 def main():
     src, scratch = pathlib.Path(sys.argv[1]).resolve(), pathlib.Path(sys.argv[2]).resolve()
-    only = set(sys.argv[3:])
+    names = sys.argv[3:]
+    unknown = [n for n in names if n != "--center" and n not in {m[0] for m in MUTANTS}]
+    if unknown:
+        sys.exit(f"no such mutant: {unknown}")
+    # Each target lands exactly once, or nothing is judged: found now, not an hour in.
+    for name, rel, old, _, _ in MUTANTS:
+        count = (src / rel).read_text(encoding="utf-8").count(old)
+        if count != 1:
+            print(f"MISS  {name}: the target appears {count} times", flush=True)
+    chosen = center_mutants() if "--center" in names else [m for m in MUTANTS if not names or m[0] in names]
+    minutes = float(os.environ.get("COS_MUTATE_MINUTES", "0"))
+    deadline = time.time() + minutes * 60 if minutes else None
     copy = scratch / "copy"
     if copy.exists():
         shutil.rmtree(copy)
@@ -171,18 +380,22 @@ def main():
         print(out[-3000:])
         sys.exit("baseline is not green; no mutant may be judged against a red suite")
     killed = survived = 0
-    for name, rel, old, new, words in MUTANTS:
-        if only and name not in only:
-            continue
+    not_run = []
+    for name, rel, old, new, words in chosen:
+        if deadline and time.time() > deadline:
+            not_run.append(name); continue
         path = copy / rel
         text = path.read_text(encoding="utf-8")
         if text.count(old) != 1:
             print(f"MISS  {name}: the target appears {text.count(old)} times", flush=True); survived += 1; continue
         path.write_text(text.replace(old, new), encoding="utf-8")
         try:
-            code, out, seconds, timed_out = suite(copy)
+            outcome = suite(copy, deadline)
         finally:
             path.write_text(text, encoding="utf-8")
+        if outcome is None:
+            not_run.append(name); continue
+        code, out, seconds, timed_out = outcome
         if not filecmp.cmp(path, src / rel, shallow=False):
             sys.exit(f"RESTORE FAILED for {name}: {rel} differs from the worktree")
         lines = [l for l in out.splitlines() if "check failed [" in l or "Setup assistant pin:" in l or ": error:" in l]
@@ -195,8 +408,10 @@ def main():
             killed += 1; print(f"killed  {name} ({seconds:.0f}s): {reason[:220]}", flush=True)
         else:
             survived += 1; print(f"MISATTRIBUTED  {name}: {reason[:260]}", flush=True)
-    print(f"RESULT: {killed}/{killed + survived} killed by a check that names the behaviour; every restore compared equal", flush=True)
-    sys.exit(0 if survived == 0 else 1)
+    for name in not_run:
+        print(f"NOT RUN  {name}", flush=True)
+    print(f"RESULT: {killed}/{killed + survived} killed by a check that names the behaviour; {len(not_run)} not run; every restore compared equal", flush=True)
+    sys.exit(0 if survived == 0 and not not_run else 1)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import OSLog
 import AppKit
+import AVFoundation
 import SwiftUI
 
 /// A draft belongs to the editor, not the Activity window. The parent holds this
@@ -584,8 +585,12 @@ struct ActivityWindow: View {
     /// Settings hub (Miles, 2026-10-27): Settings draws as the hub unless General, Advanced, Use classic Settings is on.
     @AppStorage(SettingsHub.classicKey) private var classicSettings = false
     @StateObject private var today = TodayHomeStore()
-    @State private var todayAsk = ""
-    @FocusState private var todayAskFocused: Bool
+    /// The ⌘K command center (Miles, 2026-10-31). Only whether it is open lives here: its words and highlight are the panel's
+    /// own state, so typing never composes the window again.
+    @State private var commandOpen = false
+    @State private var commandKeys = CommandCenterKeys()
+    /// Offscreen fixtures only (Tests/CommandCenterRender.swift).
+    var commandFixture: CommandCenterFixture? = nil
     @State private var todayShowAll = false
     @State private var todayShowTomorrow = false
     @State private var todayNextIndex = 0
@@ -623,6 +628,19 @@ struct ActivityWindow: View {
         view._today = StateObject(wrappedValue: store)
         view._handoffStore = StateObject(wrappedValue: handoff)
         view._homeLoads = State(initialValue: loads)
+        return view
+    }
+
+    /// The command center open over the Today frame, on a fixture (Tests/CommandCenterRender.swift): no live loads.
+    static func commandCenterFixture(model: ControllerModel, store: TodayHomeStore, handoff: WorkHandoffStore, fixture: CommandCenterFixture,
+                                     section: ActivitySection? = nil, settings: Bool = false, open: Bool = true,
+                                     loads: [ActivityHome.Source: ActivityHome.SourceState] = [.sessions: .answered, .voices: .answered, .memories: .answered, .work: .answered]) -> ActivityWindow {
+        precondition(!model.backgroundWorkEnabled)
+        var view = todayFixture(model: model, store: store, handoff: handoff, loads: loads)
+        view.commandFixture = fixture
+        view._commandOpen = State(initialValue: open)
+        view._section = State(initialValue: section)
+        view._showingSettings = State(initialValue: settings)
         return view
     }
 
@@ -972,7 +990,8 @@ struct ActivityWindow: View {
             model.openLibraryMeeting(row)
         }
         .alert("COS Control", isPresented: Binding(
-            get: { model.error != nil },
+            // While the command center is open its result line says this, in place, and the field keeps its focus.
+            get: { model.error != nil && !commandOpen },
             set: { if !$0 { model.error = nil } }
         )) {
             Button("OK", role: .cancel) { model.error = nil }
@@ -1290,6 +1309,11 @@ struct ActivityWindow: View {
     /// Escape reaches these window-owned routes before TextEditor/ScrollView can
     /// consume it. Other child panes retain their own cancellation semantics.
     private func handleActivityEscape() -> Bool {
+        // ⌘K first: it floats over everything below. It undoes one thing at a time, then closes.
+        if commandOpen {
+            if commandKeys.escape?() != true { closeCommandCenter() }
+            return true
+        }
         if showingSettings {
             // The hub first: a search to clear, then an inline confirm to close. Then Escape leaves Settings.
             if model.settingsHubEscape?() == true { return true }
@@ -7858,6 +7882,11 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
     }
     @Published var runBusy = false
     @Published var captureBusy = false
+    /// The command center (⌘K): a recording start and Doctor's report on their way. They hold across a closed panel.
+    @Published var recordInFlight = false
+    @Published var gatheringReport = false
+    /// The receipt of the last run started here, so its row can come first.
+    @Published var lastStartedRunID: String?
     @Published var notice: String?
     /// On screen (TodayWindowWatcher), and the window's opening loads finished (loadOverviewIfNeeded).
     @Published var windowVisible = true
@@ -8101,10 +8130,25 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
         guardrail.account(outcome, now: Date())
         if before == nil, guardrail.pausedUntil(now: Date()) != nil { todayLog.error("run breaker opened for 15 minutes") }
         switch outcome {
-        case .admitted: runNote = "Started. It shows in Running."
+        case .admitted:
+            runNote = Self.startedNote
+            lastStartedRunID = id
         case .refused(let reason), .notStarted(let reason): runNote = reason
         }
         todayLog.info("run outcome: \(String(describing: outcome).prefix(60), privacy: .public) used=\(guardrail.used(now: Date()))")
+    }
+
+    static let startedNote = "Started. It shows in Running."
+
+    /// The checks startRun makes before it does anything, read only, for what has a cost before the run: Doctor spends a real
+    /// question, so a run the cap or the breaker would refuse never gets that far. Nil: startRun would go ahead.
+    func runRefusal(target: String, handoff: WorkHandoffStore) -> String? {
+        if runBusy { return "A run is starting." }
+        let admission = TodayRunGuard(defaults: .standard).admission(target: target, inFlight: Self.inFlightTargets(handoff.receipts),
+                                                                     switchOn: TodayHome.workRunsOn(.standard), now: Date())
+        if admission != .allowed { return TodayRunGuard.line(admission) ?? "Work runs from Today is off in Settings." }
+        let holds = handoff.receipts(for: target).contains { WorkChatPreflight.holds($0, continuations: [:]) }
+        return TodayRunGuard.preflight(busy: handoff.busy || handoff.quietSend, holds: holds)
     }
 
     /// 0.5.337 (loop audit W5): Stop on a Work run Today shows. The server answers; only its 2xx says it stopped.
@@ -8141,6 +8185,32 @@ extension ActivityWindow {
         TodayHome.liveSessions(list: model.claudeSessions, live: model.petEnabled ? model.petSessions : nil)
     }
 
+    /// What is recording now. The Mac capture keys on its own store, so it shows from the moment it starts and goes when it has
+    /// saved; a glasses meeting keys on the server's live sessions. recordingCount decides neither.
+    func todayRecordings() -> [TodayHome.Recording] {
+        if let forced = commandFixture?.recordings { return forced }
+        let store = model.macRecording
+        let captureID = store.manifest?.captureId
+        let starting = store.phase == "starting"
+        let stoppable = store.isRecording || starting
+        // Saving… after Stop and until it has saved. A save that stopped on an error leaves here for Meetings, which has Retry.
+        let saving = store.saveLine.headline == MacRecordingSaveStatus.saving
+        var recordings: [TodayHome.Recording] = []
+        if stoppable || saving {
+            let manifest = store.manifest
+            recordings.append(TodayHome.Recording(sessionId: captureID ?? "", start: manifest.map { Date(timeIntervalSince1970: $0.startTime / 1000) }, isMac: true, title: manifest?.title,
+                                                  saving: stoppable ? nil : MacRecordingSaveStatus.saving, canStop: stoppable))
+        }
+        for row in model.liveTranscriptRows where row.phase == .live && row.sessionId != captureID && !row.sessionId.hasPrefix("mac_") {
+            recordings.append(TodayHome.Recording(sessionId: row.sessionId, start: row.startTime, isMac: false))
+        }
+        // The server says something else is live and no row names it (the live transcript setting is off, or the first read is
+        // still on its way).
+        let others = (model.liveTranscriptServerLive ?? 0) - (store.occupied ? 1 : 0)
+        if others > 0, !recordings.contains(where: { !$0.isMac }) { recordings.append(TodayHome.Recording(sessionId: "", start: nil, isMac: false)) }
+        return recordings
+    }
+
     func todayRunInputs(now: Date) -> TodayHome.RunInputs {
         var input = TodayHome.RunInputs()
         input.now = now
@@ -8153,11 +8223,7 @@ extension ActivityWindow {
             return TodayHome.WorkRun(id: r.id, title: r.workTitle, sessionID: r.sessionID, jobIDs: Set([r.id] + [r.jobID].compactMap { $0 }),
                                      startedAt: Date(timeIntervalSince1970: r.createdAt), jobID: r.jobID)
         }
-        var recordings = model.liveTranscriptRows.filter { $0.phase == .live }.map {
-            TodayHome.Recording(sessionId: $0.sessionId, start: $0.startTime, isMac: $0.sessionId == model.macRecording.manifest?.captureId)
-        }
-        if recordings.isEmpty, model.liveTranscriptDot { recordings = [TodayHome.Recording(sessionId: "", start: nil, isMac: false)] }
-        input.recordings = recordings
+        input.recordings = todayRecordings()
         input.jobs = today.jobsSupported == true ? today.jobs : nil
         input.routines = today.routines
         var finished = model.petCompletions.filter { !$0.isScheduledJob }.map {
@@ -8364,16 +8430,21 @@ extension ActivityWindow {
                     }
                     .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
                 }
+                // ⌘K floats over the frame, above the clipped content, with this tick's rows. The page under it never moves.
+                .overlay(alignment: .topTrailing) {
+                    if commandOpen { commandCenter(frame: frame, now: timeline.date, windowSize: geometry.size, mode: mode) }
+                }
             }
             .onChange(of: ActivityHome.dayKey(timeline.date)) { _, _ in todayResetExpansions() }
         }
+        .onChange(of: section) { _, _ in commandSectionChanged() }
         .background(TodayInk.page)
         .background(TodayWindowWatcher { visible in if today.windowVisible != visible { today.windowVisible = visible } }.frame(width: 0, height: 0))
         .task(id: todayEnabled) { await todayTickLoop() }
         .onAppear { todayResetExpansions() }
         .background {
-            // ⌘K focuses the Ask box from any tab.
-            Button("") { goHome(); DispatchQueue.main.async { todayAskFocused = true } }
+            // ⌘K opens the command center over any tab, and stays on that tab.
+            Button("") { toggleCommandCenter() }
                 .keyboardShortcut("k", modifiers: .command).opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
             // The Settings hub takes the rail's and the toolbar's place, so their keys stay here while it shows (QA
             // 2026-10-28, as 0.5.351 had them): ⌘⇧H and ⌘0 home, ⌘1 to ⌘9 the tabs in rail order.
@@ -8562,6 +8633,11 @@ extension ActivityWindow {
         return ScrollView {
             VStack(alignment: .leading, spacing: wide ? 26 : 20) {
                 todayHeader(now: now)
+                // Miles, 2026-10-31: above everything but the header, and nothing at all when nothing records.
+                if !frame.recordings.isEmpty {
+                    TodayRecordingSection(rows: frame.recordings, now: now, store: model.macRecording, initialConfirm: commandFixture?.todayStopConfirm,
+                                          recording: { commandRecording() }, open: { todayOpen($0) }, stop: { commandStopRecording() })
+                }
                 Text(TodayHome.brief(frame.counts))
                     .font(COSType.display(wide ? 25 : 22))
                     .lineSpacing(wide ? 8 : 6)
@@ -8614,29 +8690,24 @@ extension ActivityWindow {
         }
     }
 
+    /// Opens the command center. Same place and look as the field it opens.
     var todayAskBox: some View {
-        let runs = TodayHome.workRunsOn(.standard)
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
-                Image(systemName: runs ? "sparkle" : "tray.and.arrow.down").font(.system(size: 14, weight: .medium)).foregroundStyle(TodayInk.grey).accessibilityHidden(true)
-                TextField(runs ? "Ask COS: Return runs it, Option-Return files it" : "Capture a task: Return files it to Work", text: $todayAsk)
-                    .textFieldStyle(.plain)
-                    .font(COSType.body(14))
-                    .foregroundStyle(TodayInk.ink)
-                    .focused($todayAskFocused)
-                    .onSubmit { todaySubmitAsk(file: NSEvent.modifierFlags.contains(.option)) }
-                    .disabled(today.runBusy || today.captureBusy)
-                    .accessibilityLabel("Ask COS")
-                    .accessibilityHint(runs ? "Return starts one Work run on the server. Option Return files your words to the Work inbox." : "Return files your words to the Work inbox.")
-                Text("⌘K").font(COSType.mono(11, weight: .medium)).foregroundStyle(TodayInk.grey)
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(TodayInk.kbdBorder, lineWidth: 1))
-                    .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 6) {
+            Button { openCommandCenter() } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "sparkle").font(.system(size: 14, weight: .medium)).foregroundStyle(TodayInk.grey).accessibilityHidden(true)
+                    Text(CommandCenterPanel.placeholder).font(COSType.body(14)).foregroundStyle(TodayInk.grey).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                    CommandCenterKeyHint()
+                }
+                .padding(.horizontal, 14)
+                .frame(minHeight: 44)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(TodayInk.panel))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(TodayInk.btnBorder, lineWidth: 1))
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
-            .padding(.horizontal, 14)
-            .frame(minHeight: 44)
-            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(TodayInk.panel))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(TodayInk.btnBorder, lineWidth: 1))
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open the COS command center")
+            .accessibilityHint("Ask COS, start a recording or open a session. Command K opens it from any tab.")
             if let note = today.runNote {
                 Text(note).font(COSType.body(12)).foregroundStyle(TodayInk.grey).lineLimit(2)
             }
@@ -8644,8 +8715,8 @@ extension ActivityWindow {
     }
 
     /// Return: one Work run (switch on, through the cap and the breaker). Option Return, or the switch off: the Work inbox.
-    func todaySubmitAsk(file: Bool) {
-        let text = todayAsk.trimmingCharacters(in: .whitespacesAndNewlines)
+    func todaySubmitAsk(_ words: String, file: Bool) {
+        let text = words.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !today.runBusy, !today.captureBusy else { return }
         if file || !TodayHome.workRunsOn(.standard) {
             today.captureBusy = true
@@ -8653,7 +8724,7 @@ extension ActivityWindow {
                 defer { today.captureBusy = false }
                 do {
                     try await model.captureTask(domain: taskDomain, text: text)
-                    todayAsk = ""
+                    commandKeys.clearWords?()
                     today.runNote = "Filed to the Work inbox."
                 } catch { today.runNote = error.localizedDescription }
             }
@@ -8663,7 +8734,7 @@ extension ActivityWindow {
         Task {
             await today.startRun(target: target, title: ActivityHome.clip(text, 60), prompt: text,
                                  context: "Asked from the Today home on \(TodayHome.headerDate(Date())).", handoff: handoffStore)
-            if today.runNote == "Started. It shows in Running." { todayAsk = "" }
+            if today.runNote == TodayHomeStore.startedNote { commandKeys.clearWords?() }
         }
     }
 
@@ -9246,5 +9317,952 @@ extension ActivityWindow {
         .buttonStyle(.plain)
         .help(item.summary)
         .accessibilityLabel([item.title, card.tag, card.story, card.sub].compactMap { $0 }.joined(separator: ", "))
+    }
+}
+
+// MARK: - The command center (⌘K)
+
+/// Miles, 2026-10-31: "this should become kind of a main operation center rather than just as it is today a task creation
+/// system." The logic is SetupAssistant.Center (Foundation only, executed in Tests/SetupAssistantChecks.swift); this half reads
+/// the app's state into plain values, draws the panel and runs a row. Plan: docs/setup-assistant/PLAN.md.
+
+/// What the window and the panel share without observing each other. Esc reaches the panel's own state through here, as the
+/// Settings hub's does (model.settingsHubEscape), and a closed panel keeps unsent words.
+@MainActor final class CommandCenterKeys {
+    var escape: (() -> Bool)?
+    var clearWords: (() -> Void)?
+    /// The words typed so far, kept when a click outside closes the panel. Esc clears them.
+    var draft = ""
+    /// The next section change came from the panel, which stays open to say something.
+    var keepOpen = false
+    /// This panel ran a helper command, so model.notice is its result, and a failure was shown in place.
+    var ranHelper = false
+    var recordFailed = false
+}
+
+/// Offscreen fixtures (Tests/CommandCenterRender.swift): the state a person reaches with keys, since nothing is typed there.
+struct CommandCenterFixture {
+    var recordings: [TodayHome.Recording]? = nil
+    var todayStopConfirm: String? = nil
+    var words = ""
+    var chosen: String? = nil
+    var confirming: String? = nil
+    var noticeShowing = false
+    var recording: SetupAssistant.Center.Recording? = nil
+    var result: SetupAssistant.Center.ResultInputs? = nil
+}
+
+/// What a row does to the panel once it has run.
+enum CommandEffect {
+    case close, stay
+    /// Not acknowledged yet: the one-time recording notice, in place.
+    case notice
+}
+
+extension ActivityWindow {
+    // MARK: Command center: what it reads
+
+    /// Plain values from state COS Control already holds, so it answers with the server down. Setup rows are left out on
+    /// purpose: the panel's Fix rows are repairs only, and setup stays with Finish setup and the setup guide.
+    func commandSnapshot() -> SetupAssistant.Snapshot {
+        let status = model.status
+        var s = SetupAssistant.Snapshot()
+        s.serverReachable = status.running
+        s.runtimeState = status.runtimeState
+        s.installed = status.installed
+        s.needsFirstRun = status.needsFirstRun
+        s.setupProviderInstalled = status.setupProviderInstalled
+        s.managedContract = status.managedContract
+        s.ownershipVerified = status.ownershipVerified
+        s.ownerConflict = status.ownerConflict
+        s.transactionPending = status.transactionPending
+        s.desiredState = status.desiredState
+        s.safeToRestart = status.safeToRestart
+        s.activeJobs = status.activeJobs ?? 0
+        s.activeTranscriptionSessions = status.activeTranscriptionSessions ?? 0
+        s.meetingWorkBlockingRestart = status.meetingWorkBlockingRestart
+        s.macRecordingActive = model.macRecordingActive
+        s.whisperReady = status.whisperReady
+        s.whisperCircuitOpen = status.whisperCircuitOpen
+        s.helperBusy = model.busy
+        s.checks = model.doctorChecks.map { SetupAssistant.Check(name: $0.name, state: $0.state, detail: $0.detail) }
+        var update = SetupAssistant.AppUpdate(currentVersion: ControllerModel.currentVersion, latestVersion: model.appUpdate.latestVersion, available: model.appUpdate.updateAvailable)
+        switch model.appUpdateFlow.phase {
+        case .failed: update.downloadFailed = true
+        case .staging, .applying: update.installing = true
+        default: break
+        }
+        s.appUpdate = update
+        s.dictationEnabled = model.dictation.enabled
+        s.accessibilityTrusted = model.petJumpTrusted
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: s.microphoneAllowed = true
+        case .denied, .restricted: s.microphoneAllowed = false
+        default: s.microphoneAllowed = nil
+        }
+        s.workRunsOn = TodayHome.workRunsOn(.standard)
+        return s
+    }
+
+    /// Stop keys on the Mac capture alone, never on recordingCount, which counts glasses meetings. Busy is the one rule the
+    /// meeting card uses, so a glasses meeting is never captured twice.
+    func commandRecording() -> SetupAssistant.Center.Recording {
+        if let forced = commandFixture?.recording { return forced }
+        let store = model.macRecording
+        var r = SetupAssistant.Center.Recording()
+        if #available(macOS 14.2, *) { r.osSupported = true } else { r.osSupported = false }
+        r.starting = store.phase == "starting"
+        r.stoppable = store.isRecording || r.starting
+        r.occupied = store.occupied
+        r.busy = MeetingDetectedCard.recordingBusy(macOccupied: store.occupied, macCanStart: store.canStart, liveRecordings: model.recordingCount)
+        r.saveLine = !r.stoppable && store.saveLine.headline == MacRecordingSaveStatus.saving ? MacRecordingSaveStatus.saving : nil
+        r.glassesLive = max(0, model.recordingCount - (store.occupied ? 1 : 0))
+        r.inFlight = today.recordInFlight
+        return r
+    }
+
+    func commandInputs(frame: TodayHome.Frame, now: Date) -> SetupAssistant.Center.Inputs {
+        typealias Item = SetupAssistant.Center.Item
+        var inputs = SetupAssistant.Center.Inputs()
+        inputs.snapshot = commandSnapshot()
+        inputs.live = frame.recordings.compactMap { row in
+            guard let recording = row.recording else { return nil }
+            return SetupAssistant.Center.LiveRecording(id: recording.sessionId, title: row.title, detail: TodayHome.recordingLine(recording, now: now), isMac: recording.isMac,
+                                                       canStop: recording.canStop, stopNote: TodayHome.recordingStopNote(recording))
+        }
+        let folded = TodayHome.fold(frame.needs, quiet: TodayHome.isQuiet(now: now, enabled: TodayHome.quietHoursOn(.standard)))
+        // A question's own words (NeedRow.quote) never reach this panel.
+        inputs.waiting = folded.now.map { Item(id: $0.id, title: $0.title, detail: $0.source, openLabel: $0.openLabel ?? "Open", tier: $0.tier, sessionID: $0.session?.id) }
+        inputs.waitingKnown = frame.line != .loading
+        inputs.foldedLine = folded.tomorrow.isEmpty ? nil : TodayHome.tomorrowLine(folded.tomorrow)
+        inputs.running = frame.running.map { row in
+            Item(id: row.id, title: row.title, detail: row.detail, openLabel: row.openLabel, sessionID: row.id.hasPrefix("session:") ? String(row.id.dropFirst("session:".count)) : nil)
+        }
+        inputs.runningKnown = frame.counts.sessionsKnown
+        inputs.sessions = todaySessions().map { session in
+            let host = today.hosts[session.id]
+            let open = TodayHome.openFor(session, host: host, cursorTrusted: model.petJumpTrusted)
+            return Item(id: session.id, title: session.title, detail: TodayHome.platform(session, host: host).badge + (session.workspace.isEmpty ? "" : ", " + session.workspace),
+                        openLabel: open.label, sessionID: session.id, state: session.state == "recent" ? "Recent" : nil)
+        }
+        inputs.sessionsOff = !model.claudeSessionsEnabled
+        inputs.recording = commandRecording()
+        inputs.startedRunID = today.lastStartedRunID.map { "work:" + $0 }
+        return inputs
+    }
+
+    func commandResultInputs() -> SetupAssistant.Center.ResultInputs {
+        if let forced = commandFixture?.result { return forced }
+        var r = SetupAssistant.Center.ResultInputs()
+        r.error = model.error
+        if commandKeys.recordFailed { r.recordingError = model.macRecording.error ?? "COS could not start recording. Meetings shows why." }
+        r.gatheringReport = today.gatheringReport
+        r.startingRecording = today.recordInFlight
+        r.helperProgress = model.busy ? model.operationProgress : nil
+        r.startingRun = today.runBusy
+        r.filing = today.captureBusy
+        r.runNote = today.runNote
+        r.notice = today.notice
+        r.platformNotice = model.platformOpening ? nil : model.platformOpenNotice
+        r.helperNotice = commandKeys.ranHelper && !model.busy ? model.notice : nil
+        return r
+    }
+
+    // MARK: Command center: open and close
+
+    func openCommandCenter() {
+        // Nothing opens under a task being edited or a naming review: those take the window until they close.
+        guard taskDetail == nil, !heldNamingOverlayOpen, workWorkspaceState.startItemID == nil else { return }
+        model.refreshPetJumpTrust()
+        commandKeys.keepOpen = false
+        commandKeys.recordFailed = false
+        commandOpen = true
+        todayLog.info("command center opened")
+    }
+
+    func closeCommandCenter() {
+        guard commandOpen else { return }
+        commandOpen = false
+        commandKeys.keepOpen = false
+        commandKeys.recordFailed = false
+        if commandKeys.ranHelper { model.error = nil }
+        commandKeys.ranHelper = false
+    }
+
+    /// ⌘K never navigates: it opens over whatever is showing, and a second press closes it.
+    func toggleCommandCenter() {
+        if commandOpen { closeCommandCenter() } else { openCommandCenter() }
+    }
+
+    /// A tab changed under the panel (⌘1 to ⌘9): it closes, unless it asked for the change and has something to say.
+    func commandSectionChanged() {
+        if commandKeys.keepOpen { commandKeys.keepOpen = false } else { closeCommandCenter() }
+    }
+
+    @ViewBuilder
+    func commandCenter(frame: TodayHome.Frame, now: Date, windowSize: CGSize, mode: TodayHome.RailMode) -> some View {
+        let home = !settingsHubShowing && !showingSettings && section == nil
+        let rail = settingsHubShowing ? 0 : TodayHome.railWidth(mode)
+        let gutter: CGFloat = home ? TodayHome.padding(windowWidth: windowSize.width) : 16
+        let top: CGFloat = home ? 24 : 12
+        ZStack(alignment: .topTrailing) {
+            // A click outside closes it. Unsent words wait in the draft.
+            Color.clear.contentShape(Rectangle()).onTapGesture { closeCommandCenter() }.accessibilityHidden(true)
+            CommandCenterPanel(base: commandInputs(frame: frame, now: now), keys: commandKeys, store: model.macRecording, fixture: commandFixture,
+                               recording: { commandRecording() }, snapshot: { commandSnapshot() }, resultInputs: { commandResultInputs() },
+                               run: { row, listing in commandRun(row, listing) }, submit: { words, file in todaySubmitAsk(words, file: file) },
+                               recordAfterNotice: { commandAcknowledgeAndRecord() }, close: { closeCommandCenter() },
+                               maxListHeight: max(160, windowSize.height - top - 44 - 40 - 28))
+                .frame(width: min(CommandCenterPanel.width, max(320, windowSize.width - rail - 2 * gutter)))
+                .padding(.top, top)
+                .padding(.trailing, gutter)
+        }
+    }
+
+    // MARK: Command center: running a row
+
+    /// Every kind of row. No default, so a new case does not compile until it is dispatched here. Nothing typed reaches any of
+    /// these except as the words of a run or a filed task.
+    func commandRun(_ row: SetupAssistant.Center.Row, _ listing: SetupAssistant.Center.Listing) -> CommandEffect {
+        todayLog.info("command center: \(row.logName, privacy: .public)")
+        switch row.kind {
+        case .recording(let id):
+            todayOpen(.liveView(id))
+            return .close
+        case .waiting(let id): return commandOpenWaiting(id)
+        case .running(let id): return commandOpenRunning(id)
+        case .session(let id): return commandOpenSession(id)
+        case .command(let command): return commandRun(command)
+        case .action(let action): return commandRun(action, words: listing.words)
+        case .ask:
+            commandAsk(listing)
+            return .stay
+        case .file:
+            todaySubmitAsk(listing.words, file: true)
+            return .stay
+        case .savedAnswer, .info:
+            return .stay
+        }
+    }
+
+    /// Looked up again at open: a row can be 30 seconds old, and its session can be gone.
+    func commandOpenWaiting(_ id: String) -> CommandEffect {
+        guard let row = todayFrame(now: Date()).needs.first(where: { $0.id == id }) else {
+            today.flash("That is not waiting on you any more.")
+            return .stay
+        }
+        // todayOpenNeed keeps the Cursor fallback.
+        todayOpenNeed(row)
+        return .close
+    }
+
+    func commandOpenRunning(_ id: String) -> CommandEffect {
+        guard let row = todayFrame(now: Date()).running.first(where: { $0.id == id }) else {
+            today.flash("That is not running any more.")
+            return .stay
+        }
+        todayOpen(row.open)
+        return .close
+    }
+
+    func commandOpenSession(_ id: String) -> CommandEffect {
+        guard let session = model.petSession(id: id) ?? model.claudeSessions.first(where: { ClaudeSession.sameSession($0.id, id) }) else {
+            today.flash("That session is not open any more.")
+            return .stay
+        }
+        todayOpen(TodayHome.openFor(session, host: today.hosts[session.id], cursorTrusted: model.petJumpTrusted).action)
+        return .close
+    }
+
+    func commandRun(_ command: SetupAssistant.Center.Command) -> CommandEffect {
+        switch command {
+        case .startRecording: return commandStartRecording()
+        case .stopRecording:
+            commandStopRecording()
+            return .stay
+        case .openSessions: select(.sessions)
+        case .openMeetings: select(.meetings)
+        case .openWork: select(.work)
+        case .openSpeakers: select(.speakers)
+        case .openDictation: select(.dictation)
+        case .openMemories: select(.memories)
+        case .openSettings: openActivitySettings()
+        case .runDoctor: return commandRun(.runDoctor, words: "")
+        }
+        return .close
+    }
+
+    func commandRun(_ action: SetupAssistant.Action, words: String) -> CommandEffect {
+        switch action {
+        case .runDoctor, .copyReport, .setUp, .startServer, .restartServer, .repairRuntime, .repairWhisper, .updateServer:
+            guard let command = action.helperCommand else { return .stay }
+            commandKeys.ranHelper = true
+            model.perform(command)
+            return .stay
+        case .retryAppUpdate:
+            model.installAppUpdate()
+            return .stay
+        case .resetAccessibility:
+            model.resetAccessibilityAndAddAgain()
+            return .stay
+        case .troubleshoot:
+            commandTroubleshoot(words)
+            return .stay
+        case .openUnstuck:
+            NSWorkspace.shared.open(CommandCenterPanel.unstuckURL)
+        case .openSetupGuide:
+            model.showSetupGuide?()
+        case .openPermissions:
+            if classicSettings { model.permissionGuide.openInPanel() } else { commandOpenSettings("hub.privacy.permissions") }
+        case .openSettings:
+            openActivitySettings()
+        case .openDictationSettings:
+            // The hub's Dictation group has the switch, the shortcuts and the engine. The classic Settings has its own pane.
+            if classicSettings { model.openDictationSettingsInActivity() } else { commandOpenSettings("hub.dictation.dictation") }
+        case .openMicrophoneSettings:
+            model.dictation.openMicrophoneSettings()
+        case .openTailscale:
+            if !GlassesWindowHolder.openTailscaleApp() { _ = model.providerGuide.openURL(GlassesRules.tailscaleDownload) }
+        case .openTranscriptionSettings:
+            commandOpenSettings("transcription")
+        case .openMeetings:
+            select(.meetings)
+        case .openSpeakers:
+            select(.speakers)
+        }
+        return .close
+    }
+
+    /// Settings over the tab that is showing, landing on a group. The classic Settings has no route for these and opens as it is.
+    func commandOpenSettings(_ target: String) {
+        if !classicSettings { model.settingsHubTarget = target }
+        openActivitySettings()
+    }
+
+    // MARK: Command center: recording
+
+    /// The Mac capture only. A glasses meeting stops on the glasses. Both Stops reach here after their confirm.
+    func commandStopRecording() {
+        Task { await model.macRecording.stop() }
+    }
+
+    /// The one-time notice first, in the panel. Then the store's one way to start.
+    func commandStartRecording() -> CommandEffect {
+        guard MacRecordingNotice.step(acknowledged: model.macRecording.noticeAcknowledged) == .start else { return .notice }
+        commandRecordNow()
+        return .stay
+    }
+
+    /// Only the notice card's Record comes here.
+    func commandAcknowledgeAndRecord() {
+        model.macRecording.acknowledgeNotice()
+        commandRecordNow()
+    }
+
+    /// All Mac audio with the automatic title, never the words in the box. Busy is checked again here, because a glasses meeting
+    /// can start between the row and the click. A refused System Audio prompt still records, as it does from Meetings.
+    func commandRecordNow() {
+        let store = model.macRecording
+        guard !today.recordInFlight, SetupAssistant.Center.recordingHold(commandRecording(), commandSnapshot()) == nil else { return }
+        today.recordInFlight = true
+        commandKeys.recordFailed = false
+        let title = MacRecordingNotice.title(typed: "", meetingApp: MeetingDetectorStore.shared.current?.app.title, at: Date())
+        Task {
+            let id = await store.record(title: title, sourceID: MacAudioSource.allMacAudioID, bridge: model.macRecordingBridge)
+            today.recordInFlight = false
+            if id == nil {
+                // The person asked to record: a failure must be seen. As the meeting card does, Meetings opens on the panel
+                // that says why, and the result line says it here too.
+                todayLog.info("command center: the recording did not start")
+                commandKeys.recordFailed = true
+                commandKeys.keepOpen = true
+                select(.meetings)
+            } else {
+                today.flash(MacRecordingNotice.reminder)
+            }
+        }
+    }
+
+    // MARK: Command center: asking
+
+    /// One Work run with the saved answer, a short snapshot and the same rules as troubleshoot. No Doctor.
+    func commandAsk(_ listing: SetupAssistant.Center.Listing) {
+        let id = UUID().uuidString.lowercased()
+        guard let run = SetupAssistant.Center.askRun(question: listing.words, entry: listing.entry, commandSnapshot(), id: id, asked: TodayHome.headerDate(Date())) else {
+            today.runNote = SetupAssistant.Center.askHeld(commandSnapshot())
+            return
+        }
+        commandStartRun(run)
+    }
+
+    /// The gate and the run guard first, then one at a time, then Doctor, then the run: Doctor spends a real question, so a run
+    /// that could not start never gets that far.
+    func commandTroubleshoot(_ words: String) {
+        guard !today.gatheringReport, !today.runBusy, SetupAssistant.gate(.troubleshoot, commandSnapshot()) == .ready else { return }
+        let id = UUID().uuidString.lowercased()
+        if let refusal = today.runRefusal(target: SetupAssistant.targetPrefix + id, handoff: handoffStore) {
+            today.runNote = refusal
+            todayLog.info("command center: troubleshoot refused before Doctor")
+            return
+        }
+        today.gatheringReport = true
+        Task {
+            // Not model.perform("report"): that copies the report to the clipboard.
+            let report = try? await model.runHelper(["report", "--current-version", ControllerModel.currentVersion, "--current-build", String(ControllerModel.currentBuild)],
+                                                    timeout: 90).details["report"]?.string
+            today.gatheringReport = false
+            guard let run = SetupAssistant.troubleshoot(question: words, commandSnapshot(), report: report, id: id, asked: TodayHome.headerDate(Date())) else {
+                today.runNote = "The COS server stopped answering, so nothing started."
+                return
+            }
+            commandStartRun(run)
+        }
+    }
+
+    /// Through the Today cap and breaker, as Prep me and Return are.
+    func commandStartRun(_ run: SetupAssistant.Troubleshoot) {
+        Task {
+            await today.startRun(target: run.target, title: run.title, prompt: run.prompt, context: run.context, handoff: handoffStore)
+            if today.runNote == TodayHomeStore.startedNote { commandKeys.clearWords?() }
+        }
+    }
+}
+
+/// What is recording, under the Today header and above everything else (Miles, 2026-10-31: "those should be the top items above
+/// 'running' ... a dedicated section near TODAY"). One row per recording, with where it records, how long, its live view, and how it
+/// stops. It keeps its own confirm, and it watches the Mac recording's store, which the window does not observe.
+struct TodayRecordingSection: View {
+    let rows: [TodayHome.RunRow]
+    let now: Date
+    @ObservedObject var store: MacRecordingStore
+    let recording: () -> SetupAssistant.Center.Recording
+    let open: (TodayHome.OpenAction) -> Void
+    let stop: () -> Void
+    @State private var confirming: String?
+
+    init(rows: [TodayHome.RunRow], now: Date, store: MacRecordingStore, initialConfirm: String?, recording: @escaping () -> SetupAssistant.Center.Recording,
+         open: @escaping (TodayHome.OpenAction) -> Void, stop: @escaping () -> Void) {
+        self.rows = rows
+        self.now = now
+        self.store = store
+        self.recording = recording
+        self.open = open
+        self.stop = stop
+        _confirming = State(initialValue: initialConfirm)
+    }
+
+    var body: some View {
+        let live = recording()
+        // The frame's rows wait for the next tick; the Mac's capture leaves as soon as its store says it has saved.
+        let shown = rows.filter { row in
+            guard row.recording?.isMac == true else { return true }
+            return live.stoppable || live.saveLine != nil
+        }
+        if !shown.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(shown.enumerated()), id: \.element.id) { index, row in
+                    if index > 0 { Rectangle().fill(TodayInk.rowBorder).frame(height: 1) }
+                    rowView(row, live: live)
+                    if confirming == row.id { confirmBlock(row, live: live) }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(TodayInk.panel))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(COSPalette.live.opacity(0.7), lineWidth: 1.5))
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(shown.count == 1 ? "1 meeting recording" : "\(shown.count) meetings recording")
+        }
+    }
+
+    /// Stop and save only for this Mac's own capture while it records or starts, read live from the store.
+    private func canStop(_ row: TodayHome.RunRow, _ live: SetupAssistant.Center.Recording) -> Bool {
+        row.recording?.canStop == true && live.stoppable
+    }
+
+    private func isSaving(_ row: TodayHome.RunRow, _ live: SetupAssistant.Center.Recording) -> Bool {
+        row.recording?.isMac == true && !live.stoppable
+    }
+
+    private func rowView(_ row: TodayHome.RunRow, live: SetupAssistant.Center.Recording) -> some View {
+        let saving = isSaving(row, live)
+        let line = row.recording.map { saving ? (live.saveLine ?? TodayHome.recordingLine($0, now: now)) : TodayHome.recordingLine($0, now: now) } ?? row.detail
+        return HStack(alignment: .center, spacing: 12) {
+            // The recording mark, and never a pulse: it stays still under Reduce Motion and everywhere else.
+            LiveDot(live: !saving, size: 11)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: row.title).font(COSType.body(15, weight: .semibold)).foregroundStyle(TodayInk.ink).lineLimit(1).truncationMode(.tail)
+                Text(verbatim: line).font(COSType.body(13)).foregroundStyle(TodayInk.sub).lineLimit(1).truncationMode(.tail)
+            }
+            .layoutPriority(1)
+            Spacer(minLength: 12)
+            if canStop(row, live) {
+                Button(SetupAssistant.Center.stopConfirm.confirm) { confirming = row.id }.buttonStyle(TodayButtonStyle(small: true)).disabled(confirming == row.id)
+            } else if !saving, let note = row.recording.flatMap({ TodayHome.recordingStopNote($0) }) {
+                Text(verbatim: note).font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).lineLimit(1)
+            }
+            Button(row.openLabel) { open(row.open) }.buttonStyle(TodayButtonStyle(small: true))
+        }
+        .padding(.horizontal, 16).padding(.vertical, 11)
+    }
+
+    /// Inline, as every confirm in this window is. It checks the store again before it stops anything.
+    private func confirmBlock(_ row: TodayHome.RunRow, live: SetupAssistant.Center.Recording) -> some View {
+        let confirm = SetupAssistant.Center.stopConfirm
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(verbatim: confirm.question).font(COSType.body(13.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
+            Text(verbatim: confirm.consequence).font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button(confirm.confirm) {
+                    confirming = nil
+                    if recording().stoppable { stop() }
+                }
+                .buttonStyle(TodayButtonStyle(primary: true, small: true))
+                Button("Keep recording") { confirming = nil }.buttonStyle(TodayButtonStyle(small: true)).keyboardShortcut(.cancelAction)
+            }
+            .padding(.top, 6)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(TodayInk.hotBorder, lineWidth: 1))
+        .padding(.horizontal, 16).padding(.bottom, 12)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(confirm.question)
+    }
+}
+
+/// The ⌘K chip on the box and in the field.
+struct CommandCenterKeyHint: View {
+    var body: some View {
+        Text("⌘K").font(COSType.mono(11, weight: .medium)).foregroundStyle(TodayInk.grey)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(TodayInk.kbdBorder, lineWidth: 1))
+            .accessibilityHidden(true)
+    }
+}
+
+/// Up, Down and Option-Return while the panel is open, through the same kind of local monitor as Esc (ActivityEscapeHandler), so
+/// the field keeps its focus. Option-Return has to come this way: a single-line field types a line break for it and never
+/// submits. Mounted only with the panel. Text being composed keeps its keys.
+private struct CommandCenterKeyMonitor: NSViewRepresentable {
+    var onMove: (Int) -> Bool
+    var onOptionReturn: () -> Bool
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        context.coordinator.view = view
+        context.coordinator.move = onMove
+        context.coordinator.optionReturn = onOptionReturn
+        context.coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak coordinator = context.coordinator] event in
+            guard let coordinator, let window = coordinator.view?.window,
+                  window.isKeyWindow, window.attachedSheet == nil,
+                  (event.window ?? NSApplication.shared.keyWindow) === window,
+                  (window.firstResponder as? NSTextView)?.hasMarkedText() != true else { return event }
+            let flags = event.modifierFlags.intersection([.command, .control, .option])
+            if event.keyCode == 36 || event.keyCode == 76, flags == .option {
+                return coordinator.optionReturn?() == true ? nil : event
+            }
+            guard event.keyCode == 125 || event.keyCode == 126, flags.isEmpty else { return event }
+            return coordinator.move?(event.keyCode == 125 ? 1 : -1) == true ? nil : event
+        }
+        return view
+    }
+    func updateNSView(_ view: NSView, context: Context) {
+        context.coordinator.move = onMove
+        context.coordinator.optionReturn = onOptionReturn
+    }
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
+        if let monitor = coordinator.monitor { NSEvent.removeMonitor(monitor) }
+        coordinator.monitor = nil
+    }
+    final class Coordinator {
+        weak var view: NSView?
+        var monitor: Any?
+        var move: ((Int) -> Bool)?
+        var optionReturn: (() -> Bool)?
+    }
+}
+
+/// The panel. Its words, highlight and confirm are its own state, so typing redraws this and nothing else. It draws what
+/// SetupAssistant.Center lists and asks it what each key does.
+struct CommandCenterPanel: View {
+    typealias C = SetupAssistant.Center
+    static let placeholder = "Ask COS, start a recording, open a session"
+    static let width: CGFloat = 520
+    static let unstuckURL = URL(string: "https://www.gotcos.com/control/#unstuck")!
+
+    let base: C.Inputs
+    let keys: CommandCenterKeys
+    /// Mac recording state is not on the model, so the panel watches it itself.
+    @ObservedObject var store: MacRecordingStore
+    let fixture: CommandCenterFixture?
+    let recording: () -> C.Recording
+    let snapshot: () -> SetupAssistant.Snapshot
+    let resultInputs: () -> C.ResultInputs
+    let run: (C.Row, C.Listing) -> CommandEffect
+    let submit: (String, Bool) -> Void
+    let recordAfterNotice: () -> Void
+    let close: () -> Void
+    let maxListHeight: CGFloat
+
+    @State private var words = ""
+    @State private var chosen: String?
+    @State private var confirming: String?
+    /// Why a confirmed row did not run, on that row.
+    @State private var heldLine: (id: String, text: String)?
+    @State private var noticeShowing = false
+    @State private var hovered: String?
+    @State private var loaded = false
+    @FocusState private var focused: Bool
+
+    private var live: C.Inputs {
+        var inputs = base
+        inputs.recording = recording()
+        return inputs
+    }
+
+    var body: some View {
+        let inputs = live
+        let listing = C.listing(inputs, words: words)
+        let highlight = C.effective(chosen, listing)
+        let outcome = C.onReturn(option: false, chosen: chosen, confirming: confirming != nil, noticeShowing: noticeShowing, listing, inputs.snapshot)
+        let hint = noticeShowing ? C.noticeHint : C.hint(outcome, listing, inputs.snapshot)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "sparkle").font(.system(size: 14, weight: .medium)).foregroundStyle(TodayInk.accent).accessibilityHidden(true)
+                TextField(Self.placeholder, text: $words)
+                    .textFieldStyle(.plain)
+                    .font(COSType.body(14))
+                    .foregroundStyle(TodayInk.ink)
+                    .focused($focused)
+                    .onSubmit { pressReturn() }
+                    .accessibilityLabel("COS command center")
+                    .accessibilityHint(hint)
+                CommandCenterKeyHint()
+            }
+            .padding(.horizontal, 14)
+            .frame(minHeight: 44)
+            rule
+            if let line = C.result(resultInputs()) {
+                resultLine(line)
+                rule
+            }
+            rows(listing, highlight: highlight, inputs: inputs)
+            rule
+            Text(verbatim: hint).font(COSType.body(11.5)).foregroundStyle(TodayInk.grey).lineLimit(1).truncationMode(.tail)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .accessibilityHidden(true)
+        }
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(TodayInk.panel))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(TodayInk.btnBorder, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .shadow(color: Color.black.opacity(0.18), radius: 22, y: 10)
+        .background(CommandCenterKeyMonitor(onMove: { move($0) }, onOptionReturn: {
+            pressReturn(option: true)
+            return true
+        }).frame(width: 0, height: 0))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("COS command center")
+        .onAppear { arrive() }
+        .onDisappear {
+            keys.escape = nil
+            keys.clearWords = nil
+        }
+        .onChange(of: words) { _, value in
+            guard loaded else { return }
+            keys.draft = value
+            chosen = nil
+            confirming = nil
+            heldLine = nil
+            noticeShowing = false
+        }
+        .onChange(of: highlight) { _, id in
+            let current = live
+            let list = C.listing(current, words: words)
+            let row = list.rows.first { $0.id == id }
+            AccessibilityNotification.Announcement(C.announcement(row, C.onReturn(option: false, chosen: chosen, confirming: confirming != nil, noticeShowing: noticeShowing, list, current.snapshot), list, current.snapshot)).post()
+        }
+    }
+
+    private var rule: some View { Rectangle().fill(TodayInk.rowBorder).frame(height: 1) }
+
+    private func arrive() {
+        if let fixture {
+            words = fixture.words
+            chosen = fixture.chosen
+            confirming = fixture.confirming
+            noticeShowing = fixture.noticeShowing
+        } else {
+            words = keys.draft
+        }
+        keys.escape = { pressEscape() }
+        keys.clearWords = {
+            keys.draft = ""
+            words = ""
+        }
+        DispatchQueue.main.async {
+            loaded = true
+            focused = true
+        }
+    }
+
+    // MARK: Keys
+
+    private func move(_ delta: Int) -> Bool {
+        guard confirming == nil, !noticeShowing else { return true }
+        let listing = C.listing(live, words: words)
+        chosen = C.move(delta, from: C.effective(chosen, listing), listing)
+        heldLine = nil
+        return true
+    }
+
+    private func pressEscape() -> Bool {
+        switch C.onEscape(confirming: confirming != nil, noticeShowing: noticeShowing, chosen: chosen, hasWords: !words.isEmpty) {
+        case .cancelConfirm: confirming = nil
+        case .dismissNotice: noticeShowing = false
+        case .clearHighlight: chosen = nil
+        case .clearWords:
+            keys.draft = ""
+            words = ""
+        case .close: return false
+        }
+        return true
+    }
+
+    private func pressReturn(option: Bool = false) {
+        let inputs = live
+        let listing = C.listing(inputs, words: words)
+        switch C.onReturn(option: option, chosen: chosen, confirming: confirming != nil, noticeShowing: noticeShowing, listing, inputs.snapshot) {
+        case .nothing: break
+        case .confirm: confirmOpen(listing)
+        case .activate(let id): activate(id, listing)
+        case .startRun: submit(listing.words, false)
+        case .file: submit(listing.words, true)
+        case .move(let id): chosen = id
+        }
+        focused = true
+    }
+
+    private func activate(_ id: String, _ listing: C.Listing) {
+        guard let row = listing.rows.first(where: { $0.id == id }), row.selectable else { return }
+        chosen = id
+        heldLine = nil
+        noticeShowing = false
+        if C.confirmation(row, snapshot()) != nil { confirming = id; return }
+        perform(row, listing)
+    }
+
+    /// Fresh state on confirm: if it waits now, the row says why and nothing runs. There is no force path.
+    private func confirmOpen(_ listing: C.Listing) {
+        guard let id = confirming, let row = listing.rows.first(where: { $0.id == id }) else { confirming = nil; return }
+        confirming = nil
+        if let held = C.recheck(row, snapshot(), recording()) {
+            heldLine = (id, held)
+            return
+        }
+        perform(row, listing)
+    }
+
+    private func perform(_ row: C.Row, _ listing: C.Listing) {
+        switch run(row, listing) {
+        case .close: close()
+        case .stay: break
+        case .notice: noticeShowing = true
+        }
+    }
+
+    // MARK: Drawing
+
+    private func resultLine(_ line: C.ResultLine) -> some View {
+        Text(verbatim: line.text)
+            .font(COSType.body(12.5, weight: line.tone == .problem ? .medium : .regular))
+            .foregroundStyle(line.tone == .problem ? TodayInk.hot : TodayInk.sub)
+            .lineLimit(3)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(TodayInk.qopen)
+    }
+
+    private func rows(_ listing: C.Listing, highlight: String?, inputs: C.Inputs) -> some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(listing.rows.enumerated()), id: \.element.id) { index, row in
+                        if index > 0, listing.rows[index - 1].group != row.group { rule }
+                        rowView(row, listing, highlighted: row.id == highlight).id(row.id)
+                        if confirming == row.id, let confirm = C.confirmation(row, inputs.snapshot) { confirmBlock(confirm, listing) }
+                        if let held = heldLine, held.id == row.id {
+                            Text(verbatim: held.text).font(COSType.body(12)).foregroundStyle(TodayInk.hot).padding(.leading, 41).padding(.trailing, 14).padding(.bottom, 8)
+                        }
+                        if noticeShowing, row.kind == .command(.startRecording) {
+                            MacRecordingNoticeCard(onRecord: {
+                                noticeShowing = false
+                                recordAfterNotice()
+                            }, onNotNow: { noticeShowing = false })
+                            .padding(.leading, 41).padding(.trailing, 14).padding(.bottom, 10)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: maxListHeight)
+            .fixedSize(horizontal: false, vertical: true)
+            .onChange(of: highlight) { _, id in if let id { proxy.scrollTo(id) } }
+        }
+    }
+
+    @ViewBuilder
+    private func rowView(_ row: C.Row, _ listing: C.Listing, highlighted: Bool) -> some View {
+        switch row.kind {
+        case .savedAnswer:
+            savedAnswer(row)
+        case .info:
+            infoRow(row)
+        default:
+            let label = rowLabel(row, highlighted: highlighted)
+            if row.selectable {
+                Button { activate(row.id, listing) } label: { label }
+                    .buttonStyle(.plain)
+                    .onHover { inside in hovered = inside ? row.id : (hovered == row.id ? nil : hovered) }
+                    .accessibilityLabel(voiceLabel(row))
+                    .accessibilityAddTraits(highlighted ? .isSelected : [])
+            } else {
+                label.accessibilityElement(children: .ignore).accessibilityLabel(voiceLabel(row))
+            }
+        }
+    }
+
+    private func voiceLabel(_ row: C.Row) -> String {
+        [row.title, row.state, row.detail, row.held, row.trailing].compactMap { $0 }.joined(separator: ", ")
+    }
+
+    private func rowLabel(_ row: C.Row, highlighted: Bool) -> some View {
+        HStack(alignment: .top, spacing: 11) {
+            Image(systemName: symbol(row)).font(.system(size: 13, weight: .medium)).foregroundStyle(tint(row)).frame(width: 16).padding(.top, 2).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: row.title).font(COSType.body(13.5, weight: .semibold)).foregroundStyle(row.held == nil ? TodayInk.ink : TodayInk.sub).lineLimit(2)
+                if let detail = row.detail {
+                    Text(verbatim: detail).font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                }
+                if let held = row.held {
+                    Text(verbatim: held).font(COSType.body(12)).foregroundStyle(TodayInk.hot).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 8)
+            // The word on the row, or what running it does once it is the one Return will run.
+            if let side = (highlighted ? row.trailing ?? row.state : row.state ?? (row.group == .asking || row.group == .fixing || row.group == .recording ? row.trailing : nil)) {
+                Text(verbatim: side)
+                    .font(COSType.body(12, weight: .medium))
+                    .foregroundStyle(side == row.state ? stateTint(row) : TodayInk.accent)
+                    .lineLimit(1)
+                    .padding(.top, 2)
+            }
+        }
+        .padding(.leading, 14).padding(.trailing, 14).padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(highlighted ? TodayInk.qopen : (hovered == row.id ? TodayInk.qopen.opacity(0.6) : Color.clear))
+        .overlay(alignment: .leading) { if highlighted { Rectangle().fill(TodayInk.accent).frame(width: 3) } }
+        .contentShape(Rectangle())
+    }
+
+    private func infoRow(_ row: C.Row) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: row.title).font(COSType.body(12.5)).foregroundStyle(TodayInk.sub)
+                if let detail = row.detail { Text(verbatim: detail).font(COSType.body(12)).foregroundStyle(TodayInk.grey).fixedSize(horizontal: false, vertical: true) }
+                if let held = row.held { Text(verbatim: held).font(COSType.body(12)).foregroundStyle(TodayInk.hot).fixedSize(horizontal: false, vertical: true) }
+            }
+            Spacer(minLength: 8)
+            if let state = row.state { Text(verbatim: state).font(COSType.body(12, weight: .medium)).foregroundStyle(TodayInk.grey) }
+        }
+        .padding(.leading, 41).padding(.trailing, 14).padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Labelled as saved, with the entry's title: it comes from the guide, not from a model.
+    private func savedAnswer(_ row: C.Row) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(verbatim: row.title).font(COSType.body(13.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
+                Spacer(minLength: 8)
+                if let state = row.state { Text(verbatim: state).font(COSType.body(12, weight: .medium)).foregroundStyle(TodayInk.grey) }
+            }
+            if let detail = row.detail {
+                Text(verbatim: detail).font(COSType.body(12.8)).foregroundStyle(TodayInk.ink).lineSpacing(2).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.leading, 41).padding(.trailing, 14).padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(TodayInk.qopen)
+        .overlay(alignment: .topLeading) {
+            Image(systemName: "book.closed").font(.system(size: 13, weight: .medium)).foregroundStyle(TodayInk.accent).frame(width: 16).padding(.leading, 14).padding(.top, 13).accessibilityHidden(true)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func confirmBlock(_ confirm: SetupAssistant.Confirmation, _ listing: C.Listing) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(verbatim: confirm.question).font(COSType.body(13.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
+            Text(verbatim: confirm.consequence).font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button(confirm.confirm) { confirmOpen(listing) }.buttonStyle(TodayButtonStyle(primary: true, small: true))
+                Button("Cancel") { confirming = nil }.buttonStyle(TodayButtonStyle(small: true))
+                Text("Return confirms, Esc cancels").font(COSType.mono(11)).foregroundStyle(TodayInk.grey).lineLimit(1)
+            }
+            .padding(.top, 6)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(TodayInk.hotBorder, lineWidth: 1))
+        .padding(.leading, 41).padding(.trailing, 14).padding(.bottom, 10)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(confirm.question)
+    }
+
+    private func symbol(_ row: C.Row) -> String {
+        switch row.kind {
+        case .waiting: return "hand.raised"
+        case .running: return "play"
+        case .session: return "text.bubble"
+        case .recording: return "record.circle.fill"
+        case .ask: return "sparkle"
+        case .file: return "tray.and.arrow.down"
+        case .savedAnswer: return "book.closed"
+        case .info: return "circle"
+        case .action(let action):
+            if action == .troubleshoot || action == .runDoctor { return "stethoscope" }
+            return action.changesSomething ? "wrench.and.screwdriver" : "arrow.up.forward.square"
+        case .command(let command):
+            switch command {
+            case .startRecording: return "record.circle"
+            case .stopRecording: return "stop.circle"
+            case .openSessions: return "rectangle.stack"
+            case .openMeetings: return "calendar"
+            case .openWork: return "briefcase"
+            case .openSpeakers: return "person.wave.2"
+            case .openDictation: return "mic"
+            case .openMemories: return "brain"
+            case .openSettings: return "gearshape"
+            case .runDoctor: return "stethoscope"
+            }
+        }
+    }
+
+    private func tint(_ row: C.Row) -> Color {
+        switch row.kind {
+        case .recording: return COSPalette.live
+        case .waiting: return row.state == nil ? TodayInk.sub : TodayInk.hot
+        case .command(.stopRecording): return TodayInk.hot
+        case .action(.troubleshoot): return TodayInk.sub
+        case .action(let action) where action.changesSomething: return TodayInk.hot
+        default: return TodayInk.sub
+        }
+    }
+
+    private func stateTint(_ row: C.Row) -> Color {
+        if case .waiting = row.kind { return TodayInk.hot }
+        if row.kind == .command(.stopRecording) { return TodayInk.hot }
+        return TodayInk.grey
     }
 }
