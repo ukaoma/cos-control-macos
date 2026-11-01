@@ -14758,7 +14758,7 @@ enum TodayHome {
             // The quiet-hours fold applies here as it does to Today's line (0.5.361): what it moved to tomorrow can wait, and is not hot.
             let needsNow = max(0, (c.workNeedsYou ?? 0) - c.foldedWork)
             if needsNow > 0 { bits.append(needsNow == 1 ? "1 needs you" : "\(needsNow) need you") }
-            if c.foldedWork > 0 { bits.append("\(c.foldedWork) can wait until tomorrow") }
+            if c.foldedWork > 0 { bits.append("\(c.foldedWork) can wait") }
             if let n = c.olderToSort, n > 0 { bits.append("\(n) older to sort") }
             if !bits.isEmpty { return Story(text: bits.joined(separator: ", "), hot: needsNow > 0) }
             return Story(text: c.olderToSort == nil || c.workNeedsYou == nil ? "Your tasks and meeting follow-ups" : "Nothing to sort", hot: false)

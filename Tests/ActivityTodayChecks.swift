@@ -531,10 +531,10 @@ import Foundation
               "an unsettled count says so far", TodayHome.brief(foldedOpen))
         // Work's own rail line reads the fold too (round 2): a Work row the fold moved to tomorrow can wait, and is not hot.
         var workFolded = TodayHome.Counts(); workFolded.workNeedsYou = 1; workFolded.foldedWork = 1; workFolded.olderToSort = 23; workFolded.settled = true
-        check(TodayHome.story("work", workFolded, now: now, calendar: calendar) == TodayHome.Story(text: "1 can wait until tomorrow, 23 older to sort", hot: false),
+        check(TodayHome.story("work", workFolded, now: now, calendar: calendar) == TodayHome.Story(text: "1 can wait, 23 older to sort", hot: false),
               "Work's rail line agrees with the fold: it can wait", TodayHome.story("work", workFolded, now: now, calendar: calendar).text)
         var workSome = workFolded; workSome.workNeedsYou = 3; workSome.foldedWork = 2
-        check(TodayHome.story("work", workSome, now: now, calendar: calendar) == TodayHome.Story(text: "1 needs you, 2 can wait until tomorrow, 23 older to sort", hot: true),
+        check(TodayHome.story("work", workSome, now: now, calendar: calendar) == TodayHome.Story(text: "1 needs you, 2 can wait, 23 older to sort", hot: true),
               "Work's rail line names what the fold left", TodayHome.story("work", workSome, now: now, calendar: calendar).text)
         var workPlain = workFolded; workPlain.workNeedsYou = 3; workPlain.foldedWork = 0
         check(TodayHome.story("work", workPlain, now: now, calendar: calendar) == TodayHome.Story(text: "3 need you, 23 older to sort", hot: true), "no fold, no change on Work's rail line", "")
