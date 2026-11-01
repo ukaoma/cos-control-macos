@@ -37,7 +37,7 @@ Reopening a hit older than the list, by reading each provider's open path (not b
 - Cursor. The platform route presses the Agents tab by name and needs Accessibility. Without it the row opens Sessions' reader. The reader reads the transcript by id from disk for any age.
 - Could not prove: that Claude Desktop honors `claude://resume` and `claude://code/continue` for an old session on this Mac's version, that Codex opens an old thread by link, and that Cursor's Agents window still lists an old agent to press.
 
-Not verified: all of this is proven on fixtures, the compiled engine checks, source pins and mutants, not by use on a live Mac. Focus, the arrow keys and Esc cannot be proved offscreen. Full suite, signing and install receipts are separate from these notes.
+Live on one Mac after signing, with background control: panes, tabs, session lists, word search and arrow keys worked, a Claude and a Codex hit opened their apps, and an old Cursor agent did not open and said so in the panel. Opening an old Claude session wakes it in Claude Desktop. Not tried live: Return in the panel, a real recording, the unsent-reply confirm, VoiceOver. Full suite, signing and install receipts are separate from these notes.
 
 ## 0.5.360 (build 414), ⌘K and COS cost fixes on top of 0.5.359
 
