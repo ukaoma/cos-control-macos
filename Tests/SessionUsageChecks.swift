@@ -741,28 +741,24 @@ import SQLite3
         keyWords = (try? String(contentsOf: keyLog, encoding: .utf8)) ?? ""
         check(keyAsks == 1 && keyWords.contains("Keychain denied, exit 128"), "the denial reaches the local log")
         check(!keyWords.contains(keyToken), "the sign-in never reaches the log")
-        // Only timeouts in a row stop asking. Three odd exits and a timeout are not four timeouts, and an odd exit breaks a run of them.
-        let mixHome = home.appendingPathComponent("keychain-mixed")
-        try FileManager.default.createDirectory(at: mixHome, withIntermediateDirectories: true)
-        let mixFeed = try SessionUsageCollector(home: mixHome, database: mixHome.appendingPathComponent("m.sqlite"), timeZone: TimeZone(identifier: "America/Chicago")!)
-        var mixAsks = 0
-        var mixClock: TimeInterval = 0
-        func mixPass(_ answer: SessionUsageCollector.CursorFeedToken) throws -> SessionUsageCursorFeedStatus.State? {
-            mixClock += 86_400
-            try mixFeed.syncCursorFeed(force: false, now: t0.addingTimeInterval(mixClock), readToken: { _ in mixAsks += 1; return answer }, fetch: { _, _, _, _ in .init(status: 200, body: page([])) })
-            return try mixFeed.refresh(cursorEnabled: true).cursorFeed?.state
+        // Only timeouts in a row stop asking. Three odd exits and a timeout are not four timeouts, and any other answer breaks a run of them.
+        func mixRun(_ answers: [SessionUsageCollector.CursorFeedToken]) throws -> (state: SessionUsageCursorFeedStatus.State?, asks: Int) {
+            let dir = home.appendingPathComponent("keychain-mixed-" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let feed = try SessionUsageCollector(home: dir, database: dir.appendingPathComponent("m.sqlite"), timeZone: TimeZone(identifier: "America/Chicago")!)
+            var asks = 0
+            for (index, answer) in answers.enumerated() {
+                try feed.syncCursorFeed(force: false, now: t0.addingTimeInterval(Double(index + 1) * 86_400), readToken: { _ in asks += 1; return answer }, fetch: { _, _, _, _ in .init(status: 200, body: page([])) })
+            }
+            return (try feed.refresh(cursorEnabled: true).cursorFeed?.state, asks)
         }
-        var mixState: SessionUsageCursorFeedStatus.State?
-        for answer in [SessionUsageCollector.CursorFeedToken.unavailable(.timedOut), .unavailable(.exit(36)), .unavailable(.timedOut), .unavailable(.exit(36)), .unavailable(.timedOut), .unavailable(.exit(36)), .unavailable(.timedOut)] {
-            mixState = try mixPass(answer)
-        }
-        check(mixState == .keychainBusy && mixAsks == 7, "four timeouts with odd exits between them keep retrying")
-        mixState = try mixPass(.unavailable(.timedOut))
-        check(mixState == .keychainBusy, "two timeouts in a row are not four")
-        mixState = try mixPass(.unavailable(.timedOut))
-        check(mixState == .keychainBusy, "three timeouts in a row are not four")
-        mixState = try mixPass(.unavailable(.timedOut))
-        check(mixState == .blocked, "four timeouts in a row stop asking")
+        let timeout = SessionUsageCollector.CursorFeedToken.unavailable(.timedOut), oddExit = SessionUsageCollector.CursorFeedToken.unavailable(.exit(36)), noStart = SessionUsageCollector.CursorFeedToken.unavailable(.launchFailed)
+        let mixed = try mixRun([timeout, oddExit, timeout, oddExit, timeout, oddExit, timeout])
+        check(mixed.state == .keychainBusy && mixed.asks == 7, "four timeouts with odd exits between them keep retrying")
+        check(try mixRun([timeout, timeout, timeout]).state == .keychainBusy, "three timeouts in a row are not four")
+        check(try mixRun([timeout, timeout, timeout, timeout]).state == .blocked, "four timeouts in a row stop asking")
+        check(try mixRun([timeout, timeout, timeout, noStart, timeout]).state == .keychainBusy, "a launch failure breaks a run of timeouts")
+        check(try mixRun([timeout, timeout, timeout, .token("SECRET_SIGN_IN_NEVER_LOGGED"), timeout]).state == .keychainBusy, "a good read starts the timeouts over")
         let oversized = String(repeating: "x", count: 70_000)
         try oversized.write(to: keyLog, atomically: true, encoding: .utf8)
         try keyPass(dayFour, .unavailable(.launchFailed), force: true)
@@ -1987,11 +1983,18 @@ extension Checks {
             let words = P.headline(report: blocked, ran: 0, usage: .ready)
             check(words.contains("could not read its record of calls") && !words.contains("no calls") && !words.contains(blockedAudit.path), "the headline says so, and never prints a path")
         }
-        // A read that throws part way is not the end of the file. A directory opens, and its first read fails.
-        let brokenScripts = home.appendingPathComponent("cos-broken-scripts")
-        try fm.createDirectory(at: brokenScripts.appendingPathComponent(".cos_token_audit.jsonl"), withIntermediateDirectories: true)
-        let brokenRead = try SessionUsageCollector(home: root, database: home.appendingPathComponent("cos-broken-read.sqlite"), timeZone: chicago).cosUsage(plistScripts: brokenScripts.path, dataDirectory: nil, importSessions: false, now: now)
-        check(brokenRead.auditFound && brokenRead.auditUnreadable, "a read that fails part way is flagged, not taken for the end of the file")
+        // A read that throws part way is not the end of the file: the rows read so far stand, and the caller is told it was cut short.
+        let cutFile = home.appendingPathComponent("cos-cut-read.jsonl")
+        try Data("{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n".utf8).write(to: cutFile)
+        var cutRows = 0, cutReads = 0
+        let cut = SessionUsageCollector.cosForEachJSONLine(cutFile, { _ in cutRows += 1 }, read: { handle in
+            cutReads += 1
+            if cutReads == 1 { return try handle.read(upToCount: 9) }
+            throw CocoaError(.fileReadUnknown)
+        })
+        check(cut == nil && cutRows == 1, "a read that fails part way is flagged, not taken for the end of the file")
+        var wholeRows = 0
+        check(SessionUsageCollector.cosForEachJSONLine(cutFile, { _ in wholeRows += 1 }) == 0 && wholeRows == 3, "the same file read to its end counts all three rows")
         // Busy means busy: SQLITE_BUSY and SQLITE_LOCKED, with or without an extended code, and nothing else.
         typealias F = SessionUsageCollector
         check([SQLITE_BUSY, SQLITE_LOCKED, SQLITE_BUSY | (1 << 8), SQLITE_LOCKED | (1 << 8)].allSatisfy { F.failure($0, busy: "b", other: "o").busy && F.failure($0, busy: "b", other: "o").message == "b" }, "busy and locked, extended or not, are a busy history")

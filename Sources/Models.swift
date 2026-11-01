@@ -383,7 +383,7 @@ struct ServerStatus: Sendable {
         if meetingFinalizationPending > 0 { return "Blocks Update / Restart until the meeting is in the library." }
         if (activeTranscriptionSessions ?? 0) > 0, !meetingSyncActive { return "Blocks Update / Restart until this recording is saved." }
         if meetingSyncUnconfirmed {
-            return "The server is not answering, so COS cannot tell whether a save is running. Update and Restart wait until it answers or stops. Run Doctor if this stays."
+            return "The server is not answering, so COS cannot tell whether a save is running. Update and Restart wait until it answers or stops. If it never does, Repair server in Settings brings it back, and Run Doctor shows why."
         }
         if meetingSyncBlocksRestart { return "Blocks Update / Restart until meeting work finishes." }
         return "Meeting work in progress."

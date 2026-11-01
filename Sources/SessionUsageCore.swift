@@ -1325,7 +1325,7 @@ enum CosCostRates {
         return (Double(counts.input)*r.input + Double(counts.cacheRead)*r.read + Double(counts.output)*r.output) / 1_000_000
     }
     /// What a ledger's model string names, or nil when it names nothing with a fixed price: a tier, a router, a local
-    /// model. A bare alias maps to today's model, which is approximate for old rows, and only ever feeds an estimate.
+    /// model. A bare alias maps to today's model, which is approximate for old rows. A measured row on a bare alias is priced at that model too, so its dollars are measured tokens at today's rate.
     static func resolve(_ ledgerModel: String) -> (provider: String, model: String)? {
         var name = ledgerModel.trimmingCharacters(in: .whitespaces)
         if let bracket = name.firstIndex(of: "[") { name = String(name[..<bracket]) } // claude-opus-5-5[1m]
@@ -1723,8 +1723,8 @@ struct CosCostAccumulator {
             return $0.session == $1.session ? $0.at < $1.at : $0.session < $1.session
         }
         var counted = Set<String>()
-        // Each run's window, from its start to its proven end. The windows of one session never overlap, because the next
-        // run's own prompt ends the one before.
+        // Each run's window, from its start to its proven end. A run's end is the next typed turn or message from another session,
+        // so windows of one session usually do not overlap. Two runs started close together can, and an event in both is counted once.
         let marksBySession = Dictionary(grouping: marks, by: \.session)
         var windows: [String: [ClosedRange<Double>]] = [:]
         var silentRuns = 0

@@ -1378,6 +1378,9 @@ enum ServerUpdateGuard {
         guard let left = parts(version), let right = parts(other) else { return false }
         return left.lexicographicallyPrecedes(right)
     }
+    /// Whether Roll back server has somewhere to go: a manifest that keeps at least one earlier generation. A refusal that points at
+    /// Roll back must not promise what rollback() would refuse with "No retained server generation is available."
+    static func canRollBack(hasManifest: Bool, retained: Int) -> Bool { hasManifest && retained > 0 }
     /// The refusal for installing `resolved` over what this Mac has, or nil. `installed` is every version it can see.
     static func refusal(requested: String, resolved: String, installed: [String], canRollBack: Bool) -> String? {
         guard requested == "latest", let ahead = installed.first(where: { isOlder(resolved, than: $0) }) else { return nil }

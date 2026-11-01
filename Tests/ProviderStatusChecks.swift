@@ -70,6 +70,7 @@ struct ProviderStatusChecks {
         json()
         voice()
         qaFixes()
+        rollbackHint()
         if failures > 0 {
             FileHandle.standardError.write(Data("provider-status checks: \(failures) failed, \(passes) passed\n".utf8))
             exit(1)
@@ -294,5 +295,15 @@ struct ProviderStatusChecks {
         check(VoiceEnvFile.restore(maxEnv, to: snapshot) == maxEnv, "env restore", "an unchanged file is left byte for byte")
         let dup = VoiceEnvFile.restore("COS_WHISPER_TRANSCRIPTION_TIER=a\nCOS_WHISPER_TRANSCRIPTION_TIER=b\n", to: snapshot)
         check(dup.components(separatedBy: "COS_WHISPER_TRANSCRIPTION_TIER=").count == 2, "env restore", "duplicates collapse to one: \(dup)")
+    }
+
+    /// The refusal points at Roll back server only when a retained generation exists for it to go to.
+    static func rollbackHint() {
+        check(ServerUpdateGuard.canRollBack(hasManifest: true, retained: 1) && ServerUpdateGuard.canRollBack(hasManifest: true, retained: 3), "rollback hint", "a manifest that keeps a generation can roll back")
+        check(!ServerUpdateGuard.canRollBack(hasManifest: true, retained: 0), "rollback hint", "a manifest that keeps none has nowhere to go")
+        check(!ServerUpdateGuard.canRollBack(hasManifest: false, retained: 2), "rollback hint", "no manifest, no rollback")
+        let hinted = ServerUpdateGuard.refusal(requested: "latest", resolved: "6.94.2", installed: ["6.97.0"], canRollBack: ServerUpdateGuard.canRollBack(hasManifest: true, retained: 1)) ?? ""
+        let plain = ServerUpdateGuard.refusal(requested: "latest", resolved: "6.94.2", installed: ["6.97.0"], canRollBack: ServerUpdateGuard.canRollBack(hasManifest: true, retained: 0)) ?? ""
+        check(hinted.contains("Roll back server") && !plain.contains("Roll back server") && plain.hasSuffix("so nothing changed."), "rollback hint", "the refusal names Roll back only with something to roll back to: \(plain)")
     }
 }

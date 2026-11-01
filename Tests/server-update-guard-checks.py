@@ -46,12 +46,12 @@ with tempfile.TemporaryDirectory(prefix="cos-update-guard-", dir="/tmp") as tmp:
                        'printf \'{"version":"%s","dist.integrity":"sha512-fake"}\' "$v"\n')
         npm.chmod(0o755)
 
-    def scenario(latest, manifest=None, running=None, legacy=None, version=None):
+    def scenario(latest, manifest=None, running=None, legacy=None, version=None, previous=("6.90.0",)):
         stand_ins(latest)
         state["server"] = running
         manifest_file.unlink(missing_ok=True); plist_file.unlink(missing_ok=True)
         if manifest:
-            manifest_file.write_text(json.dumps({"version": manifest, "generationPath": str(home / "gen"), "installedAt": "2026-10-31T00:00:00Z", "previousVersions": []}))
+            manifest_file.write_text(json.dumps({"version": manifest, "generationPath": str(home / "gen"), "installedAt": "2026-10-31T00:00:00Z", "previousVersions": list(previous)}))
         if legacy:
             app = home / "legacy-app"; app.mkdir(exist_ok=True)
             (app / "package.json").write_text(json.dumps({"name": legacy[0], "version": legacy[1]}))
@@ -75,6 +75,8 @@ with tempfile.TemporaryDirectory(prefix="cos-update-guard-", dir="/tmp") as tmp:
     running = scenario("6.94.2", running="6.96.3")
     check(running["ok"] is False and "6.96.3" in running["message"], "a running server newer than latest is refused")
     check("Roll back" not in running["message"], "no rollback hint without a managed server")
+    bare = scenario("6.94.2", manifest="6.96.3", previous=())
+    check(bare["ok"] is False and "Roll back" not in bare["message"] and bare["message"].endswith("nothing changed."), "no rollback hint when the manifest retains nothing to roll back to")
     check(scenario("6.94.2", manifest="6.90.0", running="6.96.3")["ok"] is False, "a running server newer than the manifest is refused")
     check(scenario("6.94.2", manifest="6.96.3", running="6.90.0")["ok"] is False, "a manifest newer than the running server is refused")
     check(scenario("6.94.2", running="6.94.2")["ok"] is True, "a running server on latest reinstalls")

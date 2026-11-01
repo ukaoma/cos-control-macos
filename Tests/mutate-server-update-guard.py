@@ -19,7 +19,8 @@ MUTANTS = [
     ("the manifest is ignored", MAIN, '[request("/api/health", timeout: 8)?.body?["server_version"] as? String, loadManifest()?.version].compactMap { $0 }', '[request("/api/health", timeout: 8)?.body?["server_version"] as? String].compactMap { $0 }', "a stopped managed server newer than latest is refused"),
     ("a legacy package is ignored", MAIN, "            versions.append(version)\n", "            _ = version\n", "a stopped legacy server package newer than latest is refused"),
     ("any package counts as the server", MAIN, 'package["name"] as? String == packageName, let version = package["version"] as? String {\n            versions.append', 'let version = package["version"] as? String {\n            versions.append', "a folder that is not the server package proves nothing"),
-    ("a rollback hint with no managed server", MAIN, "installed: installedServerVersions(), canRollBack: loadManifest() != nil)", "installed: installedServerVersions(), canRollBack: true)", "no rollback hint without a managed server"),
+    ("a rollback hint with no managed server", MAIN, "canRollBack: ServerUpdateGuard.canRollBack(hasManifest: manifest != nil, retained: retained)) {", "canRollBack: true) {", "no rollback hint without a managed server"),
+    ("a rollback hint with nothing retained", MAIN, "canRollBack: ServerUpdateGuard.canRollBack(hasManifest: manifest != nil, retained: retained)) {", "canRollBack: manifest != nil) {", "no rollback hint when the manifest retains nothing to roll back to"),
 ]
 
 

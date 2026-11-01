@@ -37,7 +37,7 @@ import Foundation
         let busy = status(["meetingSyncActive": .bool(true), "meetingSyncBlocksRestart": .bool(true), "meetingSyncMeetings": .array([row(["phase": .string("stopped")])])])
         check(busy.meetingWorkBlockingRestart && busy.heldAudioNote == nil, "real work beside a held job still blocks, with no note saying otherwise")
         let unanswered = status(["meetingSyncActive": .bool(true), "meetingSyncBlocksRestart": .bool(true), "meetingSyncUnconfirmed": .bool(true)])
-        check(unanswered.meetingWorkBlockingRestart && unanswered.meetingWorkBlockReason.contains("not answering") && unanswered.meetingWorkBlockReason.contains("Doctor"), "a server that does not answer stays blocked and says why")
+        check(unanswered.meetingWorkBlockingRestart && unanswered.meetingWorkBlockReason.contains("not answering") && unanswered.meetingWorkBlockReason.contains("Doctor") && unanswered.meetingWorkBlockReason.contains("Repair server"), "a server that does not answer stays blocked and says why")
         check(!status(["meetingFinalizationLastError": .string("decode failed")]).meetingWorkBlockingRestart, "a last error with nothing pending is not a lock")
         let saving = status(["meetingFinalizationPending": .number(1)])
         check(saving.meetingWorkBlockingRestart && saving.meetingWorkBlockReason.contains("library"), "a real save still blocks")

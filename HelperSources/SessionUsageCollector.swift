@@ -854,7 +854,7 @@ extension SessionUsageCollector {
     /// Lines of an append-only file, without holding it. Returns the count of lines that were not valid JSON objects, or nil
     /// when the file will not open or a read fails before its end. A final line with no newline may still be being written,
     /// so it is left for the next read rather than counted.
-    private static func cosForEachJSONLine(_ file: URL, _ body: ([String: Any]) -> Void) -> Int? {
+    static func cosForEachJSONLine(_ file: URL, _ body: ([String: Any]) -> Void, read: (FileHandle) throws -> Data? = { try $0.read(upToCount: 1 << 20) }) -> Int? {
         guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
         defer { try? handle.close() }
         var unreadable = 0
@@ -863,7 +863,7 @@ extension SessionUsageCollector {
             // A read that throws part way (an offline iCloud file, a failing disk) is not the end of the file. The rows read so
             // far stand, and the caller is told the file could not be read to its end.
             let next: Data?
-            do { next = try handle.read(upToCount: 1 << 20) } catch { return nil }
+            do { next = try read(handle) } catch { return nil }
             guard let chunk = next, !chunk.isEmpty else { break }
             carry.append(chunk)
             guard let last = carry.lastIndex(of: 10) else { continue }

@@ -3020,7 +3020,7 @@ final class COSControlHelper {
             "transactionPending": loadTransaction() != nil || loadInPlaceConfigurationTransaction() != nil,
             "apiURL": "http://127.0.0.1:3141",
         ]
-        for (key, value) in meetingSyncStatusFields(health: health) {
+        for (key, value) in meetingSyncStatusFields(health: health, snapshot: snapshot) {
             details[key] = value
         }
         for (key, value) in meetingLifecycleStatusFields(health: health) {
@@ -3086,7 +3086,7 @@ final class COSControlHelper {
     /// Prefer server `meeting_sync` (6.18.4+). Fall back to scanning
     /// `~/.cos-glasses/data/pending-batch` so Control still shows HQ polish
     /// progress on older servers / mid-drain saves.
-    private func meetingSyncStatusFields(health: [String: Any]?) -> [String: Any] {
+    private func meetingSyncStatusFields(health: [String: Any]?, snapshot: OwnershipSnapshot? = nil) -> [String: Any] {
         if let sync = health?["meeting_sync"] as? [String: Any],
            let active = sync["active"] as? Bool {
             let percent = sync["percent"] as? Int
@@ -3106,7 +3106,8 @@ final class COSControlHelper {
         // process (nothing on the API ports, launchd has no pid) nothing can be running. A process that does not answer
         // may still be mid-save, so that stays blocked: lsof and launchd are what tell the two apart.
         guard health == nil else { return meetingSyncStatusFromPendingBatch(workCanRun: true, serverAnswered: true) }
-        let snapshot = ownershipSnapshot()
+        // The status call already took one; reading lsof and launchd twice a poll while the server is down is the slow part.
+        let snapshot = snapshot ?? ownershipSnapshot()
         return meetingSyncStatusFromPendingBatch(workCanRun: !snapshot.allListenerPIDs.isEmpty || snapshot.servicePID != nil, serverAnswered: false)
     }
 
@@ -7151,7 +7152,11 @@ final class COSControlHelper {
     }
 
     private func requireLatestMovesForward(requested: String, resolved: String) throws {
-        if let refusal = ServerUpdateGuard.refusal(requested: requested, resolved: resolved, installed: installedServerVersions(), canRollBack: loadManifest() != nil) {
+        // The same list rollback() reads: the retained generations, or the older previous versions of a manifest that predates them.
+        let manifest = loadManifest()
+        let retained = manifest.map { $0.retainedGenerations?.count ?? $0.previousVersions.count } ?? 0
+        if let refusal = ServerUpdateGuard.refusal(requested: requested, resolved: resolved, installed: installedServerVersions(),
+                                                   canRollBack: ServerUpdateGuard.canRollBack(hasManifest: manifest != nil, retained: retained)) {
             throw HelperError.message(refusal)
         }
     }

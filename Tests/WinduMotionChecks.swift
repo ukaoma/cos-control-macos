@@ -38,6 +38,10 @@ import CryptoKit
     // Motion V2 (Miles 2026-10-31): frames 160-167 drop the stray wreck fragment that crossed the hero's feet after the
     // enemy left; they show the clean run cell of frame 7. Every other frame is still the exact retime of the source.
     for f in 0..<184 {let cell=(160...167).contains(f) ? remap[7] : remap[f];precondition(digest(actual.variants[i].full[f])==sourceHashes[cell],"retime changed pixels or mismatched enemy/contact at \(i)/\(f)")}
+    // The tail of a loop draws the body strip, so the same eight cells must be clean there too: the hero standing, as in the
+    // last eight frames of the loop (measured on the shipped art: all sixteen cells are one image per cast).
+    let cleanBody=digest(actual.variants[i].body[176])
+    for f in 160...167 {precondition(digest(actual.variants[i].body[f])==cleanBody,"the body strip still carries the fragment at \(i)/\(f)")}
    }}
   }
   autoreleasepool {

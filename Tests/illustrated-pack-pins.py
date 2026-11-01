@@ -42,4 +42,4 @@ for pose,(count,interval,width) in {'idle':(82,.04,128),'waiting':(76,.04,160),'
   w,h,depth,color=struct.unpack('>IIBB',(pack/filename).read_bytes()[16:26])
   assert (w,h,depth,color)==(count*width*scale,256*scale,8,6)
   assert w<=32760 and w*h<=16777216
-print('PASS: 204 preserved illustrated PNGs, 6 preserved ambient PNGs, 12 retimed PNGs, 13 casts, V15/348/349 rollback, exact ambient cadence/RGBA')
+print('PASS: 204 preserved illustrated PNGs, 6 preserved ambient PNGs, 36 retimed PNGs, 13 casts, V15/348/349 rollback, exact ambient cadence/RGBA')

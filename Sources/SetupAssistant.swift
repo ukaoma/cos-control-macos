@@ -202,7 +202,7 @@ enum SetupAssistant {
         static let ownerConflict = "Another server owns the COS ports, so COS Control will not touch it."
         static let recording = "A meeting is recording. Save or end it first."
         static let saving = "A meeting is still saving. This comes back when it is done."
-        static let unconfirmed = "The server is not answering, so COS cannot tell whether a save is running. This comes back when it answers or stops."
+        static let unconfirmed = "The server is not answering, so COS cannot tell whether a save is running. This comes back when it answers or stops. If it never does, Repair server in Settings brings it back."
         static let interruptedUpdate = "An interrupted server update needs Repair first."
         static let unprovenIdle = "This server cannot prove it is idle. Restart in Settings asks first."
         static let installing = "The update is already installing."

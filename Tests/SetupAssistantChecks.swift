@@ -812,6 +812,8 @@ import Foundation
         for action in serverChanges { check(SA.gate(action, saving) == .held(SA.Held.saving), "[a meeting still saving holds]", "\(action)") }
         var unanswered = saving; unanswered.meetingSyncUnconfirmed = true
         for action in serverChanges { check(SA.gate(action, unanswered) == .held(SA.Held.unconfirmed), "[a server that does not answer holds in its own words]", "\(action)") }
+        // A hung server that holds audio has one way out, and the held line names it.
+        check(SA.Held.unconfirmed.contains("Repair server"), "[a server that does not answer names the way out]", "")
 
         // The recording reason wins over the job count: it is the one the person can act on first.
         var both = recording; both.activeJobs = 2
