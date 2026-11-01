@@ -103,6 +103,8 @@ import SwiftUI
         Scene(name: "settings-microphone", fixture: CommandCenterFixture(words: "microphone", recording: recording())),
         Scene(name: "settings-one-word", fixture: CommandCenterFixture(words: "settings", recording: recording())),
         Scene(name: "settings-decision-models-floor", fixture: CommandCenterFixture(words: "decision models", recording: recording(), panelWidth: 320)),
+        meaningScene("meaning-above-word-hits", meaningSet(.subq, .on), found: meaningDone(meaningHits), word: C.Found(words: C.plain(topic), phase: .done, hits: [
+            hit("claude:wordaaaa", "Permissions audit", match: "the audit of permissions for the new tier", days: 3), hit("claude:wordbbbb", "Failure notes", match: nil, days: 4)])),
         meaningScene("meaning-rows-and-word-hits", meaningSet(.jev, .on), found: meaningDone(meaningHits), word: foundHits),
         meaningScene("meaning-searching", meaningSet(.jev, .on), found: meaningDone([], phase: .searching)),
         meaningScene("meaning-partial-further", meaningSet(.jev, .on), found: meaningDone([], phase: .partial)),
