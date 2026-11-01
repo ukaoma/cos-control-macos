@@ -471,6 +471,11 @@ import Foundation
         check(fromList.workRunning && fromList.state == "running" && fromList.id == row.id, "a hit the list holds is the list's row")
         check(!ClaudeSession.listed(hit: hit, loaded: [session("claude:bbbb2222", "recent", name: "other")], workSessionIDs: [], runningWorkSessionIDs: []).heldByServer,
               "another loaded row does not mark a hit")
+        // The list names the session by its full id and the hit by 8 characters: still the list's row, with its live state.
+        var fullRow = session(full, "running", name: "Ask COS run about pricing")
+        fullRow.workRunning = true
+        let byPrefix = ClaudeSession.listed(hit: hit, loaded: [fullRow], workSessionIDs: [], runningWorkSessionIDs: [])
+        check(byPrefix.id == full && byPrefix.workRunning && byPrefix.heldByServer, "a hit the list names by its full id is the list's row")
         // A scheduled job (origin job) is a routine, held and opened in Sessions.
         let job = session("claude:cccc3333", "recent", name: "Nightly sync", job: "Nightly sync")
         let jobHit = ClaudeSession.listed(hit: job, loaded: [], workSessionIDs: [], runningWorkSessionIDs: [])

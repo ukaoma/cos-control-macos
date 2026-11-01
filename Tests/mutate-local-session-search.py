@@ -25,10 +25,8 @@ MUTANTS = [
     ("a hit with no title stays untitled", "            if let title = lastCustomTitle(in: file) ?? firstClaudeUserTitle(in: file), !title.isEmpty { shown[at][\"name\"] = title }\n", "",
      "has a title, not Claude session"),
     # QA 0.5.361 item 14: Codex and Cursor are bounded, and only regular files are read
-    ("every Codex rollout is titled", "        for row in recentCodexConversations(sessionsRoot: codexRoot, newest: codexNewest, namesTailBytes: codexNamesTailBytes) { add(row) }\n", "        for row in recentCodexConversations(sessionsRoot: codexRoot, namesTailBytes: codexNamesTailBytes) { add(row) }\n",
-     "a Codex rollout past the newest 20 is not opened for a title"),
-    ("every Cursor transcript is titled", "            pinnedIds: cursorPinned,\n            newest: cursorNewest\n", "            pinnedIds: cursorPinned\n",
-     "a Cursor transcript past the newest 20 is not opened for a title"),
+    # "Every Codex rollout is titled" and "every Cursor transcript is titled" are not here: the scans already return only their 20 newest rows, so
+    # reading fewer heads changes the time and not the answer. Their wiring is pinned in Tests/setup-assistant-pins.py instead.
     ("a FIFO or a link counts as a transcript", "        (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true\n", "        true\n",
      "a FIFO named like a transcript does not stop the search"),
     ("the window may begin inside a key", "haystack.distance(from: lower, to: space) <= 40 { from = space }", "haystack.distance(from: lower, to: space) <= 40 { from = lower }",

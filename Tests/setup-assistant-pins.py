@@ -448,6 +448,9 @@ def bound(name):
     return int(found.group(1)) if found else None
 pin((bound("localSearchDesktopNewest"), bound("localSearchTranscriptNewest"), bound("localSearchCodexNewest"), bound("localSearchCursorNewest")) == (30, 20, 20, 20),
     "the title reads are bounded to exactly 30 Desktop records and 20 each of Claude, Codex and Cursor transcripts (9.1 s unbounded, about 1.4 s at these, on 733 Desktop records and 870 transcripts)")
+pin("recentCodexConversations(sessionsRoot: codexRoot, newest: codexNewest, namesTailBytes: codexNamesTailBytes)" in helper_lines
+    and "pinnedIds: cursorPinned,\n            newest: cursorNewest\n" in helper_lines,
+    "the local scan passes the newest bound to the Codex and Cursor scans (the answer does not show it: those scans already return 20 rows; the reads do)")
 pin(helper_lines.count("allowed = Set(dated.sorted { $0.mtime > $1.mtime }.prefix(newest).map(\\.file))") == 2
     and helper_lines.count("allowed = Set(dated.sorted { $0.1 > $1.1 }.prefix(newest).map(\\.0))") == 1
     and helper_lines.count("if let allowed, !pinned, !allowed.contains(file) { continue }") == 3, "the Claude, Codex and Cursor scans title only the newest transcripts when they are told to")

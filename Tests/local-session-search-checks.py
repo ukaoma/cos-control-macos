@@ -42,10 +42,10 @@ def make_transcript(cli_id, project, words):
     (folder / f"{cli_id}.jsonl").write_text(json.dumps(line) + "\n")
 
 
-def run(args, stdin=""):
+def run(args, stdin="", wait=60):
     env = dict(os.environ, COS_CONTROL_TEST_HOME=str(home), CFFIXED_USER_HOME=str(decoy), HOME=str(decoy))
     started = time.time()
-    result = subprocess.run([helper] + args, input=stdin.encode(), capture_output=True, env=env, timeout=60)
+    result = subprocess.run([helper] + args, input=stdin.encode(), capture_output=True, env=env, timeout=wait)
     try:
         answer = json.loads(result.stdout.decode() or "{}")
     except ValueError:
@@ -53,8 +53,8 @@ def run(args, stdin=""):
     return result.returncode, answer, result.stderr.decode(), time.time() - started
 
 
-def search(words):
-    code, answer, err, _ = run(["claude-sessions-search", "--local", "--limit", "20"], words)
+def search(words, wait=60):
+    code, answer, err, _ = run(["claude-sessions-search", "--local", "--limit", "20"], words, wait=wait)
     return code, answer.get("details", {}).get("hits", []), answer, err
 
 
@@ -154,7 +154,9 @@ try:
         check(not any(key[-n:] in snippet for n in range(8, 61)), "a snippet never begins inside a key", snippet[:80])
     head_key = ("Z9y8X7w6V5" * 6)[:60]
     tailed = str(uuid.uuid4())
-    make_transcript(tailed, "-tmp-fx-GitHub-tail-site", "intro words tailtoken " + "pad " * 32 + head_key + " end of the line")
+    # The haystack is the title, the project and the body: "intro words" (11) + newline + "tail-site" (9) + newline, then the body, so
+    # the key starts at character 150 and the 180-character window ends 30 characters into it.
+    make_transcript(tailed, "-tmp-fx-GitHub-tail-site", "intro words\ntailtoken " + "x" * 105 + " " + head_key + " end of the line")
     code, hits, _, _ = search("tailtoken")
     check(len(hits) == 1 and "tailtoken" in str(hits[0].get("snippet")), "a snippet keeps the words it matched, whichever end is cut", str([h.get("snippet") for h in hits])[:120])
     if hits:
@@ -165,16 +167,20 @@ try:
     # point anywhere. Both are skipped, and the search still answers.
     fifo_folder = home / ".claude/projects/-tmp-fx-GitHub-fifo-site"
     fifo_folder.mkdir(parents=True, exist_ok=True)
-    os.mkfifo(fifo_folder / f"{uuid.uuid4()}.jsonl")
+    fifo_path, link_path = fifo_folder / f"{uuid.uuid4()}.jsonl", fifo_folder / f"{uuid.uuid4()}.jsonl"
+    os.mkfifo(fifo_path)
     outside = home / "outside-secret.jsonl"
     outside.write_text(json.dumps({"type": "user", "message": {"role": "user", "content": "a linkedwordqq that lives outside the projects"}}) + "\n")
-    os.symlink(outside, fifo_folder / f"{uuid.uuid4()}.jsonl")
-    started = time.time()
+    os.symlink(outside, link_path)
     try:
-        code, hits, answer, _ = search("linkedwordqq")
-        finished = time.time() - started < 30
+        code, hits, answer, _ = search("linkedwordqq", wait=20)
+        finished = True
     except subprocess.TimeoutExpired:
         code, hits, finished = -1, [], False
+    finally:
+        # Gone again either way, so a helper that blocks on it fails this one check, not every search after it.
+        fifo_path.unlink(missing_ok=True)
+        link_path.unlink(missing_ok=True)
     check(finished and code == 0, "a FIFO named like a transcript does not stop the search", f"code {code}")
     check(hits == [], "a symlink is not read", str([h.get("id") for h in hits]))
 
@@ -208,11 +214,11 @@ try:
     code, hits, _, _ = search("ocelotbodyword")
     check(len(hits) == 1 and hits[0]["id"].lower() == old_codex, "a Codex rollout past the newest 20 is found by its words", str([h["id"] for h in hits]))
     if hits:
-        check(hits[0].get("name") == "Codex session", "a Codex rollout past the newest 20 is not opened for a title", str(hits[0].get("name")))
+        check(hits[0].get("name") == "Codex session", "a Codex rollout past the newest 20 keeps the generic name", str(hits[0].get("name")))
     code, hits, _, _ = search("lynxbodyword")
     check(len(hits) == 1 and hits[0]["id"].lower() == old_cursor, "a Cursor transcript past the newest 20 is found by its words", str([h["id"] for h in hits]))
     if hits:
-        check(hits[0].get("name") == "Cursor session", "a Cursor transcript past the newest 20 is not opened for a title", str(hits[0].get("name")))
+        check(hits[0].get("name") == "Cursor session", "a Cursor transcript past the newest 20 keeps the generic name", str(hits[0].get("name")))
     new_codex, new_cursor = str(uuid.uuid4()), str(uuid.uuid4())
     make_codex(new_codex, "caracalwords the newest rollout", 5)
     make_cursor(new_cursor, "servalwords the newest transcript", 5)

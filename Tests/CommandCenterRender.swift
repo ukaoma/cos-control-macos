@@ -122,6 +122,10 @@ import SwiftUI
         Scene(name: "nouns-recent-petoff", fixture: CommandCenterFixture(words: "recent", recording: recording()), manyRecents: true),
         Scene(name: "nouns-recent-peton", fixture: CommandCenterFixture(words: "recent", recording: recording()), petOn: true, manyRecents: true),
         Scene(name: "nouns-today", fixture: CommandCenterFixture(words: "sessions today", recording: recording()), manyRecents: true),
+        // QA 0.5.361: "running" lists what runs and what waits, and says so when nothing does; a search that used its whole time.
+        Scene(name: "nouns-running", fixture: CommandCenterFixture(words: "running", recording: recording()), manyRecents: true),
+        Scene(name: "nouns-running-none", fixture: CommandCenterFixture(words: "running", recording: recording()), empty: true),
+        Scene(name: "hits-timeout", fixture: CommandCenterFixture(words: "persona pricing", recording: recording(), found: C.Found(words: "persona pricing", phase: .timedOut, hits: [])), manyRecents: true),
         Scene(name: "nouns-sessions-off", fixture: CommandCenterFixture(words: "sessions", recording: recording()), sessionsOff: true, empty: true),
         Scene(name: "nouns-not-loaded", fixture: CommandCenterFixture(words: "sessions", recording: recording(), sessionsLoaded: false), notLoaded: true),
         Scene(name: "hits", fixture: CommandCenterFixture(words: "persona pricing", recording: recording(), found: foundHits), manyRecents: true),
