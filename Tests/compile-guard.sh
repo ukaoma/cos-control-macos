@@ -6,8 +6,8 @@
 # (WindowServer watchdog panic). This guard makes that impossible:
 #   1. ONE guarded command machine-wide at a time (lockf on a shared lock file; others wait, up to 30 min).
 #   2. It starts only when at least COS_COMPILE_MIN_FREE_GB of memory is free or reclaimable.
-#   3. A watchdog kills any swift-frontend above COS_COMPILE_MAX_FRONTEND_GB and the whole run if all
-#      swift-frontends together pass COS_COMPILE_MAX_TOTAL_GB.
+#   3. A watchdog stops the run (its own process tree only, never another session's compile) when any swift-frontend
+#      passes COS_COMPILE_MAX_FRONTEND_GB or all swift-frontends together pass COS_COMPILE_MAX_TOTAL_GB.
 # Large-profile defaults scale with the Mac (0.5.267, the repo is public): free floor min(40 GB, 60% of RAM), one frontend
 # min(48 GB, 75% of RAM), all frontends min(60 GB, 85% of RAM). A 96 GB Mac gets 40 / 48 / 60; a 16 GB Mac gets
 # 9 / 12 / 13, so the serial test compiles (about 3 GB each since the tracker checks were split) still run there.
@@ -26,6 +26,16 @@ free_gb() {
   local f=$(sysctl -n vm.page_free_count) s=$(sysctl -n vm.page_speculative_count)
   local i=$(vm_stat | awk '/Pages inactive/ {gsub("\\.","",$3); print $3}')
   echo $(( (f + s + i) * page / 1073741824 ))
+}
+
+# Every descendant of pid $1 (children, grandchildren, ...), one per line, from a single ps snapshot. $1 itself is not listed.
+owned_pids() {
+  ps -Ao pid=,ppid= | awk -v root="$1" '
+    { parent[$1] = $2 }
+    END { do { grew = 0
+                for (p in parent) if (!(p in own) && (parent[p] == root || (parent[p] in own))) { own[p] = 1; grew = 1 } }
+          while (grew)
+          for (p in own) print p }'
 }
 
 # Choose direct Swift jobs from available memory. The bounded profile passed
@@ -80,7 +90,11 @@ while kill -0 $CMD 2>/dev/null; do
   if [[ -n "${big// /}" ]]; then REASON="a swift-frontend passed ${MAX_FRONTEND_GB} GB"; fi
   if (( total_kb > MAX_TOTAL_GB * 1048576 )); then REASON="all swift-frontends passed ${MAX_TOTAL_GB} GB together"; fi
   if [[ -n "$REASON" ]]; then
-    pkill -9 -f swift-frontend; pkill -9 -P $CMD 2>/dev/null; kill -9 $CMD 2>/dev/null
+    # 2026-10-31 (build-speed A5): stop only THIS command's own tree. The whole tree is snapshotted first, by walking ppids from
+    # $CMD, then killed in one call, so killing a parent cannot reparent a child out of reach. Never a name match:
+    # `pkill -9 -f swift-frontend` also killed every other session's compile on the machine.
+    typeset -a own; own=( ${(f)"$(owned_pids $CMD)"} )
+    kill -9 "${own[@]}" $CMD 2>/dev/null
     echo "compile-guard: STOPPED: $REASON" >&2
     wait $CMD 2>/dev/null
     exit 137
