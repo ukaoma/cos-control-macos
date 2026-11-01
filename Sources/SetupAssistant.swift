@@ -1359,8 +1359,12 @@ enum SetupAssistant {
             var calendar = Calendar(identifier: .gregorian)
             /// What the word search found so far for the words in the box. The panel owns the search; this is only its result.
             var found = Found()
-            /// Settings: session tracking is off, so waiting and running sessions cannot show.
-            var sessionsOff = false
+            /// Settings > Work and agents > Show AI sessions is off, as the model holds it. Before the list has answered that is only the
+            /// starting value (it starts off, and a server that is down never says), so `sessionsOff` says it only once the list answered.
+            var sessionsSettingOff = false
+            /// Show AI sessions is off, so waiting and running sessions cannot show. Never true before the session list answered: an
+            /// unloaded list says "not loaded", never "off" (QA 0.5.361, U9), and a word search still runs.
+            var sessionsOff: Bool { sessionsSettingOff && sessionsLoaded }
             var recording = Recording()
             /// The run started from here, listed first so a row opens it.
             var startedRunID: String? = nil
@@ -1495,6 +1499,9 @@ enum SetupAssistant {
             return out
         }
 
+        /// Where the switch is, in the words Sessions' own empty state uses.
+        static let sessionsOffDetail = "Turn on Show AI sessions in Settings, Work and agents."
+
         /// "6 things can wait until tomorrow". Today's headline (TodayHome.brief) reads the same count in the same words.
         static func canWaitLine(_ count: Int) -> String {
             count == 1 ? "1 thing can wait until tomorrow" : "\(count) things can wait until tomorrow"
@@ -1532,8 +1539,8 @@ enum SetupAssistant {
             }
             if running.isEmpty {
                 if inputs.sessionsOff {
-                    rows.append(Row(id: "command:openSessions", kind: .command(.openSessions), group: .running, title: "Session tracking is off",
-                                    detail: "Turn it on in Sessions to see agents here.", trailing: Command.openSessions.title))
+                    rows.append(Row(id: "command:openSettings", kind: .command(.openSettings), group: .running, title: "AI sessions are off",
+                                    detail: Self.sessionsOffDetail, trailing: Command.openSettings.title))
                 } else {
                     rows.append(inputs.runningKnown ? info("no-running", .running, "Nothing is running.") : info("running-unknown", .running, "Running: not loaded yet."))
                 }
@@ -1641,7 +1648,7 @@ enum SetupAssistant {
             var searchWords: String? = nil
         }
 
-        /// A row Return may move onto from the top of the list: a command or a place. Never a hit, and never the "Session tracking is off"
+        /// A row Return may move onto from the top of the list: a command or a place. Never a hit, and never the "AI sessions are off"
         /// or "N more in Sessions" line of a session list, which is for choosing from.
         private static func isOrder(_ row: Row) -> Bool {
             switch row.kind {
@@ -1704,8 +1711,8 @@ enum SetupAssistant {
             if let span {
                 result.listOnly = true
                 if inputs.sessionsOff {
-                    sessions.append(Row(id: "sessions:off", kind: .command(.openSessions), group: .sessions, title: "Session tracking is off",
-                                        detail: "Turn it on in Sessions to list sessions here.", trailing: Command.openSessions.title))
+                    sessions.append(Row(id: "sessions:off", kind: .command(.openSettings), group: .sessions, title: "AI sessions are off",
+                                        detail: Self.sessionsOffDetail, trailing: Command.openSettings.title))
                 } else if !inputs.sessionsLoaded {
                     sessions.append(info("sessions-unknown", .sessions, "Sessions: not loaded yet."))
                 } else if isRunningList(typed) {

@@ -199,11 +199,22 @@ import Foundation
         check(row(clear, "info:no-running")?.title == "Nothing is running.", "[no sessions]", "")
 
         // Sessions off: says so, and opens where the switch is.
-        let off = C.listing(center { $0.sessionsOff = true }, words: "")
-        check(row(off, "command:openSessions")?.title == "Session tracking is off" && row(off, "command:openSessions")?.selectable == true, "[sessions off]", "\(rowIDs(off))")
+        let off = C.listing(center { $0.sessionsSettingOff = true; $0.sessionsLoaded = true }, words: "")
+        check(row(off, "command:openSettings")?.title == "AI sessions are off" && row(off, "command:openSettings")?.selectable == true, "[sessions off]", "\(rowIDs(off))")
+        // The words name the switch, Show AI sessions in Settings, Work and agents, and never "tracking"; the row opens Settings (QA 0.5.361, U9, C3).
+        let offRow = row(off, "command:openSettings")
+        check(offRow?.detail == "Turn on Show AI sessions in Settings, Work and agents." && offRow?.kind == .command(.openSettings) && offRow?.trailing == "Open Settings", "[the off row names the switch and opens Settings]", "\(String(describing: offRow))")
+        check(![off, C.listing(center { $0.sessionsSettingOff = true; $0.sessionsLoaded = true }, words: "recent")].contains { listing in listing.rows.contains { ($0.title + ($0.detail ?? "")).lowercased().contains("tracking") } }, "[the off row never says tracking]", "")
+        // Off is a claim about the setting, so it waits for the list: before the first load, with no cache or the server down, the setting is only its starting
+        // value. Nothing says off and the search still runs.
+        let unknownOff = center { $0.sessionsSettingOff = true; $0.sessionsLoaded = false }
+        check(!unknownOff.sessionsOff && C.listing(unknownOff, words: "").rows.allSatisfy { $0.id != "command:openSettings" }, "[off is not claimed before the list answered]", "\(rowIDs(C.listing(unknownOff, words: "")))")
+        check(row(C.listing(unknownOff, words: "recent"), "info:sessions-unknown")?.title == "Sessions: not loaded yet." && row(C.listing(unknownOff, words: "recent"), "sessions:off") == nil, "[off is not claimed before the list answered]", "\(rowIDs(C.listing(unknownOff, words: "recent")))")
+        check(C.listing(unknownOff, words: "holiday promo").searchWords == "holiday promo", "[a search runs while the setting is not known]", "")
+        check(row(C.listing(unknownOff, words: ""), "info:no-waiting")?.title == "Nothing urgent right now.", "[nothing else urgent only when the setting is known off]", "")
         check(row(off, "info:no-running") == nil, "[sessions off]", "")
         check(row(off, "info:no-waiting")?.title == "Nothing else urgent right now.", "[sessions off never says nothing waits]", "")
-        check(row(C.listing(center { $0.sessionsOff = true; $0.foldedCount = 2 }, words: ""), "info:no-waiting")?.title == "2 things can wait until tomorrow", "[the fold reads the same in both]", "with sessions off too")
+        check(row(C.listing(center { $0.sessionsSettingOff = true; $0.sessionsLoaded = true; $0.foldedCount = 2 }, words: ""), "info:no-waiting")?.title == "2 things can wait until tomorrow", "[the fold reads the same in both]", "with sessions off too")
 
         // Fix rows only when something is broken, at most two.
         check(!clear.rows.contains { $0.group == .fixing }, "[fix only when broken]", "\(rowIDs(clear))")
@@ -937,13 +948,13 @@ import Foundation
         // States: not loaded, off, none. Text lines, no rows to open, and no search.
         let notLoaded = C.listing(center { $0.sessionsLoaded = false }, words: "sessions")
         check(row(notLoaded, "info:sessions-unknown")?.title == "Sessions: not loaded yet." && row(notLoaded, "info:sessions-none") == nil, "[sessions not loaded says so]", "\(rowIDs(notLoaded))")
-        let off = C.listing(center { $0.sessionsOff = true; $0.sessionsLoaded = true }, words: "recent")
-        check(row(off, "sessions:off")?.title == "Session tracking is off" && row(off, "sessions:off")?.selectable == true && off.searchWords == nil, "[sessions off shows the off row and no search]", "\(rowIDs(off))")
-        check(row(C.listing(center { $0.sessionsOff = true; $0.sessionsLoaded = true }, words: "sessions"), "sessions:off") != nil, "[sessions off shows the off row]", "")
-        check(C.listing(center { $0.sessionsOff = true }, words: "holiday promo").searchWords == nil, "[sessions off runs no search]", "")
+        let off = C.listing(center { $0.sessionsSettingOff = true; $0.sessionsLoaded = true }, words: "recent")
+        check(row(off, "sessions:off")?.title == "AI sessions are off" && row(off, "sessions:off")?.selectable == true && row(off, "sessions:off")?.kind == .command(.openSettings) && off.searchWords == nil, "[sessions off shows the off row and no search]", "\(rowIDs(off))")
+        check(row(C.listing(center { $0.sessionsSettingOff = true; $0.sessionsLoaded = true }, words: "sessions"), "sessions:off") != nil, "[sessions off shows the off row]", "")
+        check(C.listing(center { $0.sessionsSettingOff = true; $0.sessionsLoaded = true }, words: "holiday promo").searchWords == nil, "[sessions off runs no search]", "")
         check(row(C.listing(withSessions([]), words: "sessions"), "info:sessions-none")?.title == "No sessions yet.", "[no sessions yet]", "")
         // A session list is for choosing from: its "off" line and its "N more" line are never what Return moves onto.
-        let offList = center { $0.sessionsOff = true; $0.sessionsLoaded = true }
+        let offList = center { $0.sessionsSettingOff = true; $0.sessionsLoaded = true }
         check(returned("running", inputs: offList) == .nothing && returned("recent sessions today", inputs: offList) == .nothing, "[a session list line is not what Return moves to]", "\(returned("running", inputs: offList))")
         check(row(C.listing(offList, words: "running"), "sessions:off")?.selectable == true && returned("running", chosen: "sessions:off", inputs: offList) == returnRuns("sessions:off"), "[a session list line still opens when chosen]", "")
 
@@ -982,7 +993,7 @@ import Foundation
         for exact in ["start recording", "stop recording", "run doctor", "sessions", "open work", "usage", "go to usage", "recent", "sessions today"] {
             check(C.listing(sessions, words: exact).searchWords == nil, "[an exact command, place or noun list runs no search]", exact)
         }
-        check(C.listing(withSessions([]) { $0.sessionsOff = true }, words: "persona pricing").searchWords == nil, "[Sessions off runs no search]", "")
+        check(C.listing(withSessions([]) { $0.sessionsSettingOff = true; $0.sessionsLoaded = true }, words: "persona pricing").searchWords == nil, "[Sessions off runs no search]", "")
         check(C.listing(sessions, words: String(repeating: "word ", count: 80)).searchWords?.count == 200, "[the words are capped at 200 characters]", "\(C.listing(sessions, words: String(repeating: "word ", count: 80)).searchWords?.count ?? -1)")
         check(C.listing(center(), words: "").searchWords == nil, "[an empty box runs no search]", "")
 
@@ -1243,11 +1254,11 @@ import Foundation
         var off = healthy(); off.workRunsOn = false
         var down = healthy(); down.serverReachable = false; down.runtimeState = "stopped"
         let fixtures: [C.Inputs] = [
-            center(), center { $0.snapshot = off }, center { $0.snapshot = down }, center { $0.sessionsOff = true }, center { $0.waitingKnown = false; $0.runningKnown = false },
+            center(), center { $0.snapshot = off }, center { $0.snapshot = down }, center { $0.sessionsSettingOff = true; $0.sessionsLoaded = true }, center { $0.waitingKnown = false; $0.runningKnown = false },
             center { $0.recording.stoppable = true; $0.recording.occupied = true; $0.recording.busy = true }, center { $0.recording.busy = true; $0.recording.glassesLive = 1; $0.recording.knownGlasses = true },
             center { $0.recording.busy = true; $0.recording.glassesLive = 1 },
             center { $0.recording.occupied = true; $0.recording.busy = true; $0.recording.saveLine = "Saving…" },
-            center { $0.foldedCount = 6 }, center { $0.foldedCount = 1; $0.waiting = [waiting("a", "First")] }, center { $0.sessionsOff = true; $0.foldedCount = 2 },
+            center { $0.foldedCount = 6 }, center { $0.foldedCount = 1; $0.waiting = [waiting("a", "First")] }, center { $0.sessionsSettingOff = true; $0.sessionsLoaded = true; $0.foldedCount = 2 },
             withSessions((0..<10).map { listed("claude:" + String(format: "s%011d", $0), "Session \($0)", days: $0) }),
             withFound(withSessions([listed("claude:holiday1", "Holiday promo landing page", days: 1)]), words: "persona pricing", hits: [hit("claude:old00001", "Persona pricing review", match: "we should price the persona tier"), hit("codex:old00002", "Notes")]),
             withFound(withSessions([]), words: "persona pricing", phase: .searching, hits: []), withFound(withSessions([]), words: "persona pricing", phase: .failed, hits: []),

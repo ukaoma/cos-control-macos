@@ -184,7 +184,7 @@ MUTANTS = [
     ("center: waiting not by tier", C, "            items.enumerated().sorted { ($0.element.tier, $0.offset) < ($1.element.tier, $1.offset) }.map(\\.element)\n", "            items\n", "[tier 1 first]"),
     ("center: not loaded says nothing waits", C, '                if !inputs.waitingKnown {\n                    rows.append(info("waiting-unknown"', '                if false {\n                    rows.append(info("waiting-unknown"', "[overview not loaded]"),
     ("center: running not loaded says nothing runs", C, 'rows.append(inputs.runningKnown ? info("no-running"', 'rows.append(true ? info("no-running"', "[overview not loaded]"),
-    ("center: sessions off ignored", C, "                if inputs.sessionsOff {\n                    rows.append(Row(id: \"command:openSessions\"", "                if false {\n                    rows.append(Row(id: \"command:openSessions\"", "[sessions off]"),
+    ("center: sessions off ignored", C, "                if inputs.sessionsOff {\n                    rows.append(Row(id: \"command:openSettings\"", "                if false {\n                    rows.append(Row(id: \"command:openSettings\"", "[sessions off]"),
     ("center: sessions off says nothing waits", C, 'inputs.sessionsOff ? "Nothing else urgent right now." : "Nothing urgent right now."', '"Nothing urgent right now."', "[sessions off never says nothing waits]"),
     ("center: extras listed as fixes", C, "board(s).suggestions.filter({ $0.tier == .repair }).prefix(fixCap)", "board(s).suggestions.prefix(fixCap)", "[fix only when broken]"),
     ("center: two fixes share an id", C, 'fixes.append(Row(id: "fix:" + suggestion.id, kind: .action(action),', 'fixes.append(Row(id: "action:" + action.rawValue, kind: .action(action),', "[row ids are unique]"),
@@ -464,6 +464,11 @@ MUTANTS = [
     ("center: voices opens Speakers again", C, '                case .openSpeakers: return opener("speakers")\n', '                case .openSpeakers: return opener("speakers") + opener("voices")\n', "[a name two rows answer to is declared]"),
     ("center: voices is declared a shared name", C, '["sessions": "command:openSessions", "recent": "noun"]', '["voices": "command:openSpeakers", "sessions": "command:openSessions", "recent": "noun"]', "[no stale declared name]"),
     ("center: voices is a near command", C, '"meetings", "speakers", "dictation", "memories", "setup"]', '"meetings", "speakers", "voices", "dictation", "memories", "setup"]', "[voices opens the Voices tab]"),
+    # QA 0.5.361 item 11: off is claimed only once the list answered, and names the switch
+    ("center: off before the list answered", C, "var sessionsOff: Bool { sessionsSettingOff && sessionsLoaded }", "var sessionsOff: Bool { sessionsSettingOff }", "[off is not claimed before the list answered]"),
+    ("center: the off row names Sessions", C, 'static let sessionsOffDetail = "Turn on Show AI sessions in Settings, Work and agents."', 'static let sessionsOffDetail = "Turn it on in Sessions to list sessions here."', "[the off row names the switch and opens Settings]"),
+    ("center: the off line opens Sessions", C, 'kind: .command(.openSettings), group: .sessions, title: "AI sessions are off",', 'kind: .command(.openSessions), group: .sessions, title: "AI sessions are off",', "[sessions off shows the off row and no search]"),
+    ("view: the setting is never passed", W, "        inputs.sessionsSettingOff = !model.claudeSessionsEnabled\n", "        inputs.sessionsSettingOff = false\n", "the window passes the Show AI sessions setting"),
     # QA 0.5.361 item 10: "running" lists what runs and what waits
     ("center: running lists the whole list", C, "                } else if isRunningList(typed) {\n", "                } else if false && isRunningList(typed) {\n", "[running with nothing running says so]"),
     ("center: running skips the runs", C, "                    var items = startedFirst(inputs.running, inputs.startedRunID)\n", "                    var items: [Item] = []\n", "[running lists what runs and what waits]"),

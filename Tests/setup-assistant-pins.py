@@ -497,6 +497,10 @@ pin(foot.count("truncationMode(.tail)") == 1 and foot.index("truncationMode(.tai
 pin(foot.count("fixedSize(horizontal") == 2 and ".accessibilityHidden(true)" in foot and ".accessibilityHint(hint)" in panel and "let hint = footer.text" in panel, "the lead and tail keep their width, and the field's hint is the whole line")
 pin("C.noticeHint" in panel and "C.Footer(lead: C.noticeHint)" in panel, "the one-time notice has its own line")
 
+# The window hands the engine the raw setting; the engine decides it is "off" only once the list answered (QA 0.5.361, U9).
+pin("inputs.sessionsSettingOff = !model.claudeSessionsEnabled" in window and "inputs.sessionsOff =" not in window
+    and "var sessionsOff: Bool { sessionsSettingOff && sessionsLoaded }" in core, "the window passes the Show AI sessions setting")
+
 if failures:
     for failure in failures:
         print("Setup assistant pin: " + failure, file=sys.stderr)

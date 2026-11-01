@@ -9522,7 +9522,7 @@ extension ActivityWindow {
         inputs.sessionsLoaded = commandFixture?.sessionsLoaded ?? frame.counts.sessionsKnown
         inputs.now = now
         inputs.found = commandFixture?.found ?? SetupAssistant.Center.Found()
-        inputs.sessionsOff = !model.claudeSessionsEnabled
+        inputs.sessionsSettingOff = !model.claudeSessionsEnabled
         inputs.recording = commandRecording()
         inputs.startedRunID = today.lastStartedRunID.map { "work:" + $0 }
         return inputs
