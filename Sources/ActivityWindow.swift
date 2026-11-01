@@ -1471,6 +1471,8 @@ struct ActivityWindow: View {
         // 0.5.318: the Dictionary and history panes are reached from two tabs; a tab switch closes them like any detail.
         model.closeDictionary()
         model.closeDictationHistory()
+        // 0.5.361: Dictation's settings are the third such pane. Left open, a later Open Dictation landed on Settings.
+        model.closeDictationSettings()
         model.closeCueReview()
     }
 
@@ -9495,11 +9497,12 @@ extension ActivityWindow {
         }
         let folded = TodayHome.fold(frame.needs, quiet: TodayHome.isQuiet(now: now, enabled: TodayHome.quietHoursOn(.standard)))
         // A question's own words (NeedRow.quote) never reach this panel.
-        inputs.waiting = folded.now.map { Item(id: $0.id, title: $0.title, detail: $0.source, openLabel: $0.openLabel ?? "Open", tier: $0.tier, sessionID: $0.session?.id) }
+        inputs.waiting = folded.now.map { Item(id: $0.id, title: $0.title, detail: $0.source, openLabel: $0.openLabel ?? "Open", tier: $0.tier, sessionID: $0.session?.id, leavesSession: commandLeaves(need: $0)) }
         inputs.waitingKnown = frame.line != .loading
         inputs.foldedCount = commandFixture?.foldedCount ?? folded.tomorrow.count
         inputs.running = frame.running.map { row in
-            Item(id: row.id, title: row.title, detail: row.detail, openLabel: row.openLabel, sessionID: row.id.hasPrefix("session:") ? String(row.id.dropFirst("session:".count)) : nil)
+            Item(id: row.id, title: row.title, detail: row.detail, openLabel: row.openLabel, sessionID: row.id.hasPrefix("session:") ? String(row.id.dropFirst("session:".count)) : nil,
+                 leavesSession: commandLeaves(action: row.open))
         }
         inputs.runningKnown = frame.counts.sessionsKnown
         // The loaded list and the live rows as one list (0.5.361). With the pet on, `todaySessions()` is the live rows alone, so "recent"
@@ -9508,7 +9511,8 @@ extension ActivityWindow {
             let host = today.hosts[session.id]
             let open = TodayHome.openFor(session, host: host, cursorTrusted: model.petJumpTrusted)
             return Item(id: session.id, title: session.title, detail: TodayHome.platform(session, host: host).badge + (session.workspace.isEmpty ? "" : ", " + session.workspace),
-                        openLabel: open.label, sessionID: session.id, state: Self.commandStateWord(session.state), date: session.updatedDate, keepWarm: session.isKeepWarm)
+                        openLabel: open.label, sessionID: session.id, state: Self.commandStateWord(session.state), date: session.updatedDate, keepWarm: session.isKeepWarm,
+                        leavesSession: commandLeaves(session))
         }
         let newest = { (list: [ClaudeSession]) in Array(list.sorted { ($0.updatedDate ?? .distantPast) > ($1.updatedDate ?? .distantPast) }.prefix(Self.commandSessionLimit)) }
         inputs.sessions = SetupAssistant.Center.merged(live: newest(todaySessions()).map(item), listed: model.petEnabled ? newest(model.claudeSessions).map(item) : [])
@@ -9651,6 +9655,28 @@ extension ActivityWindow {
         return .close
     }
 
+    /// Whether opening this session takes the person out of the one open in Sessions, which discards a reply typed and not sent. A platform
+    /// open (the app's own window) does not. A session only the server may write opens in Sessions, and so does Cursor without
+    /// Accessibility. Mirrors `commandOpenSession`, `commandOpenHit` and `todayOpenNeed`.
+    func commandLeaves(_ session: ClaudeSession) -> Bool {
+        switch TodayHome.openFor(session, host: today.hosts[session.id], cursorTrusted: model.petJumpTrusted).action {
+        case .platform: return session.heldByServer
+        default: return true
+        }
+    }
+
+    /// A running row's own open action: only a platform open that finds its session in the app's lists clears nothing.
+    func commandLeaves(action: TodayHome.OpenAction) -> Bool {
+        if case .platform(let id) = action, let session = model.petSession(id: id) { return session.heldByServer }
+        return true
+    }
+
+    /// A waiting row: a session opens as `commandLeaves(_:)` says; a voice, meeting, memory or Work row opens a pane.
+    func commandLeaves(need: TodayHome.NeedRow) -> Bool {
+        if need.kind == .session, let session = need.session { return commandLeaves(session) }
+        return true
+    }
+
     /// A word-search hit opens by its own object: the helper found it by reading this Mac's session files, so it may be older than
     /// the list and the list has no row for it. Opened the way a list row is (the platform, or Sessions' reader), never from a lookup.
     func commandOpenHit(_ id: String) -> CommandEffect {
@@ -9699,9 +9725,26 @@ extension ActivityWindow {
             let item = SetupAssistant.Center.Item(id: session.id, title: session.title,
                                                   detail: TodayHome.platform(session, host: host).badge + (session.workspace.isEmpty ? "" : ", " + session.workspace),
                                                   openLabel: open.label, sessionID: session.id, state: Self.commandStateWord(session.state), date: session.updatedDate,
-                                                  keepWarm: session.isKeepWarm, match: hit.snippet)
+                                                  keepWarm: session.isKeepWarm, match: hit.snippet, leavesSession: commandLeaves(session))
             return CommandHit(item: item, session: session)
         }
+    }
+
+    /// Work's own scope click, from ⌘K: a clean list at that scope. Choosing only the scope left an open card open, a domain board
+    /// filtered and a search typed, so "completed" stayed on the card and "all work" stayed filtered. These are the fields Work's own
+    /// sidebar and its count links reset (WorkWorkspaceView.sidebar, openScope, returnToList).
+    func commandOpenWork(scope: WorkWorkspaceScope) {
+        select(.work)
+        workWorkspaceState.query = ""
+        workWorkspaceState.domain = nil
+        workWorkspaceState.selectedID = nil
+        handoffStore.selectedWorkID = nil
+        workWorkspaceState.meetingPicker = false
+        workWorkspaceState.linkTarget = nil
+        reviewStore.selectedMeeting = nil
+        workWorkspaceState.focusOverride = false
+        // Last: its observer closes Intake, Waiting on and a Start work overlay.
+        workWorkspaceState.scope = scope
     }
 
     /// Every place. No default, so a new Place does not compile until it is dispatched here. `select` first, because it closes whatever
@@ -9734,18 +9777,10 @@ extension ActivityWindow {
         case .sessionsCost:
             select(.sessions)
             sessionsPane = .cost
-        case .workAll:
-            select(.work)
-            workWorkspaceState.scope = .all
-        case .workNeeds:
-            select(.work)
-            workWorkspaceState.scope = .attention
-        case .workProgress:
-            select(.work)
-            workWorkspaceState.scope = .progress
-        case .workCompleted:
-            select(.work)
-            workWorkspaceState.scope = .completed
+        case .workAll: commandOpenWork(scope: .all)
+        case .workNeeds: commandOpenWork(scope: .attention)
+        case .workProgress: commandOpenWork(scope: .progress)
+        case .workCompleted: commandOpenWork(scope: .completed)
         case .dictationHistory:
             select(.dictation)
             model.openDictationHistory()

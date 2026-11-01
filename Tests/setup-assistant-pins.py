@@ -352,7 +352,7 @@ reached_by = {
     "SessionsPane": lambda c: (f"sessionsPane = .{c}" in reach),
     "MessagesSubview": lambda c: f"messagesSubview = .{c}" in reach,
     "SpeakerSubview": lambda c: f"speakerSubview = .{c}" in reach,
-    "WorkWorkspaceScope": lambda c: f"workWorkspaceState.scope = .{c}" in reach,
+    "WorkWorkspaceScope": lambda c: f"commandOpenWork(scope: .{c})" in reach,
     "ActivityWorkSubview": lambda c: False,
     "MemoriesSubview": lambda c: False,
 }
@@ -386,6 +386,11 @@ for key in excluded:
 pin(re.search(r"case \.openSessions:\s*\n\s*(?://[^\n]*\n\s*)*select\(\.sessions\)\s*\n\s*sessionsPane = \.sessions", opener) is not None,
     "Open Sessions resets the Sessions tab, so it never lands on Usage")
 pin("loadArchiveDays" in go and "model.archiveDays.isEmpty" in go, "Messages > Archive loads its days, which only a tab change loaded before")
+_work = block(ext, "    func commandOpenWork(scope: WorkWorkspaceScope) {", "\n    }\n")
+pin(all(f in _work for f in ("select(.work)", 'workWorkspaceState.query = ""', "workWorkspaceState.domain = nil", "workWorkspaceState.selectedID = nil", "handoffStore.selectedWorkID = nil",
+                              "workWorkspaceState.meetingPicker = false", "workWorkspaceState.linkTarget = nil", "reviewStore.selectedMeeting = nil", "workWorkspaceState.focusOverride = false"))
+    and _work.rstrip().endswith("workWorkspaceState.scope = scope"), "a Work place lands on a clean list: no open card, no domain, no search, no picker, then the scope last")
+pin("model.closeDictationSettings()" in block(window, "    private func clearDetail() {", "    private func openMemoriesView("), "leaving Dictation closes its settings, as it closes its Dictionary and History")
 pin("goHome()" in go and "default:" not in go, "Today is goHome(), and every Place is dispatched with no default")
 place_cases = [c for line in block(core, "        enum Place: String, CaseIterable, Sendable {", "            var title: String {").split("\n") if line.strip().startswith("case ") for c in re.findall(r"\w+", line.split("case ", 1)[1])]
 pin(len(place_cases) == 17, f"read the Place cases: {place_cases}")
@@ -459,6 +464,10 @@ pin(ext.count("model.sessionQuery") == 1 and ext.count("scheduleSessionSearch()"
 pin("let session = ClaudeSession.listed(hit: hit.session, loaded: loaded, workSessionIDs: workIDs, runningWorkSessionIDs: runningIDs)" in search_fn
     and "model.workSessionIDs" in search_fn and "model.runningWorkSessionIDs" in search_fn and "model.claudeSessions" in search_fn,
     "a hit passes the server-hold guard the list rows have: the loaded row, else marked as Work or running Work")
+_leaves = block(ext, "    func commandLeaves(_ session: ClaudeSession) -> Bool {", "\n    }\n")
+pin("case .platform: return session.heldByServer" in _leaves and "default: return true" in _leaves, "a platform open clears no reply; a held session or Cursor without Accessibility opens in Sessions and does")
+_inputs_text = block(ext, "    func commandInputs(frame: TodayHome.Frame, now: Date) -> SetupAssistant.Center.Inputs {", "\n    func commandResultInputs()")
+pin(_inputs_text.count("leavesSession: commandLeaves(") == 3 and "leavesSession: commandLeaves(session))" in search_fn, "every waiting, running, listed and hit row says whether opening it leaves the open session")
 pin("search: { words in try await commandSearchSessions(words) }" in ext, "the panel reaches the search only through the window's one function")
 pin(re.search(r"runHelper|model\.", panel) is None, "the panel itself calls no model and no helper")
 

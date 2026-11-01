@@ -1249,6 +1249,9 @@ enum SetupAssistant {
             var held: String? = nil
             /// The line the local search matched, for a hit. Not named `why`: that word is banned in the view half.
             var match: String? = nil
+            /// For a waiting, running, listed or hit row: opening it closes the session that is open in Sessions, and with it a reply typed
+            /// and not sent. A platform open (the app's own window) clears nothing. The window decides, from the open path it will take.
+            var leavesSession = false
 
             var selectable: Bool {
                 switch kind {
@@ -1293,6 +1296,8 @@ enum SetupAssistant {
             var keepWarm = false
             /// The text the local search matched. Cleaned, masked and shortened where the row is made.
             var match: String? = nil
+            /// Opening it takes the person out of the open session (a Sessions row, a held Work or routine run, Cursor without Accessibility).
+            var leavesSession = false
         }
 
         /// One live recording, for the rows above everything else. Stop and save reaches only this Mac's own capture.
@@ -1453,12 +1458,12 @@ enum SetupAssistant {
 
         private static func waitingRow(_ item: Item) -> Row {
             Row(id: "waiting:" + item.id, kind: .waiting(item.id), group: .waiting, title: clean(item.title), detail: item.detail.map(clean),
-                state: item.tier == 1 ? "Waiting" : nil, trailing: item.openLabel)
+                state: item.tier == 1 ? "Waiting" : nil, trailing: item.openLabel, leavesSession: item.leavesSession)
         }
 
         private static func runningRow(_ item: Item) -> Row {
             Row(id: "running:" + item.id, kind: .running(item.id), group: .running, title: clean(item.title), detail: item.detail.map(clean),
-                state: "Running", trailing: item.openLabel)
+                state: "Running", trailing: item.openLabel, leavesSession: item.leavesSession)
         }
 
         /// A button's word beside its question reads fine ("Start"). Alone on a row it has to say what it starts.
@@ -1689,7 +1694,7 @@ enum SetupAssistant {
                 let ago = when(item.date, now: inputs.now, calendar: inputs.calendar)
                 let detail = [item.detail.map(clean), ago].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
                 return Row(id: "session:" + item.id, kind: .session(item.id), group: .sessions, title: clean(item.title),
-                           detail: detail.isEmpty ? nil : detail, state: item.state, trailing: item.openLabel)
+                           detail: detail.isEmpty ? nil : detail, state: item.state, trailing: item.openLabel, leavesSession: item.leavesSession)
             }
             if let span {
                 result.listOnly = true
@@ -1723,7 +1728,7 @@ enum SetupAssistant {
                 for item in byTier(inputs.waiting) { take(item, waitingRow) }
                 for item in inputs.running { take(item, runningRow) }
                 for item in inputs.sessions {
-                    take(item) { Row(id: "session:" + $0.id, kind: .session($0.id), group: .sessions, title: clean($0.title), detail: $0.detail.map(clean), state: $0.state, trailing: $0.openLabel) }
+                    take(item) { Row(id: "session:" + $0.id, kind: .session($0.id), group: .sessions, title: clean($0.title), detail: $0.detail.map(clean), state: $0.state, trailing: $0.openLabel, leavesSession: $0.leavesSession) }
                 }
             }
             rows += sessions
@@ -1750,7 +1755,7 @@ enum SetupAssistant {
                             let detail = [item.detail.map(clean), ago].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
                             rows.append(Row(id: "hit:" + item.id, kind: .hit(item.id), group: .found, title: hitTitle(item.title),
                                             detail: detail.isEmpty ? nil : detail,
-                                            state: item.state, trailing: item.openLabel, match: matchLine(item.match, title: item.title)))
+                                            state: item.state, trailing: item.openLabel, match: matchLine(item.match, title: item.title), leavesSession: item.leavesSession))
                             shown += 1
                             // A second hit for the same session (a Desktop record's id and its transcript's) is not shown either.
                             if let id = item.sessionID { seen.append(id) }
@@ -1963,11 +1968,28 @@ enum SetupAssistant {
         static let draftConfirm = Confirmation(question: "Leave your unsent message?",
                                                consequence: "You started a message in a session and have not sent it. Going there clears it.", confirm: "Go there")
 
-        /// The inline confirm a row needs. Stop and Doctor always ask, as does anything in `changesSomething`. A place, a hit and
-        /// Search all sessions ask only when an unsent message would be lost. An opener, Start recording, Ask COS and File to Work never do.
-        static func confirmation(_ row: Row, _ s: Snapshot) -> Confirmation? {
+        /// Whether running this row takes the person out of the session that is open in Sessions, which discards a reply typed there and not
+        /// sent (`select` closes the open session). Every pane opener, every place, Search all sessions and a live view do. Settings does
+        /// not, and neither does a session that opens in its own app: the window says which, per row.
+        static func leavesSession(_ row: Row) -> Bool {
             switch row.kind {
-            case .place, .hit, .searchAll: return s.unsentSessionDraft ? draftConfirm : nil
+            case .place, .searchAll, .recording: return true
+            case .command(let command):
+                switch command {
+                case .openSessions, .openMeetings, .openWork, .openSpeakers, .openDictation, .openMemories: return true
+                case .startRecording, .stopRecording, .openSettings, .runDoctor: return false
+                }
+            case .action(let action): return action == .openMeetings || action == .openSpeakers
+            case .waiting, .running, .session, .hit: return row.leavesSession
+            case .ask, .file, .savedAnswer, .info: return false
+            }
+        }
+
+        /// The inline confirm a row needs. Stop and Doctor always ask, as does anything in `changesSomething`. Every row that leaves the
+        /// open session asks only when an unsent message would be lost. Start recording, Ask COS and File to Work never ask.
+        static func confirmation(_ row: Row, _ s: Snapshot) -> Confirmation? {
+            if s.unsentSessionDraft, leavesSession(row) { return draftConfirm }
+            switch row.kind {
             case .command(.stopRecording): return stopConfirm
             case .command(.runDoctor), .action(.runDoctor): return doctorConfirm
             case .action(.copyReport): return reportConfirm

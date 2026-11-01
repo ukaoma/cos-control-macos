@@ -804,10 +804,11 @@ import Foundation
         var drafting = healthy(); drafting.unsentSessionDraft = true
         let placeRow = row(usage, "place:sessionsUsage")!
         check(C.confirmation(placeRow, drafting) == C.draftConfirm && C.confirmation(placeRow, healthy()) == nil, "[a place with an unsent message asks first]", "")
-        for kind in [C.Kind.hit("h"), .searchAll] {
-            let r = C.Row(id: "x", kind: kind, group: .found, title: "x")
+        for (kind, leaves) in [(C.Kind.hit("h"), true), (.searchAll, true)] {
+            let r = C.Row(id: "x", kind: kind, group: .found, title: "x", leavesSession: leaves)
             check(C.confirmation(r, drafting) == C.draftConfirm && C.confirmation(r, healthy()) == nil, "[a hit and Search all sessions ask first with an unsent message]", "\(kind)")
         }
+        centerDraftSafety()
         check(C.hint(returnRuns("place:sessionsUsage"), usage, drafting) == "Return asks first: Usage", "[the footer says it asks first]", "")
         check(C.draftConfirm.confirm == "Go there" && C.recheck(placeRow, drafting, recordable()) == nil, "[the draft confirm has no force path]", "")
         for kind in C.Place.allCases.map({ C.Kind.place($0) }) {
@@ -817,6 +818,51 @@ import Foundation
         for words in ["messages", "work", "speakers", "settings", "dictation", "usage", "voices", "meetings", "sessions", "all", "review"] {
             let listing = C.listing(center(), words: words)
             check(Set(rowIDs(listing)).count == listing.rows.count, "[row ids are unique]", "\(words): \(rowIDs(listing))")
+        }
+    }
+
+    /// QA item 7: every row that takes the person out of the open session asks first when a reply is typed and not sent, exact openers
+    /// included. A row that opens in the session's own app clears nothing, so it does not ask.
+    static func centerDraftSafety() {
+        var drafting = healthy(); drafting.unsentSessionDraft = true
+        func asks(_ id: String, _ words: String, _ inputs: C.Inputs? = nil) -> Bool {
+            let list = C.listing(inputs ?? center(), words: words)
+            guard let r = row(list, id) else { check(false, "[the row is listed]", "\(id) for \(words)"); return false }
+            return C.confirmation(r, drafting) == C.draftConfirm && C.confirmation(r, healthy()) == nil
+        }
+        for (words, id) in [("sessions", "command:openSessions"), ("meetings", "command:openMeetings"), ("work", "command:openWork"), ("speakers", "command:openSpeakers"),
+                            ("dictation", "command:openDictation"), ("memories", "command:openMemories")] {
+            check(asks(id, words), "[an exact opener asks first with an unsent message]", words)
+        }
+        // The exact opener is the row Return runs, so the foot and the confirm both say so.
+        let exact = C.listing(center(), words: "sessions")
+        check(C.hint(returnRuns("command:openSessions"), exact, drafting) == "Return asks first: Open Sessions" && C.hint(returnRuns("command:openSessions"), exact, healthy()) == "Return runs: Open Sessions",
+              "[an exact opener says it asks first]", "\(C.hint(returnRuns("command:openSessions"), exact, drafting))")
+        // Settings opens over the open session and clears nothing. Start recording, Stop and Doctor keep their own rules.
+        let settings = row(C.listing(center(), words: "settings"), "command:openSettings")!
+        check(C.confirmation(settings, drafting) == nil, "[Settings does not clear a reply, so it does not ask]", "")
+        check(C.confirmation(row(C.listing(center(), words: "start recording"), "command:startRecording")!, drafting) == nil, "[Start recording never asks]", "")
+        check(C.confirmation(row(C.listing(center(), words: "run doctor"), "command:runDoctor")!, drafting) == C.doctorConfirm, "[Doctor keeps its own confirm]", "")
+        for kind in [C.Kind.ask, .file, .savedAnswer, .info] { check(C.confirmation(C.Row(id: "x", kind: kind, group: .asking, title: "x"), drafting) == nil, "[Ask, File and words never ask]", "\(kind)") }
+        // Sessions, waiting and running rows ask when their open path leaves the session, and not when it opens in the session's own app.
+        let leaving = C.Item(id: "claude:held0001", title: "A held run", sessionID: "claude:held0001", leavesSession: true)
+        let platform = C.Item(id: "claude:term0001", title: "A terminal session", sessionID: "claude:term0001", leavesSession: false)
+        let inputs = center { $0.sessions = [leaving, platform]; $0.sessionsLoaded = true; $0.waiting = [C.Item(id: "session:claude:w0000001", title: "A waiting one", sessionID: "claude:w0000001", leavesSession: true)]
+                              $0.running = [C.Item(id: "claude:r0000001", title: "A running one", sessionID: "claude:r0000001", leavesSession: false)] }
+        check(asks("session:claude:held0001", "held", inputs) && !asks("session:claude:term0001", "terminal", inputs), "[a listed session asks only when it opens inside Sessions]", "")
+        check(asks("waiting:session:claude:w0000001", "waiting", inputs), "[a waiting row that opens inside Sessions asks]", "")
+        check(!asks("running:claude:r0000001", "running one", inputs), "[a running row that opens in its own app does not ask]", "")
+        // A live view, an Open Meetings or Open Speakers offer, and Search all sessions leave the session.
+        let live = C.LiveRecording(id: "mac_1", title: "A call", detail: "Recording", isMac: true, canStop: true)
+        let recordingRow = row(C.listing(center { $0.live = [live]; $0.recording.stoppable = true; $0.recording.occupied = true; $0.recording.busy = true }, words: ""), "recording:mac_1")!
+        check(C.confirmation(recordingRow, drafting) == C.draftConfirm, "[a live view asks first with an unsent message]", "")
+        for action in [SA.Action.openMeetings, .openSpeakers] {
+            check(C.confirmation(C.Row(id: "x", kind: .action(action), group: .answer, title: "x"), drafting) == C.draftConfirm, "[an Open Meetings or Open Speakers offer asks first]", "\(action)")
+        }
+        check(C.confirmation(C.Row(id: "x", kind: .action(.openTailscale), group: .answer, title: "x"), drafting) == nil, "[an offer that opens another app does not ask]", "")
+        // Nothing asks when nothing is typed.
+        for kind in C.Place.allCases.map({ C.Kind.place($0) }) + [C.Kind.searchAll, .recording("a"), .command(.openWork)] {
+            check(C.confirmation(C.Row(id: "x", kind: kind, group: .doing, title: "x"), healthy()) == nil, "[nothing asks when no reply is typed]", "\(kind)")
         }
     }
 
