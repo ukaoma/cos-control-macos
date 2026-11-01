@@ -741,6 +741,28 @@ import SQLite3
         keyWords = (try? String(contentsOf: keyLog, encoding: .utf8)) ?? ""
         check(keyAsks == 1 && keyWords.contains("Keychain denied, exit 128"), "the denial reaches the local log")
         check(!keyWords.contains(keyToken), "the sign-in never reaches the log")
+        // Only timeouts in a row stop asking. Three odd exits and a timeout are not four timeouts, and an odd exit breaks a run of them.
+        let mixHome = home.appendingPathComponent("keychain-mixed")
+        try FileManager.default.createDirectory(at: mixHome, withIntermediateDirectories: true)
+        let mixFeed = try SessionUsageCollector(home: mixHome, database: mixHome.appendingPathComponent("m.sqlite"), timeZone: TimeZone(identifier: "America/Chicago")!)
+        var mixAsks = 0
+        var mixClock: TimeInterval = 0
+        func mixPass(_ answer: SessionUsageCollector.CursorFeedToken) throws -> SessionUsageCursorFeedStatus.State? {
+            mixClock += 86_400
+            try mixFeed.syncCursorFeed(force: false, now: t0.addingTimeInterval(mixClock), readToken: { _ in mixAsks += 1; return answer }, fetch: { _, _, _, _ in .init(status: 200, body: page([])) })
+            return try mixFeed.refresh(cursorEnabled: true).cursorFeed?.state
+        }
+        var mixState: SessionUsageCursorFeedStatus.State?
+        for answer in [SessionUsageCollector.CursorFeedToken.unavailable(.timedOut), .unavailable(.exit(36)), .unavailable(.timedOut), .unavailable(.exit(36)), .unavailable(.timedOut), .unavailable(.exit(36)), .unavailable(.timedOut)] {
+            mixState = try mixPass(answer)
+        }
+        check(mixState == .keychainBusy && mixAsks == 7, "four timeouts with odd exits between them keep retrying")
+        mixState = try mixPass(.unavailable(.timedOut))
+        check(mixState == .keychainBusy, "two timeouts in a row are not four")
+        mixState = try mixPass(.unavailable(.timedOut))
+        check(mixState == .keychainBusy, "three timeouts in a row are not four")
+        mixState = try mixPass(.unavailable(.timedOut))
+        check(mixState == .blocked, "four timeouts in a row stop asking")
         let oversized = String(repeating: "x", count: 70_000)
         try oversized.write(to: keyLog, atomically: true, encoding: .utf8)
         try keyPass(dayFour, .unavailable(.launchFailed), force: true)
@@ -1216,7 +1238,13 @@ extension Checks {
         check(rates.resolve("codex:sonnet") == nil && rates.resolve("codex-frontier") == nil && rates.resolve("cursor-grok") == nil && rates.resolve("luna-5.6-fast") == nil && rates.resolve("ollama:qwen3.8:27b") == nil, "a tier, a router or a local model has no price")
         check(abs(rates.usd(provider: "OpenAI", model: "gpt-5.6-terra", counts: SessionUsageCounts(input: 100_000, output: 100_000, cacheRead: 100_000))! - 1.42) < 1e-9, "terra is $2, $0.20 and $12 per million")
         check(abs(rates.usd(provider: "OpenAI", model: "gpt-5.5", counts: SessionUsageCounts(input: 100_000, output: 100_000, cacheRead: 100_000))! - 3.55) < 1e-9, "GPT-5.5 is $5, $0.50 and $30 per million")
-        check(abs(rates.usd(provider: "OpenAI", model: "gpt-5.6-sol", counts: SessionUsageCounts(input: 100_000, output: 100_000, cacheRead: 100_000))! - 2.44) < 1e-9, "5.6 Sol is $4, $0.40 and $20 per million")
+        let sol = SessionUsageCounts(input: 100_000, output: 100_000, cacheRead: 100_000)
+        check(abs(rates.usd(provider: "OpenAI", model: "gpt-5.6-sol", counts: sol, on: R.epoch("2026-10-31T12:00:00Z"))! - 2.44) < 1e-9, "5.6 Sol is $4, $0.40 and $20 per million")
+        // Sol's price is promotional, verified through 2026-11-21. Usage after that day has no price here, not the old one.
+        check(rates.usd(provider: "OpenAI", model: "gpt-5.6-sol", counts: sol, on: R.epoch("2026-11-21T23:59:00Z")) != nil, "the promotional rate holds through its last day")
+        check(rates.usd(provider: "OpenAI", model: "gpt-5.6-sol", counts: sol, on: R.epoch("2026-11-22T00:00:00Z")) == nil && rates.usd(provider: "OpenAI", model: "gpt-5.6-sol", counts: sol, on: R.epoch("2027-01-15T12:00:00Z")) == nil, "after its last day the promotional rate prices nothing")
+        check(rates.usd(provider: "OpenAI", model: "gpt-5.6-terra", counts: sol, on: R.epoch("2027-01-15T12:00:00Z")) != nil && rates.usd(provider: "OpenAI", model: "gpt-5.5", counts: sol, on: R.epoch("2027-01-15T12:00:00Z")) != nil, "a rate with no end date never lapses")
+        check(rates.estimateUSD(ledgerModel: "codex:gpt-5.6-sol", input: 1000, output: 100, on: R.epoch("2026-12-01T00:00:00Z")) == nil && rates.estimateUSD(ledgerModel: "codex:gpt-5.6-sol", input: 1000, output: 100, on: R.epoch("2026-11-01T00:00:00Z")) != nil, "an estimate follows the same end date")
         check(rates.usd(provider: "OpenAI", model: "gpt-5.6-terra", counts: SessionUsageCounts(input: 300_000)) == nil, "a verified rate stops at 272K of context")
         check(rates.usd(provider: "OpenAI", model: "gpt-5.6-terra", counts: SessionUsageCounts(input: 10, cacheWrite: 5)) == nil, "a verified rate does not price cache writes")
         check(SessionUsagePricing.estimate(provider: "OpenAI", model: "gpt-5.6-terra", counts: SessionUsageCounts(input: 10)) == nil, "stored Usage rates do not change")
@@ -1281,6 +1309,17 @@ extension Checks {
         a = make(); a.add(final); rows = finish(&a)
         check(rows[.dictation]?.measuredCalls == 1 && rows[.dictation]?.measuredUSD == 0 && rows[.dictation]?.unpricedMeasuredCalls == 1, "a measured row with no rate is unpriced, never $0 of spend")
         check(rows[.dictation]?.addsUnlessCursorFeedUSD == 0 && rows[.dictation]?.addsToTotalUSD == 0, "an unpriced row adds nothing to the total")
+        // The row's own day decides whether a promotional rate applies, so old rows keep their price and later ones have none.
+        var promo = audit("2026-10-30T12:00:00Z", model: "codex:gpt-5.6-sol", kind: "provider_final")
+        promo.real = SessionUsageCounts(input: 1000, output: 100)
+        a = make(); a.add(promo); rows = finish(&a)
+        check((rows[.dictation]?.measuredUSD ?? 0) > 0 && rows[.dictation]?.unpricedMeasuredCalls == 0, "a Sol row inside the promotion is priced")
+        let lateWindow = "2026-11-02"..."2026-12-01"
+        var late = CosCostAccumulator(window: lateWindow, timeZone: chicago, gistRuns: [], runs: [], workStarts: [:], events: [])
+        promo.stamp = "2026-11-25T12:00:00Z"
+        late.add(promo)
+        let lateRows = Dictionary(uniqueKeysWithValues: late.finish(handoffsFound: true, workRuns: 0, workRunsWithoutLogs: 0).rows.map { ($0.category, $0) })
+        check(lateRows[.dictation]?.measuredUSD == 0 && lateRows[.dictation]?.unpricedMeasuredCalls == 1, "a Sol row after the promotion has no price, and says so")
         // Gist rows dedupe against their ledger, and the measured source wins.
         func gistRun(_ at: String, model: String = "claude-sonnet-5-5", cost: Double? = 0.25, engine: String = "claude") -> CosGistRun {
             var usage: [String: Any] = ["inputTokens": 1000, "outputTokens": 100]
@@ -1327,6 +1366,9 @@ extension Checks {
         check(abs((rows[.answers]?.measuredUSD ?? 0) - 0.004) < 1e-12, "a run's dollars come from its session slice")
         check(rows[.answers]?.approximateMatches == 1, "a time and model match is labelled approximate")
         check(rows[.answers]?.addsToTotalUSD == 0, "a slice Usage has priced adds nothing to the total")
+        // A run with a priced event and an unpriced one has dollars, and they leave the unpriced one out, so the row says so.
+        a = make(runs: [run("r1")], events: [event("2026-10-30T12:00:30Z"), event("2026-10-30T12:00:40Z", model: "claude-made-up-9")]); a.add(g2Row); rows = finish(&a)
+        check((rows[.answers]?.measuredUSD ?? 0) > 0 && rows[.answers]?.unpricedMeasuredCalls == 1 && P.measuredPartial({ var r = report([]); r.rows = [rows[.answers]!]; return r }()), "a mixed run is partial: its dollars end in +")
         a = make(runs: [run("r1")], events: [event("2026-10-30T12:00:30Z")]); a.add(audit("2026-10-30T12:01:00Z", source: "g2-query", caller: "full_query", model: "opus", run: "r1")); rows = finish(&a)
         check(rows[.answers]?.approximateMatches == 0 && rows[.answers]?.measuredCalls == 1, "a row carrying its run id is an exact match")
         // A row names its session bare (`cli_session_id`) and the collector keys the runs provider:id. With no run id and another
@@ -1459,6 +1501,11 @@ extension Checks {
         check(turn.measuredTokens == 100, "a person typing right after a handoff ends the run, because their words are not its prompt")
         turn = workTurns([mark("2026-10-30T12:00:20Z", .typed), mark("2026-10-30T12:05:30Z", .typed)], handoffs: [CosWorkRun(session: "claude:s1", start: handoff, openedInApp: true)])
         check(turn.measuredTokens == 300, "a prompt opened in the app and sent by the person is the run's own")
+        // The person sends it when they get to it, so there is no delivery limit: five minutes later is still the run's own prompt.
+        turn = workTurns([mark("2026-10-30T12:04:00Z", .typed), mark("2026-10-30T12:09:30Z", .typed)], handoffs: [CosWorkRun(session: "claude:s1", start: handoff, openedInApp: true)])
+        check(turn.measuredTokens == 300, "a prompt the person sent minutes after opening it in the app is still the run's own")
+        turn = workTurns([mark("2026-10-30T12:04:00Z", .typed), mark("2026-10-30T12:09:30Z", .typed)])
+        check(turn.measuredTokens == 100, "a typed turn minutes after a handed-in run is the person moving on")
         turn = workTurns([mark("2026-10-30T12:00:03Z", .handedIn), mark("2026-10-30T12:04:00Z", .handedIn), mark("2026-10-30T12:04:03Z", .end), mark("2026-10-30T12:09:00Z", .end)],
                          handoffs: [CosWorkRun(session: "claude:s1", start: handoff), CosWorkRun(session: "claude:s1", start: R.epoch("2026-10-30T12:03:59Z")!)])
         check(turn.measuredTokens == 300 && turn.widerTokens == 700, "two runs in one session do not count a turn twice")
@@ -1496,6 +1543,18 @@ extension Checks {
         a = make(runs: [run("r1")], work: ["claude:s2": R.epoch("2026-10-30T12:00:00Z")!], events: [copyA, copyB])
         finished = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
         check(finished.work.widerTokens == 1000 && !finished.rows.contains { $0.category == .answers }, "a copied message goes to Work over a G2 run")
+        // A day ledger with no price at all leaves its tokens out of the dollars, and the row says so.
+        a = make()
+        a.addDailyTokens(1_000_000, category: .liveAndUpkeep, priced: true, day: "2026-10-30")
+        a.addDailyTokens(2_000_000, category: .liveAndUpkeep, priced: false, day: "2026-10-30")
+        a.addDailyTokens(5_000_000, category: .other, priced: false, day: "2026-10-30")
+        a.addDailyTokens(3_000_000, category: .work, priced: false, day: "2026-10-30")
+        rows = finish(&a)
+        check(rows[.liveAndUpkeep]?.unpricedLedgerTokens == 2_000_000 && rows[.other]?.unpricedLedgerTokens == 5_000_000 && rows[.liveAndUpkeep]?.measuredTokens == 3_000_000, "unpriced ledger tokens are counted and flagged")
+        let ledgerReport: CosUsageReport = { var r = CosUsageReport(windowStart: "2026-10-02", windowEnd: "2026-10-31", timeZone: "America/Chicago", updatedAt: "x", auditFound: true, runLedgersFound: true); r.rows = CosCostCategory.allCases.compactMap { rows[$0] }; return r }()
+        check(P.measuredPartial(ledgerReport) && P.rowLine(rows[.liveAndUpkeep]!).figure.hasSuffix("+") && P.rowLine(rows[.liveAndUpkeep]!).mix?.contains("tokens counted by the day have no verified price") == true, "a row with priced and unpriced ledger tokens ends in + and says why")
+        check(P.rowLine(rows[.other]!).figure == "No price" && P.measuredPartial(ledgerReport), "a row of unpriced ledger tokens is No price, and the headline figure ends in +")
+        check(a.finish(handoffsFound: true, workRuns: 0, workRunsWithoutLogs: 0).work.unpricedEvents > 0, "unpriced ledger tokens in Work make its line end in +")
         // Day ledgers add tokens and dollars, never calls.
         a = make()
         a.addDailyTokens(1_000_000, category: .liveAndUpkeep, priced: true, day: "2026-10-30")
@@ -1556,6 +1615,7 @@ extension Checks {
         check(P.share(measured: 5, ran: 100, usage: .paused) == nil, "a paused Usage has no share")
         check(P.share(measured: 5, ran: 100, usage: .importing(files: 3)) == nil, "an importing Usage has no share")
         check(P.share(measured: 5, ran: 0, usage: .ready) == nil && P.share(measured: 0, ran: 100, usage: .ready) == nil, "no total or no measurement has no share")
+        check(P.share(measured: 5, ran: 100, usage: .ready, auditUnreadable: true) == nil && P.share(measured: 5, ran: 100, usage: .ready, auditUnreadable: false) == 0.05, "an audit that would not open leaves calls out of the numerator, so there is no share")
         // The headline, literally.
         var m = CosCostRow(category: .answers); m.calls = 10; m.measuredCalls = 10; m.measuredUSD = 284
         var e = CosCostRow(category: .dictation); e.calls = 1685; e.estimatedCalls = 1685; e.estimatedUSD = 0.44
@@ -1590,7 +1650,14 @@ extension Checks {
         check(!P.ranPartial(usageBuckets: [bucket("2026-10-30", 5)], report: report([m]), usage: .ready), "a fully priced window is not partial")
         check(!P.ranPartial(usageBuckets: [partialBucket("2026-08-01", events: 3, priced: 0)], report: report([m]), usage: .ready), "an unpriced bucket outside the window is not this window's")
         check(!P.ranPartial(usageBuckets: [partialBucket("2026-10-30", events: 3, priced: 0)], report: report([m]), usage: .paused) && !P.ranPartial(usageBuckets: [partialBucket("2026-10-30", events: 3, priced: 0)], report: report([m]), usage: .unavailable), "a total that is not shown has nothing to qualify")
-        check(P.compareLine(share: 0.015, price: 200, ceiling: true) == "Up to about 1.5% of your usage, so up to $3.00 of your $200.", "a share against a partial total is a ceiling")
+        check(P.compareLine(share: 0.015, price: 200, lean: .ceiling) == "Up to about 1.5% of your usage, so up to $3.00 of your $200.", "a share against a partial total is a ceiling")
+        // A model with no price sits in both figures, so with both partial the share is not a ceiling and not a floor.
+        check(P.shareLean(ranPartial: true, measuredPartial: false) == .ceiling && P.shareLean(ranPartial: true, measuredPartial: true) == .either && P.shareLean(ranPartial: false, measuredPartial: true) == .plain && P.shareLean(ranPartial: false, measuredPartial: false) == .plain, "only a partial total beside complete calls is a ceiling")
+        let either = P.compareLine(share: 0.015, price: 200, lean: .either) ?? ""
+        check(either.hasPrefix("About 1.5% of your usage") && !either.contains("Up to") && either.hasSuffix("the true share can be higher or lower."), "with both partial the words say it can go either way")
+        check(P.compareLine(share: 0.0004, price: 200) == "Under 0.1% of your usage, so under $0.20 of your $200." && !(P.compareLine(share: 0.0004, price: 200, lean: .ceiling) ?? "").contains("about under"), "a share under a tenth of a percent has no 'about under'")
+        var bothPartial = report([m]); bothPartial.rows[0].unpricedMeasuredCalls = 1
+        check(P.sessionNotes(bothPartial, ranPartial: true).contains { $0.hasPrefix("Some of your own sessions and some of COS's calls") && $0.hasSuffix("the share can be higher or lower.") } && !P.sessionNotes(bothPartial, ranPartial: true).contains { $0.contains("COS's share of it is lower") }, "the footer does not claim the share is lower when both figures are partial")
         check(P.sessionNotes(report([m]), ranPartial: true).contains { $0.hasPrefix("Some of your own sessions use models with no verified price") } && !P.sessionNotes(report([m])).contains { $0.hasPrefix("Some of your own sessions") }, "one line says the total is low when it is")
         check(P.method(report([m])).contains { $0.contains("ends in a +") }, "the method says what a + means")
         // Estimated calls with a price for only some of them do not say "the rest".
@@ -1658,9 +1725,11 @@ extension Checks {
         check(P.stillReadingNote(progress).hasPrefix("Still reading 2 sessions") && notes.contains { $0.hasPrefix("3 sessions are compressed") } && notes.contains { $0.hasPrefix("1 session has no log") }, "the page says what is not in yet")
         check(P.headlineParts(report: report([m, e]), ran: 18_612, usage: .ready).caveat == " 1,685 more calls have only character counts, so the real figure is higher.", "the caveat is its own part of the headline")
         check(P.showsDollars(report([m])) && P.showsDollars(report([e])) && !P.showsDollars(report([one])), "the page says what the dollars are only when it shows some")
-        check(P.compareHint(share: nil, price: nil).contains("never sent") && P.compareHint(share: nil, price: 20).contains("needs a current Usage total") && P.compareHint(share: nil, price: nil, measured: false).hasPrefix("Once this server measures"), "the price field says what it does and why it cannot yet")
+        check(P.compareHint(share: nil, price: nil).contains("never sent") && P.compareHint(share: nil, price: 20).contains("needs a current Usage total") && P.compareHint(share: nil, price: nil, measured: false) == "There are no measured calls yet. Once COS has some, this shows its share of what you pay. Your price stays on this Mac.", "the price field says what it does and why it cannot yet")
+        check(!P.compareHint(share: nil, price: nil, measured: false).contains("server"), "the price field promises nothing of a server")
         var quietReport = report([]); quietReport.runLedgersFound = false
-        check(P.sessionNotes(quietReport).isEmpty && !P.sessionNotes({ var r = report([e]); r.runLedgersFound = false; return r }()).isEmpty, "the run record note appears only when there are calls for it to explain")
+        check(P.sessionNotes(quietReport).isEmpty && !P.sessionNotes({ var r = report([m]); r.runLedgersFound = false; return r }()).isEmpty, "the run record note appears when there are answers for it to explain")
+        check(P.sessionNotes({ var r = report([e]); r.runLedgersFound = false; return r }()).isEmpty, "the run record note is about the Answers row, so dictation alone does not get it")
         var approximate = report([m]); approximate.rows[0].approximateMatches = 3
         check(P.method(approximate).contains { $0.hasPrefix("3 calls were matched") } && !P.method(report([m])).contains { $0.contains("matched to") }, "the method says how many matches are approximate")
         check(notes.contains { $0.hasPrefix("4 calls have no readable date") } && notes.contains { $0.hasPrefix("1 line could not") }, "undated and unreadable rows are said, not dropped")

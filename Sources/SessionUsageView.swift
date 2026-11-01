@@ -1785,7 +1785,7 @@ struct CosCostView: View {
         return P.ranUSD(usageBuckets: usage.report?.buckets ?? [], report: report, cursorFeedOn: P.usageHoldsCursor(feedOn: usage.cursorEnabled, usage: usage.report, report: report))
     }
     private var share: Double? {
-        store.report.flatMap { P.share(measured: P.measuredUSD($0), ran: ran, usage: usageState) }
+        store.report.flatMap { P.share(measured: P.measuredUSD($0), ran: ran, usage: usageState, auditUnreadable: $0.auditUnreadable) }
     }
     /// Some of the person's own usage has no price, so the total they ran is low and the share reads high.
     private func ranPartial(_ report: CosUsageReport) -> Bool {
@@ -1952,7 +1952,7 @@ struct CosCostView: View {
                     .textFieldStyle(.plain).cosField().frame(width: 104)
                     .monospacedDigit().accessibilityLabel("What you pay a month for these tools")
             }
-            if let line = P.compareLine(share: share, price: price, ceiling: ranPartial(report)) {
+            if let line = P.compareLine(share: share, price: price, lean: P.shareLean(ranPartial: ranPartial(report), measuredPartial: P.measuredPartial(report))) {
                 Text(line).font(COSType.display(narrow ? 19 : 21)).fixedSize(horizontal: false, vertical: true)
             }
             Text(P.compareHint(share: share, price: price, measured: P.measuredUSD(report) > 0)).font(COSType.body(12.5)).foregroundStyle(COSPalette.subtle).fixedSize(horizontal: false, vertical: true)

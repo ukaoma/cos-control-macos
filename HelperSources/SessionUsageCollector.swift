@@ -65,6 +65,9 @@ final class SessionUsageCollector {
         var lastSuccessAt: Double?
         /// Keychain reads in a row with no answer. Optional so existing checkpoints decode unchanged.
         var keychainMisses: Int?
+        /// Timeouts in a row. Any other answer (a good read, a denial, a launch failure, an odd exit) starts it over, so three odd
+        /// exits and a timeout never add up to the four that stop asking.
+        var keychainTimeouts: Int?
     }
     static let cursorFeedStartMs: Int64 = 1_577_836_800_000 // 2020-01-01, before any account history
     static let cursorPageSize = 500
@@ -317,7 +320,7 @@ final class SessionUsageCollector {
         let token: String
         // A run in progress keeps the patient wait, so one unanswered prompt cannot strand a backfill.
         let read = readToken(force || state.runEndMs != 0)
-        if case .unavailable = read {} else { state.keychainMisses = nil }
+        if case .unavailable = read {} else { state.keychainMisses = nil; state.keychainTimeouts = nil }
         switch read {
         case .token(let value): token = value
         case .missing: state.state = .signIn; state.nextAllowedAt = clock + 3600; try saveCursorFeedState(state); return
@@ -420,13 +423,15 @@ final class SessionUsageCollector {
         state.state = .blocked
         state.nextAllowedAt = clock + 30*86_400
     }
-    /// Retries at 15 minutes, doubling to 6 hours. A timeout can be a prompt on screen with nobody there, so four in a
-    /// row stop asking the way a denial does. A launch failure or an odd exit shows no prompt and keeps retrying.
+    /// Retries at 15 minutes, doubling to 6 hours. A timeout can be a prompt on screen with nobody there, so four timeouts in a
+    /// row stop asking the way a denial does. A launch failure or an odd exit shows no prompt and keeps retrying, and it breaks
+    /// a run of timeouts: only timeouts count toward the four.
     private func noteKeychainMiss(_ miss: KeychainMiss, _ state: inout CursorFeedState, clock: Double, now: Date) {
         let misses = (state.keychainMisses ?? 0) + 1
         state.keychainMisses = misses
+        state.keychainTimeouts = miss == .timedOut ? (state.keychainTimeouts ?? 0) + 1 : nil
         noteFeedLog("Keychain \(miss.word), \(misses) in a row", now: now)
-        if miss == .timedOut && misses >= 4 {
+        if (state.keychainTimeouts ?? 0) >= 4 {
             stopAskingKeychain(&state, clock: clock)
             return
         }

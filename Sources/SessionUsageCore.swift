@@ -1217,6 +1217,8 @@ struct CosCostRow: Codable, Equatable, Sendable {
     var measuredTokens: Int64 = 0
     /// Measured, with no verified rate for the model.
     var unpricedMeasuredCalls = 0
+    /// Tokens from a day ledger that has no price at all (no call count exists for these). The dollars leave them out.
+    var unpricedLedgerTokens: Int64 = 0
     /// Calls with only character counts. Chars over four, so cache reads and system prompts are not in them.
     var estimatedCalls = 0
     /// A floor at verified rates, for the estimated calls that have one. Stays out of every measured figure.
@@ -1295,28 +1297,31 @@ struct CosUsageReport: Codable, Equatable, Sendable {
 enum CosCostRates {
     static let checkedOn = "2026-10-31"
     /// OpenAI: standard tier, read from the raw page 2026-10-31 (https://developers.openai.com/api/docs/pricing). The page
-    /// marks gpt-5.6-sol as a promotional price, at least through 2026-11-21. Prices over 272K context stay unpriced,
-    /// and so does a row with cache writes, as they do on the Usage card.
-    private static let openAI: [String: (input: Double, read: Double, output: Double)] = [
-        "gpt-5.6-terra": (2, 0.2, 12),
-        "gpt-5.6-sol": (4, 0.4, 20),
-        "gpt-5.6-luna": (0.2, 0.02, 1.2),
-        "gpt-5.5": (5, 0.5, 30),
-        "gpt-6-sol": (2, 0.2, 10),
-        "gpt-6.1-terra": (1, 0.05, 5),
+    /// marks gpt-5.6-sol as a promotional price, at least through 2026-11-21 (`through`: the last day the rate is verified).
+    /// Prices over 272K context stay unpriced, and so does a row with cache writes, as they do on the Usage card.
+    private static let openAI: [String: (input: Double, read: Double, output: Double, through: String?)] = [
+        "gpt-5.6-terra": (2, 0.2, 12, nil),
+        "gpt-5.6-sol": (4, 0.4, 20, "2026-11-21"),
+        "gpt-5.6-luna": (0.2, 0.02, 1.2, nil),
+        "gpt-5.5": (5, 0.5, 30, nil),
+        "gpt-6-sol": (2, 0.2, 10, nil),
+        "gpt-6.1-terra": (1, 0.05, 5, nil),
     ]
     /// TypeSafe Jev: $42 per billion input tokens (server/lib/jev.ts, glasses-server a921078, read 2026-10-31).
     static let jevPerInputToken = 42.0 / 1_000_000_000
 
     /// The Usage card first, then the verified additions. Nil means No price, never $0.
-    static func usd(provider: String, model: String, counts: SessionUsageCounts, oneHour: Int64 = 0) -> Double? {
+    /// `on` is when the usage happened, in epoch seconds, for a rate that ends. Nil means now.
+    static func usd(provider: String, model: String, counts: SessionUsageCounts, oneHour: Int64 = 0, on instant: Double? = nil) -> Double? {
         if let known = SessionUsagePricing.estimate(provider: provider, model: model, counts: counts, oneHour: oneHour) { return known }
-        return extraUSD(provider: provider, model: model, counts: counts)
+        return extraUSD(provider: provider, model: model, counts: counts, on: instant)
     }
-    /// Priced only by the additions, so Usage's own total does not hold this spend.
-    static func extraUSD(provider: String, model: String, counts: SessionUsageCounts) -> Double? {
+    /// Priced only by the additions, so Usage's own total does not hold this spend. A promotional rate prices only usage up to its
+    /// last verified day: after it the page may say anything, so there is no price rather than an old one.
+    static func extraUSD(provider: String, model: String, counts: SessionUsageCounts, on instant: Double? = nil) -> Double? {
         guard provider == "OpenAI", counts.cacheWrite == 0, counts.input + counts.cacheRead <= 272_000,
               let r = openAI[model] else { return nil }
+        if let through = r.through, (instant ?? Date().timeIntervalSince1970) > (CosCostRules.epoch(through + "T23:59:59Z") ?? 0) { return nil }
         return (Double(counts.input)*r.input + Double(counts.cacheRead)*r.read + Double(counts.output)*r.output) / 1_000_000
     }
     /// What a ledger's model string names, or nil when it names nothing with a fixed price: a tier, a router, a local
@@ -1344,10 +1349,10 @@ enum CosCostRates {
         }
     }
     /// A floor for a call with only character counts: its tokens at the plain input and output rates, no cache.
-    static func estimateUSD(ledgerModel: String, input: Int64, output: Int64) -> Double? {
+    static func estimateUSD(ledgerModel: String, input: Int64, output: Int64, on instant: Double? = nil) -> Double? {
         if ledgerModel.hasPrefix("jev-") { return Double(input) * jevPerInputToken }
         guard let resolved = resolve(ledgerModel) else { return nil }
-        return usd(provider: resolved.provider, model: resolved.model, counts: SessionUsageCounts(input: input, output: output))
+        return usd(provider: resolved.provider, model: resolved.model, counts: SessionUsageCounts(input: input, output: output), on: instant)
     }
 }
 
@@ -1600,7 +1605,8 @@ struct CosWorkRun: Equatable, Sendable {
 }
 
 extension CosCostRules {
-    /// A handed-in prompt lands within seconds of its handoff. Anything later is not this run's own prompt.
+    /// A handed-in prompt lands within seconds of its handoff. Anything later is not this run's own prompt. A prompt placed in the
+    /// app is sent by the person, whenever they get to it, so it has no limit.
     static let deliverySeconds = 120.0
 
     /// A Claude log row. A tool result is a `user` row the person never wrote, a background task's notice and a compaction
@@ -1642,8 +1648,9 @@ extension CosCostRules {
         let after = marks.filter { $0.at >= run.start - CosCostAccumulator.runLeadSeconds }.sorted { $0.at < $1.at }
         var rest = after[...]
         // The run's own prompt is not the person moving on, so the first row that fits is passed over.
-        if let first = after.firstIndex(where: { $0.kind != .end }), after[first].at - run.start <= deliverySeconds,
-           after[first].kind == .handedIn || after[first].kind == .peer || (run.openedInApp && after[first].kind == .typed) {
+        if let first = after.firstIndex(where: { $0.kind != .end }),
+           (after[first].at - run.start <= deliverySeconds && (after[first].kind == .handedIn || after[first].kind == .peer))
+            || (run.openedInApp && after[first].kind == .typed) {
             rest = after[after.index(after: first)...]
         }
         if let closer = rest.first(where: { $0.kind != .end }) { return closer.at }
@@ -1731,7 +1738,7 @@ struct CosCostAccumulator {
         }
         work.runsWithoutLogs = silentRuns
         for event in ordered {
-            let usd = CosCostRates.usd(provider: event.provider, model: event.model, counts: event.counts, oneHour: event.oneHour)
+            let usd = CosCostRates.usd(provider: event.provider, model: event.model, counts: event.counts, oneHour: event.oneHour, on: event.at)
             let extra = SessionUsagePricing.estimate(provider: event.provider, model: event.model, counts: event.counts, oneHour: event.oneHour) == nil ? usd ?? 0 : 0
             if let start = workStarts[event.session], event.at >= start - Self.runLeadSeconds {
                 if !event.id.isEmpty && !counted.insert(event.id).inserted { continue }
@@ -1764,7 +1771,7 @@ struct CosCostAccumulator {
         r.calls += 1
         r.estimatedCalls += 1
         r.estimatedTokens += row.estimatedInput + row.estimatedOutput
-        if let usd = CosCostRates.estimateUSD(ledgerModel: row.pricedModel, input: row.estimatedInput, output: row.estimatedOutput) {
+        if let usd = CosCostRates.estimateUSD(ledgerModel: row.pricedModel, input: row.estimatedInput, output: row.estimatedOutput, on: CosCostRules.epoch(row.stamp)) {
             r.estimatedUSD += usd
             r.estimatedPricedCalls += 1
         }
@@ -1781,7 +1788,7 @@ struct CosCostAccumulator {
         let named = row.pricedModel
         var usd = row.realUSD
         if usd == nil, let resolved = CosCostRates.resolve(named) {
-            usd = CosCostRates.usd(provider: resolved.provider, model: resolved.model, counts: counts, oneHour: row.realOneHour)
+            usd = CosCostRates.usd(provider: resolved.provider, model: resolved.model, counts: counts, oneHour: row.realOneHour, on: CosCostRules.epoch(row.stamp))
         }
         if let usd {
             r.measuredUSD += usd
@@ -1890,12 +1897,15 @@ struct CosCostAccumulator {
             work.widerTokens += tokens
             work.widerUSD += usd
             work.addsToTotalUSD += usd
+            // A day of unpriced tokens is not an event, but it leaves dollars out the way one does, so the Work line ends in +.
+            if !priced { work.unpricedEvents += 1; work.widerUnpricedEvents += 1 }
             return
         }
         var r = rows[category] ?? CosCostRow(category: category)
         r.measuredTokens += tokens
         r.measuredUSD += usd
         r.addsToTotalUSD += usd
+        if !priced { r.unpricedLedgerTokens += tokens }
         rows[category] = r
     }
 
@@ -1908,7 +1918,7 @@ struct CosCostAccumulator {
             r.measuredTokens += run.inputTokens + run.outputTokens
             var usd = run.costUSD
             if usd == nil, let resolved = CosCostRates.resolve(run.model) {
-                usd = CosCostRates.usd(provider: resolved.provider, model: resolved.model, counts: SessionUsageCounts(input: run.inputTokens, output: run.outputTokens))
+                usd = CosCostRates.usd(provider: resolved.provider, model: resolved.model, counts: SessionUsageCounts(input: run.inputTokens, output: run.outputTokens), on: run.at)
             }
             if let usd {
                 r.measuredUSD += usd
@@ -1926,7 +1936,8 @@ struct CosCostAccumulator {
             r.measuredUSD += runUSD[index]
             r.measuredTokens += runTokens[index]
             r.addsToTotalUSD += runAdds[index]
-            if runUnpriced[index] && runUSD[index] == 0 { r.unpricedMeasuredCalls += 1 }
+            // A run with priced and unpriced events is partial too: its dollars leave the unpriced ones out.
+            if runUnpriced[index] { r.unpricedMeasuredCalls += 1 }
             rows[category] = r
         }
         work.handoffsFound = handoffsFound
@@ -1978,9 +1989,21 @@ enum CosCostPresentation {
     static func calls(_ report: CosUsageReport) -> Int { overhead(report).reduce(0) { $0 + $1.calls } }
     /// Measured dollars over the total. Nil when a share would mislead: no total, a total still being read, or a figure
     /// bigger than what it divides.
-    static func share(measured: Double, ran: Double, usage: UsageState) -> Double? {
-        guard usage == .ready, measured > 0, ran > 0, measured <= ran else { return nil }
+    static func share(measured: Double, ran: Double, usage: UsageState, auditUnreadable: Bool = false) -> Double? {
+        // An audit that would not open leaves calls out of the numerator, and by an amount nobody can size.
+        guard usage == .ready, !auditUnreadable, measured > 0, ran > 0, measured <= ran else { return nil }
         return measured / ran
+    }
+    /// Which way a share may be off. Usage's total leaves out models with no price, so alone it reads the share high (a ceiling).
+    /// COS's measured dollars leave out calls with no price, and the same model usually sits in both figures, so with both
+    /// partial the share can be off either way and no word like "up to" is true.
+    enum ShareLean: Equatable, Sendable { case plain, ceiling, either }
+    static func shareLean(ranPartial: Bool, measuredPartial: Bool) -> ShareLean {
+        switch (ranPartial, measuredPartial) {
+        case (true, false): return .ceiling
+        case (true, true): return .either
+        default: return .plain
+        }
     }
     static func percent(_ fraction: Double) -> String {
         let p = fraction * 100
@@ -1988,7 +2011,7 @@ enum CosCostPresentation {
         return String(format: p < 10 ? "%.1f%%" : "%.0f%%", p)
     }
     /// A figure whose dollars leave out some measured calls (a model with no verified rate) ends in +, as Usage's figures do.
-    static func measuredPartial(_ report: CosUsageReport) -> Bool { overhead(report).contains { $0.unpricedMeasuredCalls > 0 } }
+    static func measuredPartial(_ report: CosUsageReport) -> Bool { overhead(report).contains { $0.unpricedMeasuredCalls > 0 || $0.unpricedLedgerTokens > 0 } }
     /// Whether the total the person ran leaves out usage Usage could not price: any bucket in the window with an event it has no
     /// rate for. COS's own calls on such models are priced by the additions, so the share against that total reads high.
     static func ranPartial(usageBuckets: [SessionUsageBucket], report: CosUsageReport, usage: UsageState) -> Bool {
@@ -2091,8 +2114,9 @@ enum CosCostPresentation {
             mixParts.append("\(row.measuredCalls.formatted()) measured\(floor).")
         }
         // A call on a model with no verified rate has tokens and no dollars, so the dollars are a floor and end in +, as Usage's do.
-        let partial = row.measuredUSD > 0 && row.unpricedMeasuredCalls > 0
-        if partial { mixParts.append("\(row.unpricedMeasuredCalls.formatted()) measured \(row.unpricedMeasuredCalls == 1 ? "call has" : "calls have") no verified price, so the dollars are a floor.") }
+        let partial = row.measuredUSD > 0 && (row.unpricedMeasuredCalls > 0 || row.unpricedLedgerTokens > 0)
+        if row.measuredUSD > 0 && row.unpricedMeasuredCalls > 0 { mixParts.append("\(row.unpricedMeasuredCalls.formatted()) measured \(row.unpricedMeasuredCalls == 1 ? "call has" : "calls have") no verified price, so the dollars are a floor.") }
+        if row.measuredUSD > 0 && row.unpricedLedgerTokens > 0 { mixParts.append("\(SessionUsagePresentation.shortTokens(row.unpricedLedgerTokens)) tokens counted by the day have no verified price, so the dollars are a floor.") }
         let mix = mixParts.isEmpty ? nil : mixParts.joined(separator: " ")
         if row.measuredUSD > 0 {
             return RowLine(id: row.category, title: row.category.title, count: count, evidence: .measured, figure: money(row.measuredUSD) + (partial ? "+" : ""), detail: tokens + ", measured", mix: mix)
@@ -2138,10 +2162,15 @@ enum CosCostPresentation {
     }
     /// Share times price. API value against a subscription price would compare two different things. When some of the person's own
     /// usage has no price, the total is low and the share reads high, so it is said as a ceiling.
-    static func compareLine(share: Double?, price: Double?, ceiling: Bool = false) -> String? {
+    static func compareLine(share: Double?, price: Double?, lean: ShareLean = .plain) -> String? {
         guard let share, let price else { return nil }
-        if ceiling { return "Up to about \(percent(share)) of your usage, so up to \(money(share * price)) of your \(money(price))." }
-        return "About \(percent(share)) of your usage, roughly \(money(share * price)) of your \(money(price))."
+        // Under a tenth of a percent has no "about" or "up to": it is a bound.
+        if share < 0.001 { return "Under 0.1% of your usage, so under \(money(price * 0.001)) of your \(money(price))." + (lean == .either ? " Some models have no price in either figure, so the true share can be higher or lower." : "") }
+        switch lean {
+        case .ceiling: return "Up to about \(percent(share)) of your usage, so up to \(money(share * price)) of your \(money(price))."
+        case .either: return "About \(percent(share)) of your usage, roughly \(money(share * price)) of your \(money(price)). Some models have no price in either figure, so the true share can be higher or lower."
+        case .plain: return "About \(percent(share)) of your usage, roughly \(money(share * price)) of your \(money(price))."
+        }
     }
     /// The Work line: each run's own window in its session log, plus real rows for work no log holds.
     static func workUSD(_ report: CosUsageReport) -> Double {
@@ -2209,7 +2238,7 @@ enum CosCostPresentation {
     }
     /// The line under the price field. It says what the field does, or why it cannot yet.
     static func compareHint(share: Double?, price: Double?, measured: Bool = true) -> String {
-        if !measured { return "Once this server measures its calls, this shows COS's share of what you pay. Your price stays on this Mac." }
+        if !measured { return "There are no measured calls yet. Once COS has some, this shows its share of what you pay. Your price stays on this Mac." }
         if price == nil { return "Add it to see COS's share of what you pay. It stays on this Mac and is never sent." }
         if share == nil { return "The comparison needs a current Usage total and a measured figure. Your price stays on this Mac." }
         return "COS's share of your usage, times what you pay. Your price stays on this Mac and is never sent."
@@ -2235,13 +2264,18 @@ enum CosCostPresentation {
     /// Sessions whose numbers are not in yet, in plain words. Still reading sits at the top of the page, so not here.
     static func sessionNotes(_ report: CosUsageReport, ranPartial: Bool = false) -> [String] {
         var notes: [String] = []
-        if ranPartial { notes.append("Some of your own sessions use models with no verified price. They aren't in the total you ran, so it is higher than shown and COS's share of it is lower.") }
+        if ranPartial {
+            notes.append(measuredPartial(report)
+                ? "Some of your own sessions and some of COS's calls use models with no verified price. Neither figure holds them, so the share can be higher or lower."
+                : "Some of your own sessions use models with no verified price. They aren't in the total you ran, so it is higher than shown and COS's share of it is lower.")
+        }
         let s = report.sessions
         if s.compressed > 0 { notes.append("\(s.compressed.formatted()) \(s.compressed == 1 ? "session is" : "sessions are") compressed and could not be read, so their cost is not in these figures.") }
         if s.noLogs > 0 { notes.append("\(s.noLogs.formatted()) \(s.noLogs == 1 ? "session has" : "sessions have") no log left on this Mac, so their cost is not in these figures.") }
         if s.busy { notes.append("The usage history was busy, so this pass read nothing new. COS tries again soon.") }
         if s.failed { notes.append("COS could not read the usage history, so this pass read nothing new. It tries again in \(slowSeconds / 60) minutes.") }
-        if !report.runLedgersFound && calls(report) > 0 { notes.append("This server has no run records, so answers stay estimated.") }
+        // The line is about the Answers row. Without one, there are no answers for it to blame the server for.
+        if !report.runLedgersFound, overhead(report).contains(where: { $0.category == .answers && $0.calls > 0 }) { notes.append("This server has no run records, so answers stay estimated.") }
         if report.undatedCalls > 0 { notes.append("\(report.undatedCalls.formatted()) \(report.undatedCalls == 1 ? "call has" : "calls have") no readable date, so \(report.undatedCalls == 1 ? "it isn't" : "they aren't") in these 30 days.") }
         if report.unreadableRows > 0 { notes.append("\(report.unreadableRows.formatted()) \(report.unreadableRows == 1 ? "line" : "lines") could not be read at all.") }
         return notes

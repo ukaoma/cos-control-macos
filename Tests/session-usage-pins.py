@@ -137,9 +137,12 @@ PINS = [
                and between(t[VIEW], "func refresh(importSessions: Bool", "COS cost could not refresh").count("catch is CancellationError {") == 1,
      VIEW, "        } catch is CancellationError {\n            return\n        } catch { self.error = \"Usage could not refresh", "        } catch { self.error = \"Usage could not refresh"),
     ("the share is said as a ceiling when some of the person's own usage has no price",
-     lambda t: once(t[VIEW], "P.compareLine(share: share, price: price, ceiling: ranPartial(report))") and once(t[VIEW], "usage: usageState, ranPartial: ranPartial(report))")
+     lambda t: once(t[VIEW], "P.compareLine(share: share, price: price, lean: P.shareLean(ranPartial: ranPartial(report), measuredPartial: P.measuredPartial(report)))") and once(t[VIEW], "usage: usageState, ranPartial: ranPartial(report))")
                and once(t[VIEW], "P.sessionNotes(report, ranPartial: ranPartial(report))"),
-     VIEW, "P.compareLine(share: share, price: price, ceiling: ranPartial(report))", "P.compareLine(share: share, price: price)"),
+     VIEW, "lean: P.shareLean(ranPartial: ranPartial(report), measuredPartial: P.measuredPartial(report))", "lean: .plain"),
+    ("a share is not shown when the record of calls would not open",
+     lambda t: once(t[VIEW], "P.share(measured: P.measuredUSD($0), ran: ran, usage: usageState, auditUnreadable: $0.auditUnreadable)"),
+     VIEW, ", auditUnreadable: $0.auditUnreadable)", ")"),
     ("the COS cost command finds Node the same way",
      lambda t: t[HELPER].count("findCompressedLogNode(for: collector)") == 2, HELPER, "            findCompressedLogNode(for: collector)\n            let environment = serverEnvironment()", "            let environment = serverEnvironment()"),
     ("the calendar draws what fits",
