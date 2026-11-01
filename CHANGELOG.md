@@ -63,7 +63,7 @@ Known, not fixed here:
 Not verified:
 
 - The ⌘K and Today changes are proven on fixtures, the compiled engine checks and source pins, not by use on a live Mac. The panel's own state cannot be reached from a test, so `perform` and the draft rules are held by pins and by the engine's checks.
-- No full-app compile, full suite, signing or install ran for these fixes. What ran: the Usage, setup assistant, Today, provider-status, pet-rotation, illustrated-pet and What's New lanes, their mutation lanes for the rules above, and a type-check of `ActivityWindow.swift`, `ControllerModel.swift`, `SessionUsageView.swift`, `HelperClient.swift` and the helper's `main.swift` as primary files against the other sources. The render lanes, the meeting-restart lane and the pet drag lanes did not run.
+- No full-app compile, full suite, signing or install ran for these fixes. What ran: the Usage, setup assistant, Today, provider-status, pet-rotation, illustrated-pet, What's New (pins and models) and Update Server guard lanes (the last compiles the whole helper), their mutation lanes for the rules above, and a type-check of `ActivityWindow.swift`, `ControllerModel.swift`, `SessionUsageView.swift`, `HelperClient.swift` and the helper's `main.swift` as primary files against the other sources. The render lanes, the meeting-restart lane and the pet drag lanes did not run.
 - Runtime CPU cost of the first compressed read, how often the history lock collides, and ⌘K focus behavior were not measured.
 
 ## 0.5.359 (build 413), ⌘K command center, COS cost, compressed Codex logs, Update Server only moves forward
