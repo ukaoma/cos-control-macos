@@ -307,6 +307,11 @@ import Foundation
         // A command that is held has no row to go to: Return falls back to Ask, as before.
         var heldRecord = center(); heldRecord.recording.inFlight = true
         check(returned("start recording now please", inputs: heldRecord) == .move("ask"), "[a held command moves to Ask]", "\(returned("start recording now please", inputs: heldRecord))")
+        // The same for a command that is not a Start phrase in a sentence, so the held rule is what decides and not the Start rule.
+        var busyHelper = healthy(); busyHelper.helperBusy = true
+        let busyDoctor = center { $0.snapshot = busyHelper }
+        check(row(C.listing(busyDoctor, words: "run doctor please"), "command:runDoctor")?.selectable == false, "[a busy helper holds Doctor]", "")
+        check(returned("run doctor please", inputs: busyDoctor) == .move("ask"), "[a held command moves to Ask]", "\(returned("run doctor please", inputs: busyDoctor))")
         // The whole phrase runs at once; a highlight runs what it highlights.
         check(returned("start recording") == returnRuns("command:startRecording"), "[Return runs the highlight]", "")
         check(returned("sessions") == returnRuns("command:openSessions"), "[Return runs the highlight]", "")
