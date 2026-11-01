@@ -165,6 +165,7 @@ actor HelperClient {
         preferStable: Bool = false,
         stdinData: Data? = nil,
         answers: Bool = false,
+        quality: QualityOfService? = nil,
         progress: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> HelperResponse {
         let executable = try helperURL(preferStable: preferStable)
@@ -186,6 +187,7 @@ actor HelperClient {
                 let collector = ProgressLineCollector(callback: progress)
                 process.executableURL = executable
                 process.arguments = arguments
+                if let quality { process.qualityOfService = quality }
                 process.standardOutput = outputPipe
                 process.standardError = progressPipe
                 let inputPipe = stdinData == nil ? nil : Pipe()

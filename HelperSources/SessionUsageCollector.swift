@@ -609,6 +609,8 @@ final class SessionUsageCollector {
         process.environment = ["PATH": "/usr/bin:/bin"]
         process.standardInput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
+        // The first read of a long history starts at launch with no window open, so it yields to anything the person is doing.
+        process.qualityOfService = .utility
         let pipe = Pipe()
         process.standardOutput = pipe
         // Not a mark against the file: the decoder is what failed, so the next pass tries again.
@@ -932,6 +934,7 @@ extension SessionUsageCollector {
         decoder.environment = ["PATH": "/usr/bin:/bin"]
         decoder.standardInput = FileHandle.nullDevice
         decoder.standardError = FileHandle.nullDevice
+        decoder.qualityOfService = .utility
         let rows = Pipe()
         decoder.standardOutput = rows
         // Not a mark against the file: the decoder is what failed, so the next pass tries again.

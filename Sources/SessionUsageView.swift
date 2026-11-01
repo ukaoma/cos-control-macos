@@ -43,7 +43,7 @@ final class SessionUsageStore: ObservableObject {
         defer { loading = false }
         let arguments = SessionUsagePresentation.helperArguments(importNew: importNew, tracking: enabled, cursorEnabled: cursorEnabled, cursorNow: cursorNow)
         do {
-            let result = try await helper.run(arguments, timeout: 45)
+            let result = try await helper.run(arguments, timeout: 45, quality: .utility)
             guard result.ok else { throw HelperClientError.commandFailed(result.message) }
             report = try JSONDecoder().decode(SessionUsageReport.self, from: JSONEncoder().encode(result.details))
             error = nil
@@ -1741,7 +1741,7 @@ final class CosCostStore: ObservableObject {
         loading = true
         defer { loading = false }
         do {
-            let result = try await helper.run(importSessions ? ["cos-usage"] : ["cos-usage", "--read-only"], timeout: 45)
+            let result = try await helper.run(importSessions ? ["cos-usage"] : ["cos-usage", "--read-only"], timeout: 45, quality: .utility)
             guard result.ok else { throw HelperClientError.commandFailed(result.message) }
             report = try JSONDecoder().decode(CosUsageReport.self, from: JSONEncoder().encode(result.details))
             error = nil

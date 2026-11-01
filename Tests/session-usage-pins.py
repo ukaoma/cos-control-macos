@@ -33,6 +33,9 @@ def code(text):
 
 
 texts = {name: code((root / name).read_text(encoding="utf-8")) for name in (VIEW, CORE, ACTIVITY, HELPER, CONNECT, CONTROLLER, HUB)}
+CLIENT, COLLECTOR = "Sources/HelperClient.swift", "HelperSources/SessionUsageCollector.swift"
+for extra in (CLIENT, COLLECTOR):
+    texts[extra] = code((root / extra).read_text(encoding="utf-8"))
 
 
 def once(text, needle):
@@ -101,6 +104,18 @@ PINS = [
     ("never $0 is decided in Core, not the view",
      lambda t: "pricedEvents > 0" not in t[VIEW].replace("point.pricedEvents > 0 ?", "").replace("row.pricedEvents > 0 &&", "") and once(t[VIEW], "P.dayCounted(summary, measure: measure)") and once(t[VIEW], "P.hasFigure(measure, pricedEvents: $0.pricedEvents)"),
      VIEW, "P.hasFigure(measure, pricedEvents: $0.pricedEvents)", "measure != .cost || $0.pricedEvents > 0"),
+    ("Usage's helper runs at utility priority, so a first read from launch yields to the person",
+     lambda t: once(t[VIEW], "let result = try await helper.run(arguments, timeout: 45, quality: .utility)") and once(t[CLIENT], "if let quality { process.qualityOfService = quality }"),
+     VIEW, 'let result = try await helper.run(arguments, timeout: 45, quality: .utility)', 'let result = try await helper.run(arguments, timeout: 45)'),
+    ("the helper passes the priority to the process it starts",
+     lambda t: once(t[CLIENT], "if let quality { process.qualityOfService = quality }"), CLIENT, "if let quality { process.qualityOfService = quality }", ""),
+    ("Usage's decoder runs at utility priority",
+     lambda t: once(t[COLLECTOR], "        process.qualityOfService = .utility\n"), COLLECTOR, "        process.qualityOfService = .utility\n", ""),
+    ("COS cost's decoder runs at utility priority",
+     lambda t: once(t[COLLECTOR], "        decoder.qualityOfService = .utility\n"), COLLECTOR, "        decoder.qualityOfService = .utility\n", ""),
+    ("COS cost's helper runs at utility priority too",
+     lambda t: once(t[VIEW], 'importSessions ? ["cos-usage"] : ["cos-usage", "--read-only"], timeout: 45, quality: .utility)'),
+     VIEW, ', timeout: 45, quality: .utility)\n            guard result.ok else { throw HelperClientError.commandFailed(result.message) }\n            report = try JSONDecoder().decode(CosUsageReport.self', ', timeout: 45)\n            guard result.ok else { throw HelperClientError.commandFailed(result.message) }\n            report = try JSONDecoder().decode(CosUsageReport.self'),
     ("the helper tries the app's Node first for compressed logs, and never a zstd binary",
      lambda t: once(t[HELPER], 'collector.compressedLogNodes = ([bundledNode] + executableCandidates("node")).filter { fm.isExecutableFile(atPath: $0) }'),
      HELPER, '([bundledNode] + executableCandidates("node"))', '(executableCandidates("node"))'),
