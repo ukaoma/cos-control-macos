@@ -9,7 +9,8 @@ troubleshoot other issues. Plan and validation: `operations/personal/wk44_2026/P
 COS repo, Revision 2.
 
 Available only with the Today home on (`activityTodayHomeEnabled`, default off), so nothing changes for anyone else until
-Miles says.
+Miles says, with one exception that is for everyone: a Claude session named by its first 8 characters (the saved list, a search
+hit) now opens through its transcript's full id, where `session-reveal` used to refuse it as an incomplete id.
 
 | Piece | Where | State |
 | --- | --- | --- |
@@ -217,7 +218,7 @@ to ask before it changes anything. The person's words go in quoted. The packet i
 
 Titles are untrusted. `Center.clean` makes them one line with control and direction characters gone and bounded (and masked, for a
 hit), the panel draws them with `Text(verbatim:)`, they open only their own row, they are never matched for dispatch (a match only
-filters the list and never highlights) and they never go into a prompt. The same holds for match text, which is also masked by shape. A question's own words (`NeedRow.quote`) never reach the panel. A row is looked
+filters the list, a title that matches a loaded session may take the first Return's move, and a search hit never does) and they never go into a prompt. The same holds for match text, which is also masked by shape. A question's own words (`NeedRow.quote`) never reach the panel. A row is looked
 up again at open, so a session that went away flashes a line instead of opening stale, and `todayOpenNeed` keeps the Cursor
 fallback.
 
@@ -231,7 +232,7 @@ unsent words wait for the next open. All of these are rules in `SetupAssistant.C
 | --- | --- | --- | --- |
 | Down | Highlight the first row | Next row (stops at the last) | Nothing |
 | Up | Nothing | Previous row; from the first, back to no highlight | Nothing |
-| Return | Where the words point first: a command listed at the top (Stop, Doctor, "go to se", a phrase inside a sentence) moves to that command's row, and a title that matches a session moves to the first session row. A second Return runs it, and its own confirm still applies. Otherwise one Work run, through the Ask row with the snapshot and the rules, only for 3 or more words with no answer or command match. A saved answer, a near-command or a short text moves to the Ask row, and a second Return runs it. Start Work off: files, unless the words are an answer or close to a command | Run the row: an opener runs at once, a change opens its confirm | Confirm (after the fresh check) |
+| Return | Where the words point first: a command listed at the top (Stop, Doctor, "go to se", a phrase inside a sentence) moves to that command's row, and a title that matches a session moves to the first session row. A second Return runs it, and its own confirm still applies. Otherwise the first Return moves to the Ask row and a second Return runs it (one Work run, through the Ask row with the snapshot and the rules); free text never starts a run on the first Return. Work runs from Today off: the first Return files the words at once, unless they are a saved answer or close to a command | Run the row: an opener runs at once, a change opens its confirm | Confirm (after the fresh check) |
 | Option-Return | Files to the Work inbox | Same: Option-Return always files | Same |
 | Esc | Clears the words, then closes | Clears the highlight | Cancels the confirm |
 | ⌘K | Opens over the current tab, and closes when open. It never navigates, and it does not open under a task being edited or a naming review | | |
