@@ -1131,7 +1131,7 @@ import Foundation
         }
         // A plan name, a UUID and a key-like word that is not a credential stay readable.
         for stays in ["PLAN_cmdK_find_sessions_2026-10-31", "3f2504e0-4f89-41d3-9a0c-0305e82c3301", "TOKEN_COUNT=12345678", "MAX_TOKENS: 4096", "secretName: fred", "token: the one",
-                      "claude-code-sessions_find_local_words_2026-10-31_final.md", "basic setup of the pricing table"] {
+                      "claude-code-sessions_find_local_words_2026-10-31_final.md", "basic setup of the pricing table", "a pneumonoultramicroscopicsilicovolcanoconiosis case"] {
             check(C.mask(stays) == stays, "[a name or a plain word is not hidden]", "\(stays): \(C.mask(stays))")
         }
         // The same words from a loaded row and from a title search: a listed row's title is masked too.
