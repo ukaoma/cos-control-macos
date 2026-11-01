@@ -575,21 +575,48 @@ class WatchdogTests(Base):
         survivors = [l for l in out.splitlines() if f'{self.dir}/marker-sleep' in l]
         self.assertEqual(survivors, [], 'processes forked while the guard was stopping the run survived it')
 
-    def test_large_profile_total_cap_counts_only_this_runs_frontends(self):
-        # The per-frontend cap is out of reach and the total cap is 2000 GB; an inflated row (about 95 TB) is far over the total.
-        self.start_guard({'cmd.sh': '"$FE" 600 &\necho $! > "$PIDS/frontend"\nwhile [ ! -e "$DIR/end" ]; do sleep 0.2; done\n'},
-                         COS_COMPILE_MAX_FRONTEND_GB='100000', COS_COMPILE_MAX_TOTAL_GB='2000')
+    TOTAL_SCRIPT = {'cmd.sh': '"$FE" 600 &\necho $! > "$PIDS/frontend"\nwhile [ ! -e "$DIR/end" ]; do sleep 0.2; done\n'}
+
+    def test_large_profile_stops_its_own_run_when_the_machine_total_is_over_the_cap_and_names_the_others(self):
+        # Per-frontend cap out of reach, total cap 2000 GB; an inflated row (about 95 TB) is far over the total. The two inflated rows
+        # belong to frontends OUTSIDE the command's tree, and this run's own frontend is tiny.
+        self.start_guard(self.TOTAL_SCRIPT, COS_COMPILE_MAX_FRONTEND_GB='100000', COS_COMPILE_MAX_TOTAL_GB='2000')
         inside = self.pid_files('frontend')
-        self.mark('trip', self.decoy.pid)  # the machine's total is over the cap, but none of it is this run's
-        time.sleep(4)
-        self.assertIsNone(self.guard.poll(), "the run was stopped for swift-frontends that are not its own")
-        self.mark('trip', self.decoy.pid, inside['frontend'])  # now this run's own frontend is over the total too
+        other = subprocess.Popen([str(self.fe), '600'])  # a second foreign swift-frontend
+        time.sleep(1.5)  # the guard has sampled the machine under the cap: nothing yet
+        self.assertIsNone(self.guard.poll())
+        self.mark('trip', self.decoy.pid, other.pid)
+        code, err = self.guard_finished()
+        self.assertEqual(code, 137, err)  # our run stops ...
+        self.assertIn('compile-guard: STOPPED: all swift-frontends on this Mac passed 2000 GB together', err)
+        self.assertIn("this run's own: 0 GB", err)
+        self.assertIn('Not stopped, not touched:', err)
+        self.assertIn(f'pid {self.decoy.pid} (', err)  # ... naming the offenders ...
+        self.assertIn(f'pid {other.pid} (', err)
+        self.assertEqual(self.still_alive([inside['frontend']]), [])
+        self.assertIsNone(self.decoy.poll()); self.assertIsNone(other.poll())  # ... and never signalling them
+        self.assertTrue(self.alive(self.decoy.pid) and self.alive(other.pid))
+
+    def test_large_profile_own_total_over_the_cap_stops_with_its_own_wording(self):
+        self.start_guard(self.TOTAL_SCRIPT, COS_COMPILE_MAX_FRONTEND_GB='100000', COS_COMPILE_MAX_TOTAL_GB='2000')
+        inside = self.pid_files('frontend')
+        self.mark('trip', inside['frontend'])
         code, err = self.guard_finished()
         self.assertEqual(code, 137, err)
         self.assertIn("compile-guard: STOPPED: all of this run's swift-frontends passed 2000 GB together", err)
-        self.assertEqual(err.count('swift-frontends on this Mac total'), 1, err)  # the foreign total was named, once, while it was foreign
         self.assertEqual(self.still_alive([inside['frontend']]), [])
         self.assertTrue(self.alive(self.decoy.pid))
+
+    def test_large_profile_total_under_the_cap_changes_nothing(self):
+        self.start_guard(self.TOTAL_SCRIPT, COS_COMPILE_MAX_FRONTEND_GB='100000', COS_COMPILE_MAX_TOTAL_GB='2000')
+        inside = self.pid_files('frontend')
+        time.sleep(3)  # a few samples, nothing over any cap
+        self.assertIsNone(self.guard.poll())
+        (self.dir / 'end').touch()
+        code, err = self.guard_finished()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(err, '')
+        self.assertTrue(self.alive(inside['frontend']) and self.alive(self.decoy.pid))
 
 
 if __name__ == '__main__':

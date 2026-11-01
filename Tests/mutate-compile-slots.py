@@ -72,8 +72,9 @@ M = [
  ("trip counts foreign frontends", G, 'else if (rss[p] > max) forbig = forbig " " p ":" rss[p]', 'else if (rss[p] > max) { forbig = forbig " " p ":" rss[p]; ownbig = ownbig " " p }', WATCH),
  ("foreign frontend is not named", G, '    echo "compile-guard: NOTE: swift-frontend pid $pid holds', '    : "compile-guard: NOTE: swift-frontend pid $pid holds', WATCH),
  ("foreign frontend is named on every sample", G, '    [[ -n "${WARNED[$pid]:-}" ]] && continue\n', "", WATCH),
- ("total cap counts the whole machine", G, "if (( OWN_FE_KB > MAX_TOTAL_GB * 1048576 )); then REASON", "if (( ALL_FE_KB > MAX_TOTAL_GB * 1048576 )); then REASON", WATCH),
- ("foreign total is named on every sample", G, ' && [[ -z "${WARNED[total]:-}" ]]', "", WATCH),
+ ("machine total over the cap does not stop this run", G, "    elif (( ALL_FE_KB > MAX_TOTAL_GB * 1048576 )); then\n", "    elif (( 0 )); then\n", WATCH),
+ ("machine total stop names no offenders", G, 'Not stopped, not touched: $(foreign_top)"', 'Not stopped, not touched: nobody"', WATCH),
+ ("own total over the cap is worded as the machine's", G, "    if (( OWN_FE_KB > MAX_TOTAL_GB * 1048576 )); then\n", "    if (( 0 )); then\n", WATCH),
  ("stop kills without freezing the tree first", G, '    kill -STOP "${pids[@]}" 2>/dev/null\n', "", WATCH),
  ("stop scans the tree only once", G, "  for i in {1..20}; do\n", "  for i in {1..1}; do\n", WATCH),
  # B4 (2026-10-31): --jobs, trial only.
