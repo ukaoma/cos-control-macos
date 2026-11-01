@@ -12,7 +12,7 @@ TMP="$(mktemp -d /tmp/cos-control-tests.XXXXXX)"
 # the cleanup). COS_SUITE_LOG_DIR overrides the folder; a failed copy never changes the suite's exit status.
 SUITE_LOG_DIR="${COS_SUITE_LOG_DIR:-$HOME/Library/Logs/COS/control-suite}"
 SUITE_STAMP="$(date +%Y%m%d-%H%M%S)"
-trap '_suite_exit_logs 2>/dev/null || true; rm -rf "$TMP"' EXIT
+trap '_app_build_stop 2>/dev/null || true; _suite_exit_logs 2>/dev/null || true; rm -rf "$TMP"' EXIT
 # Speed plan A1 (2026-10-31): a pin or lane that failed under set -e used to end the suite with no output at all (0.5.357
 # needed a separate tail run to find out where). Every such failure now names its line in this file, on stderr. A command
 # inside `if`, `||` or `!` never reaches this trap, so a check that already reports its own failure is unchanged.
@@ -55,6 +55,31 @@ _suite_exit_logs() {
   mkdir -p "$SUITE_LOG_DIR" || return 0
   [[ -f "$COS_TEST_KIT_LOG" ]] && /bin/cp "$COS_TEST_KIT_LOG" "$SUITE_LOG_DIR/${SUITE_STAMP}-kit-log.jsonl"
   [[ -f "$LANE_TIMES" ]] && /bin/cp "$LANE_TIMES" "$SUITE_LOG_DIR/${SUITE_STAMP}-lane-times.tsv"
+  return 0
+}
+
+# Speed plan B1 (2026-10-31, DEFAULT OFF): COS_SUITE_CONCURRENT_COMPILES=1 lets the first full-app compile (the one that has
+# to type-check the whole app, about 270 s) run in the background while the next lanes run, in the second compile slot
+# (COS_COMPILE_SLOTS defaults to 2 then; each compile is still one frontend under its own 8 GiB cap). The second full-app
+# call, which reuses it, waits for it first. Off, the compile is waited for on the line after it starts: the same commands in
+# the same order. Its exit status is read from its own PID, never assumed; the EXIT trap stops it (and only it) on a failure.
+APP_BUILD_PID=""
+if [[ "${COS_SUITE_CONCURRENT_COMPILES:-0}" == 1 ]]; then
+  export COS_COMPILE_SLOTS="${COS_COMPILE_SLOTS:-2}"
+fi
+_app_build_wait() {
+  [[ -n "$APP_BUILD_PID" ]] || return 0
+  local pid=$APP_BUILD_PID code=0
+  APP_BUILD_PID=""
+  wait "$pid" || code=$?
+  (( code == 0 )) || { print -u2 "FAIL: the full-app compile (pid $pid) exited $code"; exit $code; }
+}
+_app_build_stop() {
+  local pid=$APP_BUILD_PID child
+  [[ -n "$pid" ]] || return 0
+  APP_BUILD_PID=""
+  for child in $(/usr/bin/pgrep -P "$pid" 2>/dev/null); do kill "$child" 2>/dev/null || true; done
+  kill "$pid" 2>/dev/null || true
   return 0
 }
 
@@ -249,7 +274,9 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
   "$ROOT/Sources/ControlSetup.swift" \
   "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
-  -o "$TMP/COS Control"
+  -o "$TMP/COS Control" &
+APP_BUILD_PID=$!
+[[ "${COS_SUITE_CONCURRENT_COMPILES:-0}" == 1 ]] || _app_build_wait
 
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   "$ROOT/Sources/Models.swift" \
@@ -2850,6 +2877,7 @@ if /usr/bin/grep -RE 'details\["token"\]|"token"[[:space:]]*:[[:space:]]*try rea
   exit 1
 fi
 
+_app_build_wait
 python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compile.json" --output "$TMP/COS Control" -- \
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" \
