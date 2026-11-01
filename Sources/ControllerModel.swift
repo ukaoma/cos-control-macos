@@ -2915,7 +2915,12 @@ final class ControllerModel: ObservableObject {
     @Published var sessionFeed: SessionLiveFeed?
     @Published var claudeSessionDetailError: String?
     // ── Session Chat (0.5.75) ──
-    @Published var chatDraft = ""
+    @Published var chatDraft = "" {
+        // Any edit that is not the placed words ends the block on Return (0.5.362).
+        didSet { chatPrefill.draftChanged(chatDraft) }
+    }
+    /// Words ⌘K's "Continue in" placed in the composer. While they stand, Return in the composer sends nothing.
+    var chatPrefill = SetupAssistant.Center.Prefill()
     @Published var chatMessages: [SessionChatMessage] = []
     @Published var chatBinding: SessionChatBinding?
     @Published var chatVerdict: SessionChatVerdict?
@@ -7237,6 +7242,7 @@ final class ControllerModel: ObservableObject {
         clearChatQueue()
         chatPollTask?.cancel()
         chatPollTask = nil
+        chatPrefill.clear()
         chatDraft = ""
         chatMessages = []
         chatBinding = nil
@@ -7357,6 +7363,18 @@ final class ControllerModel: ObservableObject {
             // Fork-recommending copy gets the real Fork button, not a line.
             return nil
         }
+    }
+
+    /// Words placed in the open session's composer, unsent. Call after `openClaudeSession`, which clears the draft.
+    func prefillChat(_ words: String) {
+        chatDraft = words
+        chatPrefill.place(words)
+    }
+
+    /// Return in the composer. Placed words are not sent by it: the person edits them first, or presses Send.
+    func submitChatFromReturn() {
+        guard !chatPrefill.blocksReturn else { return }
+        sendChatMessage()
     }
 
     func sendChatMessage() {

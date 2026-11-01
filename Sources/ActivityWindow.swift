@@ -6703,7 +6703,7 @@ struct SessionChatComposer: View {
                     .cosField()
                     .lineLimit(1...6)
                     .disabled(model.chatSending || model.chatPolling || model.chatForking)
-                    .onSubmit { model.sendChatMessage() }
+                    .onSubmit { model.submitChatFromReturn() }
                 Button(model.chatEditingTurn == nil ? "Send" : "Replace") { model.sendChatMessage() }
                     .keyboardShortcut(.return, modifiers: .command)
                     .disabled(model.chatSending || model.chatPolling || model.chatForking
@@ -9679,6 +9679,7 @@ extension ActivityWindow {
         case .searchAll: return commandSearchAll(listing.words)
         case .consent(let provider, let choice): return commandChooseMeaning(provider, choice)
         case .settingsGroup(let id): return commandGoSettings(id)
+        case .continueIn(let id): return commandContinueIn(id, words: listing.words)
         case .command(let command): return commandRun(command)
         case .action(let action): return commandRun(action, words: listing.words)
         case .ask:
@@ -9874,7 +9875,8 @@ extension ActivityWindow {
                               detail: TodayHome.platform(session, host: host).badge + (session.workspace.isEmpty ? "" : ", " + session.workspace),
                               openLabel: open.label, sessionID: session.id, state: Self.commandStateWord(session.state), date: session.updatedDate,
                               keepWarm: session.isKeepWarm, match: fields["judgedText"]?.string,
-                              strength: C.Strength(wire: fields["strength"]?.string), leavesSession: compressed ? false : commandLeaves(session))
+                              strength: C.Strength(wire: fields["strength"]?.string), probability: fields["probability"]?.double,
+                              canContinue: !compressed && commandCanContinue(session), leavesSession: compressed ? false : commandLeaves(session))
             out.hits.append(CommandMeaningHit(item: item, session: session, compressed: compressed))
         }
         return out
@@ -10000,6 +10002,34 @@ extension ActivityWindow {
     func commandOpenWorkLayout(_ layout: WorkLayout) {
         select(.work)
         WorkLayout.choose(layout)
+    }
+
+    /// Whether the session's composer would be there and would take a message: not a Work run or a job the COS server holds, a provider the
+    /// server publishes with Continue on, and no key lane that refuses it. Read where a row is made and again at the click.
+    func commandCanContinue(_ session: ClaudeSession) -> Bool {
+        model.canMessagePetSession(session) && KeyLanes.refusal(sessionID: session.sessionId) == nil
+    }
+
+    /// "Continue in this session": opens the match in Sessions' reader and places the typed words in its composer, unsent. Nothing is
+    /// sent. The words go in after the open, because opening a session clears the composer. The person's own unsent reply asked first
+    /// (the row's confirm). Not offered, and not run, for a session whose composer is absent or gated, nor for a compressed Codex file.
+    func commandContinueIn(_ id: String, words: String) -> CommandEffect {
+        let held = commandKeys.meaningSessions[id]
+            ?? commandKeys.meaningSessions.first(where: { SetupAssistant.Center.sameListed($0.key, id) })?.value
+        guard let session = held, !commandKeys.meaningCompressed.contains(where: { SetupAssistant.Center.sameListed($0, id) }) else {
+            today.flash("That session is not open any more.")
+            return .stay
+        }
+        guard commandCanContinue(session) else {
+            today.flash("That session cannot take a message from here now. Open it instead.")
+            return .stay
+        }
+        select(.sessions)
+        sessionsPane = .sessions
+        selectedSessionID = session.id
+        model.openClaudeSession(session)
+        model.prefillChat(words)
+        return .close
     }
 
     /// A Settings hub group, by a catalog id the engine's closed table holds. Nothing under the classic Settings, which has no hub to land in.
@@ -10843,6 +10873,7 @@ struct CommandCenterPanel: View {
         case .searchAll: return "magnifyingglass"
         case .consent: return "sparkle"
         case .settingsGroup: return "gearshape"
+        case .continueIn: return "arrow.turn.down.right"
         case .place: return "arrow.up.forward.square"
         case .recording: return "record.circle.fill"
         case .ask: return "sparkle"

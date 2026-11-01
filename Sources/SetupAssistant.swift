@@ -1731,6 +1731,40 @@ enum SetupAssistant {
             }
         }
 
+        // MARK: Continue in (0.5.362)
+
+        /// How far the top match must be ahead of the second for "Continue in" to be offered. The model's strong band starts at 0.6.
+        static let continueGap = 0.25
+        static let continueFloor = 0.6
+
+        /// The match "Continue in" is offered for, or nil. All of these: Jev decides (SubQ's bands call almost every row strong, and a wrong
+        /// row has scored 0.70 there), the top row is Strong, its probability is at least 0.6 and at least `continueGap` over the second's,
+        /// and its session can take a message (checked where the row is made). A pasted first prompt can ask a model to pick it; a clear gap
+        /// and a Jev-only rule keep that from becoming a button. Nothing is sent by it: it opens a session and leaves words in a box.
+        static func continueTarget(_ found: MeaningFound, _ m: Meaning) -> Item? {
+            guard m.provider == .jev, let top = found.hits.first, top.strength == .strong, top.canContinue, !top.keepWarm,
+                  let p = top.probability, p >= continueFloor else { return nil }
+            if found.hits.count > 1 {
+                guard let second = found.hits[1].probability, p - second >= continueGap else { return nil }
+            }
+            return top
+        }
+
+        /// Words placed in a session's composer by "Continue in". While they stand as placed, Return in the composer sends nothing: the
+        /// person has to edit them or press Send. Pure, so the rule runs in the checks; ControllerModel holds one.
+        struct Prefill: Equatable, Sendable {
+            private(set) var text: String? = nil
+            var blocksReturn: Bool { text != nil }
+            mutating func place(_ words: String) {
+                text = words.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : words
+            }
+            /// Any change to the draft that is not the placed words ends the block.
+            mutating func draftChanged(_ draft: String) {
+                if let text, draft != text { self.text = nil }
+            }
+            mutating func clear() { text = nil }
+        }
+
         /// The question before anything is sent. The first part says what leaves, in full; SubQ's adds what it keeps. Emails, links and
         /// key-shaped text are removed on the server before anything is sent.
         static func consentText(_ provider: MeaningProvider) -> String {
@@ -1775,6 +1809,11 @@ enum SetupAssistant {
                                 state: item.state, trailing: item.openLabel, match: matchLine(item.match, title: item.title), leavesSession: item.leavesSession))
                 if let id = item.sessionID { shown.append(id) }
             }
+            // "Continue in this session": the one strong match with a clear gap, offered above the rows. Only when its own row is shown.
+            if let target = continueTarget(found, m), let shownRow = rows.first(where: { $0.id == "hit:" + target.id }) {
+                rows.insert(Row(id: "continue:" + target.id, kind: .continueIn(target.id), group: .meaning, title: "Continue in this session", detail: shownRow.title,
+                                trailing: "Continue", leavesSession: true), at: 0)
+            }
             func status(_ said: MeaningLine, _ id: String) -> Row { info(id, .meaning, said.title, detail: said.detail) }
             switch found.phase {
             case .idle: break
@@ -1808,6 +1847,8 @@ enum SetupAssistant {
             case consent(MeaningProvider, MeaningChoice)
             /// A Settings hub group (a `Center.settingsGroups` id). It opens by a closed switch in the window, like a place.
             case settingsGroup(String)
+            /// Open the strongest meaning match in Sessions' reader with the typed words in the composer, unsent. Carries the hit id.
+            case continueIn(String)
             case ask, file
             /// Words only: the saved answer, and lines like "Nothing is running."
             case savedAnswer, info
@@ -1853,6 +1894,7 @@ enum SetupAssistant {
                 case .hit: return "hit"
                 case .consent: return "consent"
                 case .settingsGroup: return "settings"
+                case .continueIn: return "continue"
                 case .searchAll: return "search"
                 case .ask: return "ask"
                 case .file: return "file"
@@ -1881,6 +1923,10 @@ enum SetupAssistant {
             var match: String? = nil
             /// How strongly the person's decision model matched it (0.5.362). Nil for a word hit. It draws a word on the row and decides nothing.
             var strength: Strength? = nil
+            /// The model's probability for it, 0 to 1 (meaning rows). It decides only whether "Continue in" is offered.
+            var probability: Double? = nil
+            /// The session's composer would be there and would take a message: checked where the row is made, and again at the click.
+            var canContinue = false
             /// Opening it takes the person out of the open session (a Sessions row, a held Work or routine run, Cursor without Accessibility).
             var leavesSession = false
         }
@@ -2542,7 +2588,7 @@ enum SetupAssistant {
                     return Footer(lead: "Return moves to " + sessionWord(row.title), title: row.title, tail: ". Return again opens it.")
                 case .recording, .waiting, .running, .place, .settingsGroup, .searchAll:
                     return Footer(lead: "Return moves to ", title: row.title, tail: ". Return again opens it.")
-                case .consent:
+                case .consent, .continueIn:
                     return Footer(lead: "Return moves to ", title: row.title, tail: ". Return again chooses it.")
                 default:
                     return Footer(lead: "Return moves to ", title: row.title, tail: ". Return again " + (confirmation(row, s) != nil ? "asks first." : "runs it."))
@@ -2554,6 +2600,8 @@ enum SetupAssistant {
                     return Footer(lead: (confirmation(row, s) != nil ? "Return asks first: " : "Return opens: ") + sessionWord(row.title), title: row.title)
                 case .recording, .waiting, .running, .place, .settingsGroup, .searchAll:
                     return Footer(lead: confirmation(row, s) != nil ? "Return asks first: " : "Return opens: ", title: row.title)
+                case .continueIn:
+                    return Footer(lead: "Return opens the session with your words ready. It does not send them.")
                 case .consent(_, let choice):
                     return Footer(lead: choice == .on ? "Return turns on search by meaning for this model." : "Return stops asking about search by meaning for this model.")
                 default:
@@ -2634,7 +2682,7 @@ enum SetupAssistant {
         /// not, and neither does a session that opens in its own app: the window says which, per row.
         static func leavesSession(_ row: Row) -> Bool {
             switch row.kind {
-            case .place, .settingsGroup, .searchAll, .recording: return true
+            case .place, .settingsGroup, .searchAll, .recording, .continueIn: return true
             case .command(let command):
                 switch command {
                 case .openSessions, .openMeetings, .openWork, .openSpeakers, .openDictation, .openMemories: return true

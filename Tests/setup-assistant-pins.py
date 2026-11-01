@@ -732,6 +732,21 @@ pin("guard !classic else { return [] }" in vs and "!hidden.contains(group.id)" i
 settings_listing = block(core, "            let groups = visibleSettings(", "            var seen: [String] = []")
 pin("autoHighlight" not in settings_listing, "Settings rows never highlight themselves")
 
+# ---- 0.5.362: Continue in -------------------------------------------------------------------------------------------------------------
+
+cont = block(ext, "    func commandContinueIn(_ id: String, words: String) -> CommandEffect {", "\n    }\n")
+pin(before(cont, "guard commandCanContinue(session) else", "model.openClaudeSession(session)", "model.prefillChat(words)"), "Continue in checks the session again at the click, opens it, and only then places the words (opening clears the composer)")
+pin("sendChatMessage" not in cont and "model.send" not in cont and "perform(" not in cont, "Continue in sends nothing")
+pin("model.canMessagePetSession(session) && KeyLanes.refusal(sessionID: session.sessionId) == nil" in ext and "canContinue: !compressed && commandCanContinue(session)" in find_fn, "a row is checked for a composer where it is made, with the same gate the pane uses and the key lanes' refusal")
+pin(".onSubmit { model.submitChatFromReturn() }" in window and ".onSubmit { model.sendChatMessage() }" not in window, "Return in the composer goes through the prefill block")
+cm_code = code(read("Sources/ControllerModel.swift"))
+pin("didSet { chatPrefill.draftChanged(chatDraft) }" in cm_code and "chatPrefill.clear()" in block(cm_code, "    private func resetSessionChat() {", "    private func prepareSessionChat("), "an edit ends the block, and opening a session clears it")
+pin("guard !chatPrefill.blocksReturn else { return }\n        sendChatMessage()" in cm_code, "Return in the composer sends nothing while placed words stand")
+pin(cm_code.count("chatPrefill.place(") == 1 and "func prefillChat(_ words: String) {" in cm_code and window.count("prefillChat(") == 1, "one place sets the block, and one caller uses it")
+cmod = block(core, "        static func continueTarget(", "\n        }\n")
+pin("m.provider == .jev" in cmod and "top.strength == .strong" in cmod and "p >= continueFloor" in cmod and "p - second >= continueGap" in cmod and "top.canContinue" in cmod, "Continue in is Jev only, Strong only, with a clear gap, for a session that can take a message")
+pin("static let continueGap = 0.25" in core and "static let continueFloor = 0.6" in core, "the gap and the floor are named")
+
 pin("s.classicSettings = classicSettings" in window and "var classicSettings = false" in core, "the window passes the classic Settings flag")
 
 if failures:

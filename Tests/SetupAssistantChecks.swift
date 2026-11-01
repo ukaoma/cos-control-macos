@@ -83,6 +83,7 @@ import Foundation
         centerSearch()
         centerMeaning()
         centerStaleRunning()
+        centerContinue()
         centerFooter()
         centerConfirms()
         centerAsk()
@@ -1488,6 +1489,68 @@ import Foundation
             check(!banned.contains { text.contains($0) } && !hedges.contains { (" " + text.lowercased() + " ").contains($0) }, "[meaning copy rules]", text)
         }
         check(said.count >= 40, "[meaning copy rules]", "read \(said.count) strings")
+    }
+
+    static func scored(_ id: String, _ title: String, _ strength: C.Strength, _ p: Double, canContinue: Bool = true) -> C.Item {
+        var item = meaningHit(id, title, strength)
+        item.probability = p
+        item.canContinue = canContinue
+        return item
+    }
+
+    static func centerContinue() {
+        let on = meaningCenter(.jev)
+        let words = topic
+        let one = [scored("claude:abc12345", "Jewelry persona review", .strong, 0.82), scored("codex:def67890", "Quarterly planning", .likely, 0.41)]
+        func listing(_ hits: [C.Item], _ inputs: C.Inputs? = nil) -> C.Listing { C.listing(found(inputs ?? on, words: words, .done, hits: hits), words: words) }
+        let offered = listing(one)
+        check(row(offered, "continue:claude:abc12345")?.title == "Continue in this session" && row(offered, "continue:claude:abc12345")?.detail == "Jewelry persona review", "[Continue in names the session in its detail]", "\(rowIDs(offered))")
+        check(rowIDs(offered).first(where: { $0.hasPrefix("continue:") || $0.hasPrefix("hit:") }) == "continue:claude:abc12345" && row(offered, "continue:claude:abc12345")?.group == .meaning, "[Continue in sits above the rows]", "")
+        // Only Jev, only a Strong top row, a clear gap, a session that can take a message.
+        check(row(listing(one, meaningCenter(.subq, choices: ["subq": .on])), "continue:claude:abc12345") == nil, "[Continue in is Jev only]", "")
+        check(listing([scored("claude:abc12345", "A", .likely, 0.55), one[1]]).rows.allSatisfy { !$0.id.hasPrefix("continue:") }, "[Continue in needs a strong match]", "")
+        check(listing([scored("claude:abc12345", "A", .strong, 0.61), scored("codex:def67890", "B", .likely, 0.5)]).rows.allSatisfy { !$0.id.hasPrefix("continue:") }, "[Continue in needs a clear gap to the second row]", "")
+        check(listing([scored("claude:abc12345", "A", .strong, 0.9), scored("codex:def67890", "B", .strong, 0.8)]).rows.allSatisfy { !$0.id.hasPrefix("continue:") }, "[Continue in needs a clear gap to the second row]", "two strong")
+        check(row(listing([scored("claude:abc12345", "A", .strong, 0.85), scored("codex:def67890", "B", .likely, 0.60)]), "continue:claude:abc12345") != nil, "[a gap of a quarter is clear]", "")
+        check(listing([scored("claude:abc12345", "A", .strong, 0.85)] + [scored("codex:def67890", "B", .possible, 0.1)]).rows.contains { $0.id == "continue:claude:abc12345" }, "[a weak second row leaves the gap clear]", "")
+        var unknown = one; unknown[1].probability = nil
+        check(listing(unknown).rows.allSatisfy { !$0.id.hasPrefix("continue:") }, "[an unknown second probability is no gap]", "")
+        check(listing([scored("claude:abc12345", "A", .strong, 0.5)]).rows.allSatisfy { !$0.id.hasPrefix("continue:") }, "[Continue in needs 0.6]", "")
+        check(listing([scored("claude:abc12345", "A", .strong, 0.9, canContinue: false), one[1]]).rows.allSatisfy { !$0.id.hasPrefix("continue:") }, "[no Continue in when the composer would be absent or gated]", "")
+        check(C.continueTarget(C.MeaningFound(), on.meaning) == nil, "[no rows, no Continue in]", "")
+        let titleInputs = meaningCenter(.jev, sessions: [listed("claude:abc12345ef56", "Jewelry persona review", days: 1)])
+        let titled = C.listing(found(titleInputs, words: "jewelry persona review", .done, hits: one), words: "jewelry persona review")
+        check(titled.rows.allSatisfy { !$0.id.hasPrefix("continue:") }, "[no Continue in for a session the title row already shows]", "\(rowIDs(titled))")
+        // It never takes Return, before or after rows arrive, and the second Return still runs Ask.
+        check(returned(words, inputs: found(on, words: words, .done, hits: one)) == .move("ask") && returned(words, chosen: "ask", inputs: found(on, words: words, .done, hits: one)) == returnRuns("ask"), "[Continue in never takes Return]", "")
+        check(returned(words, inputs: found(on, words: words, .searching)) == returned(words, inputs: found(on, words: words, .done, hits: one)), "[Return does the same before and after Continue in arrives]", "")
+        // A chosen one is run on purpose, asks first for an unsent reply, and leaves the open session.
+        let r = row(offered, "continue:claude:abc12345")!
+        check(C.onReturn(option: false, chosen: r.id, confirming: false, noticeShowing: false, offered, on.snapshot) == returnRuns(r.id), "[a chosen Continue in is run]", "")
+        var draft = healthy(); draft.unsentSessionDraft = true
+        check(C.leavesSession(r) && C.confirmation(r, draft) == C.draftConfirm && C.confirmation(r, healthy()) == nil, "[Continue in asks before it overwrites an unsent reply]", "")
+        check(!C.sendsWords(r) && !C.keepsWordsWhileStaying(r) && C.draftAfterRun(r, words) == "", "[Continue in hands the words over and empties the box]", "")
+        check(C.hint(returnRuns(r.id), offered, on.snapshot) == "Return opens the session with your words ready. It does not send them.", "[the hint says it does not send]", C.hint(returnRuns(r.id), offered, on.snapshot))
+        // The placed words block Return in the composer until they are edited.
+        var prefill = C.Prefill()
+        check(!prefill.blocksReturn, "[nothing placed blocks nothing]", "")
+        prefill.place("find the persona pricing session")
+        check(prefill.blocksReturn, "[placed words block Return in the composer]", "")
+        prefill.draftChanged("find the persona pricing session")
+        check(prefill.blocksReturn, "[the placed words themselves keep the block]", "")
+        prefill.draftChanged("find the persona pricing session now")
+        check(!prefill.blocksReturn, "[an edit ends the block]", "")
+        prefill.draftChanged("find the persona pricing session")
+        check(!prefill.blocksReturn, "[an edit that is typed back does not bring the block back]", "")
+        prefill.place("   ")
+        check(!prefill.blocksReturn, "[blank words block nothing]", "")
+        prefill.place("hello there")
+        prefill.clear()
+        check(!prefill.blocksReturn, "[opening another session clears the block]", "")
+        // Copy.
+        for text in [r.title, r.detail ?? "", r.trailing ?? ""] {
+            check(!text.contains("\u{2014}") && !text.contains("\u{2192}") && !text.contains("->"), "[Continue in copy rules]", text)
+        }
     }
 
     static func centerStaleRunning() {
