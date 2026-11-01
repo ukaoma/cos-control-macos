@@ -460,6 +460,16 @@ import Foundation
             let r = C.Row(id: "x", kind: kind, group: .doing, title: "x")
             check(!C.sendsWords(r) && C.draftAfterRun(r, "open work").isEmpty, "[a row that ran leaves no draft]", "\(kind)")
         }
+        // The classic Settings' Dictation row opens the Dictation tab and leaves the open session; the hub's opens Settings and does not.
+        let drafting = center { $0.snapshot.unsentSessionDraft = true }
+        let classicRow = C.Row(id: "action:openDictationSettings", kind: .action(.openDictationSettings), group: .answer, title: "x", leavesSession: true)
+        let hubRow = C.Row(id: "action:openDictationSettings", kind: .action(.openDictationSettings), group: .answer, title: "x")
+        check(C.confirmation(classicRow, drafting.snapshot) != nil && C.confirmation(hubRow, drafting.snapshot) == nil, "[the classic Dictation settings row asks first with an unsent reply]", "")
+        let classicListing = C.listing(center { $0.snapshot.classicSettings = true }, words: "dictation does not paste")
+        let dictationOffer = classicListing.rows.first { $0.id == "action:openDictationSettings" }
+        check(dictationOffer == nil || dictationOffer?.leavesSession == true, "[the classic Dictation settings row says it leaves the session]", "\(rowIDs(classicListing))")
+        let hubListing = C.listing(center(), words: "dictation does not paste")
+        check(hubListing.rows.first { $0.id == "action:openDictationSettings" }?.leavesSession != true, "[the hub's Dictation settings row leaves nothing]", "")
         // A hit whose open is under way keeps the words while the panel stays open; nothing else does, and a hit that closes the panel leaves none.
         let hitRow = C.Row(id: "hit:x", kind: .hit("x"), group: .found, title: "x")
         check(C.keepsWordsWhileStaying(hitRow) && !C.sendsWords(hitRow) && C.draftAfterRun(hitRow, "pricing").isEmpty, "[a hit keeps its words only while the panel stays]", "")

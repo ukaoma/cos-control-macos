@@ -72,6 +72,8 @@ enum SetupAssistant {
     }
 
     struct Snapshot: Sendable, Equatable {
+        /// The classic Settings is in use: its Dictation row opens the Dictation tab (and leaves the open session), where the hub's opens Settings.
+        var classicSettings = false
         /// ServerStatus.running: /api/health answered 200.
         var serverReachable = false
         /// ServerStatus.runtimeState (RuntimeState in HelperSources/main.swift).
@@ -1915,7 +1917,8 @@ enum SetupAssistant {
                 result.entry = saved.entry
                 rows.append(Row(id: "answer", kind: .savedAnswer, group: .answer, title: saved.entry.title, detail: saved.text, state: "Saved answer"))
                 for offer in saved.offers {
-                    rows.append(Row(id: "action:" + offer.action.rawValue, kind: .action(offer.action), group: .answer, title: rowTitle(offer.action), held: offer.held))
+                    rows.append(Row(id: "action:" + offer.action.rawValue, kind: .action(offer.action), group: .answer, title: rowTitle(offer.action), held: offer.held,
+                                    leavesSession: offer.action == .openDictationSettings && s.classicSettings))
                 }
             } else if result.autoHighlight == nil, ranked.isEmpty, placed.isEmpty, sessions.isEmpty {
                 rows.append(info("no-answer", .answer, "No saved answer for this."))
@@ -2123,7 +2126,7 @@ enum SetupAssistant {
                 case .openSessions, .openMeetings, .openWork, .openSpeakers, .openDictation, .openMemories: return true
                 case .startRecording, .stopRecording, .openSettings, .runDoctor: return false
                 }
-            case .action(let action): return action == .openMeetings || action == .openSpeakers
+            case .action(let action): return action == .openMeetings || action == .openSpeakers || row.leavesSession
             case .waiting, .running, .session, .hit: return row.leavesSession
             case .ask, .file, .savedAnswer, .info: return false
             }

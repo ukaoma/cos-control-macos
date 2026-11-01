@@ -9431,6 +9431,7 @@ extension ActivityWindow {
     func commandSnapshot() -> SetupAssistant.Snapshot {
         let status = model.status
         var s = SetupAssistant.Snapshot()
+        s.classicSettings = classicSettings
         s.serverReachable = status.running
         s.runtimeState = status.runtimeState
         s.installed = status.installed

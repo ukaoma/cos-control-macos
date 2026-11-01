@@ -618,6 +618,8 @@ for callee in scan_callees:
 pin("Process()" in helper_function("loadCursorPinnedIds") and "readCursorPins ? loadCursorPinnedIds(" in helper_function("localSessionKeywordHits"),
     "the one process the scan can reach is the Cursor pin read, and only behind readCursorPins")
 
+pin("s.classicSettings = classicSettings" in window and "var classicSettings = false" in core, "the window passes the classic Settings flag")
+
 if failures:
     for failure in failures:
         print("Setup assistant pin: " + failure, file=sys.stderr)
