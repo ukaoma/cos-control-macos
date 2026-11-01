@@ -43,6 +43,15 @@ def bump_build(scratch):
     path.write_bytes(plistlib.dumps(info))
 
 
+def drop_scrub(scratch):
+    """Removes the whole scrub: the guard self-tests then inherit run.sh's exports."""
+    path = scratch / "Tests/preflight.sh"
+    text, n = re.subn(r"^GUARD_SCRUB=\(.*\)$", "GUARD_SCRUB=(/usr/bin/env)", path.read_text(), flags=re.M)
+    if n != 1:
+        raise SystemExit(f"GUARD_SCRUB lands {n} times in preflight.sh, not once")
+    path.write_text(text)
+
+
 def first_png():
     return str(sorted((root / "Resources/BundledCharacters/jedi-miles-windu").glob("*.png"))[0].relative_to(root))
 
@@ -63,6 +72,8 @@ MUTANTS = [
     ("source-greps", ["Sources/Models.swift"], lambda s: append(s / "Sources/Models.swift", '\n        case "recent": "Today"\n')),
     ("preflight-selftest", ["Tests/preflight-pins.py"], lambda s: edit(s / "Tests/preflight-pins.py", 'CONFLICT = re.compile(r" [0-9]+(\\.[^/ ]*)?$")', 'CONFLICT = re.compile(r" [0-9]+NEVER$")')),
     ("run-header", ["Tests/run.sh"], lambda s: edit(s / "Tests/run.sh", """trap 'print -u2 "FAIL at run.sh:$LINENO"' ZERR\n""", "")),
+    ("scrub-list", ["Tests/preflight.sh"], lambda s: edit(s / "Tests/preflight.sh", " -u COS_TEST_KIT_STORE", "")),
+    ("run-env", ["Tests/preflight.sh"], drop_scrub),
     ("compile-bounded", ["Tests/compile-bounded.py"], lambda s: edit(s / "Tests/compile-bounded.py", "RSS_CAP = 8 * GIB", "RSS_CAP = 80 * GIB")),
     ("compile-slots", ["Tests/compile-bounded.py", "Tests/test-compile-slots.py"], lambda s: edit(s / "Tests/compile-bounded.py",
         "max(live, key=lambda o: (o['acquiredNs'], o['pid']))['pid'] != me", "min(live, key=lambda o: (o['acquiredNs'], o['pid']))['pid'] != me")),
@@ -102,6 +113,9 @@ def main():
             mutate(scratch)
             done, secs = run_preflight(scratch, check_id)
             named = f"PREFLIGHT FAIL: {check_id}" in done.stderr
+            if check_id == "run-env":
+                # The planted defect is the removed scrub, so the failure must come from test-compile-slots.py (70 != 0).
+                named = named and "PREFLIGHT FAIL: compile-slots" in done.stdout + done.stderr
             if done.returncode == 1 and named:
                 killed += 1
                 print(f"KILLED  {check_id:26} rc=1  \"PREFLIGHT FAIL: {check_id}\"  {secs:.0f}s")

@@ -19,13 +19,23 @@
 #   run-header           the top of run.sh run alone: a failing pin prints FAIL at run.sh:N, one EXIT trap, the pinned
 #                        compile profile, the kit store and its off switch, the logs, the background full-app compile
 #                        (status read, stopped on failure, off by default); 11 header mutants must be caught
+#   scrub-list           every `export COS_*` in the top of run.sh is in GUARD_SCRUB below
+#   run-env              this file run the way run.sh runs it (the top of run.sh executed first, so its exports are
+#                        set), for compile-slots and kit-compile; it must pass. Standalone runs missed the failure that
+#                        run.sh's COS_COMPILE_PROFILE=bounded caused in compile-slots.
 #   compile-bounded, compile-slots, kit-compile, reuse-compile
-#                        the compile-guard self-tests, which run stand-in compilers and never ran in the suite
+#                        the compile-guard self-tests, which run stand-in compilers and never ran in the suite; each runs
+#                        under GUARD_SCRUB, an environment without the suite's COS_COMPILE_* and COS_TEST_KIT_* variables
 set -uo pipefail
 # The unittest-based self-tests print Python 3.9 ResourceWarnings about their own helper processes; they are not failures.
 export PYTHONWARNINGS=ignore::ResourceWarning
 ROOT="${0:A:h:h}"
 PY=/usr/bin/python3
+# The compile-guard self-tests build the guard's environment themselves, so they must not inherit the suite's. Tests/run.sh
+# exports COS_COMPILE_PROFILE=bounded and the kit variables before it calls this file, and test-compile-slots.py then failed
+# (70 != 0), which would have stopped every full suite in its first minute. Standalone runs hid it. The list below is every
+# COS variable run.sh exports plus the guard's own knobs; the scrub-list check keeps it complete.
+GUARD_SCRUB=(/usr/bin/env -u COS_COMPILE_PROFILE -u COS_COMPILE_SLOTS -u COS_COMPILE_GUARD_HELD -u COS_COMPILE_LOCK -u COS_COMPILE_MIN_FREE_GB -u COS_COMPILE_MAX_FRONTEND_GB -u COS_COMPILE_MAX_TOTAL_GB -u COS_TEST_KIT -u COS_TEST_KIT_PERSIST -u COS_TEST_KIT_STORE -u COS_TEST_KIT_DIR -u COS_TEST_KIT_LOG)
 ONLY="${COS_PREFLIGHT_ONLY:-}"
 FAILED=()
 RAN=0
@@ -57,10 +67,12 @@ check negated-pins             "$PY" "$ROOT/Tests/preflight-pins.py" negated "$R
 check source-greps             "$PY" "$ROOT/Tests/preflight-pins.py" greps "$ROOT"
 check preflight-selftest       "$PY" "$ROOT/Tests/preflight-pins.py" --selftest "$ROOT"
 check run-header               "$PY" "$ROOT/Tests/run-header-selftest.py" "$ROOT"
-check compile-bounded          "$PY" "$ROOT/Tests/test-compile-bounded.py"
-check compile-slots            "$PY" "$ROOT/Tests/test-compile-slots.py"
-check kit-compile              "$PY" "$ROOT/Tests/test-kit-compile.py"
-check reuse-compile            "$PY" "$ROOT/Tests/test-reuse-compile.py"
+check scrub-list               "$PY" "$ROOT/Tests/preflight-pins.py" scrub "$ROOT"
+check run-env                  "$PY" "$ROOT/Tests/preflight-pins.py" runenv "$ROOT"
+check compile-bounded          "${GUARD_SCRUB[@]}" "$PY" "$ROOT/Tests/test-compile-bounded.py"
+check compile-slots            "${GUARD_SCRUB[@]}" "$PY" "$ROOT/Tests/test-compile-slots.py"
+check kit-compile              "${GUARD_SCRUB[@]}" "$PY" "$ROOT/Tests/test-kit-compile.py"
+check reuse-compile            "${GUARD_SCRUB[@]}" "$PY" "$ROOT/Tests/test-reuse-compile.py"
 
 if (( RAN == 0 )); then
   print -u2 "PREFLIGHT FAIL: COS_PREFLIGHT_ONLY=$ONLY names no check"
