@@ -11826,9 +11826,10 @@ final class COSControlHelper {
         for dir in dirs {
             let isDir = (try? dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
             guard isDir else { continue }
+            // Bounded (newest set): no date is prefetched for every file in the folder, only read for the few the filter keeps.
             guard let files = try? FileManager.default.contentsOfDirectory(
                 at: dir,
-                includingPropertiesForKeys: [.contentModificationDateKey, .creationDateKey],
+                includingPropertiesForKeys: newest == nil ? [.contentModificationDateKey, .creationDateKey] : nil,
                 options: [.skipsHiddenFiles]
             ) else { continue }
             for file in files {
@@ -11838,12 +11839,14 @@ final class COSControlHelper {
                 let sessionId = String(name.dropLast(6))
                 let shortId = String(sessionId.prefix(8))
                 if liveIds.contains(shortId) || liveIds.contains(sessionId) { continue }
+                let pinned = starredIds.contains(sessionId.lowercased())
+                // The newest-N filter first: it needs no file read, and the dates of the hundreds it drops were each a stat call (measured 0.3 s).
+                if let allowed, !pinned, !allowed.contains(file) { continue }
                 let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .creationDateKey])
                 let mtime = values?.contentModificationDate ?? .distantPast
-                let pinned = starredIds.contains(sessionId.lowercased())
                 let fresh = now.timeIntervalSince(mtime) <= maxAge
                 if !pinned && !fresh { continue }
-                if let allowed, !pinned, !allowed.contains(file) { continue }
+                if newest != nil, !isRegularTranscript(file) { continue }
                 let desktop = index[sessionId.lowercased()] ?? index[shortId]
                 var title = desktop?.title ?? ""
                 // 0.5.250: a title someone gave the session (Desktop's, or a custom-title) is never read as a warm-up.
@@ -12744,11 +12747,22 @@ final class COSControlHelper {
         return uuid.lowercased()
     }
 
-    static func loadCodexThreadNames(sessionsRoot: URL) -> [String: String] {
+    /// `tailBytes`: read only the end of the index (the newest names; a later line for an id wins anyway). The ⌘K search passes it so a
+    /// long-lived install does not read the whole file on every keystroke's search. Nil reads it all, as the Sessions scan always did.
+    static func loadCodexThreadNames(sessionsRoot: URL, tailBytes: Int? = nil) -> [String: String] {
         let index = sessionsRoot.deletingLastPathComponent().appendingPathComponent("session_index.jsonl")
         guard let handle = try? FileHandle(forReadingFrom: index) else { return [:] }
         defer { try? handle.close() }
-        guard let text = String(data: handle.readDataToEndOfFile(), encoding: .utf8) else { return [:] }
+        var data = Data()
+        if let tailBytes, let size = (try? index.resourceValues(forKeys: [.fileSizeKey]).fileSize), size > tailBytes {
+            guard (try? handle.seek(toOffset: UInt64(size - tailBytes))) != nil else { return [:] }
+            data = (try? handle.readToEnd()) ?? Data()
+            // The first line of the tail is cut: drop it.
+            if let newline = data.firstIndex(of: 0x0A) { data = Data(data[data.index(after: newline)...]) } else { data = Data() }
+        } else {
+            data = handle.readDataToEndOfFile()
+        }
+        guard let text = String(data: data, encoding: .utf8) else { return [:] }
         var names: [String: String] = [:]
         for line in text.split(whereSeparator: \.isNewline) {
             guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
@@ -12837,19 +12851,31 @@ final class COSControlHelper {
         sessionsRoot: URL,
         now: Date = Date(),
         maxAge: TimeInterval = agentSessionMaxAge,
-        limit: Int = agentSessionListLimit
+        limit: Int = agentSessionListLimit,
+        newest: Int? = nil,
+        namesTailBytes: Int? = nil
     ) -> [[String: Any]] {
-        let names = loadCodexThreadNames(sessionsRoot: sessionsRoot)
+        let names = loadCodexThreadNames(sessionsRoot: sessionsRoot, tailBytes: namesTailBytes)
         let pinnedIds = loadCodexPinnedIds(sessionsRoot: sessionsRoot)
         var pinnedRows: [(mtime: Date, row: [String: Any])] = []
         var recentRows: [(mtime: Date, row: [String: Any])] = []
-        for file in listCodexJsonlFiles(sessionsRoot: sessionsRoot) {
-            let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .creationDateKey])
-            let mtime = values?.contentModificationDate ?? .distantPast
+        let codexFiles = listCodexJsonlFiles(sessionsRoot: sessionsRoot)
+        // `newest`: read the head of this many rollouts only, the most recently written (pinned ones still all count). Each head is a 256 KB
+        // read, and a heavy Codex user has hundreds of rollouts (subagents included) in a week.
+        var allowed: Set<URL>?
+        if let newest {
+            let dated = codexFiles.map { ($0, (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast) }
+            allowed = Set(dated.sorted { $0.1 > $1.1 }.prefix(newest).map(\.0))
+        }
+        for file in codexFiles {
             let fileId = idFromCodexFilename(file.lastPathComponent)
             let pinned = fileId.map { pinnedIds.contains($0) } ?? false
+            if let allowed, !pinned, !allowed.contains(file) { continue }
+            let values = try? file.resourceValues(forKeys: [.contentModificationDateKey, .creationDateKey])
+            let mtime = values?.contentModificationDate ?? .distantPast
             let fresh = now.timeIntervalSince(mtime) <= maxAge
             if !pinned && !fresh { continue }
+            if newest != nil, !isRegularTranscript(file) { continue }
             guard let meta = peekCodexMeta(in: file), meta.subagent == false else { continue }
             let nativeId = meta.id.isEmpty ? file.deletingPathExtension().lastPathComponent : meta.id
             let title = names[nativeId] ?? (meta.title.isEmpty ? "Codex session" : meta.title)
@@ -13758,7 +13784,8 @@ final class COSControlHelper {
         limit: Int = agentSessionListLimit,
         composerNames: [String: String] = [:],
         composerActivity: [String: CursorComposerActivity] = [:],
-        pinnedIds: Set<String> = []
+        pinnedIds: Set<String> = [],
+        newest: Int? = nil
     ) -> [[String: Any]] {
         guard let projects = try? FileManager.default.contentsOfDirectory(
             at: projectsRoot,
@@ -13766,6 +13793,24 @@ final class COSControlHelper {
             options: [.skipsHiddenFiles]
         ) else { return [] }
         var byId: [String: (mtime: Date, row: [String: Any], workspace: String)] = [:]
+        // `newest`: title this many transcripts only, the most recently written (pinned ones still all count). An unnamed Cursor session's
+        // title is a read of up to 512 KB.
+        var allowed: Set<URL>?
+        if let newest {
+            var dated: [(file: URL, mtime: Date)] = []
+            for project in projects {
+                guard (try? project.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { continue }
+                let folder = project.lastPathComponent
+                if folder.contains("var-folders") || folder.contains("private-var") { continue }
+                let sessions = (try? FileManager.default.contentsOfDirectory(at: project.appendingPathComponent("agent-transcripts", isDirectory: true), includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+                for sessionDir in sessions where sessionDir.lastPathComponent != "subagents" {
+                    let file = sessionDir.appendingPathComponent("\(sessionDir.lastPathComponent).jsonl")
+                    guard let mtime = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate else { continue }
+                    dated.append((file, mtime))
+                }
+            }
+            allowed = Set(dated.sorted { $0.mtime > $1.mtime }.prefix(newest).map(\.file))
+        }
         for project in projects {
             let isDir = (try? project.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
             guard isDir else { continue }
@@ -13789,6 +13834,8 @@ final class COSControlHelper {
                 let mtime = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
                 let fresh = now.timeIntervalSince(mtime) <= maxAge
                 if !pinned && !fresh { continue }
+                if let allowed, !pinned, !allowed.contains(file) { continue }
+                if newest != nil, !isRegularTranscript(file) { continue }
                 let created = (try? file.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? mtime
                 let title = composerNames[nativeId]
                     ?? lastCursorUserTitle(in: file)
@@ -18073,17 +18120,24 @@ final class COSControlHelper {
         return nil
     }
 
+    /// A transcript the ⌘K scan may open: a regular file. A symlink can point anywhere (it reads as not regular, probed), a FIFO blocks
+    /// the whole scan until it times out, and a directory has no body.
+    static func isRegularTranscript(_ file: URL) -> Bool {
+        (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+    }
+
     static func peekSessionSearchBody(in file: URL, maxBytes: Int = sessionSearchBodyBytes) -> String {
-        guard let handle = try? FileHandle(forReadingFrom: file) else { return "" }
+        guard isRegularTranscript(file), let handle = try? FileHandle(forReadingFrom: file) else { return "" }
         defer { try? handle.close() }
-        let data = handle.readData(ofLength: maxBytes)
-        // Lenient: a window cut inside a multibyte character made the strict decode drop the whole file (2 of the 80 newest, measured).
-        // The cut line fails its own JSON parse and is skipped.
-        let text = String(decoding: data, as: UTF8.self)
+        // The throwing read: the old one raises an Objective-C exception on an I/O error, and an exception ends the helper.
+        guard let data = try? handle.read(upToCount: maxBytes) else { return "" }
+        // The bytes are split at newlines and each line is parsed as it is: no whole-window String decode (a cut inside a multibyte character
+        // dropped the whole file before, 2 of the 80 newest, measured) and no split by Character. Splitting 96 KB by grapheme cluster, 80
+        // times, was 0.3 s of the scan. The cut last line fails its own JSON parse and is skipped.
         var parts: [String] = []
         var used = 0
-        for line in text.split(whereSeparator: \.isNewline) {
-            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+        for line in data.split(separator: 0x0A, omittingEmptySubsequences: true) {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
                   let chunk = sessionSearchBodyChunk(obj) else { continue }
             parts.append(chunk)
             used += chunk.count
@@ -18130,7 +18184,7 @@ final class COSControlHelper {
                 guard uuidName?.firstMatch(in: name, range: whole) != nil else { continue }
                 let mtime = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
                     ?? .distantPast
-                guard now.timeIntervalSince(mtime) <= maxAge else { continue }
+                guard now.timeIntervalSince(mtime) <= maxAge, isRegularTranscript(file) else { continue }
                 rows.append(SessionSearchTranscript(
                     provider: "claude",
                     id: String(name.dropLast(6)),
@@ -18142,7 +18196,7 @@ final class COSControlHelper {
         for file in listCodexJsonlFiles(sessionsRoot: codexRoot) {
             let mtime = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
                 ?? .distantPast
-            guard now.timeIntervalSince(mtime) <= maxAge else { continue }
+            guard now.timeIntervalSince(mtime) <= maxAge, isRegularTranscript(file) else { continue }
             let id = idFromCodexFilename(file.lastPathComponent)
                 ?? file.deletingPathExtension().lastPathComponent
             rows.append(SessionSearchTranscript(provider: "codex", id: id, file: file, mtime: mtime))
@@ -18170,7 +18224,7 @@ final class COSControlHelper {
                 guard FileManager.default.fileExists(atPath: file.path) else { continue }
                 let mtime = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
                     ?? .distantPast
-                guard now.timeIntervalSince(mtime) <= maxAge else { continue }
+                guard now.timeIntervalSince(mtime) <= maxAge, isRegularTranscript(file) else { continue }
                 rows.append(SessionSearchTranscript(provider: "cursor", id: nativeId, file: file, mtime: mtime))
             }
         }
@@ -18186,7 +18240,8 @@ final class COSControlHelper {
     }
 
     /// `desktopNewest`: see `loadClaudeDesktopIndex(from:newest:)`. Nil searches every Desktop title, as the Sessions fallback does.
-    static func localSessionKeywordHits(query: String, limit: Int, home: URL, desktopNewest: Int? = nil, transcriptNewest: Int? = nil, readCursorPins: Bool = true) -> [[String: Any]] {
+    static func localSessionKeywordHits(query: String, limit: Int, home: URL, desktopNewest: Int? = nil, transcriptNewest: Int? = nil, readCursorPins: Bool = true,
+                                        codexNewest: Int? = nil, cursorNewest: Int? = nil, codexNamesTailBytes: Int? = nil) -> [[String: Any]] {
         let tokens = tokenizeSessionQuery(query)
         guard !tokens.isEmpty else { return [] }
         let claudeProjects = home.appendingPathComponent(".claude/projects", isDirectory: true)
@@ -18253,7 +18308,7 @@ final class COSControlHelper {
             desktopOnlyRows: false
         ) { add(row) }
         let codexRoot = home.appendingPathComponent(".codex/sessions", isDirectory: true)
-        for (id, name) in loadCodexThreadNames(sessionsRoot: codexRoot) {
+        for (id, name) in loadCodexThreadNames(sessionsRoot: codexRoot, tailBytes: codexNamesTailBytes) {
             add([
                 "id": id,
                 "provider": "codex",
@@ -18269,7 +18324,7 @@ final class COSControlHelper {
                 "updatedAt": "",
             ])
         }
-        for row in recentCodexConversations(sessionsRoot: codexRoot) { add(row) }
+        for row in recentCodexConversations(sessionsRoot: codexRoot, newest: codexNewest, namesTailBytes: codexNamesTailBytes) { add(row) }
         for (id, name) in composerNames {
             add([
                 "id": id,
@@ -18290,7 +18345,8 @@ final class COSControlHelper {
         for row in recentCursorConversations(
             projectsRoot: cursorProjects,
             composerNames: composerNames,
-            pinnedIds: cursorPinned
+            pinnedIds: cursorPinned,
+            newest: cursorNewest
         ) { add(row) }
         let transcripts = listSessionSearchTranscripts(
             claudeProjects: claudeProjects,
@@ -18407,6 +18463,10 @@ final class COSControlHelper {
     static let localSearchDesktopNewest = 30
     /// And how many Claude transcripts are titled: the newest (each title is a 256 KB read).
     static let localSearchTranscriptNewest = 20
+    /// The same bound for Codex rollouts and Cursor transcripts, and how much of Codex's name index the search reads (its end).
+    static let localSearchCodexNewest = 20
+    static let localSearchCursorNewest = 20
+    static let localSearchCodexNamesTailBytes = 256 * 1024
 
     private func emitLocalSessionsSearch(args: [String]) throws {
         var input = Data()
@@ -18419,7 +18479,8 @@ final class COSControlHelper {
         guard query.count >= 3 else { throw HelperError.message("The words must be at least 3 characters.") }
         let limit = min(max(Int(option("--limit", in: args) ?? "8") ?? 8, 1), 20)
         let rows = Self.localSessionKeywordHits(query: query, limit: limit, home: home,
-                                                desktopNewest: Self.localSearchDesktopNewest, transcriptNewest: Self.localSearchTranscriptNewest, readCursorPins: false)
+                                                desktopNewest: Self.localSearchDesktopNewest, transcriptNewest: Self.localSearchTranscriptNewest, readCursorPins: false,
+                                                codexNewest: Self.localSearchCodexNewest, cursorNewest: Self.localSearchCursorNewest, codexNamesTailBytes: Self.localSearchCodexNamesTailBytes)
         emit(ok: true, message: rows.isEmpty ? "No matching sessions" : "Session lookup ready", details: [
             "state": rows.isEmpty ? "empty" : "ready",
             "hits": rows,
