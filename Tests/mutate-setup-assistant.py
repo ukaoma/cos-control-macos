@@ -469,7 +469,7 @@ MUTANTS = [
     ("view: the words are placed before the open", W, "        model.openClaudeSession(session)\n        model.prefillChat(words)\n", "        model.prefillChat(words)\n        model.openClaudeSession(session)\n", "only then places the words"),
     ("view: Continue in skips the click-time check", W, "        guard commandCanContinue(session) else {\n            today.flash(\"That session cannot take a message from here now. Open it instead.\")\n            return .stay\n        }\n", "", "checks the session again at the click"),
     ("view: Continue in sends", W, "        model.prefillChat(words)\n        return .close", "        model.prefillChat(words)\n        model.sendChatMessage()\n        return .close", "sends nothing"),
-    ("center: the words leave as plain words", C, "            let sent = queryWords(raw)\n", "            let sent = String(plain(raw).prefix(200))\n", "sent as typed"),
+    ("center: the words leave as plain words", C, "            let sent = queryWords(raw)\n", "            let sent = String(plain(raw).prefix(200))\n", "typed words with secrets hidden"),
     ("center: an email leaves with the words", C, r'''            #"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#,''' + "\n", "", "nothing a secret is"),
     ("center: a link leaves with the words", C, r'''            #"(?i)(?:\b[a-z][a-z0-9+.\-]*://|\bwww\.)\S+"#,''' + "\n", "", "nothing a secret is"),
     ("center: a key=value leaves with the words", C, r'''            #"(?i)[\p{L}\p{N}_\-]*(?:key|secret|token|passw|contrase|senha|mot de passe|geheim)[\p{L}\p{N}_\-]*\s*[:=]\s*\S+"#,''' + "\n", "", "nothing a secret is"),

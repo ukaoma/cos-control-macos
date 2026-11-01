@@ -25,7 +25,7 @@ MUTANTS = [
     ("helper: a late answer is unreachable", H, 'details: ["available": false, "reason": late ? "timed_out" : "unreachable"]', 'details: ["available": false, "reason": "unreachable"]', "timed_out inside 8 seconds"),
     ("helper: a 404 is failed", H, "case 404: return \"server_too_old\"", "case 404: return \"failed\"", "HTTP 404"),
     ("helper: a 503 is failed", H, "case 503: return \"try_later\"", "case 503: return \"failed\"", "HTTP 503"),
-    ("helper: the server's words are forwarded", H, '''out["reason"] = reason ?? "failed"''', '''out["reason"] = reason ?? "failed"; out["message"] = body["message"]''', "an answer with its reason only"),
+    ("helper: the server's words are forwarded", H, '''out["reason"] = reason ?? "failed"''', '''out["reason"] = reason ?? "failed"; out["message"] = body["message"]''', "words are never echoed"),
     ("helper: any reason text passes", H, '''$0.range(of: "^[a-z_]{3,48}$", options: .regularExpression) != nil ? $0 : nil }
             out["reason"]''', '''$0 }
             out["reason"]''', "not a code reads as failed"),
@@ -33,16 +33,16 @@ MUTANTS = [
     ("helper: an unknown strength reads strong", H, '''contains(strength) ? strength : "possible"''', '''contains(strength) ? strength : "strong"''', "unknown strength reads as possible"),
     ("helper: a row without a probability is kept", H, "case let probability = number.doubleValue, probability.isFinite, probability >= 0, probability <= 1 else { return nil }", "case let probability = number.doubleValue, probability.isFinite else { return nil }", "usable probability"),
     ("helper: a boolean is a probability", H, "let number = row[\"probability\"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),\n                  case let probability", "let number = row[\"probability\"] as? NSNumber,\n                  case let probability", "usable probability"),
-    ("helper: rows are uncapped", H, "out[\"rows\"] = Array(projectedRows.prefix(8))", "out[\"rows\"] = Array(projectedRows)", "at most 8 rows"),
+    ("helper: rows are uncapped", H, "out[\"rows\"] = Array(projectedRows.prefix(8))", "out[\"rows\"] = Array(projectedRows)", "at most 8 rows, the first eight"),
     ("helper: judged text is uncut", H, 'projected["judgedText"] = String((row["judged_text"] as? String ?? "").prefix(400))', 'projected["judgedText"] = row["judged_text"] as? String ?? ""', "judged text is cut"),
     ("helper: a title is uncut", H, 'projected["name"] = String((projected["name"] as? String ?? "").prefix(300))', '', "title and a project are bounded"),
     ("helper: a big answer is read", H, "guard (response.data?.count ?? 0) <= Self.sessionFindAnswerBytes else {", "guard true else {", "far bigger"),
     ("helper: the last activity is not the date", H, 'projected["lastActivityAt"] = last; projected["updatedAt"] = last', 'projected["lastActivityAt"] = last', "last activity, not the file time"),
     ("helper: a keyword snippet rides along", H, 'projected["snippet"] = nil\n            return projected', 'return projected', "no keyword snippet"),
     ("helper: the capability is any value", H, "let find = capabilities[\"sessionFind\"] as? NSNumber, CFGetTypeID(find) == CFBooleanGetTypeID() {", "let find = capabilities[\"sessionFind\"] as? NSNumber {", "real boolean"),
-    ("helper: every capability passes", H, 'result["capabilities"] = ["sessionFind": find.boolValue]', 'result["capabilities"] = capabilities', "one boolean and nothing else"),
+    ("helper: every capability passes", H, 'result["capabilities"] = ["sessionFind": find.boolValue]', 'result["capabilities"] = capabilities', "token is never echoed"),
     ("helper: a provider that is not Jev or SubQ passes", H, 'if let provider = body["provider"] as? String, ["jev", "subq"].contains(provider) { out["provider"] = provider }', 'if let provider = body["provider"] as? String { out["provider"] = provider }', "not Jev or SubQ is dropped"),
-    ("helper: a reset time of any shape passes", H, 'text.range(of: "^[0-9TZ:.+-]+$", options: .regularExpression) != nil else { return nil }', 'true else { return nil }', "not a date is dropped"),
+    ("helper: a reset time of any shape passes", H, 'text.range(of: "^[0-9TZ:.+-]+$", options: .regularExpression) != nil else { return nil }', 'true else { return nil }', "a bad date is not taken"),
 ]
 
 

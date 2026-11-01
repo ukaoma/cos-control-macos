@@ -181,6 +181,11 @@ try:
     check([x["probability"] for x in rows] == sorted((x["probability"] for x in rows), reverse=True), "[rows keep the server's order]", str([x["probability"] for x in rows]))
     check(len(set(ids)) == len(ids), "[one row per session]", "")
 
+    # Twelve good rows: eight are kept, in the server's order.
+    state["body"] = answer([row(f"6666aaaa-0000-4000-8000-{i:012d}", f"Good {i}", 0.9 - i * 0.02) for i in range(12)])
+    _, got, _, _ = find()
+    check([x["name"] for x in got["details"]["rows"]] == [f"Good {i}" for i in range(8)], "[at most 8 rows, the first eight]", str(len(got["details"]["rows"])))
+
     # A title and a project are one line each, and an answer far bigger than the contract's is not read.
     state["body"] = answer([row("4444aaaa-0000-4000-8000-000000000004", "T" * 900, 0.5, project="P" * 600)])
     _, got, _, _ = find()
