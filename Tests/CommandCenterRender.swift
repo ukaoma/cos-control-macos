@@ -64,16 +64,18 @@ import SwiftUI
     static func meaningSet(_ provider: C.MeaningProvider, _ choice: C.MeaningChoice?, settled: C.MeaningReason? = nil) -> C.Meaning {
         C.Meaning(provider: provider, keyed: true, capable: true, choices: choice.map { [provider.rawValue: $0] } ?? [:], settled: settled)
     }
-    static func mHit(_ id: String, _ title: String, _ strength: C.Strength, match: String?, days: Int, state: String = "Recent") -> C.Item {
+    static func mHit(_ id: String, _ title: String, _ strength: C.Strength, match: String?, days: Int, p: Double, state: String = "Recent") -> C.Item {
         var item = hit(id, title, match: match, days: days, state: state)
         item.strength = strength
+        item.probability = p
+        item.canContinue = true
         return item
     }
     static let topic = "persona pricing for the jewelry tier"
     static let meaningHits = [
-        mHit("claude:1a2b3c4d", "Jewelry persona review", .strong, match: "we should price the jewelry persona tier above the base plan, then test it", days: 12),
-        mHit("codex:3c4d5e6f-7081-4a92-b3c4-d5e6f7081a92", "Quarterly planning", .likely, match: "the add-on tier needs its own price, and the table one more column", days: 19),
-        mHit("cursor:7b8c9d0e", "Notes", .possible, match: nil, days: 31),
+        mHit("claude:1a2b3c4d", "Jewelry persona review", .strong, match: "we should price the jewelry persona tier above the base plan, then test it", days: 12, p: 0.82),
+        mHit("codex:3c4d5e6f-7081-4a92-b3c4-d5e6f7081a92", "Quarterly planning", .likely, match: "the add-on tier needs its own price, and the table one more column", days: 19, p: 0.41),
+        mHit("cursor:7b8c9d0e", "Notes", .possible, match: nil, days: 31, p: 0.18),
     ]
     static func meaningDone(_ hits: [C.Item], phase: C.MeaningPhase = .done, asked: Int = 254, skipped: Int = 0) -> C.MeaningFound {
         C.MeaningFound(words: C.plain(topic), phase: phase, hits: hits, asked: asked, skipped: skipped, reachedBack: now.addingTimeInterval(-44 * 86_400), resetsAt: nil)
@@ -91,6 +93,13 @@ import SwiftUI
         meaningScene("meaning-rows", meaningSet(.jev, .on), found: meaningDone(meaningHits)),
         meaningScene("meaning-rows-chosen", meaningSet(.jev, .on), found: meaningDone(meaningHits), chosen: "hit:codex:3c4d5e6f-7081-4a92-b3c4-d5e6f7081a92"),
         meaningScene("meaning-rows-floor", meaningSet(.jev, .on), found: meaningDone(meaningHits), chosen: "hit:claude:1a2b3c4d", width: 320),
+        meaningScene("meaning-rows-subq", meaningSet(.subq, .on), found: meaningDone(meaningHits)),
+        meaningScene("meaning-continue-floor", meaningSet(.jev, .on), found: meaningDone(meaningHits), chosen: "continue:claude:1a2b3c4d", width: 320),
+        Scene(name: "places-memories", fixture: CommandCenterFixture(words: "memories", recording: recording())),
+        Scene(name: "places-board", fixture: CommandCenterFixture(words: "board", recording: recording())),
+        Scene(name: "settings-microphone", fixture: CommandCenterFixture(words: "microphone", recording: recording())),
+        Scene(name: "settings-one-word", fixture: CommandCenterFixture(words: "settings", recording: recording())),
+        Scene(name: "settings-decision-models-floor", fixture: CommandCenterFixture(words: "decision models", recording: recording(), panelWidth: 320)),
         meaningScene("meaning-rows-and-word-hits", meaningSet(.jev, .on), found: meaningDone(meaningHits), word: foundHits),
         meaningScene("meaning-searching", meaningSet(.jev, .on), found: meaningDone([], phase: .searching)),
         meaningScene("meaning-partial-further", meaningSet(.jev, .on), found: meaningDone([], phase: .partial)),

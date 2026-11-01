@@ -2607,9 +2607,9 @@ enum SetupAssistant {
                 case .recording, .waiting, .running, .place, .settingsGroup, .searchAll:
                     return Footer(lead: confirmation(row, s) != nil ? "Return asks first: " : "Return opens: ", title: row.title)
                 case .continueIn:
-                    return Footer(lead: "Return opens the session with your words ready. It does not send them.")
+                    return Footer(lead: "Return opens it with your words ready, unsent.")
                 case .consent(_, let choice):
-                    return Footer(lead: choice == .on ? "Return turns on search by meaning for this model." : "Return stops asking about search by meaning for this model.")
+                    return Footer(lead: choice == .on ? "Return turns on search by meaning." : "Return stops asking about this.")
                 default:
                     return Footer(lead: (confirmation(row, s) != nil ? "Return asks first: " : "Return runs: "), title: row.title)
                 }

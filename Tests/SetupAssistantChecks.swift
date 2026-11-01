@@ -1530,7 +1530,7 @@ import Foundation
         var draft = healthy(); draft.unsentSessionDraft = true
         check(C.leavesSession(r) && C.confirmation(r, draft) == C.draftConfirm && C.confirmation(r, healthy()) == nil, "[Continue in asks before it overwrites an unsent reply]", "")
         check(!C.sendsWords(r) && !C.keepsWordsWhileStaying(r) && C.draftAfterRun(r, words) == "", "[Continue in hands the words over and empties the box]", "")
-        check(C.hint(returnRuns(r.id), offered, on.snapshot) == "Return opens the session with your words ready. It does not send them.", "[the hint says it does not send]", C.hint(returnRuns(r.id), offered, on.snapshot))
+        check(C.hint(returnRuns(r.id), offered, on.snapshot) == "Return opens it with your words ready, unsent.", "[the hint says the words are ready, unsent]", C.hint(returnRuns(r.id), offered, on.snapshot))
         // The placed words block Return in the composer until they are edited.
         var prefill = C.Prefill()
         check(!prefill.blocksReturn, "[nothing placed blocks nothing]", "")
