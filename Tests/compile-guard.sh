@@ -34,8 +34,9 @@ free_gb() {
 # mistaken for ours). $OWNED is a running union across samples, like ProcessTree in compile-bounded.py: a process seen as our
 # descendant stays ours after its parent exits and launchd adopts it, and anything it forks later joins through its parent.
 # Also sets OWN_FE_KB (our swift-frontends' RSS), OWN_BIG (ours over the per-frontend cap), ALL_FE_KB (every swift-frontend on
-# the machine) and FOREIGN_BIG (swift-frontends over the cap that are NOT ours, "pid:kb"). A failed snapshot changes nothing.
-OWNED=""; OWN_FE_KB=0; OWN_BIG=""; ALL_FE_KB=0; FOREIGN_BIG=""
+# the machine), FOREIGN_BIG (swift-frontends over the per-frontend cap that are NOT ours, "pid:kb") and FOREIGN_ALL (every swift-frontend
+# that is not ours, "kb:pid"). A failed snapshot changes nothing.
+OWNED=""; OWN_FE_KB=0; OWN_BIG=""; ALL_FE_KB=0; FOREIGN_BIG=""; FOREIGN_ALL=""
 scan() {
   local out line
   out=$(ps -Ao pid=,ppid=,rss=,lstart=,comm= 2>/dev/null | awk -v root=$CMD -v prev="$OWNED" -v max=$(( MAX_FRONTEND_GB * 1048576 )) '
@@ -49,16 +50,16 @@ scan() {
       do { grew = 0
            for (p in alive) if (!(p in own) && (ppid[p] in own)) { own[p] = 1; grew = 1 } }
       while (grew)
-      state = ""; ownfe = 0; allfe = 0; ownbig = ""; forbig = ""
+      state = ""; ownfe = 0; allfe = 0; ownbig = ""; forbig = ""; forall = ""
       for (p in alive) {
         if (fe[p]) {
           allfe += rss[p]
           if (p in own) { ownfe += rss[p]; if (rss[p] > max) ownbig = ownbig " " p }
-          else if (rss[p] > max) forbig = forbig " " p ":" rss[p]
+          else { forall = forall " " rss[p] ":" p; if (rss[p] > max) forbig = forbig " " p ":" rss[p] }
         }
         if (p in own) state = state (state == "" ? "" : ";") p "|" st[p]
       }
-      print "STATE|" state; print "OWNFE|" ownfe; print "OWNBIG|" ownbig; print "ALLFE|" allfe; print "FORBIG|" forbig
+      print "STATE|" state; print "OWNFE|" ownfe; print "OWNBIG|" ownbig; print "ALLFE|" allfe; print "FORBIG|" forbig; print "FORALL|" forall
     }')
   [[ "$out" == *STATE\|* ]] || return 1
   for line in ${(f)out}; do
@@ -68,6 +69,7 @@ scan() {
       OWNBIG\|*) OWN_BIG=${line#OWNBIG\|} ;;
       ALLFE\|*)  ALL_FE_KB=${line#ALLFE\|} ;;
       FORBIG\|*) FOREIGN_BIG=${line#FORBIG\|} ;;
+      FORALL\|*) FOREIGN_ALL=${line#FORALL\|} ;;
     esac
   done
 }
@@ -83,10 +85,20 @@ note_foreign() {
     WARNED[$pid]=1
     echo "compile-guard: NOTE: swift-frontend pid $pid holds $(( ${item#*:} / 1048576 )) GB, over the ${MAX_FRONTEND_GB} GB cap, but it is not part of this run (not a descendant of the guarded command). It was NOT stopped and this run continues." >&2
   done
-  if (( ALL_FE_KB > MAX_TOTAL_GB * 1048576 && OWN_FE_KB <= MAX_TOTAL_GB * 1048576 )) && [[ -z "${WARNED[total]:-}" ]]; then
-    WARNED[total]=1
-    echo "compile-guard: NOTE: swift-frontends on this Mac total $(( ALL_FE_KB / 1048576 )) GB, over the ${MAX_TOTAL_GB} GB cap, but this run's own are $(( OWN_FE_KB / 1048576 )) GB. Nothing was stopped." >&2
-  fi
+}
+
+# 2026-10-31 (Miles' lead): the machine's swift-frontends together over the total cap stop THIS run (it must not add memory while
+# the machine is over the line: the 10/07 failure), whoever the memory belongs to. The others are named, never signalled.
+# "pid 123 (45 GB), pid 456 (7 GB)": the five biggest swift-frontends that are not this run's.
+foreign_top() {
+  local item out="" n=0
+  local -a items
+  items=( ${=FOREIGN_ALL} ); items=( ${(On)items} )
+  for item in $items; do
+    (( n++ >= 5 )) && break
+    out+="${out:+, }pid ${item#*:} ($(( ${item%%:*} / 1048576 )) GB)"
+  done
+  print -r -- "${out:-none}"
 }
 
 # Stop this run: freeze the whole owned tree first (SIGSTOP), re-scan until no new process appears, then SIGKILL the set. A frozen
@@ -152,7 +164,11 @@ REASON=""
 while kill -0 $CMD 2>/dev/null; do
   if scan; then
     if [[ -n "${OWN_BIG// /}" ]]; then REASON="a swift-frontend passed ${MAX_FRONTEND_GB} GB"; fi
-    if (( OWN_FE_KB > MAX_TOTAL_GB * 1048576 )); then REASON="all of this run's swift-frontends passed ${MAX_TOTAL_GB} GB together"; fi
+    if (( OWN_FE_KB > MAX_TOTAL_GB * 1048576 )); then
+      REASON="all of this run's swift-frontends passed ${MAX_TOTAL_GB} GB together"
+    elif (( ALL_FE_KB > MAX_TOTAL_GB * 1048576 )); then
+      REASON="all swift-frontends on this Mac passed ${MAX_TOTAL_GB} GB together ($(( ALL_FE_KB / 1048576 )) GB; this run's own: $(( OWN_FE_KB / 1048576 )) GB), so this run stops and adds no more. Not stopped, not touched: $(foreign_top)"
+    fi
     note_foreign
   fi
   if [[ -n "$REASON" ]]; then
