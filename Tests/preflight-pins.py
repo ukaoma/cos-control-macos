@@ -5,7 +5,10 @@
     preflight-pins.py duplicates <checkout>   no iCloud conflict copy ("Views 2.swift", "Fonts 3") under the build inputs
     preflight-pins.py negated    <checkout>   no `! command` line in run.sh (errexit never fails on one; speed plan A2)
     preflight-pins.py greps      <checkout>   every one-line `grep -q 'text' "$ROOT/<repo file>"` pin of run.sh, replayed
-    preflight-pins.py --selftest <checkout>   each of the four above, run against a scratch copy with one defect planted
+    preflight-pins.py scrub      <checkout>   every `export COS_*` in the top of run.sh is removed by GUARD_SCRUB in preflight.sh
+    preflight-pins.py runenv     <checkout>   preflight.sh run the way run.sh runs it (the top of run.sh executed first), for
+                                              the guard self-tests that are sensitive to the suite's exports; must pass
+    preflight-pins.py --selftest <checkout>   each static command, run against a scratch copy with one defect planted
 
 Each command prints every offender and exits 1; none excludes a path silently. `greps` reads only files that are in the
 repository (Sources, HelperSources, Resources, Tests, scripts), never anything a lane builds, so a clean checkout passes it
@@ -101,7 +104,45 @@ def shell_quote(value):
     return "'" + value.replace("'", "'\\''") + "'"
 
 
-COMMANDS = {"version": version, "duplicates": duplicates, "negated": negated, "greps": greps}
+def header_lines(root):
+    """The top of run.sh: everything before the desktop-safety check, which is where its exports and traps live."""
+    lines = (root / "Tests/run.sh").read_text().splitlines()
+    cut = next(i for i, l in enumerate(lines) if l.startswith('/usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py"'))
+    return lines[:cut]
+
+
+def scrub(root):
+    """Every COS variable run.sh exports must be removed from the guard self-tests' environment (GUARD_SCRUB)."""
+    exported = sorted({m.group(1) for l in header_lines(root) for m in [re.match(r"\s*export (COS_[A-Z0-9_]+)=", l)] if m})
+    listing = re.search(r"^GUARD_SCRUB=\((.*)\)\s*$", (root / "Tests/preflight.sh").read_text(), re.M)
+    if not listing:
+        return ["Tests/preflight.sh has no GUARD_SCRUB list"]
+    removed = set(re.findall(r"-u (\S+)", listing.group(1)))
+    return [f"Tests/run.sh exports {name}, which GUARD_SCRUB in Tests/preflight.sh does not remove" for name in exported if name not in removed]
+
+
+# The guard self-tests that read the environment they inherit. test-compile-slots.py failed (70 != 0) under run.sh's
+# COS_COMPILE_PROFILE=bounded; test-kit-compile.py builds its commands from os.environ and meets the kit variables.
+ENV_SENSITIVE = ("compile-slots", "kit-compile")
+
+
+def runenv(root):
+    """Runs preflight.sh from a copy of run.sh's header, so the suite's exports are set exactly as run.sh sets them."""
+    probe = [f'COS_PREFLIGHT_ONLY={name} zsh "$ROOT/Tests/preflight.sh"' for name in ENV_SENSITIVE]
+    with tempfile.TemporaryDirectory(prefix="preflight-env.") as tmp:
+        scratch = pathlib.Path(tmp)
+        farm(root, scratch, ["Tests/run.sh", "Tests/preflight.sh"])
+        (scratch / "Tests/run.sh").write_text("\n".join(header_lines(root) + probe) + "\n")
+        env = dict(os.environ, COS_SUITE_LOG_DIR=str(scratch / "logs"))
+        done = subprocess.run(["/bin/zsh", str(scratch / "Tests/run.sh")], capture_output=True, text=True, env=env)
+    if done.returncode == 0:
+        print(f"preflight run-env: {', '.join(ENV_SENSITIVE)} pass with run.sh's exports set")
+        return []
+    tail = [l for l in (done.stderr + done.stdout).splitlines() if l.strip()][-6:]
+    return [f"preflight.sh fails when run the way run.sh runs it (exit {done.returncode})"] + tail
+
+
+COMMANDS = {"version": version, "duplicates": duplicates, "negated": negated, "greps": greps, "scrub": scrub}
 
 
 def farm(root, scratch, copies):
@@ -196,6 +237,12 @@ def selftest(root):
             with open(s / rel, "a") as stream:
                 stream.write("\n" + pattern + "\n")
         expect_fail("plant the forbidden text of a ban", "greps", "no longer holds", ["Tests/run.sh", "Sources/Views.swift", "Sources/ControlInstance.swift", "Sources/COSControlApp.swift", "Sources/ControllerModel.swift", "Sources/Models.swift", "Sources/ActivityWindow.swift"], plant_forbidden)
+        # scrub: a variable dropped from GUARD_SCRUB, and a new export in run.sh that GUARD_SCRUB does not know
+        expect_fail("drop COS_TEST_KIT_STORE from the scrub", "scrub", "COS_TEST_KIT_STORE", ["Tests/preflight.sh"],
+                    lambda s: plant(s / "Tests/preflight.sh", " -u COS_TEST_KIT_STORE", ""))
+        both = '/usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT"\n/usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT" --selftest\n'
+        expect_fail("export a new COS variable", "scrub", "COS_NEW_KNOB", ["Tests/run.sh", "Tests/preflight.sh"],
+                    lambda s: plant(s / "Tests/run.sh", both, "export COS_NEW_KNOB=1\n" + both))
         # a heredoc body is not a pin: a negated-looking line inside one must not be reported
         farm(root, scratch, ["Tests/run.sh"])
         (scratch / "Tests/run.sh").write_text((scratch / "Tests/run.sh").read_text() + "\n/usr/bin/python3 - <<'PY'\n! not a shell line\nPY\n")
@@ -205,7 +252,7 @@ def selftest(root):
 
 
 def main(argv):
-    if len(argv) != 3 or (argv[1] not in COMMANDS and argv[1] != "--selftest"):
+    if len(argv) != 3 or (argv[1] not in COMMANDS and argv[1] not in ("--selftest", "runenv")):
         print(__doc__, file=sys.stderr)
         return 64
     root = pathlib.Path(argv[2]).resolve()
@@ -214,13 +261,13 @@ def main(argv):
         if problems:
             print("FAIL preflight-pins selftest:\n  " + "\n  ".join(problems))
             return 1
-        print("PASS preflight-pins selftest: duplicates (file and folder), version, negated (and not inside a here-document) and greps each fail when one defect is planted")
+        print("PASS preflight-pins selftest: duplicates (file and folder), version, negated (and not inside a here-document), greps and scrub each fail when one defect is planted")
         return 0
-    found = COMMANDS[argv[1]](root)
+    found = (runenv if argv[1] == "runenv" else COMMANDS[argv[1]])(root)
     if found:
         print(f"FAIL preflight {argv[1]}:\n  " + "\n  ".join(found))
         return 1
-    if argv[1] != "greps":
+    if argv[1] not in ("greps", "runenv"):
         print(f"PASS preflight {argv[1]}")
     return 0
 

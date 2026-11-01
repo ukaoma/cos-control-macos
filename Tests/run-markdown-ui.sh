@@ -5,7 +5,7 @@ OUT="${1:-/tmp/cos-markdown-ui}"
 TMP="$(mktemp -d /tmp/cos-markdown-ui-build.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 # Speed plan B3 (2026-10-31): with ControlSetup.swift and ControlInstance.swift the Sources are exactly the app kit's set, so
-# this lane reuses the app kit instead of building the 55-file app-core kit again.
+# inside the suite this lane reuses the kit the earlier lanes built instead of building a second one of 55 files.
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/SettingsHubCatalog.swift" "$ROOT/Sources/SettingsHubViews.swift" "$ROOT/Sources/SessionUsageView.swift" "$ROOT/Sources/SetupAssistant.swift" \
   "$ROOT/Sources/AppQuit.swift" "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \

@@ -11,15 +11,25 @@ import hashlib
 import os
 import pathlib
 import re
+import atexit
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else pathlib.Path(__file__).resolve().parent.parent).resolve()
 lines = (root / "Tests/run.sh").read_text().splitlines()
 cut = next(i for i, l in enumerate(lines) if l.startswith('/usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py"'))
 HEADER = lines[:cut]
 fails = []
+SCRATCH = []
+
+
+@atexit.register
+def _remove_scratch():
+    for directory in SCRATCH:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 def need(ok, message):
@@ -31,26 +41,43 @@ def line_of(header, needle):
     return next(i for i, l in enumerate(header) if needle in l)
 
 
-def run_probe(header, probe, env_extra=None, sleep_free=True):
-    """Runs header + probe as <scratch>/Tests/run.sh; returns (completed process, scratch path, probe's first line number)."""
+def make_script(header, probe):
+    """<scratch>/Tests/run.sh = header + probe; returns (script, scratch)."""
     scratch = pathlib.Path(tempfile.mkdtemp(prefix="run-header."))
+    SCRATCH.append(scratch)
     (scratch / "Tests").mkdir()
     (scratch / "Sources").mkdir()
     (scratch / "home").mkdir()
     (scratch / "Sources/Views.swift").write_text("let a = 1\n")
     script = scratch / "Tests/run.sh"
     script.write_text("\n".join(header + probe) + "\n")
+    return script, scratch
+
+
+def probe_env(scratch, env_extra=None):
     env = dict(os.environ, HOME=str(scratch / "home"), COS_SUITE_LOG_DIR=str(scratch / "logs"))
-    for key in ("COS_TEST_KIT_PERSIST", "COS_TEST_KIT_STORE", "COS_TEST_KIT_LOG", "COS_COMPILE_PROFILE", "COS_TEST_KIT_DIR"):
+    for key in ("COS_TEST_KIT_PERSIST", "COS_TEST_KIT_STORE", "COS_TEST_KIT_LOG", "COS_COMPILE_PROFILE", "COS_TEST_KIT_DIR",
+                "COS_COMPILE_SLOTS", "COS_SUITE_CONCURRENT_COMPILES"):
         env.pop(key, None)
     env.update(env_extra or {})
-    done = subprocess.run(["/bin/zsh", str(script)], capture_output=True, text=True, env=env, cwd=str(scratch))
+    return env
+
+
+def run_probe(header, probe, env_extra=None):
+    """Runs header + probe as <scratch>/Tests/run.sh; returns (completed process, scratch path, probe's first line number)."""
+    script, scratch = make_script(header, probe)
+    done = subprocess.run(["/bin/zsh", str(script)], capture_output=True, text=True, env=probe_env(scratch, env_extra), cwd=str(scratch))
     return done, scratch, len(header) + 1
 
 
 def checks(header, tag):
     """Every behavior of the header, asserted. Returns nothing; failures are appended to `fails` with the tag."""
-    n = len(fails)
+    problems = []
+
+    def need(ok, message):
+        if not ok:
+            problems.append(message)
+
     # A1: a failing pin names its own line in run.sh, and a command that handles its failure prints nothing extra.
     done, scratch, first = run_probe(header, ["/usr/bin/grep -q 'let a' \"$ROOT/Sources/Views.swift\"",
                                               "if /usr/bin/false; then :; fi", "/usr/bin/false || true", "! /usr/bin/true",
@@ -92,7 +119,6 @@ def checks(header, tag):
     found = re.search(r"BG=(\d+) KIDS=([\d ]*)", done.stdout)
     pids = ([int(found.group(1))] + [int(x) for x in found.group(2).split()]) if found else []
     time_left = 20
-    import time
     while time_left and any(alive(x) for x in pids):
         time.sleep(0.1); time_left -= 1
     leftover = [x for x in pids if alive(x)]
@@ -106,7 +132,51 @@ def checks(header, tag):
     need("SLOTS=2" in done.stdout, f"{tag}: COS_SUITE_CONCURRENT_COMPILES=1 must open a second compile slot (got {done.stdout.strip()!r})")
     done, scratch, first = run_probe(header, ['print -r -- "SLOTS=${COS_COMPILE_SLOTS-unset}"'], {"COS_SUITE_CONCURRENT_COMPILES": "1", "COS_COMPILE_SLOTS": "3"})
     need("SLOTS=3" in done.stdout, f"{tag}: a slot count the caller chose must stand (got {done.stdout.strip()!r})")
-    return len(fails) - n
+    # A1 and A9 inside a function: LINENO counts from the function's first line, so both must report the real line.
+    done, scratch, first = run_probe(header, ["f() {", "  /usr/bin/true", "  /usr/bin/false", "}", "f"])
+    need(done.returncode != 0 and f"FAIL at run.sh:{first + 2}" in done.stderr,
+         f"{tag}: a failure inside a function must name its real line {first + 2} (stderr {done.stderr[:120]!r})")
+    done, scratch, first = run_probe(header, ["g() {", "  sleep 1.2", "  /usr/bin/true", "}", "g", "print end"])
+    rows = [r.split("\t") for f in (scratch / "logs").glob("*-lane-times.tsv") for r in f.read_text().splitlines()]
+    need(any(r[0] == str(first + 1) and "sleep" in r[2] for r in rows), f"{tag}: a slow line inside a function must be written with its real line {first + 1} (got {rows[:3]})")
+    # A9: the command still running when the suite ends (the one that failed, on a red run) is not lost.
+    done, scratch, first = run_probe(header, ["sleep 1.2"])
+    rows = [r.split("\t") for f in (scratch / "logs").glob("*-lane-times.tsv") for r in f.read_text().splitlines()]
+    need(any(r[0] == str(first) and "sleep" in r[2] for r in rows), f"{tag}: the last command before exit must be written to the lane table (got {rows[:3]})")
+    # B2: a store that cannot be used, or a checkout hash that cannot be computed, turns persistence off with one line.
+    state = ['print -r -- "PERSIST=${COS_TEST_KIT_PERSIST-unset} STORE=${COS_TEST_KIT_STORE-unset}"']
+    done, scratch, first = run_probe(header, state, {"COS_TEST_KIT_STORE": "/dev/null/no-store"})
+    need("PERSIST=0 STORE=unset" in done.stdout and done.returncode == 0 and done.stderr.count("kit store") == 1,
+         f"{tag}: an unwritable store must switch persistence off with one line, not fail (got {done.stdout.strip()!r}, stderr {done.stderr[:120]!r})")
+    broken = [l.replace("/usr/bin/shasum -a 256", "/usr/bin/false") for l in header]
+    done, scratch, first = run_probe(broken, state)
+    need("PERSIST=0 STORE=unset" in done.stdout and "no checkout hash" in done.stderr,
+         f"{tag}: a failed checkout hash must switch persistence off, never share one folder (got {done.stdout.strip()!r}, stderr {done.stderr[:120]!r})")
+    # B1: the EXIT trap signals only its own background job, never another PID it was handed. Two ways to be wrong: a child
+    # of this shell that is some other command (a lane that reused the PID), and a process that is not our child but has our
+    # exact command line (started here from the same script).
+    done, scratch, first = run_probe(header, ["sleep 60 >/dev/null 2>&1 &", "APP_BUILD_PID=$!", "LANE_PID=$!", "sleep 0.3",
+                                              'print -r -- "LANE=$LANE_PID"', "/usr/bin/false"])
+    lane = re.search(r"LANE=(\d+)", done.stdout)
+    time.sleep(0.3)
+    survived = bool(lane) and alive(int(lane.group(1)))
+    if survived:
+        os.kill(int(lane.group(1)), 9)
+    need(survived, f"{tag}: the EXIT trap must not signal a child of this shell that is another command")
+    script, scratch = make_script(header, ["if [[ -n ${AS_SLEEPER:-} ]]; then sleep 60; exit 0; fi", "APP_BUILD_PID=$UNRELATED_PID", "/usr/bin/false"])
+    twin = subprocess.Popen(["/bin/zsh", str(script)], env=probe_env(scratch, {"AS_SLEEPER": "1"}), cwd=str(scratch),
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        time.sleep(0.8)
+        subprocess.run(["/bin/zsh", str(script)], env=probe_env(scratch, {"UNRELATED_PID": str(twin.pid)}), cwd=str(scratch), capture_output=True)
+        time.sleep(0.3)
+        need(twin.poll() is None, f"{tag}: the EXIT trap must not signal a process that is not its child, even with its command line")
+    finally:
+        for kid in subprocess.run(["/usr/bin/pgrep", "-P", str(twin.pid)], capture_output=True, text=True).stdout.split():
+            os.kill(int(kid), 9)  # the twin's own sleep
+        twin.kill()
+        twin.wait()
+    return problems
 
 
 def alive(pid):
@@ -121,53 +191,69 @@ def alive(pid):
 
 
 # The real header must pass every case.
-real_failures = checks(HEADER, "header")
+fails.extend(checks(HEADER, "header"))
 need(sum(1 for l in HEADER if re.match(r"\s*trap .* EXIT\s*$", l)) == 1, "header: exactly one EXIT trap (a second one replaces the cleanup)")
 need(sum(1 for l in HEADER if re.match(r"\s*trap .* ZERR\s*$", l)) == 1, "header: exactly one ZERR trap")
 need(sum(1 for l in HEADER if re.match(r"\s*trap .* DEBUG\s*$", l)) == 1, "header: exactly one DEBUG trap")
-# B1 call sites in the body of run.sh (not the header): the first full-app compile starts in the background and is waited for
-# at once unless the flag is on; the second, which reuses it, waits first. Nothing else in run.sh touches the build PID.
+# B1 call sites in the body of run.sh (not the header): the first full-app compile is the body of _app_build_cmd. Flag off,
+# the function is called plainly (foreground, so Ctrl-C reaches it); flag on, it is started with & and its PID kept. The
+# second compile, which reuses it, waits first. Nothing else in run.sh touches the build PID.
 body = lines[cut:]
 reuse = [i for i, l in enumerate(body) if l.startswith('python3 "$ROOT/Tests/reuse-compile.py"')]
 need(len(reuse) == 2, f"run.sh: two full-app compiles expected, found {len(reuse)}")
 if len(reuse) == 2:
     end = next(i for i in range(reuse[0], len(body)) if body[i].startswith('  -o "$TMP/COS Control"'))
-    need(body[end].endswith(" &") and body[end + 1] == "APP_BUILD_PID=$!"
-         and body[end + 2] == '[[ "${COS_SUITE_CONCURRENT_COMPILES:-0}" == 1 ]] || _app_build_wait',
-         "run.sh: the first full-app compile must be backgrounded, its PID kept, and waited for at once when the flag is off")
+    need(body[reuse[0] - 1] == "_app_build_cmd() {" and body[end + 1] == "}", "run.sh: the first full-app compile must be the whole body of _app_build_cmd")
+    need(body[end + 2:end + 9] == ['if [[ "${COS_SUITE_CONCURRENT_COMPILES:-0}" == 1 ]]; then', "  _app_build_cmd &", "  APP_BUILD_PID=$!", "else",
+                                  "  _app_build_cmd", "fi", ""],
+         "run.sh: flag on starts _app_build_cmd with & and keeps its PID; flag off calls it plainly in the foreground")
     need(body[reuse[1] - 1] == "_app_build_wait", "run.sh: the second full-app compile must wait for the first")
-    need(sum(1 for l in body if "APP_BUILD_PID" in l) == 1 and sum(1 for l in body if l.strip().startswith("_app_build_wait") or "|| _app_build_wait" in l) == 2,
-         "run.sh: the build PID is set once, and waited for in exactly two places")
+    need(sum(1 for l in body if "APP_BUILD_PID" in l) == 1 and sum(1 for l in body if l.strip() == "_app_build_wait") == 1
+         and not any("|| _app_build_wait" in l for l in body) and sum(1 for l in body if l.strip() in ("_app_build_cmd &", "_app_build_cmd")) == 2,
+         "run.sh: the build PID is set once, the wait is called once (before the second compile), and the compile is started in two places")
 
 if not fails:
     # Each mutant of the header must be caught by the cases above (they are run into a separate list).
     mutants = [
         ("no ZERR trap", lambda h: [l for l in h if not re.match(r"\s*trap .* ZERR\s*$", l)]),
-        ("ZERR trap prints no line", lambda h: [l.replace("$LINENO", "?") if re.match(r"\s*trap .* ZERR\s*$", l) else l for l in h]),
+        ("ZERR trap prints no line", lambda h: [l.replace("LINENO", "0") if re.match(r"\s*trap .* ZERR\s*$", l) else l for l in h]),
+        ("ZERR trap line is function-relative", lambda h: [l.replace("${#funcstack} ? ${${funcsourcetrace[1]:-x:0}##*:} + LINENO : LINENO", "LINENO") if re.match(r"\s*trap .* ZERR\s*$", l) else l for l in h]),
         ("EXIT trap leaves $TMP", lambda h: [l.replace('; rm -rf "$TMP"', "") if re.match(r"\s*trap .* EXIT\s*$", l) else l for l in h]),
         ("EXIT trap skips the log copy", lambda h: [l.replace("_suite_exit_logs 2>/dev/null || true; ", "") if re.match(r"\s*trap .* EXIT\s*$", l) else l for l in h]),
         ("profile not pinned", lambda h: [l for l in h if l.strip() != "export COS_COMPILE_PROFILE=bounded"]),
         ("persistence ignores the off switch", lambda h: [l.replace('!= 0 ]]', '!= x ]]') if "COS_TEST_KIT_PERSIST:-}" in l else l for l in h]),
         ("a failed background compile is not read", lambda h: [l.replace("(( code == 0 )) ||", "true ||") if "code == 0" in l else l for l in h]),
         ("the EXIT trap leaves the background compile", lambda h: [l.replace("_app_build_stop 2>/dev/null || true; ", "") if re.match(r"\s*trap .* EXIT\s*$", l) else l for l in h]),
-        ("a stopped compile leaves its children", lambda h: [l.replace('for child in $(/usr/bin/pgrep -P "$pid" 2>/dev/null); do kill "$child" 2>/dev/null || true; done', ":") if "pgrep -P" in l else l for l in h]),
+        ("a stopped compile leaves its children", lambda h: [l.replace('for child in $(/usr/bin/pgrep -P "$1" 2>/dev/null); do _kill_tree "$child"; done', ":") if "pgrep -P" in l else l for l in h]),
+        ("the EXIT trap signals a PID that is not its child", lambda h: [l for l in h if "-o ppid=" not in l]),
+        ("the EXIT trap signals a child with another command line", lambda h: [l for l in h if '-o command= -p "$pid"' not in l]),
+        ("the lane table uses the function-relative line", lambda h: [l.replace('local at="${funcfiletrace[1]##*:}"', 'local at=$1') for l in h]),
+        ("the last row is lost at exit", lambda h: [l for i, l in enumerate(h) if not (l == "  _lane_row" and h[i - 1] == "_suite_exit_logs() {")]),
+        ("an unwritable store is not checked", lambda h: [l.replace('if [[ -n "$KIT_STORE" ]] && /bin/mkdir -p "$KIT_STORE" 2>/dev/null && [[ -w "$KIT_STORE" ]]; then', "if true; then") for l in h]),
+        ("a failed hash is not validated", lambda h: [l.replace("=~ '^[0-9a-f]{16}$'", "=~ '.*'") for l in h]),
         ("slots opened by default", lambda h: [l.replace('if [[ "${COS_SUITE_CONCURRENT_COMPILES:-0}" == 1 ]]; then', "if true; then") if l.startswith('if [[ "${COS_SUITE_CONCURRENT_COMPILES') else l for l in h]),
         ("no lane table", lambda h: [l for l in h if not re.match(r"\s*trap .* DEBUG\s*$", l)]),
     ]
+    from concurrent.futures import ThreadPoolExecutor
+    planted = []
     for name, mutate in mutants:
         mutated = mutate(HEADER)
         if mutated == HEADER:
             fails.append(f"mutant {name!r} changed nothing")
-            continue
-        saved = list(fails)
-        caught = checks(mutated, "mutant")
-        fails[:] = saved
+        else:
+            planted.append((name, mutated))
+    # Each mutant gets its own scratch checkout and processes, and most of a case is waiting, so a few run side by side. Two is the
+    # machine cap for lightweight workers while a release suite runs; HEADER_SELFTEST_WORKERS raises it when the machine is free.
+    workers = int(os.environ.get("HEADER_SELFTEST_WORKERS", "2"))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        outcomes = list(pool.map(lambda item: (item[0], checks(item[1], "mutant")), planted))
+    for name, caught in outcomes:
         if not caught:
             fails.append(f"mutant {name!r} survived every case")
         else:
-            print(f"KILLED  {name}  ({caught} case(s) failed)")
+            print(f"KILLED  {name}  ({len(caught)} case(s) failed)")
 
 if fails:
     print("FAIL run header selftest:\n  " + "\n  ".join(fails))
     sys.exit(1)
-print("PASS run header selftest: FAIL at run.sh:N names the line, one EXIT trap cleans up and copies the logs, the lane table names a slow line, the bounded profile is pinned, persistence has its off switch; 11 of 11 header mutants caught")
+print("PASS run header selftest: FAIL at run.sh:N names the line, one EXIT trap cleans up and copies the logs, the lane table names a slow line, the bounded profile is pinned, persistence has its off switch; 18 of 18 header mutants caught")
