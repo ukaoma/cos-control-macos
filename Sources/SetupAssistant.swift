@@ -977,7 +977,7 @@ enum SetupAssistant {
                 case .today: return ["today", "home"]
                 case .messages: return ["messages"]
                 case .threads: return ["threads"]
-                case .messagesRecent: return ["messages recent", "recent messages"]
+                case .messagesRecent: return ["recent", "messages recent", "recent messages"]
                 case .messagesArchive: return ["archive", "messages archive"]
                 case .speakersMeetings: return ["meetings to review", "speakers meetings", "speaker meetings"]
                 case .speakersSamples: return ["samples to review", "voice samples", "speakers samples"]
@@ -1000,14 +1000,24 @@ enum SetupAssistant {
 
         /// Names that two kinds of row both answer to, and who wins. Commands first, then panes, then tabs. "voices" is the
         /// Speakers opener and the Voices tab: the opener runs, and the tab is listed under it. "sessions" is the Sessions opener
-        /// and the noun list: the opener runs, and the sessions are listed under it. A new shared name fails a check until it is
-        /// declared here.
-        static let sharedNames: [String: String] = ["voices": "command:openSpeakers", "sessions": "command:openSessions"]
+        /// and the noun list: the opener runs, and the sessions are listed under it. "recent" is Messages > Recent and the noun list:
+        /// the list wins and nothing highlights ("noun"). A new shared name fails a check until it is declared here.
+        static let sharedNames: [String: String] = ["voices": "command:openSpeakers", "sessions": "command:openSessions", "recent": "noun"]
 
         /// Each place's names, normalized once. The panel builds a listing several times a keystroke, and `normalized` builds a Locale.
         private static let placeNames: [Place: [String]] = Dictionary(uniqueKeysWithValues: Place.allCases.map { place in (place, place.names.map(plain)) })
 
         private static let openerVerbs = ["open ", "go to ", "show "]
+
+        /// The places these words reach, closest first (panes are declared before tabs, so a pane comes before a tab at the same rank), at
+        /// most `cap` of them. `typed` is
+        /// `plain(words)`.
+        static func visiblePlaces(_ typed: String, question: Bool, among places: [Place] = Place.allCases, cap: Int = placeCap) -> [(place: Place, rank: Int)] {
+            let found = places.enumerated().compactMap { index, place in
+                placeRank(place, typed, question: question).map { (place: place, rank: $0, order: index) }
+            }.sorted { ($0.rank, $0.order) < ($1.rank, $1.order) }
+            return found.prefix(cap).map { (place: $0.place, rank: $0.rank) }
+        }
 
         /// How a place matches the words, as `commandRank` does for a command: 0 is a whole name ("usage", "go to usage"), 1 the start
         /// of a name (three letters or more, so "us" reaches nothing), 2 a name that begins a longer sentence ("usage limit reached")
@@ -1650,10 +1660,8 @@ enum SetupAssistant {
             // Places: panes and tabs, after the commands. An exact name highlights its row unless a command already has, and a noun
             // list ("recent") is the list, not Messages > Recent.
             let span = nounSpan(typed, question: question)
-            let placed = Place.allCases.enumerated().compactMap { index, place in
-                placeRank(place, typed, question: question).map { (place: place, rank: $0, order: index) }
-            }.sorted { ($0.rank, $0.place.parent == nil ? 0 : 1, $0.order) < ($1.rank, $1.place.parent == nil ? 0 : 1, $1.order) }
-            for found in placed.prefix(placeCap) {
+            let placed = visiblePlaces(typed, question: question)
+            for found in placed {
                 let row = Row(id: "place:" + found.place.rawValue, kind: .place(found.place), group: .places, title: found.place.title,
                               detail: found.place.parent.map { "In " + $0 })
                 if found.rank == 0, span == nil, result.autoHighlight == nil { result.autoHighlight = row.id }

@@ -404,7 +404,19 @@ local = block(helper, "    private func emitLocalSessionsSearch(args: [String]) 
 for banned in ("request(", "speakerReviewToken", "readToken", "speakerReviewBody", "URLSession", "Process()", "embedding", "openai", "queryEscape"):
     pin(banned.lower() not in local.lower(), f"the local search never uses {banned}")
 pin("FileHandle.standardInput.read(upToCount: 4_097 - input.count)" in local and ".prefix(200)" in local and "query.count >= 3" in local, "the local search reads its words from a bounded stdin, 200 characters, at least 3")
-pin("Self.localSessionKeywordHits(query: query, limit: limit, home: FileManager.default.homeDirectoryForCurrentUser)" in local, "the local search is the fallback's own scan, over this Mac's home")
+pin("Self.localSessionKeywordHits(query: query, limit: limit, home: FileManager.default.homeDirectoryForCurrentUser," in local, "the local search is the fallback's own scan, over this Mac's home")
+pin("desktopNewest: Self.localSearchDesktopNewest, transcriptNewest: Self.localSearchTranscriptNewest, readCursorPins: false)" in local,
+    "the local search bounds its title reads: the newest Desktop records and transcripts, and no sqlite3 process per Cursor workspace")
+pin(re.search(r"static let localSearchDesktopNewest = (\d+)", helper) and int(re.search(r"static let localSearchDesktopNewest = (\d+)", helper).group(1)) <= 40
+    and int(re.search(r"static let localSearchTranscriptNewest = (\d+)", helper).group(1)) <= 40, "the title reads are bounded to 40 each (9.1 s unbounded, 1.7 s at 30 and 20, on 733 Desktop records and 870 transcripts)")
+# The helper has "/*" inside a string far above these functions, so `code()` would cut them out: line comments only for these two.
+helper_lines = "\n".join(re.sub(r"(^|\s)//.*$", r"\1", line) for line in read("HelperSources/main.swift").splitlines())
+pin("allowed = Set(dated.sorted { $0.mtime > $1.mtime }.prefix(newest).map(\\.file))" in helper_lines and "if let allowed, !pinned, !allowed.contains(file) { continue }" in helper_lines, "recentClaudeConversations titles only the newest transcripts when it is told to")
+pin("files = dated.sorted { $0.1 > $1.1 }.prefix(newest).map(\\.0)" in helper_lines, "loadClaudeDesktopIndex reads only the newest heads when it is told to")
+reveal = block(helper, "    private func emitSessionReveal(args: [String]) throws {", "    private func emitSessionHooksStatus() throws {")
+pin("let fullId = transcript.map { $0.deletingPathExtension().lastPathComponent.lowercased() }.flatMap { UUID(uuidString: $0) == nil ? nil : $0 } ?? sessionId" in reveal
+    and "sessionId: fullId,\n                records: Self.claudeDesktopRecords(for: fullId, sessionsRoot: desktopRoot)," in reveal and "Self.claudeDesktopMentions(fullId, sessionsRoot: desktopRoot)" in reveal,
+    "a short Claude id (how a search hit names a session) reveals through its transcript's full id, which Desktop's links need")
 pin('if args.contains("--local") { try emitLocalSessionsSearch(args: args); return }' in helper, "the verb's --local flag is the first thing it checks")
 pin("static let sessionSearchBodyFileLimit = 80" in helper, "the scan reads at most 80 transcripts")
 panel_search = block(panel, "    private func runSearch(_ words: String?) async {", "    private func move(_ delta: Int) -> Bool {")

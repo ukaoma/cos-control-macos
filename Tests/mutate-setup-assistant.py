@@ -19,6 +19,7 @@ import mutate_bounded as bounded
 LIMIT = 900
 C = "Sources/SetupAssistant.swift"
 W = "Sources/ActivityWindow.swift"
+HP = "HelperSources/main.swift"
 R = "scripts/build-release.sh"
 S = "Tests/run.sh"
 MUTANTS = [
@@ -169,7 +170,7 @@ MUTANTS = [
     ("center: near-command at any length", C, "            if parts.count <= 4, parts.contains(where: commandWords.contains) { return true }\n", "            if parts.contains(where: commandWords.contains) { return true }\n", "[a long sentence is a run]"),
     ("center: a phrase in a sentence is no near-command", C, "            return Command.allCases.contains { $0.phrases.contains { $0.contains(\" \") && padded.contains(\" \" + plain($0) + \" \") } }\n", "            return false\n",
      "[a near-command moves to Ask]"),
-    ("center: the hint lies", C, 'default: return "Return moves to \\(row.title). Return again " + (confirmation(row, s) != nil ? "asks first." : "runs it.")', 'default: return "Return runs it."', "[the hint says what Return does]"),
+    ("center: the hint lies", C, 'tail: ". Return again " + (confirmation(row, s) != nil ? "asks first." : "runs it.")', 'tail: ". Return runs it."', "[the hint says what Return does]"),
     # The command center: keys
     ("center: Down wraps", C, "            return next < 0 ? nil : ids[min(next, ids.count - 1)]\n", "            return ids[(next + ids.count) % ids.count]\n", "[Up from the first clears]"),
     ("center: Esc closes at once", C, "            return hasWords ? .clearWords : .close\n", "            return .close\n", "[Esc clears, then closes]"),
@@ -182,10 +183,10 @@ MUTANTS = [
     ("center: running caps at four", C, "        static let runningCap = 3\n", "        static let runningCap = 4\n", "[running caps at three]"),
     ("center: fix caps at three", C, "        static let fixCap = 2\n", "        static let fixCap = 3\n", "[fix caps at two]"),
     ("center: waiting not by tier", C, "            items.enumerated().sorted { ($0.element.tier, $0.offset) < ($1.element.tier, $1.offset) }.map(\\.element)\n", "            items\n", "[tier 1 first]"),
-    ("center: not loaded says nothing waits", C, 'rows.append(inputs.waitingKnown ? info("no-waiting"', 'rows.append(true ? info("no-waiting"', "[overview not loaded]"),
+    ("center: not loaded says nothing waits", C, '                if !inputs.waitingKnown {\n                    rows.append(info("waiting-unknown"', '                if false {\n                    rows.append(info("waiting-unknown"', "[overview not loaded]"),
     ("center: running not loaded says nothing runs", C, 'rows.append(inputs.runningKnown ? info("no-running"', 'rows.append(true ? info("no-running"', "[overview not loaded]"),
     ("center: sessions off ignored", C, "                if inputs.sessionsOff {\n", "                if false {\n", "[sessions off]"),
-    ("center: sessions off says nothing waits", C, 'inputs.sessionsOff ? "Nothing else is waiting on you." : "Nothing is waiting on you."', '"Nothing is waiting on you."', "[sessions off never says nothing waits]"),
+    ("center: sessions off says nothing waits", C, 'inputs.sessionsOff ? "Nothing else urgent right now." : "Nothing urgent right now."', '"Nothing urgent right now."', "[sessions off never says nothing waits]"),
     ("center: extras listed as fixes", C, "board(s).suggestions.filter({ $0.tier == .repair }).prefix(fixCap)", "board(s).suggestions.prefix(fixCap)", "[fix only when broken]"),
     ("center: two fixes share an id", C, 'fixes.append(Row(id: "fix:" + suggestion.id, kind: .action(action),', 'fixes.append(Row(id: "action:" + action.rawValue, kind: .action(action),', "[row ids are unique]"),
     ("center: the server fix comes last", C, "            return live + (s.serverReachable ? rows + fixes : fixes + rows)\n", "            return live + rows + fixes\n", "[server down lists the fix first]"),
@@ -212,8 +213,8 @@ MUTANTS = [
     ("center: a title is unbounded", C, "            return String(String(out).trimmingCharacters(in: .whitespaces).prefix(titleCap))\n", "            return String(out).trimmingCharacters(in: .whitespaces)\n", "[titles are bounded]"),
     ("center: a waiting title is not cleaned", C, 'Row(id: "waiting:" + item.id, kind: .waiting(item.id), group: .waiting, title: clean(item.title),', 'Row(id: "waiting:" + item.id, kind: .waiting(item.id), group: .waiting, title: item.title,',
      "[titles are cleaned on the row]"),
-    ("center: a title match highlights itself", C, "                sessions.append(row)\n", "                sessions.append(row); result.autoHighlight = result.autoHighlight ?? row.id\n", "[a session match never highlights]"),
-    ("center: a session lists twice", C, "                if let session = item.sessionID { guard seen.insert(session).inserted else { return } }\n", "", "[a session lists once]"),
+    ("center: a title match highlights itself", C, "                    sessions.append(row)\n", "                    sessions.append(row); result.autoHighlight = result.autoHighlight ?? row.id\n", "[a session match never highlights]"),
+    ("center: a session lists twice", C, "plain(item.title).contains(typed), !listed(item.sessionID) else { return }", "plain(item.title).contains(typed) else { return }", "[a session lists once]"),
     ("center: the search is uncapped", C, "                guard sessions.count < sessionCap, typed.count >= 2,", "                guard typed.count >= 2,", "[the search is capped]"),
     # The command center: confirms
     ("center: Doctor runs at once", C, "            case .command(.runDoctor), .action(.runDoctor): return doctorConfirm\n", "", "[Doctor always confirms]"),
@@ -285,29 +286,28 @@ MUTANTS = [
     ("view: a held row runs", W, "        guard let row = listing.rows.first(where: { $0.id == id }), row.selectable else { return }\n", "        guard let row = listing.rows.first(where: { $0.id == id }) else { return }\n", "a held row never runs"),
     ("view: a title parsed as markdown", W, "Text(verbatim: row.title).font(COSType.body(13.5, weight: .semibold)).foregroundStyle(row.held == nil ? TodayInk.ink : TodayInk.sub)", "Text(row.title).font(COSType.body(13.5, weight: .semibold)).foregroundStyle(row.held == nil ? TodayInk.ink : TodayInk.sub)", "drawn verbatim"),
     ("view: a breadcrumb with the title", W, 'todayLog.info("command center: \\(row.logName, privacy: .public)")', 'todayLog.info("command center: \\(row.title, privacy: .public)")', "a breadcrumb names a kind"),
-    ("view: quiet hours skipped", W, "TodayHome.fold(frame.needs, quiet: TodayHome.isQuiet(now: now, enabled: TodayHome.quietHoursOn(.standard)))", "TodayHome.fold(frame.needs, quiet: false)", "quiet-hours fold"),
+    ("view: quiet hours skipped", W, "        let folded = TodayHome.fold(frame.needs, quiet: TodayHome.isQuiet(now: now, enabled: TodayHome.quietHoursOn(.standard)))\n        // A question's own words", "        let folded = TodayHome.fold(frame.needs, quiet: false)\n        // A question's own words", "quiet-hours fold"),
     ("view: a question's words reach the panel", W, "inputs.waiting = folded.now.map { Item(id: $0.id, title: $0.title,", "inputs.waiting = folded.now.map { Item(id: $0.id, title: $0.quote ?? $0.title,", "a question's words never reach"),
     ("view: a stale session opens", W, "        guard let row = todayFrame(now: Date()).needs.first(where: { $0.id == id }) else {\n", "        guard let row = frameNeeds.first(where: { $0.id == id }) else {\n", "looked up again at open"),
     ("view: an error covers the panel", W, "get: { model.error != nil && !commandOpen },", "get: { model.error != nil },", "shows in place"),
     ("view: the result line loses progress", W, "        r.helperProgress = model.busy ? model.operationProgress : nil\n", "", "operationProgress"),
     ("view: VoiceOver hears nothing", W, "AccessibilityNotification.Announcement(C.announcement(", "_ = (C.announcement(", "VoiceOver hears the highlight"),
     # 0.5.360: Return goes to the command or the session the words point at, and a row that ran leaves nothing armed
-    ("center: Return skips the command row", C, "            if let top = listing.rows.first, case .command = top.kind, top.selectable, !listing.returnSkips.contains(top.id) { return .move(top.id) }\n", "", "[the start of a Start phrase moves to its row]"),
-    ("center: Return skips Stop", C, "case .command = top.kind, top.selectable, !listing.returnSkips.contains(top.id) {", "case .command(let command) = top.kind, command != .stopRecording, top.selectable, !listing.returnSkips.contains(top.id) {", "[Stop inside a sentence still moves to its row, which confirms]"),
-    ("center: Return skips Doctor", C, "case .command = top.kind, top.selectable, !listing.returnSkips.contains(top.id) {", "case .command(let command) = top.kind, command != .runDoctor, top.selectable, !listing.returnSkips.contains(top.id) {", "[Return moves to the command row]"),
-    ("center: Return moves to a held command", C, "case .command = top.kind, top.selectable, !listing.returnSkips.contains(top.id) {", "case .command = top.kind, !listing.returnSkips.contains(top.id) {", "[a held command moves to Ask]"),
-    ("center: a session row comes before the command row", C, "case .command = top.kind, top.selectable, !listing.returnSkips.contains(top.id) {", "case .command = top.kind, top.selectable, !listing.returnSkips.contains(top.id), !listing.rows.contains(where: { $0.group == .sessions }) {", "[a command row comes before a session row]"),
+    ("center: Return skips the command row", C, "            if let top = listing.rows.first, isOrder(top), top.selectable, !listing.returnSkips.contains(top.id) { return .move(top.id) }\n", "", "[the start of a Start phrase moves to its row]"),
+    ("center: Return skips Stop", C, "isOrder(top), top.selectable, !listing.returnSkips.contains(top.id) {", "isOrder(top), top.id != \"command:stopRecording\", top.selectable, !listing.returnSkips.contains(top.id) {", "[Stop inside a sentence still moves to its row, which confirms]"),
+    ("center: Return skips Doctor", C, "isOrder(top), top.selectable, !listing.returnSkips.contains(top.id) {", "isOrder(top), top.id != \"command:runDoctor\", top.selectable, !listing.returnSkips.contains(top.id) {", "[Return moves to the command row]"),
+    ("center: Return moves to a held command", C, "isOrder(top), top.selectable, !listing.returnSkips.contains(top.id) {", "isOrder(top), !listing.returnSkips.contains(top.id) {", "[a held command moves to Ask]"),
+    ("center: a session row comes before the command row", C, "isOrder(top), top.selectable, !listing.returnSkips.contains(top.id) {", "isOrder(top), top.selectable, !listing.returnSkips.contains(top.id), !listing.rows.contains(where: { $0.group == .sessions }) {", "[a command row comes before a session row]"),
     ("center: a session match starts a run", C, "            if let session = listing.rows.first(where: { $0.group == .sessions && $0.selectable }) { return .move(session.id) }\n", "", "[a session match moves to the session]"),
     ("center: a session match moves to Ask", C, "{ return .move(session.id) }", '{ _ = session; return .move("ask") }', "[a session match moves to the session]"),
     ("center: a session match moves past the first", C, "listing.rows.first(where: { $0.group == .sessions && $0.selectable }) { return .move(session.id) }", "listing.rows.last(where: { $0.group == .sessions && $0.selectable }) { return .move(session.id) }", "[a session match moves to the first session row]"),
-    ("center: the hint says a session runs", C, '                case .recording, .waiting, .running, .session: return "Return moves to \\(row.title). Return again opens it."\n', '                case .recording, .waiting, .running, .session: return "Return moves to \\(row.title). Return again runs it."\n', "[the hint says what Return does]"),
+    ("center: the hint says a session runs", C, 'return Footer(lead: "Return moves to the session ", title: row.title, tail: ". Return again opens it.")', 'return Footer(lead: "Return moves to the session ", title: row.title, tail: ". Return again runs it.")', "[the hint says what Return does]"),
     ("center: the hint says Stop runs", C, '(confirmation(row, s) != nil ? "asks first." : "runs it.")', '"runs it."', "[the hint says what Return does]"),
     ("center: a ran row keeps its draft", C, "            sendsWords(row) ? draft : \"\"\n", "            draft\n", "[a row that ran leaves no draft]"),
     ("center: every row sends its words", C, "            case .ask, .file, .action(.troubleshoot): return true\n            default: return false\n", "            case .ask, .file, .action(.troubleshoot): return true\n            default: return true\n", "[a row that ran leaves no draft]"),
     ("center: Ask loses its words", C, "            case .ask, .file, .action(.troubleshoot): return true\n", "            case .file, .action(.troubleshoot): return true\n", "[Ask, File and troubleshoot keep the words]"),
     ("center: File loses its words", C, "            case .ask, .file, .action(.troubleshoot): return true\n", "            case .ask, .action(.troubleshoot): return true\n", "[Ask, File and troubleshoot keep the words]"),
     ("center: troubleshoot loses its words", C, "            case .ask, .file, .action(.troubleshoot): return true\n", "            case .ask, .file: return true\n", "[Ask, File and troubleshoot keep the words]"),
-    ("view: Return starts a bare run", W, "            if let ask = listing.rows.first(where: { $0.kind == .ask && $0.selectable }) { activate(ask.id, listing) }\n", "            submit(listing.words)\n", "starts its Work run through the Ask row"),
     ("view: a ran row keeps its draft", W, "            words = C.draftAfterRun(row, words)\n            keys.draft = words\n", "            words = C.draftAfterRun(row, words)\n", "a row that ran empties its highlight"),
     ("view: a ran row keeps its highlight", W, "            chosen = nil\n            words = C.draftAfterRun(row, words)\n", "            words = C.draftAfterRun(row, words)\n", "a row that ran empties its highlight"),
     ("view: the notice counts as a run", W, "        if effect != .notice, !C.sendsWords(row) {\n", "        if !C.sendsWords(row) {\n", "a row that ran empties its highlight"),
@@ -346,11 +346,121 @@ MUTANTS = [
     ("pins: a Doctor row renamed", C, '        static let recovery = "Recovery controller"\n', '        static let recovery = "Recovery agent"\n', "doctorDetails writes"),
     ("pins: the engine opens a link", C, "    static let maxPacket = 12_000\n", '    static let maxPacket = 12_000\n    static let site = URL(string: "https://www.gotcos.com")\n', "never uses URL("),
     ("pins: the suite skips the lane", S, 'zsh "$ROOT/Tests/run-setup-assistant.sh"\n', "", "runs the setup assistant lane once"),
+    # 0.5.361: free text moves to Ask first, hits never take Return, places, the noun list, the local word search, match text, the footer
+    ("center: the first Return starts a run", C, "            if let target = askable ?? listing.rows.first(where: { $0.kind == .file }) { return .move(target.id) }\n", "            if let target = askable ?? listing.rows.first(where: { $0.kind == .file }) { return .activate(target.id) }\n", "[free text moves to Ask first]"),
+    ("center: a gone highlight acts on another row", C, "            if let chosen, !listing.rows.contains(where: { $0.id == chosen && $0.selectable }) { return .nothing }\n", "", "[a chosen row that is gone returns nothing]"),
+    ("center: Return moves onto a hit", C, "            case .command, .place: return true\n", "            case .command, .place, .hit: return true\n", "Return does the same before and after hits arrive"),
+    ("center: a hit is a session row for Return", C, "listing.rows.first(where: { $0.group == .sessions && $0.selectable })", "listing.rows.first(where: { ($0.group == .sessions || $0.group == .found) && $0.selectable })", "Return does the same before and after hits arrive"),
+    ("center: a hit sits with the sessions", C, 'rows.append(Row(id: "hit:" + item.id, kind: .hit(item.id), group: .found,', 'rows.append(Row(id: "hit:" + item.id, kind: .hit(item.id), group: .sessions,', "[hits are their own group]"),
+    ("center: a session list waits for nothing", C, "            if listing.listOnly { return .nothing }\n", "", "[a noun list wins its name and highlights nothing]"),
+    ("center: an exact place name highlights nothing", C, "                if found.rank == 0, span == nil, result.autoHighlight == nil { result.autoHighlight = row.id }\n", "", "[an exact place name highlights its row]"),
+    ("center: a noun list highlights its place", C, "if found.rank == 0, span == nil, result.autoHighlight == nil {", "if found.rank == 0, result.autoHighlight == nil {", "[a noun list wins its name and highlights nothing]"),
+    ("center: a place in a sentence is moved to", C, "                if found.rank == 2 || span != nil { result.returnSkips.insert(row.id) }\n", "                if span != nil { result.returnSkips.insert(row.id) }\n", "[a first-word match in a sentence goes to Ask]"),
+    ("center: a noun list moves to its place", C, "                if found.rank == 2 || span != nil { result.returnSkips.insert(row.id) }\n", "                if found.rank == 2 { result.returnSkips.insert(row.id) }\n", "[a noun list wins its name and highlights nothing]"),
+    ("center: two letters reach a place", C, "            guard core.count >= 3 else { return nil }\n", "            guard core.count >= 2 else { return nil }\n", "[us skips Usage and goes to a session]"),
+    ("center: a place sentence is not listed", C, '            if names.contains(where: { core.hasPrefix($0 + " ") }) { return 2 }\n', "", "[a first-word match in a sentence is listed only]"),
+    ("center: a question names a place outright", C, "            if names.contains(core) { return question ? 2 : 0 }\n", "            if names.contains(core) { return 0 }\n", "[a first-word match in a sentence is listed only]"),
+    ("center: places are no near-command", C, "!ranked.isEmpty || !placed.isEmpty || nearCommand(words)", "!ranked.isEmpty || nearCommand(words)", "[a place counts as a near-command]"),
+    ("center: the place list is uncapped", C, "return found.prefix(cap).map { (place: $0.place, rank: $0.rank) }", "return found.map { (place: $0.place, rank: $0.rank) }", "[the place list is capped]"),
+    ("center: a place with an unsent message does not ask", C, "            case .place, .hit, .searchAll: return s.unsentSessionDraft ? draftConfirm : nil\n", "", "[a place with an unsent message asks first]"),
+    ("center: a place always asks", C, "            case .place, .hit, .searchAll: return s.unsentSessionDraft ? draftConfirm : nil\n", "            case .place, .hit, .searchAll: return draftConfirm\n", "[a place with an unsent message asks first]"),
+    ("center: tasks is not Work", C, 'case .openWork: return opener("work") + opener("tasks")', 'case .openWork: return opener("work")', "[tasks is one row, Work]"),
+    ("center: a question is a list", C, "static func nounSpan(_ typed: String, question: Bool) -> Span? { question ? nil : nounForms[typed] }", "static func nounSpan(_ typed: String, question: Bool) -> Span? { nounForms[typed] }", "[a sentence is not a list]"),
+    ("center: the noun list is uncapped", C, "for item in inside.prefix(nounCap) {", "for item in inside {", "[the noun list shows eight]"),
+    ("center: no more-in-Sessions row", C, "                    if inside.count > nounCap {\n", "                    if false {\n", "[then N more in Sessions]"),
+    ("center: an undated session is in today", C, "case .today: return date.map { calendar.isDate($0, inSameDayAs: now) } ?? false", "case .today: return date.map { calendar.isDate($0, inSameDayAs: now) } ?? true", "[an undated session is in all, never in a day]"),
+    ("center: a warm-up is listed", C, "for item in live + listed where !item.keepWarm {", "for item in live + listed {", "[a keep-warm session never lists]"),
+    ("center: a session merges twice", C, "if let at = byKey[key]?.first(where: { out[$0].sessionID.map { sameListed($0, id) } ?? false }) {", "if let at = Optional<Int>.none {", "[one session lists once, newest first]"),
+    ("center: oldest first", C, "case let (x?, y?): return x != y ? x > y : a.offset < b.offset", "case let (x?, y?): return x != y ? x < y : a.offset < b.offset", "[newest first]"),
+    ("center: a short id matches at four characters", C, "return short.count >= 8 && long.hasPrefix(short)", "return short.count >= 4 && long.hasPrefix(short)", "[different sessions]"),
+    ("center: a session matches across providers", C, "guard x.count == 2, y.count == 2, x[0] == y[0], !x[1].isEmpty", "guard x.count == 2, y.count == 2, !x[1].isEmpty", "[different sessions]"),
+    ("center: the live row loses the list's date", C, "                        if out[at].date == nil { out[at].date = item.date }\n", "", "[the live row wins and takes the list's date]"),
+    ("center: not loaded says no sessions", C, "                } else if !inputs.sessionsLoaded {\n", "                } else if false {\n", "[sessions not loaded says so]"),
+    ("center: two characters search", C, "if typed.count >= 3, span == nil, !exact, !inputs.sessionsOff {", "if typed.count >= 2, span == nil, !exact, !inputs.sessionsOff {", "[under three characters, no search]"),
+    ("center: an exact command searches", C, "if typed.count >= 3, span == nil, !exact, !inputs.sessionsOff {", "if typed.count >= 3, span == nil, !inputs.sessionsOff {", "[an exact command, place or noun list runs no search]"),
+    ("center: a noun list searches", C, "if typed.count >= 3, span == nil, !exact, !inputs.sessionsOff {", "if typed.count >= 3, !exact, !inputs.sessionsOff {", "[an exact command, place or noun list runs no search]"),
+    ("center: Sessions off searches", C, "if typed.count >= 3, span == nil, !exact, !inputs.sessionsOff {", "if typed.count >= 3, span == nil, !exact {", "[Sessions off runs no search]"),
+    ("center: the search words are uncapped", C, "                let search = String(typed.prefix(200))\n", "                let search = typed\n", "[the words are capped at 200 characters]"),
+    ("center: hits are uncapped", C, "for item in found.hits where shown < hitCap && !listed(item.sessionID) {", "for item in found.hits where !listed(item.sessionID) {", "[hits are capped at five]"),
+    ("center: a hit lists twice", C, "for item in found.hits where shown < hitCap && !listed(item.sessionID) {", "for item in found.hits where shown < hitCap {", "[a session lists once, by sameSession]"),
+    ("center: hits for other words show", C, "                if found.words == search {\n", "                if true {\n", "[hits for other words never show]"),
+    ("center: Search all sessions is missing", C, '                rows.append(Row(id: "search-all", kind: .searchAll, group: .found,', '                _ = (Row(id: "search-all", kind: .searchAll, group: .found,', "[Search all sessions is offered]"),
+    ("center: a refresh drops the chosen hit", C, "            if old.words == words, let chosen, let gone = old.hits.first(where: { \"hit:\" + $0.id == chosen }), !kept.contains(where: { $0.id == gone.id }) {\n", "            if false, let chosen, let gone = old.hits.first(where: { \"hit:\" + $0.id == chosen }), !kept.contains(where: { $0.id == gone.id }) {\n", "[a refresh keeps a chosen hit]"),
+    ("center: new words keep an old hit", C, "if old.words == words, let chosen, let gone", "if let chosen, let gone", "[new words start clean]"),
+    ("center: match text is not masked", C, "            var text = mask(clean(snippet))\n", "            var text = clean(snippet)\n", "[key-shaped text is masked in match text]"),
+    ("center: a hit title is not masked", C, "        static func hitTitle(_ title: String) -> String { mask(clean(title)) }\n", "        static func hitTitle(_ title: String) -> String { clean(title) }\n", "[key-shaped text is masked in a hit title]"),
+    ("center: sk- keys are not masked", C, '            #"\\b(?:sk|pk|rk|sess)[-_][A-Za-z0-9_\\-]{16,}"#,\n', "", "[key-shaped text is masked"),
+    ("center: GitHub tokens are not masked", C, '            #"\\bgh[pousr]_[A-Za-z0-9]{16,}|\\bgithub_pat_[A-Za-z0-9_]{16,}"#,\n', "", "[key-shaped text is masked"),
+    ("center: Slack tokens are not masked", C, '            #"\\bxox[abprs]-[A-Za-z0-9\\-]{10,}"#,\n', "", "[key-shaped text is masked"),
+    ("center: AWS keys are not masked", C, '            #"\\b(?:AKIA|ASIA)[0-9A-Z]{12,}"#,\n', "", "[key-shaped text is masked"),
+    ("center: bearer tokens are not masked", C, '            #"(?i)\\bbearer\\s+[A-Za-z0-9._~+/\\-]{16,}=*"#,\n', "", "[key-shaped text is masked"),
+    ("center: key=value secrets are not masked", C, '            #"(?i)\\b(?:api[_-]?key|token|secret|password|passwd)\\s*[:=]\\s*\\S{6,}"#,\n', "", "[key-shaped text is masked"),
+    ("center: long mixed tokens are not masked", C, '            #"(?<![A-Za-z0-9_\\-])(?=[A-Za-z0-9_\\-]*[A-Za-z])(?=[A-Za-z0-9_\\-]*[0-9])[A-Za-z0-9_\\-]{32,}(?![A-Za-z0-9_\\-])"#,\n', "", "[key-shaped text is masked"),
+    ("center: a title echo shows", C, "if said.count < 4 || said == named || named.contains(said) { return nil }", "if said.count < 4 { return nil }", "[a title echo shows no match line]"),
+    ("center: match text is unbounded", C, "return String(text.prefix(matchCap))", "return text", "[match text is bounded]"),
+    ("center: a leading title is kept", C, "if !own.isEmpty, let range = text.range(of: own, options: [.caseInsensitive, .anchored]) {", "if false, let range = text.range(of: own, options: [.caseInsensitive, .anchored]) {", "[a window that starts with the title keeps the rest]"),
+    ("center: the footer cuts its tail", C, 'return Footer(lead: "Return moves to the session ", title: row.title, tail: ". Return again opens it.")', 'return Footer(lead: "Return moves to the session ", title: row.title + ". Return again opens it.")', "[Return again opens it stays whole]"),
+    ("center: a place says it runs", C, 'return Footer(lead: confirmation(row, s) != nil ? "Return asks first: " : "Return opens: ", title: row.title)', 'return Footer(lead: confirmation(row, s) != nil ? "Return asks first: " : "Return runs: ", title: row.title)', "[the footer says Return opens]"),
+    ("center: a session titled like a command is not called a session", C, 'return Footer(lead: confirmation(row, s) != nil ? "Return asks first: the session " : "Return opens the session ", title: row.title)', 'return Footer(lead: confirmation(row, s) != nil ? "Return asks first: " : "Return opens: ", title: row.title)', "[a session titled like a command is called a session]"),
+    ("center: the fold line changes words", C, 'count == 1 ? "1 thing can wait until tomorrow" : "\\(count) things can wait until tomorrow"', 'count == 1 ? "1 thing can wait until tomorrow" : "\\(count) more for tomorrow"', "[the fold reads the same in both]"),
+    ("center: no fold count when something waits", C, '            } else if inputs.foldedCount > 0 {\n                rows.append(info("folded"', '            } else if false {\n                rows.append(info("folded"', "[the fold count shows when something waits]"),
+    ("center: nothing waiting reads waiting", C, 'inputs.sessionsOff ? "Nothing else urgent right now." : "Nothing urgent right now."', 'inputs.sessionsOff ? "Nothing else urgent right now." : "Nothing is waiting on you."', "[no sessions]"),
+    ("view: Open Sessions keeps Usage", W, "            select(.sessions)\n            sessionsPane = .sessions\n        case .openMeetings: select(.meetings)", "            select(.sessions)\n        case .openMeetings: select(.meetings)", "Open Sessions resets the Sessions tab"),
+    ("view: Archive loads nothing", W, "            if model.archiveDays.isEmpty { Task { await model.loadArchiveDays() } }\n        case .speakersMeetings:", "        case .speakersMeetings:", "Archive loads its days"),
+    ("view: Usage opens Sessions only", W, "            select(.sessions)\n            sessionsPane = .usage\n", "            select(.sessions)\n", "SessionsPane.usage has no row"),
+    ("view: COS cost opens Sessions only", W, "            select(.sessions)\n            sessionsPane = .cost\n", "            select(.sessions)\n", "SessionsPane.cost has no row"),
+    ("view: Archive opens Messages only", W, "            messagesSubview = .archive\n", "", "MessagesSubview.archive has no row"),
+    ("view: Voices opens Speakers only", W, "            speakerSubview = .voices\n", "", "SpeakerSubview.voices has no row"),
+    ("view: Completed opens Work only", W, "            workWorkspaceState.scope = .completed\n", "", "WorkWorkspaceScope.completed has no row"),
+    ("view: Threads goes nowhere", W, "        case .threads: select(.threads)\n", "        case .threads: break\n", "ActivitySection.threads has no row"),
+    ("view: a place is not dispatched", W, "        case .dictationDictionary:\n            select(.dictation)\n            model.openDictionary()\n", "        default:\n            select(.dictation)\n", "no default"),
+    ("view: a hit opens from the list", W, "guard let session = commandKeys.hitSessions[id] else {", "guard let session = model.petSession(id: id) else {", "a hit opens its own session object"),
+    ("view: a hit opens by the platform only", W, "        default:\n            select(.sessions)\n            sessionsPane = .sessions\n            selectedSessionID = session.id\n            model.openClaudeSession(session)\n", "        default:\n            break\n", "a hit opens the way a list row does"),
+    ("view: the search is not debounced", W, "        try? await Task.sleep(nanoseconds: 500_000_000)\n        guard !Task.isCancelled else { return }\n        if found.words != words", "        if found.words != words", "500 ms of quiet first"),
+    ("view: the search runs under a fixture", W, "        guard fixture == nil else { return }\n        guard let words else {", "        guard let words else {", "nothing runs under a fixture"),
+    ("view: the search is not keyed", W, ".task(id: listing.searchWords) { await runSearch(listing.searchWords) }", ".task { await runSearch(listing.searchWords) }", "one search at a time"),
+    ("view: the search is the server's", W, '["claude-sessions-search", "--local", "--limit", "8"]', '["claude-sessions-search", "--limit", "8"]', "the word search is one fixed verb, local"),
+    ("view: the words are an argument", W, '["claude-sessions-search", "--local", "--limit", "8"]', '["claude-sessions-search", "--local", "--limit", "8", "--query", words]', "typed words are never a helper argument"),
+    ("view: the words skip stdin", W, "stdinData: Data(String(words.prefix(200)).utf8))", "stdinData: nil)", "the one stated exception to hard rule 2"),
+    ("view: the search reads the Sessions tab's hits", W, '        var seen = Set<String>()\n        return (response.details["hits"]', '        _ = model.sessionSearchHits\n        var seen = Set<String>()\n        return (response.details["hits"]', "never reads the Sessions tab"),
+    ("view: the list refresh is forced", W, "if commandFixture == nil { Task { await model.loadClaudeSessions() } }", "if commandFixture == nil { Task { await model.loadClaudeSessions(force: true) } }", "not forced"),
+    ("view: the footer cuts its words", W, "Text(verbatim: footer.lead).lineLimit(1).fixedSize(horizontal: footer.title != nil, vertical: false)\n            if let title = footer.title { Text(verbatim: title).lineLimit(1).truncationMode(.tail) }", "Text(verbatim: footer.lead).lineLimit(1).truncationMode(.tail)\n            if let title = footer.title { Text(verbatim: title).lineLimit(1).truncationMode(.tail) }", "only the title is cut"),
+    ("view: Today's headline ignores the fold", W, "Text(TodayHome.brief(todayBriefCounts(frame, now: now)))", "Text(TodayHome.brief(frame.counts))", "the recording section sits under the header"),
+    ("view: ⌘K counts the fold differently", W, "inputs.foldedCount = commandFixture?.foldedCount ?? folded.tomorrow.count", "inputs.foldedCount = commandFixture?.foldedCount ?? 0", "⌘K counts what the same fold moved to tomorrow"),
+    ("view: the panel's sessions are unbounded", W, "static let commandSessionLimit = 80", "static let commandSessionLimit = 8000", "the panel's sessions are the live rows and the loaded list, merged and bounded"),
+    ("helper: the local search reads the token", HP, '        guard query.count >= 3 else { throw HelperError.message("The words must be at least 3 characters.") }\n', '        _ = try? speakerReviewToken()\n        guard query.count >= 3 else { throw HelperError.message("The words must be at least 3 characters.") }\n', "the local search never uses speakerReviewToken"),
+    ("helper: the local search words are uncapped", HP, "trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))\n        guard query.count >= 3", "trimmingCharacters(in: .whitespacesAndNewlines))\n        guard query.count >= 3", "bounded stdin"),
+    ("helper: the --local flag is not checked", HP, '        if args.contains("--local") { try emitLocalSessionsSearch(args: args); return }\n', "", "the verb's --local flag"),
+    ("helper: the local scan reads every transcript", HP, "static let sessionSearchBodyFileLimit = 80", "static let sessionSearchBodyFileLimit = 800", "at most 80 transcripts"),
+    ("helper: the local scan reads every Desktop record", HP, "desktopNewest: Self.localSearchDesktopNewest, transcriptNewest: Self.localSearchTranscriptNewest, readCursorPins: false)", "desktopNewest: nil, transcriptNewest: nil, readCursorPins: false)", "the local search bounds its title reads"),
+    ("helper: a short Claude id stays short on reveal", HP, "                sessionId: fullId,\n                records: Self.claudeDesktopRecords(for: fullId, sessionsRoot: desktopRoot),", "                sessionId: sessionId,\n                records: Self.claudeDesktopRecords(for: fullId, sessionsRoot: desktopRoot),", "a short Claude id"),
 ]
 
 # Most dangerous first: what would spend a run, record, or change something unasked, then the keys and the saved answers. The
 # view mutants come first of all, because a pin kills each before any compile. Whatever is not named here runs after these.
 CENTER_FIRST = [
+    # 0.5.361 first: a run must never start from a first Return, a hit must never take Return, nothing typed may leave the Mac or reach an argument.
+    "view: the search is the server's", "view: the words are an argument", "view: the words skip stdin", "helper: the local search reads the token", "helper: the --local flag is not checked",
+    "center: the first Return starts a run", "center: Return moves onto a hit", "center: a hit is a session row for Return", "center: a hit sits with the sessions",
+    "center: a gone highlight acts on another row", "view: the search reads the Sessions tab's hits", "view: a hit opens from the list", "view: a hit opens by the platform only",
+    "view: the search is not keyed", "view: the search is not debounced", "view: the search runs under a fixture", "view: the list refresh is forced",
+    "helper: the local scan reads every transcript", "helper: the local scan reads every Desktop record", "helper: the local search words are uncapped", "helper: a short Claude id stays short on reveal",
+    "center: a place with an unsent message does not ask", "center: a place always asks", "center: a place in a sentence is moved to", "center: a question names a place outright",
+    "center: an exact place name highlights nothing", "center: a noun list highlights its place", "center: a noun list moves to its place", "center: a session list waits for nothing",
+    "center: two letters reach a place", "center: a place sentence is not listed", "center: places are no near-command", "center: the place list is uncapped", "center: tasks is not Work",
+    "view: Open Sessions keeps Usage", "view: Archive loads nothing", "view: Usage opens Sessions only", "view: COS cost opens Sessions only", "view: Archive opens Messages only",
+    "view: Voices opens Speakers only", "view: Completed opens Work only", "view: Threads goes nowhere", "view: a place is not dispatched",
+    "center: a question is a list", "center: the noun list is uncapped", "center: no more-in-Sessions row", "center: an undated session is in today", "center: a warm-up is listed",
+    "center: a session merges twice", "center: oldest first", "center: a short id matches at four characters", "center: a session matches across providers",
+    "center: the live row loses the list's date", "center: not loaded says no sessions",
+    "center: two characters search", "center: an exact command searches", "center: a noun list searches", "center: Sessions off searches", "center: the search words are uncapped",
+    "center: hits are uncapped", "center: a hit lists twice", "center: hits for other words show", "center: Search all sessions is missing", "center: a refresh drops the chosen hit", "center: new words keep an old hit",
+    "center: match text is not masked", "center: a hit title is not masked", "center: sk- keys are not masked", "center: GitHub tokens are not masked", "center: Slack tokens are not masked",
+    "center: AWS keys are not masked", "center: bearer tokens are not masked", "center: key=value secrets are not masked", "center: long mixed tokens are not masked",
+    "center: a title echo shows", "center: match text is unbounded", "center: a leading title is kept",
+    "center: the footer cuts its tail", "center: a place says it runs", "center: a session titled like a command is not called a session", "view: the footer cuts its words",
+    "center: the fold line changes words", "center: no fold count when something waits", "center: nothing waiting reads waiting", "view: Today's headline ignores the fold",
+    "view: ⌘K counts the fold differently", "view: the panel's sessions are unbounded",
     # Miles's ask of 2026-10-31 first.
     "section: above the header", "section: drawn with nothing recording", "section: Stop with no confirm", "section: the confirm skips the store", "section: Stop on a glasses row",
     "section: Stop keys on the count", "section: glasses do not say where they stop", "section: it pulses", "section: ⌘K reads its own list", "section: a row opens something else",
@@ -359,7 +469,7 @@ CENTER_FIRST = [
     "view: Ask spends Doctor", "view: ⌘K goes Home", "view: opening it navigates", "view: Esc goes back past the panel", "view: the panel gives up its Esc",
     "view: Option-Return left to the field", "view: a dispatch default", "view: an action not dispatched", "view: the field is disabled", "view: the box takes words again",
     "center: recordings below the rest", "center: Stop on a glasses recording", "center: Stop listed twice", "center: a second glasses line", "center: saving says recording",
-    "view: Return starts a bare run", "view: a ran row keeps its draft", "view: a ran row keeps its highlight", "view: the notice counts as a run", "view: Ask empties its words",
+    "view: a ran row keeps its draft", "view: a ran row keeps its highlight", "view: the notice counts as a run", "view: Ask empties its words",
     "view: a run leaves the draft behind", "view: a filing leaves the draft behind", "view: a recording leaves the draft behind", "view: clearing the draft forgets the draft",
     "view: the unnamed recording counts a Mac row", "view: a saved Mac capture is a glasses meeting",
     "center: Return skips the command row", "center: Return skips Stop", "center: Return skips Doctor", "center: Return moves to a held command",
@@ -395,7 +505,21 @@ def center_mutants():
     return [by_name[name] for name in CENTER_FIRST] + rest
 
 
+def today_pins(copy):
+    """Tests/activity-today-pins.py on the copy: pure Python, a second or two."""
+    result = bounded.run(["python3", "Tests/activity-today-pins.py", "."], 120, cwd=copy)
+    return result.returncode, result.stdout + result.stderr
+
+
 def suite(copy, deadline=None):
+    outcome = suite_lane(copy, deadline)
+    if outcome is None or outcome[0] != 0:
+        return outcome
+    code, text = today_pins(copy)
+    return (code, outcome[1] + text, outcome[2], outcome[3])
+
+
+def suite_lane(copy, deadline=None):
     started = time.time()
     # The compile lock is shared with whoever else is building: waiting for it is not a kill.
     for _ in range(60):
@@ -431,9 +555,9 @@ def main():
     for part in ("Sources", "Tests", "HelperSources", "scripts"):
         shutil.copytree(src / part, copy / part)
     code, out, seconds, _ = suite(copy)
-    passed = [l for l in out.splitlines() if l.startswith("PASS: setup assistant")]
-    print(f"BASELINE (unmutated): exit {code} in {seconds:.0f}s: {' / '.join(passed) or '(no PASS line)'}", flush=True)
-    if code != 0 or len(passed) != 2:
+    passed = [l for l in out.splitlines() if l.startswith("PASS: setup assistant") or "Activity Today wiring pinned" in l]
+    print(f"BASELINE (unmutated): exit {code} in {seconds:.0f}s: {' / '.join(x[:60] for x in passed) or '(no PASS line)'}", flush=True)
+    if code != 0 or len(passed) != 3:
         print(out[-3000:])
         sys.exit("baseline is not green; no mutant may be judged against a red suite")
     killed = survived = 0
@@ -455,7 +579,7 @@ def main():
         code, out, seconds, timed_out = outcome
         if not filecmp.cmp(path, src / rel, shallow=False):
             sys.exit(f"RESTORE FAILED for {name}: {rel} differs from the worktree")
-        lines = [l for l in out.splitlines() if "check failed [" in l or "Setup assistant pin:" in l or ": error:" in l]
+        lines = [l for l in out.splitlines() if "check failed [" in l or "Setup assistant pin:" in l or "Activity Today pin:" in l or ": error:" in l]
         reason = lines[0].strip() if lines else (out.strip().splitlines()[-1] if out.strip() else "")
         if timed_out:
             killed += 1; print(f"killed  {name}: TIMEOUT after {LIMIT} s (no named check)", flush=True)

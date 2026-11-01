@@ -11795,7 +11795,8 @@ final class COSControlHelper {
         limit: Int = 20,
         starredIds: Set<String> = [],
         desktopSessionsRoot: URL? = nil,
-        desktopIndex: [String: ClaudeDesktopSession]? = nil
+        desktopIndex: [String: ClaudeDesktopSession]? = nil,
+        newest: Int? = nil
     ) -> [[String: Any]] {
         let index = desktopIndex ?? desktopSessionsRoot.map { loadClaudeDesktopIndex(from: $0) } ?? [:]
         let dirs = (try? FileManager.default.contentsOfDirectory(
@@ -11803,6 +11804,20 @@ final class COSControlHelper {
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles]
         )) ?? []
+        // `newest`: title only this many transcripts, the most recently written (starred ones still all count). Each title is a 256 KB
+        // read and a line split, so the whole recent set cost seconds in the shipped build (measured 2026-10-31). Nil titles them all.
+        var allowed: Set<URL>?
+        if let newest {
+            var dated: [(file: URL, mtime: Date)] = []
+            for dir in dirs {
+                guard (try? dir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
+                      let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles]) else { continue }
+                for file in files where file.pathExtension == "jsonl" {
+                    dated.append((file, (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast))
+                }
+            }
+            allowed = Set(dated.sorted { $0.mtime > $1.mtime }.prefix(newest).map(\.file))
+        }
         var pinnedRows: [(mtime: Date, row: [String: Any])] = []
         var recentRows: [(mtime: Date, row: [String: Any])] = []
         var seen = Set<String>()
@@ -11827,6 +11842,7 @@ final class COSControlHelper {
                 let pinned = starredIds.contains(sessionId.lowercased())
                 let fresh = now.timeIntervalSince(mtime) <= maxAge
                 if !pinned && !fresh { continue }
+                if let allowed, !pinned, !allowed.contains(file) { continue }
                 let desktop = index[sessionId.lowercased()] ?? index[shortId]
                 var title = desktop?.title ?? ""
                 // 0.5.250: a title someone gave the session (Desktop's, or a custom-title) is never read as a warm-up.
@@ -12558,7 +12574,10 @@ final class COSControlHelper {
         var created: Date
     }
 
-    static func loadClaudeDesktopIndex(from sessionsRoot: URL) -> [String: ClaudeDesktopSession] {
+    /// `newest`: read the head of only this many records, the most recently written. The ⌘K panel's local search sets it: each head is
+    /// a 256 KB read and a byte-by-byte parse, 12 ms apiece in the shipped build, so all 733 on one Mac took 9 seconds (measured
+    /// 2026-10-31). Nil reads them all, as the Sessions list does.
+    static func loadClaudeDesktopIndex(from sessionsRoot: URL, newest: Int? = nil) -> [String: ClaudeDesktopSession] {
         var byFull: [String: ClaudeDesktopSession] = [:]
         guard FileManager.default.fileExists(atPath: sessionsRoot.path),
               let walker = FileManager.default.enumerator(
@@ -12566,9 +12585,18 @@ final class COSControlHelper {
                 includingPropertiesForKeys: [.contentModificationDateKey, .creationDateKey, .isRegularFileKey],
                 options: [.skipsHiddenFiles]
               ) else { return [:] }
+        var files: [URL] = []
         for case let file as URL in walker {
             let name = file.lastPathComponent
             guard name.hasPrefix("local_"), name.hasSuffix(".json") else { continue }
+            files.append(file)
+        }
+        if let newest, files.count > newest {
+            let dated = files.map { ($0, (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date.distantPast) }
+            files = dated.sorted { $0.1 > $1.1 }.prefix(newest).map(\.0)
+        }
+        for file in files {
+            let name = file.lastPathComponent
             let id = normalizeClaudeSessionId(String(name.dropLast(5)))
             guard id.count >= 8 else { continue }
             let values = try? file.resourceValues(forKeys: [
@@ -14272,13 +14300,17 @@ final class COSControlHelper {
                 sessionId: sessionId, projectsRoot: home.appendingPathComponent(".claude/projects", isDirectory: true)
             )
             let writtenAt = transcript.flatMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate }
+            // 0.5.361: a short id (the first 8 characters, which is how the local session list and a ⌘K search hit name a transcript
+            // session) means its one transcript's full id, and Desktop's links need the full id. Without this a session older than the
+            // saved list was refused as "an incomplete ID". A full id resolves to itself, so nothing else changes.
+            let fullId = transcript.map { $0.deletingPathExtension().lastPathComponent.lowercased() }.flatMap { UUID(uuidString: $0) == nil ? nil : $0 } ?? sessionId
             let target = Self.claudeDesktopTarget(
-                sessionId: sessionId,
-                records: Self.claudeDesktopRecords(for: sessionId, sessionsRoot: desktopRoot),
+                sessionId: fullId,
+                records: Self.claudeDesktopRecords(for: fullId, sessionsRoot: desktopRoot),
                 live: Self.claudeTranscriptBusy(pid: live?.pid, writtenAt: writtenAt),
                 transcriptExists: transcript != nil,
                 desktopVersion: desktopVersion,
-                mentionedElsewhere: { Self.claudeDesktopMentions(sessionId, sessionsRoot: desktopRoot) }
+                mentionedElsewhere: { Self.claudeDesktopMentions(fullId, sessionsRoot: desktopRoot) }
             )
             claudeLink = target.link
             revealReason = target.reason
@@ -18134,7 +18166,8 @@ final class COSControlHelper {
         return Array(rows.prefix(max(1, min(limit, sessionSearchBodyFileLimit))))
     }
 
-    static func localSessionKeywordHits(query: String, limit: Int, home: URL) -> [[String: Any]] {
+    /// `desktopNewest`: see `loadClaudeDesktopIndex(from:newest:)`. Nil searches every Desktop title, as the Sessions fallback does.
+    static func localSessionKeywordHits(query: String, limit: Int, home: URL, desktopNewest: Int? = nil, transcriptNewest: Int? = nil, readCursorPins: Bool = true) -> [[String: Any]] {
         let tokens = tokenizeSessionQuery(query)
         guard !tokens.isEmpty else { return [] }
         let claudeProjects = home.appendingPathComponent(".claude/projects", isDirectory: true)
@@ -18147,10 +18180,11 @@ final class COSControlHelper {
         let composerNames = loadCursorComposerNames(
             from: home.appendingPathComponent("Library/Application Support/Cursor/User/globalStorage/state.vscdb")
         )
-        let cursorPinned = loadCursorPinnedIds(
+        // `readCursorPins` false: no sqlite3 process per Cursor workspace (each can take up to 2 s). The ⌘K search does not need a pin.
+        let cursorPinned = readCursorPins ? loadCursorPinnedIds(
             from: home.appendingPathComponent("Library/Application Support/Cursor/User/workspaceStorage")
-        )
-        let desktopIndex = loadClaudeDesktopIndex(from: claudeDesktop)
+        ) : []
+        let desktopIndex = loadClaudeDesktopIndex(from: claudeDesktop, newest: desktopNewest)
         var rows: [[String: Any]] = []
         var seen = Set<String>()
         func add(_ row: [String: Any]) {
@@ -18184,7 +18218,8 @@ final class COSControlHelper {
             projectsRoot: claudeProjects,
             starredIds: claudeStarred,
             desktopSessionsRoot: claudeDesktop,
-            desktopIndex: desktopIndex
+            desktopIndex: desktopIndex,
+            newest: transcriptNewest
         ) { add(row) }
         let codexRoot = home.appendingPathComponent(".codex/sessions", isDirectory: true)
         for (id, name) in loadCodexThreadNames(sessionsRoot: codexRoot) {
@@ -18315,6 +18350,12 @@ final class COSControlHelper {
     /// stdin, at most 200 characters, never as an argument, so `ps` never shows them. No server token is read, no request is made and
     /// nothing is embedded: the scan is `localSessionKeywordHits`, the same code the verb falls back to when the server cannot answer,
     /// bounded to 80 transcripts. Killing this process stops the scan. The answer has the shape the Sessions tab already decodes.
+    /// How many Claude Desktop records the ⌘K search reads titles from: the newest. Older Desktop sessions still match by the words in
+    /// their transcripts (the 80 most recent files) and by "Search all sessions".
+    static let localSearchDesktopNewest = 30
+    /// And how many Claude transcripts are titled: the newest (each title is a 256 KB read).
+    static let localSearchTranscriptNewest = 20
+
     private func emitLocalSessionsSearch(args: [String]) throws {
         var input = Data()
         while input.count <= 4_096 {
@@ -18325,7 +18366,8 @@ final class COSControlHelper {
         let query = String(String(decoding: input.prefix(4_096), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))
         guard query.count >= 3 else { throw HelperError.message("The words must be at least 3 characters.") }
         let limit = min(max(Int(option("--limit", in: args) ?? "8") ?? 8, 1), 20)
-        let rows = Self.localSessionKeywordHits(query: query, limit: limit, home: FileManager.default.homeDirectoryForCurrentUser)
+        let rows = Self.localSessionKeywordHits(query: query, limit: limit, home: FileManager.default.homeDirectoryForCurrentUser,
+                                                desktopNewest: Self.localSearchDesktopNewest, transcriptNewest: Self.localSearchTranscriptNewest, readCursorPins: false)
         emit(ok: true, message: rows.isEmpty ? "No matching sessions" : "Session lookup ready", details: [
             "state": rows.isEmpty ? "empty" : "ready",
             "hits": rows,

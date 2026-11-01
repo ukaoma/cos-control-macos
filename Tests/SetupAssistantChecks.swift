@@ -348,6 +348,7 @@ import Foundation
         // A highlight that went away is no highlight.
         check(returned("draft the note to Dana", chosen: "command:gone") == .nothing, "[a chosen row that is gone returns nothing]", "\(returned("draft the note to Dana", chosen: "command:gone"))")
         check(returned("hello", chosen: "hit:gone") == .nothing, "[a chosen row that is gone returns nothing]", "a hit that went with a new search")
+        check(C.effective("command:gone", C.listing(center(), words: "start recording")) == "command:startRecording" && C.effective("command:gone", C.listing(center(), words: "draft the note to Dana")) == nil, "[a stale highlight is none]", "the drawn highlight falls back to the phrase, never to the stale id")
         // Option-Return always files.
         check(returned("start recording", option: true) == .file, "[Option-Return always files]", "")
         check(returned("hello", option: true, chosen: "ask") == .file, "[Option-Return always files]", "")
@@ -703,11 +704,16 @@ import Foundation
             if unique.count > 1 {
                 shared.insert(baseName(name))
                 check(C.sharedNames[baseName(name)] != nil, "[a name two rows answer to is declared]", "\(name): \(unique.sorted())")
-                check(listing.autoHighlight == C.sharedNames[baseName(name)], "[the declared winner highlights]", "\(name): \(String(describing: listing.autoHighlight))")
+                if C.sharedNames[baseName(name)] == "noun" {
+                    // The noun list wins: it lists the sessions, and nothing highlights or runs on Return.
+                    check(listing.autoHighlight == nil && listing.listOnly && returned(name) == .nothing, "[a noun list wins its name and highlights nothing]", "\(name): \(String(describing: listing.autoHighlight))")
+                } else {
+                    check(listing.autoHighlight == C.sharedNames[baseName(name)], "[the declared winner highlights]", "\(name): \(String(describing: listing.autoHighlight))")
+                }
             } else if let only = unique.first, only.hasPrefix("place:") {
                 check(listing.autoHighlight == "place:" + only.dropFirst("place:".count), "[an exact place name highlights its row]", "\(name): \(String(describing: listing.autoHighlight))")
                 check(returned(name) == returnRuns(listing.autoHighlight ?? "?"), "[Return opens an exact place name]", name)
-            } else if let only = unique.first, only == "noun", name != "sessions" {
+            } else if let only = unique.first, only == "noun" {
                 check(listing.autoHighlight == nil && listing.listOnly, "[a noun list highlights nothing]", "\(name): \(String(describing: listing.autoHighlight))")
             }
         }
@@ -724,6 +730,8 @@ import Foundation
         check(row(usage, "place:sessionsUsage")?.title == "Usage" && row(usage, "place:sessionsUsage")?.detail == "In Sessions", "[a tab row names its parent]", "")
         check(returned("usage") == returnRuns("place:sessionsUsage"), "[usage then Return opens Usage]", "")
         check(C.hint(returnRuns("place:sessionsUsage"), usage, healthy()) == "Return opens: Usage", "[the footer says Return opens]", "\(C.hint(returnRuns("place:sessionsUsage"), usage, healthy()))")
+        check(C.listing(center(), words: "recent").autoHighlight == nil && row(C.listing(center(), words: "recent"), "place:messagesRecent") != nil, "[recent: the noun list wins, Messages > Recent is listed]", "")
+        check(C.listing(center(), words: "messages recent").autoHighlight == "place:messagesRecent" && C.listing(center(), words: "go to archive").autoHighlight == "place:messagesArchive", "[Messages > Recent and Archive by name]", "")
         check(C.listing(center(), words: "cos cost").autoHighlight == "place:sessionsCost" && C.listing(center(), words: "go to usage").autoHighlight == "place:sessionsUsage", "[a tab by name]", "")
         check(C.listing(center(), words: "go to usage").nearCommand && C.listing(center(), words: "usa").nearCommand, "[a place counts as a near-command]", "")
         check(returned("go to usage") == returnRuns("place:sessionsUsage"), "[go to usage opens, never a run]", "\(returned("go to usage"))")
@@ -740,6 +748,10 @@ import Foundation
             check(listing.rows.filter { $0.group == .places }.count <= C.placeCap && C.placeCap == 6, "[the place list is capped]", "\(pane): \(rowIDs(listing))")
             check(listing.autoHighlight?.hasPrefix("command:") == true, "[a pane with an Open command highlights the command]", "\(pane): \(String(describing: listing.autoHighlight))")
         }
+        // The cap bounds the list, whatever the table holds: a small cap proves it.
+        check(C.visiblePlaces("work", question: false, cap: 2).count == 2 && C.visiblePlaces("work", question: false).count == 4 && C.visiblePlaces("work", question: false, cap: 0).isEmpty, "[the place list is capped]", "\(C.visiblePlaces("work", question: false).map(\.place))")
+        check(C.visiblePlaces("messages", question: false).map(\.place) == [.messages, .messagesRecent, .messagesArchive], "[a pane before its tabs]", "\(C.visiblePlaces("messages", question: false).map(\.place))")
+        check(C.visiblePlaces("usage", question: false, among: [.sessionsCost]).isEmpty, "[places are looked up among the ones given]", "")
         check(row(C.listing(center(), words: "speakers"), "place:speakersVoices") != nil && row(C.listing(center(), words: "dictation"), "place:dictationHistory") != nil, "[a pane lists its tabs under the command]", "")
         check(C.listing(center(), words: "voices").autoHighlight == "command:openSpeakers" && row(C.listing(center(), words: "voices"), "place:speakersVoices") != nil, "[voices: the opener runs and the tab is listed]", "")
         // Recording is not a place: it lists Start recording first, and a bare word inside a Start phrase is no order (0.5.359's rule).
