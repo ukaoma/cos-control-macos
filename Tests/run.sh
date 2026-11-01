@@ -7,19 +7,91 @@ TARGET="arm64-apple-macosx14.0"
 # when it starts with /tmp/, and with a home elsewhere the self-test failed its workspace
 # fixture (measured 2026-09-13, released 0.5.223 helper included).
 TMP="$(mktemp -d /tmp/cos-control-tests.XXXXXX)"
-trap 'rm -rf "$TMP"' EXIT
+# Speed plan A9 (2026-10-31): the kit log (one JSON line per compile call: mode, kit, seconds) and the lane timing table
+# are written inside $TMP and copied to a stable folder at exit, in this ONE EXIT trap (a second EXIT trap would replace
+# the cleanup). COS_SUITE_LOG_DIR overrides the folder; a failed copy never changes the suite's exit status.
+SUITE_LOG_DIR="${COS_SUITE_LOG_DIR:-$HOME/Library/Logs/COS/control-suite}"
+SUITE_STAMP="$(date +%Y%m%d-%H%M%S)"
+trap '_app_build_stop 2>/dev/null || true; _suite_exit_logs 2>/dev/null || true; rm -rf "$TMP"' EXIT
+# Speed plan A1 (2026-10-31): a pin or lane that failed under set -e used to end the suite with no output at all (0.5.357
+# needed a separate tail run to find out where). Every such failure now names its line in this file, on stderr. A command
+# inside `if`, `||` or `!` never reaches this trap, so a check that already reports its own failure is unchanged.
+trap 'print -u2 "FAIL at run.sh:$LINENO"' ZERR
 
 mkdir -p "$TMP/home"
 # 0.5.317: the lanes compiled Sources/*.swift again with every harness, about 40 full compiles a suite. Each compile now
 # goes through Tests/kit-compile.py, which builds each set of Sources ONCE per run into the testable module COSControlKit
 # (still through the guard) and compiles only the harness against it. COS_TEST_KIT=0 runs every command as written.
 export COS_TEST_KIT_DIR="${COS_TEST_KIT_DIR:-$TMP/kits}"
+# Speed plan A5 (2026-10-31): every compile in this suite takes the measured bounded lane (one frontend, 8 GiB cap,
+# receipts). Left to "auto", freeing memory on the machine moved a compile onto the large profile, which has no cap and
+# stops compiles with a machine-wide pkill.
+export COS_COMPILE_PROFILE=bounded
+export COS_TEST_KIT_LOG="${COS_TEST_KIT_LOG:-$TMP/kit-log.jsonl}"
+# Speed plan B2 (2026-10-31): kits survive between runs of the same checkout. The store is outside the repo and outside
+# iCloud, named by the checkout's resolved path. COS_TEST_KIT_PERSIST=0 is the off switch (kits live and die in $TMP).
+if [[ "${COS_TEST_KIT_PERSIST:-}" != 0 ]]; then
+  export COS_TEST_KIT_PERSIST=1
+  export COS_TEST_KIT_STORE="${COS_TEST_KIT_STORE:-$HOME/Library/Caches/COS/kits/$(print -rn -- "${ROOT:A}" | /usr/bin/shasum -a 256 | /usr/bin/cut -c1-16)}"
+fi
+
+# Speed plan A9: per-lane timing without touching a lane line. A DEBUG trap fires before every command of this shell (not
+# the subshells); the gap since the previous command is that command's duration, kept in $TMP/lane-times.tsv when it was
+# one second or more: line, seconds, the command's first 80 characters. Nothing here can fail the suite.
+zmodload zsh/datetime
+LANE_TIMES="$TMP/lane-times.tsv"
+_lane_line=0 _lane_at=$EPOCHREALTIME _lane_cmd=""
+_lane_tick() {
+  (( ZSH_SUBSHELL == 0 )) || return 0
+  local now=$EPOCHREALTIME
+  if (( now - _lane_at >= 1 )); then
+    printf '%s\t%.1f\t%s\n' "$_lane_line" $(( now - _lane_at )) "$_lane_cmd" >>"$LANE_TIMES" 2>/dev/null || true
+  fi
+  _lane_line=$1 _lane_at=$EPOCHREALTIME _lane_cmd="${2[1,80]}"
+  return 0
+}
+trap '_lane_tick $LINENO "$ZSH_DEBUG_CMD"' DEBUG
+_suite_exit_logs() {
+  mkdir -p "$SUITE_LOG_DIR" || return 0
+  [[ -f "$COS_TEST_KIT_LOG" ]] && /bin/cp "$COS_TEST_KIT_LOG" "$SUITE_LOG_DIR/${SUITE_STAMP}-kit-log.jsonl"
+  [[ -f "$LANE_TIMES" ]] && /bin/cp "$LANE_TIMES" "$SUITE_LOG_DIR/${SUITE_STAMP}-lane-times.tsv"
+  return 0
+}
+
+# Speed plan B1 (2026-10-31, DEFAULT OFF): COS_SUITE_CONCURRENT_COMPILES=1 lets the first full-app compile (the one that has
+# to type-check the whole app, about 270 s) run in the background while the next lanes run, in the second compile slot
+# (COS_COMPILE_SLOTS defaults to 2 then; each compile is still one frontend under its own 8 GiB cap). The second full-app
+# call, which reuses it, waits for it first. Off, the compile is waited for on the line after it starts: the same commands in
+# the same order. Its exit status is read from its own PID, never assumed; the EXIT trap stops it (and only it) on a failure.
+APP_BUILD_PID=""
+if [[ "${COS_SUITE_CONCURRENT_COMPILES:-0}" == 1 ]]; then
+  export COS_COMPILE_SLOTS="${COS_COMPILE_SLOTS:-2}"
+fi
+_app_build_wait() {
+  [[ -n "$APP_BUILD_PID" ]] || return 0
+  local pid=$APP_BUILD_PID code=0
+  APP_BUILD_PID=""
+  wait "$pid" || code=$?
+  (( code == 0 )) || { print -u2 "FAIL: the full-app compile (pid $pid) exited $code"; exit $code; }
+}
+_app_build_stop() {
+  local pid=$APP_BUILD_PID child
+  [[ -n "$pid" ]] || return 0
+  APP_BUILD_PID=""
+  for child in $(/usr/bin/pgrep -P "$pid" 2>/dev/null); do kill "$child" 2>/dev/null || true; done
+  kill "$pid" 2>/dev/null || true
+  return 0
+}
 
 # 0.5.252 (Miles, 2026-09-30: focus jumped and his clicks landed in the wrong window while gates ran): before anything
 # runs, no test may activate an app, put a window on screen, add a status item or post a system event unless a person
 # opted in by hand. The self-test proves each rule can fail.
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT"
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT" --selftest
+# Speed plan A3 (2026-10-31): the static checks first, about a minute, no Swift compile. Five of ten recent suite failures
+# were a text pin that only ran 25 to 50 minutes in. Tests/preflight.sh DUPLICATES them; every check below still runs where
+# it always did. It runs all its checks and names every failure, so one rerun fixes them all.
+zsh "$ROOT/Tests/preflight.sh"
 # Hand-run: Tests/mutate-session-usage.py (the Usage slicing mutation lane, serial, green baseline first),
 # Tests/mutate-server-update-guard.py and Tests/mutate-meeting-restart.py (one helper compile per helper mutant) and
 # Tests/run-session-usage-render.sh (offscreen PNGs, including the 760 pt narrow slice). COS cost: Tests/run-cos-cost-render.sh
@@ -202,7 +274,9 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
   "$ROOT/Sources/ControlSetup.swift" \
   "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
-  -o "$TMP/COS Control"
+  -o "$TMP/COS Control" &
+APP_BUILD_PID=$!
+[[ "${COS_SUITE_CONCURRENT_COMPILES:-0}" == 1 ]] || _app_build_wait
 
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   "$ROOT/Sources/Models.swift" \
@@ -282,6 +356,8 @@ zsh "$ROOT/Tests/run-illustrated-pet.sh"
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediGalleryContract.swift" \
   -framework AppKit -o "$TMP/jedi-gallery-contract"
 "$TMP/jedi-gallery-contract" "$ROOT/Resources"
+# Speed plan B3 (2026-10-31): with ControlSetup.swift and ControlInstance.swift this lane's Sources are exactly the app kit's
+# set (everything but COSControlApp.swift), so it reuses the app kit instead of building the 55-file app-core kit again.
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/SettingsHubCatalog.swift" "$ROOT/Sources/SettingsHubViews.swift" "$ROOT/Sources/SessionUsageView.swift" "$ROOT/Sources/SetupAssistant.swift" \
   "$ROOT/Sources/AppQuit.swift" "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
@@ -290,6 +366,7 @@ zsh "$ROOT/Tests/run-illustrated-pet.sh"
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" \
   "$ROOT/Sources/SessionPet.swift" \
+  "$ROOT/Sources/ControlSetup.swift" "$ROOT/Sources/ControlInstance.swift" \
   "$ROOT/Tests/JediIdleContract.swift" -framework AppKit -framework SwiftUI -o "$TMP/jedi-idle-contract"
 "$TMP/jedi-idle-contract" "$ROOT/Resources"
 # The executable pixel test must cover the same loader the gallery calls.
@@ -1131,14 +1208,18 @@ PYEOF
 # And its label must be the plural one only -- a ternary here means the singular
 # duplicate is back.
 /usr/bin/grep -q 'Button("Recover all") { confirmRecoverAllOrphans = true }' "$ROOT/Sources/Views.swift"
-! /usr/bin/grep -q 'recoverableOrphans.count == 1 ? "Recover"' "$ROOT/Sources/Views.swift"
+# Speed plan A2 (2026-10-31): this and the five other `! grep -q` pins below could never fail. Under errexit a negated
+# command is exempt, so a match was ignored; each is now an `if` that fails the suite by name.
+if /usr/bin/grep -q 'recoverableOrphans.count == 1 ? "Recover"' "$ROOT/Sources/Views.swift"; then print -u2 'FAIL: the singular Recover ternary is back (the Recover label must be the plural "Recover all" only)'; exit 1; fi
 
 # --- 0.5.69 footer CTAs ---------------------------------------------------------
 # Both were .buttonStyle(.link) with no spacing, reading as one run-on string in
 # a panel where every other action is a bordered chip. Quit especially must not
 # look like body text.
 /usr/bin/grep -q 'Button("Quit", systemImage: "power")' "$ROOT/Sources/Views.swift"
-! /usr/bin/grep -q 'buttonStyle(.link)' "$ROOT/Sources/Views.swift"
+# Code only: a comment line (Views.swift says why these were once links) is not a link button.
+VIEWS_CODE="$(/usr/bin/grep -v -E '^[[:space:]]*//' "$ROOT/Sources/Views.swift")"
+[[ $(print -r -- "$VIEWS_CODE" | /usr/bin/grep -c 'buttonStyle(.link)') == 0 ]] || { print -u2 "FAIL: a footer action is a .buttonStyle(.link) again (they are bordered chips)"; exit 1; }
 echo '  Recover is single-CTA; footer actions are chips'
 # Opener must reach the method it claims to call. 2026-10-09: the opener is the
 # header's refresh button, which refreshes AND runs the manual check
@@ -1667,7 +1748,7 @@ expected = '''VStack(spacing: 0) {
 assert re.sub(r"\s+", "", before) == re.sub(r"\s+", "", expected), "only the styled live transcript and recording stop/save controls may precede ControlPanel"
 PY
 /usr/bin/grep -q -F 'MenuBarIcon.variant(for: model.appUpdateFlow.phase, recording: model.recordingCount > 0 || model.macRecordingActive)' "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift"
-! /usr/bin/grep -q 'hasNotice' "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift"
+if /usr/bin/grep -q 'hasNotice' "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift"; then print -u2 "FAIL: hasNotice is back in ControlInstance.swift or COSControlApp.swift (the menu bar icon reads the update flow phase)"; exit 1; fi
 /usr/bin/grep -q 'AppUpdateInfo.merging(previous: appUpdate, incoming:' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'static func merging(previous: AppUpdateInfo, incoming: AppUpdateInfo)' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'enum MenuBarIcon' "$ROOT/Sources/Models.swift"
@@ -2011,7 +2092,7 @@ PY
 /usr/bin/grep -q 'func openSessionInPlatform' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'jumpFromReveal' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'try await NSWorkspace.shared.open' "$ROOT/Sources/ControllerModel.swift"
-! /usr/bin/grep -q 'func applySessionReveal' "$ROOT/Sources/ControllerModel.swift"
+if /usr/bin/grep -q 'func applySessionReveal' "$ROOT/Sources/ControllerModel.swift"; then print -u2 "FAIL: applySessionReveal is back in ControllerModel.swift"; exit 1; fi
 /usr/bin/grep -q 'func choosePetSprite' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'enum PetSpriteStore' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'case "session-pet-live"' "$ROOT/HelperSources/main.swift"
@@ -2418,8 +2499,8 @@ PY
 # default clock. Caps (7-day / 20-per-provider / 32 MB) dropped rows with no
 # signal. dropped is a SIBLING of the session array, never a 13th row key.
 /usr/bin/grep -q 'case "recent": ""' "$ROOT/Sources/Models.swift"
-! /usr/bin/grep -q 'case "recent": "Today"' "$ROOT/Sources/Models.swift"
-! /usr/bin/grep -q '36 \* 3600' "$ROOT/Sources/ActivityWindow.swift"
+if /usr/bin/grep -q 'case "recent": "Today"' "$ROOT/Sources/Models.swift"; then print -u2 'FAIL: a "recent" session prints "Today" again (Models.swift)'; exit 1; fi
+if /usr/bin/grep -q '36 \* 3600' "$ROOT/Sources/ActivityWindow.swift"; then print -u2 "FAIL: the 36-hour hint suppression is back in ActivityWindow.swift"; exit 1; fi
 /usr/bin/grep -q 'func clockHint(clock: SessionClock' "$ROOT/Sources/Models.swift"
 /usr/bin/grep -q 'session.clockHint(clock: model.sessionClock)' "$ROOT/Sources/ActivityWindow.swift"
 /usr/bin/grep -q 'session.showsStateChip' "$ROOT/Sources/ActivityWindow.swift"
@@ -2796,6 +2877,7 @@ if /usr/bin/grep -RE 'details\["token"\]|"token"[[:space:]]*:[[:space:]]*try rea
   exit 1
 fi
 
+_app_build_wait
 python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compile.json" --output "$TMP/COS Control" -- \
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" \
