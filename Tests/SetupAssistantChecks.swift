@@ -1507,7 +1507,10 @@ import Foundation
         check(row(offered, "continue:claude:abc12345")?.title == "Continue in this session" && row(offered, "continue:claude:abc12345")?.detail == "Jewelry persona review", "[Continue in names the session in its detail]", "\(rowIDs(offered))")
         check(rowIDs(offered).first(where: { $0.hasPrefix("continue:") || $0.hasPrefix("hit:") }) == "continue:claude:abc12345" && row(offered, "continue:claude:abc12345")?.group == .meaning, "[Continue in sits above the rows]", "")
         // Only Jev, only a Strong top row, a clear gap, a session that can take a message.
-        check(row(listing(one, meaningCenter(.subq, choices: ["subq": .on])), "continue:claude:abc12345") == nil, "[Continue in is Jev only]", "")
+        let subqOn = meaningCenter(.subq, choices: ["subq": .on])
+        check(row(listing(one, subqOn), "continue:claude:abc12345") == nil && C.continueProviders == [.jev], "[Continue in is Jev only]", "")
+        check(C.continueTarget(found(subqOn, words: words, .done, hits: one).meaningFound, subqOn.meaning, enabledFor: [.subq]) != nil
+              && C.continueTarget(found(on, words: words, .done, hits: one).meaningFound, on.meaning, enabledFor: [.subq]) == nil, "[Continue in follows one per-model set]", "")
         check(listing([scored("claude:abc12345", "A", .likely, 0.55), one[1]]).rows.allSatisfy { !$0.id.hasPrefix("continue:") }, "[Continue in needs a strong match]", "")
         check(listing([scored("claude:abc12345", "A", .strong, 0.61), scored("codex:def67890", "B", .likely, 0.5)]).rows.allSatisfy { !$0.id.hasPrefix("continue:") }, "[Continue in needs a clear gap to the second row]", "")
         check(listing([scored("claude:abc12345", "A", .strong, 0.9), scored("codex:def67890", "B", .strong, 0.8)]).rows.allSatisfy { !$0.id.hasPrefix("continue:") }, "[Continue in needs a clear gap to the second row]", "two strong")

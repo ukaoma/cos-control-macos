@@ -1740,15 +1740,17 @@ enum SetupAssistant {
         // MARK: Continue in (0.5.362)
 
         /// How far the top match must be ahead of the second for "Continue in" to be offered. The model's strong band starts at 0.6.
+        /// The models "Continue in" is offered for: the one line to change once SubQ's floors and bands are measured. SubQ's bands call almost every
+        /// row strong (a wrong row has scored 0.70 with nothing else near), so it stays off until then. Jev's replayed Strong rows were right 14 of 14.
+        static let continueProviders: Set<MeaningProvider> = [.jev]
         static let continueGap = 0.25
         static let continueFloor = 0.6
 
-        /// The match "Continue in" is offered for, or nil. All of these: Jev decides (SubQ's bands call almost every row strong, and a wrong
-        /// row has scored 0.70 there), the top row is Strong, its probability is at least 0.6 and at least `continueGap` over the second's,
+        /// The match "Continue in" is offered for, or nil. All of these: the model that decides is one `continueProviders` names, the top row is Strong, its probability is at least 0.6 and at least `continueGap` over the second's,
         /// and its session can take a message (checked where the row is made). A pasted first prompt can ask a model to pick it; a clear gap
         /// and a Jev-only rule keep that from becoming a button. Nothing is sent by it: it opens a session and leaves words in a box.
-        static func continueTarget(_ found: MeaningFound, _ m: Meaning) -> Item? {
-            guard m.provider == .jev, let top = found.hits.first, top.strength == .strong, top.canContinue, !top.keepWarm,
+        static func continueTarget(_ found: MeaningFound, _ m: Meaning, enabledFor: Set<MeaningProvider> = continueProviders) -> Item? {
+            guard let decides = m.provider, enabledFor.contains(decides), let top = found.hits.first, top.strength == .strong, top.canContinue, !top.keepWarm,
                   let p = top.probability, p >= continueFloor else { return nil }
             if found.hits.count > 1 {
                 guard let second = found.hits[1].probability, p - second >= continueGap else { return nil }

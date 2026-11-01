@@ -756,7 +756,7 @@ pin("didSet { chatPrefill.draftChanged(chatDraft) }" in cm_code and "chatPrefill
 pin("guard !chatPrefill.blocksReturn else { return }\n        sendChatMessage()" in cm_code, "Return in the composer sends nothing while placed words stand")
 pin(cm_code.count("chatPrefill.place(") == 1 and "func prefillChat(_ words: String) {" in cm_code and window.count("prefillChat(") == 1, "one place sets the block, and one caller uses it")
 cmod = block(core, "        static func continueTarget(", "\n        }\n")
-pin("m.provider == .jev" in cmod and "top.strength == .strong" in cmod and "p >= continueFloor" in cmod and "p - second >= continueGap" in cmod and "top.canContinue" in cmod, "Continue in is Jev only, Strong only, with a clear gap, for a session that can take a message")
+pin("enabledFor.contains(decides)" in cmod and "static let continueProviders: Set<MeaningProvider> = [.jev]" in core and "top.strength == .strong" in cmod and "p >= continueFloor" in cmod and "p - second >= continueGap" in cmod and "top.canContinue" in cmod, "Continue in is Jev only, Strong only, with a clear gap, for a session that can take a message")
 pin("static let continueGap = 0.25" in core and "static let continueFloor = 0.6" in core, "the gap and the floor are named")
 
 pin("s.classicSettings = classicSettings" in window and "var classicSettings = false" in core, "the window passes the classic Settings flag")
