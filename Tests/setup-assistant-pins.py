@@ -693,7 +693,7 @@ pin("C.adoptingShownIDs(" in ask_fn and "C.adoptingShownIDs(hits.map(\\.item), s
 ann = [line.strip() for line in ask_fn.split("\n") if "Announcement(" in line]
 pin(ann == ["if shown > 0, shown != before { AccessibilityNotification.Announcement(C.foundAnnouncement(shown)).post() }"], f"meaning rows announce a fixed count only: {ann}")
 pin(".onChange(of: listing.rows.map(\\.id)) { _, _ in if let highlight { proxy.scrollTo(highlight) } }" in panel, "the highlight is followed when rows arrive")
-pin("lineLimit(isConsent(row) ? nil : 2)" in panel, "the question draws every line of what leaves")
+pin("lineLimit(isConsent(row) ? nil : (row.group == .meaning ? 3 : 2))" in panel, "the question draws every line of what leaves")
 pin("inputs.meaning.settled = settled" in panel and "if forgetting { inputs.meaning = C.forgettingProvider(inputs.meaning) }" in panel, "the panel hands the engine what it remembers")
 # Consent storage: in Models.swift beside the Today keys; never in the engine.
 pin('static func meaningChoiceKey(_ provider: String) -> String { "activityTodayMeaning." + provider }' in models and "UserDefaults" not in core, "the choice is stored per model beside the Today keys, never by the engine")

@@ -10782,7 +10782,7 @@ struct CommandCenterPanel: View {
                 Text(verbatim: row.title).font(COSType.body(13.5, weight: .semibold)).foregroundStyle(row.held == nil ? TodayInk.ink : TodayInk.sub).lineLimit(2)
                 if let detail = row.detail {
                     // The question before anything is sent draws every line of what leaves; no other row's detail is more than two.
-                    Text(verbatim: detail).font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).lineLimit(isConsent(row) ? nil : 2).fixedSize(horizontal: false, vertical: true)
+                    Text(verbatim: detail).font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).lineLimit(isConsent(row) ? nil : (row.group == .meaning ? 3 : 2)).fixedSize(horizontal: false, vertical: true)
                 }
                 // What the search matched: one line, drawn verbatim like a title.
                 if let match = row.match {
