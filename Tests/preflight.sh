@@ -1,9 +1,11 @@
 #!/bin/zsh
-# Speed plan A3 (2026-10-31): the static checks of the suite, run first and in about a minute with no Swift compile.
+# Speed plan A3 (2026-10-31): the static checks of the suite, run first and in about two minutes with no Swift compile.
 #
 # Five of ten recent Control suite failures came from a text pin that only ran 25 to 50 minutes in (the What's New summary
-# cap, the Jedi pack pins, label alignment, a stale grep). This runs those checks before any compile. It DUPLICATES them:
-# Tests/run.sh still runs every one of them where it always did, so removing this file removes nothing from the suite.
+# cap, the Jedi pack pins, label alignment, a stale grep). This runs those checks before any compile. The static pins are
+# DUPLICATED here: Tests/run.sh still runs them where it always did. Seven checks exist only here and are not duplicates of
+# anything in run.sh: the four compile-guard self-tests, duplicates, preflight-selftest and run-header (plus scrub-list and
+# run-env, which guard this file itself).
 #
 # Every check runs even after one fails, so a single rerun fixes everything. It exits 1 and names each failure.
 # A check is here only if it reads repository files and nothing a lane builds: each passes on a checkout where no lane has

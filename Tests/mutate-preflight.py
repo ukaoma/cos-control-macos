@@ -43,6 +43,14 @@ def bump_build(scratch):
     path.write_bytes(plistlib.dumps(info))
 
 
+def drop_line(path, pattern):
+    """Removes the one line matching pattern."""
+    text, n = re.subn(pattern + r"\n", "", path.read_text(), flags=re.M)
+    if n != 1:
+        raise SystemExit(f"{pattern!r} lands {n} times in {path.name}, not once")
+    path.write_text(text)
+
+
 def drop_scrub(scratch):
     """Removes the whole scrub: the guard self-tests then inherit run.sh's exports."""
     path = scratch / "Tests/preflight.sh"
@@ -71,14 +79,14 @@ MUTANTS = [
     ("negated-pins", ["Tests/run.sh"], lambda s: append(s / "Tests/run.sh", '\n! /usr/bin/grep -q \'x\' "$ROOT/Sources/Views.swift"\n')),
     ("source-greps", ["Sources/Models.swift"], lambda s: append(s / "Sources/Models.swift", '\n        case "recent": "Today"\n')),
     ("preflight-selftest", ["Tests/preflight-pins.py"], lambda s: edit(s / "Tests/preflight-pins.py", 'CONFLICT = re.compile(r" [0-9]+(\\.[^/ ]*)?$")', 'CONFLICT = re.compile(r" [0-9]+NEVER$")')),
-    ("run-header", ["Tests/run.sh"], lambda s: edit(s / "Tests/run.sh", """trap 'print -u2 "FAIL at run.sh:$LINENO"' ZERR\n""", "")),
+    ("run-header", ["Tests/run.sh"], lambda s: drop_line(s / "Tests/run.sh", r"^trap .* ZERR$")),
     ("scrub-list", ["Tests/preflight.sh"], lambda s: edit(s / "Tests/preflight.sh", " -u COS_TEST_KIT_STORE", "")),
     ("run-env", ["Tests/preflight.sh"], drop_scrub),
     ("compile-bounded", ["Tests/compile-bounded.py"], lambda s: edit(s / "Tests/compile-bounded.py", "RSS_CAP = 8 * GIB", "RSS_CAP = 80 * GIB")),
     ("compile-slots", ["Tests/compile-bounded.py", "Tests/test-compile-slots.py"], lambda s: edit(s / "Tests/compile-bounded.py",
         "max(live, key=lambda o: (o['acquiredNs'], o['pid']))['pid'] != me", "min(live, key=lambda o: (o['acquiredNs'], o['pid']))['pid'] != me")),
     ("kit-compile", ["Tests/kit-compile.py"], lambda s: edit(s / "Tests/kit-compile.py", "if source_digests(files) != digests:", "if False:")),
-    ("reuse-compile", ["Tests/reuse-compile.py"], lambda s: edit(s / "Tests/reuse-compile.py", "if fingerprint(root, command, toolchain) != before:", "if False:")),
+    ("reuse-compile", ["Tests/reuse-compile.py"], lambda s: edit(s / "Tests/reuse-compile.py", "if fingerprint(root, command, toolchain, args.output, scratch) != before:", "if False:")),
 ]
 
 

@@ -16,7 +16,8 @@ trap '_app_build_stop 2>/dev/null || true; _suite_exit_logs 2>/dev/null || true;
 # Speed plan A1 (2026-10-31): a pin or lane that failed under set -e used to end the suite with no output at all (0.5.357
 # needed a separate tail run to find out where). Every such failure now names its line in this file, on stderr. A command
 # inside `if`, `||` or `!` never reaches this trap, so a check that already reports its own failure is unchanged.
-trap 'print -u2 "FAIL at run.sh:$LINENO"' ZERR
+# Inside a function LINENO counts from the function's first line, so the definition line is added back.
+trap 'print -u2 "FAIL at run.sh:$(( ${#funcstack} ? ${${funcsourcetrace[1]:-x:0}##*:} + LINENO : LINENO ))"' ZERR
 
 mkdir -p "$TMP/home"
 # 0.5.317: the lanes compiled Sources/*.swift again with every harness, about 40 full compiles a suite. Each compile now
@@ -30,28 +31,52 @@ export COS_COMPILE_PROFILE=bounded
 export COS_TEST_KIT_LOG="${COS_TEST_KIT_LOG:-$TMP/kit-log.jsonl}"
 # Speed plan B2 (2026-10-31): kits survive between runs of the same checkout. The store is outside the repo and outside
 # iCloud, named by the checkout's resolved path. COS_TEST_KIT_PERSIST=0 is the off switch (kits live and die in $TMP).
+# The name is hashed in its own assignment and must be 16 hex characters, so a failed shasum can never leave every checkout
+# sharing one folder. A store that cannot be created or written (a sandbox that allows only /tmp and the workspace) switches
+# persistence off with one line instead of failing every kit lane.
 if [[ "${COS_TEST_KIT_PERSIST:-}" != 0 ]]; then
-  export COS_TEST_KIT_PERSIST=1
-  export COS_TEST_KIT_STORE="${COS_TEST_KIT_STORE:-$HOME/Library/Caches/COS/kits/$(print -rn -- "${ROOT:A}" | /usr/bin/shasum -a 256 | /usr/bin/cut -c1-16)}"
+  KIT_STORE="${COS_TEST_KIT_STORE:-}"
+  if [[ -z "$KIT_STORE" ]]; then
+    KIT_HASH="$(print -rn -- "${ROOT:A}" | /usr/bin/shasum -a 256 | /usr/bin/cut -c1-16)" || KIT_HASH=""
+    if [[ "$KIT_HASH" =~ '^[0-9a-f]{16}$' ]]; then KIT_STORE="$HOME/Library/Caches/COS/kits/$KIT_HASH"; fi
+  fi
+  if [[ -n "$KIT_STORE" ]] && /bin/mkdir -p "$KIT_STORE" 2>/dev/null && [[ -w "$KIT_STORE" ]]; then
+    export COS_TEST_KIT_PERSIST=1
+    export COS_TEST_KIT_STORE="$KIT_STORE"
+  else
+    print -u2 "run.sh: the kit store ${KIT_STORE:-(no checkout hash)} cannot be used, so kits stay per-run (COS_TEST_KIT_PERSIST=0)"
+    export COS_TEST_KIT_PERSIST=0
+    unset COS_TEST_KIT_STORE
+  fi
 fi
 
 # Speed plan A9: per-lane timing without touching a lane line. A DEBUG trap fires before every command of this shell (not
 # the subshells); the gap since the previous command is that command's duration, kept in $TMP/lane-times.tsv when it was
-# one second or more: line, seconds, the command's first 80 characters. Nothing here can fail the suite.
+# one second or more: line, seconds, the command's first 80 characters. The command still running at exit (the one that
+# failed, on a red run) is written by the exit trap. Nothing here can fail the suite.
 zmodload zsh/datetime
 LANE_TIMES="$TMP/lane-times.tsv"
 _lane_line=0 _lane_at=$EPOCHREALTIME _lane_cmd=""
-_lane_tick() {
-  (( ZSH_SUBSHELL == 0 )) || return 0
+# The command's own line in this file: inside a function $LINENO counts from the function's first line, but the trap's
+# caller position is always the real one.
+_lane_row() {
   local now=$EPOCHREALTIME
   if (( now - _lane_at >= 1 )); then
     printf '%s\t%.1f\t%s\n' "$_lane_line" $(( now - _lane_at )) "$_lane_cmd" >>"$LANE_TIMES" 2>/dev/null || true
   fi
-  _lane_line=$1 _lane_at=$EPOCHREALTIME _lane_cmd="${2[1,80]}"
+  return 0
+}
+_lane_tick() {
+  (( ZSH_SUBSHELL == 0 )) || return 0
+  local at="${funcfiletrace[1]##*:}"
+  [[ "$at" == <-> ]] || at=$1
+  _lane_row
+  _lane_line=$at _lane_at=$EPOCHREALTIME _lane_cmd="${2[1,80]}"
   return 0
 }
 trap '_lane_tick $LINENO "$ZSH_DEBUG_CMD"' DEBUG
 _suite_exit_logs() {
+  _lane_row
   mkdir -p "$SUITE_LOG_DIR" || return 0
   [[ -f "$COS_TEST_KIT_LOG" ]] && /bin/cp "$COS_TEST_KIT_LOG" "$SUITE_LOG_DIR/${SUITE_STAMP}-kit-log.jsonl"
   [[ -f "$LANE_TIMES" ]] && /bin/cp "$LANE_TIMES" "$SUITE_LOG_DIR/${SUITE_STAMP}-lane-times.tsv"
@@ -61,8 +86,9 @@ _suite_exit_logs() {
 # Speed plan B1 (2026-10-31, DEFAULT OFF): COS_SUITE_CONCURRENT_COMPILES=1 lets the first full-app compile (the one that has
 # to type-check the whole app, about 270 s) run in the background while the next lanes run, in the second compile slot
 # (COS_COMPILE_SLOTS defaults to 2 then; each compile is still one frontend under its own 8 GiB cap). The second full-app
-# call, which reuses it, waits for it first. Off, the compile is waited for on the line after it starts: the same commands in
-# the same order. Its exit status is read from its own PID, never assumed; the EXIT trap stops it (and only it) on a failure.
+# call, which reuses it, waits for it first. Off, the compile runs in the foreground exactly where it always did, so Ctrl-C
+# reaches it. On, its status is read from its own PID, never assumed. The EXIT trap stops it and what it started, and only
+# when that PID is still a child of this shell running this shell's own command line (a reused PID is left alone).
 APP_BUILD_PID=""
 if [[ "${COS_SUITE_CONCURRENT_COMPILES:-0}" == 1 ]]; then
   export COS_COMPILE_SLOTS="${COS_COMPILE_SLOTS:-2}"
@@ -74,12 +100,18 @@ _app_build_wait() {
   wait "$pid" || code=$?
   (( code == 0 )) || { print -u2 "FAIL: the full-app compile (pid $pid) exited $code"; exit $code; }
 }
+_kill_tree() {
+  local child
+  for child in $(/usr/bin/pgrep -P "$1" 2>/dev/null); do _kill_tree "$child"; done
+  kill "$1" 2>/dev/null || true
+}
 _app_build_stop() {
-  local pid=$APP_BUILD_PID child
+  local pid=$APP_BUILD_PID
   [[ -n "$pid" ]] || return 0
   APP_BUILD_PID=""
-  for child in $(/usr/bin/pgrep -P "$pid" 2>/dev/null); do kill "$child" 2>/dev/null || true; done
-  kill "$pid" 2>/dev/null || true
+  [[ "$(/bin/ps -o ppid= -p "$pid" 2>/dev/null | /usr/bin/tr -d ' ')" == "$$" ]] || return 0
+  [[ "$(/bin/ps -o command= -p "$pid" 2>/dev/null)" == "$(/bin/ps -o command= -p "$$" 2>/dev/null)" ]] || return 0
+  _kill_tree "$pid"
   return 0
 }
 
@@ -88,9 +120,11 @@ _app_build_stop() {
 # opted in by hand. The self-test proves each rule can fail.
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT"
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT" --selftest
-# Speed plan A3 (2026-10-31): the static checks first, about a minute, no Swift compile. Five of ten recent suite failures
-# were a text pin that only ran 25 to 50 minutes in. Tests/preflight.sh DUPLICATES them; every check below still runs where
-# it always did. It runs all its checks and names every failure, so one rerun fixes them all.
+# Speed plan A3 (2026-10-31): the static checks first, about two minutes, no Swift compile. Five of ten recent suite failures
+# were a text pin that only ran 25 to 50 minutes in. The static pins are DUPLICATED in Tests/preflight.sh, not moved: they
+# still run below where they always did. Some checks exist only there (the compile-guard self-tests, the duplicate-file
+# check, the self-tests of the preflight and of this header); its header lists them. It runs all its checks and names every
+# failure, so one rerun fixes them all.
 zsh "$ROOT/Tests/preflight.sh"
 # Hand-run: Tests/mutate-session-usage.py (the Usage slicing mutation lane, serial, green baseline first),
 # Tests/mutate-server-update-guard.py and Tests/mutate-meeting-restart.py (one helper compile per helper mutant) and
@@ -256,6 +290,7 @@ python3 "$ROOT/Tests/HeldNamingGuardMutations.py"
 # Views.swift and ControllerModel.swift -- so every UI and model change shipped
 # without ever being type-checked here, and "builds passed" meant something much
 # narrower than it read. Same source list as scripts/build-release.sh.
+_app_build_cmd() {
 python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compile.json" --output "$TMP/COS Control" -- \
 "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" \
@@ -274,9 +309,14 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
   "$ROOT/Sources/ControlSetup.swift" \
   "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift" \
   -framework SwiftUI -framework AppKit -framework ServiceManagement \
-  -o "$TMP/COS Control" &
-APP_BUILD_PID=$!
-[[ "${COS_SUITE_CONCURRENT_COMPILES:-0}" == 1 ]] || _app_build_wait
+  -o "$TMP/COS Control"
+}
+if [[ "${COS_SUITE_CONCURRENT_COMPILES:-0}" == 1 ]]; then
+  _app_build_cmd &
+  APP_BUILD_PID=$!
+else
+  _app_build_cmd
+fi
 
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   "$ROOT/Sources/Models.swift" \
@@ -357,7 +397,8 @@ zsh "$ROOT/Tests/run-illustrated-pet.sh"
   -framework AppKit -o "$TMP/jedi-gallery-contract"
 "$TMP/jedi-gallery-contract" "$ROOT/Resources"
 # Speed plan B3 (2026-10-31): with ControlSetup.swift and ControlInstance.swift this lane's Sources are exactly the app kit's
-# set (everything but COSControlApp.swift), so it reuses the app kit instead of building the 55-file app-core kit again.
+# set (everything but COSControlApp.swift), so it reuses the kit the earlier lanes built instead of building a second one of
+# 55 files. Other lanes that are only run by hand (the render lanes) still use the 55-file set.
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/SettingsHubCatalog.swift" "$ROOT/Sources/SettingsHubViews.swift" "$ROOT/Sources/SessionUsageView.swift" "$ROOT/Sources/SetupAssistant.swift" \
   "$ROOT/Sources/AppQuit.swift" "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
