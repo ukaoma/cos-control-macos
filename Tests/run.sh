@@ -26,7 +26,7 @@ mkdir -p "$TMP/home"
 export COS_TEST_KIT_DIR="${COS_TEST_KIT_DIR:-$TMP/kits}"
 # Speed plan A5 (2026-10-31): every compile in this suite takes the measured bounded lane (one frontend, 8 GiB cap,
 # receipts). Left to "auto", freeing memory on the machine moved a compile onto the large profile, which has no cap and
-# stops compiles with a machine-wide pkill.
+# stops compiles with a stop of its own process tree.
 export COS_COMPILE_PROFILE=bounded
 export COS_TEST_KIT_LOG="${COS_TEST_KIT_LOG:-$TMP/kit-log.jsonl}"
 # Speed plan B2 (2026-10-31): kits survive between runs of the same checkout. The store is outside the repo and outside

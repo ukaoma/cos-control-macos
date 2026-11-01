@@ -20,7 +20,7 @@
 #   preflight-selftest   the three checks above that are ours, each against a scratch copy with one defect planted
 #   run-header           the top of run.sh run alone: a failing pin prints FAIL at run.sh:N, one EXIT trap, the pinned
 #                        compile profile, the kit store and its off switch, the logs, the background full-app compile
-#                        (status read, stopped on failure, off by default); 11 header mutants must be caught
+#                        (status read, stopped on failure, off by default); 18 header mutants must be caught
 #   scrub-list           every `export COS_*` in the top of run.sh is in GUARD_SCRUB below
 #   run-env              this file run the way run.sh runs it (the top of run.sh executed first, so its exports are
 #                        set), for compile-slots and kit-compile; it must pass. Standalone runs missed the failure that
