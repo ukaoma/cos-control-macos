@@ -2920,7 +2920,7 @@ final class ControllerModel: ObservableObject {
         didSet { chatPrefill.draftChanged(chatDraft) }
     }
     /// Words ⌘K's "Continue in" placed in the composer. While they stand, Return in the composer sends nothing.
-    var chatPrefill = SetupAssistant.Center.Prefill()
+    @Published var chatPrefill = SetupAssistant.Center.Prefill()
     @Published var chatMessages: [SessionChatMessage] = []
     @Published var chatBinding: SessionChatBinding?
     @Published var chatVerdict: SessionChatVerdict?
@@ -4661,16 +4661,20 @@ final class ControllerModel: ObservableObject {
     @Published var subQKeyBusy = false
     @Published var subQKeyMessage: String?
 
-    /// `quiet`: a read the ⌘K panel makes when it opens (0.5.362). It says nothing in Settings and leaves what Settings shows alone when it fails.
+    /// `quiet`: a read the ⌘K panel makes (0.5.362). It says nothing in Settings, leaves what Settings shows alone when the server cannot answer
+    /// or says it has no decision settings, and never supersedes a read or a change that Settings has in flight: it takes the generation as it
+    /// is, so a later Settings read or change discards it instead of the other way round.
     func loadDecisionSettings(quiet: Bool = false) async {
         if !quiet { decisionMessage = nil }
-        let generation = UUID(); decisionReadGeneration = generation
+        let generation = quiet ? decisionReadGeneration : UUID()
+        if !quiet { decisionReadGeneration = generation }
         do {
             let response = try await helper.run(["decision-provider-status"], timeout: 25)
             guard decisionReadGeneration == generation else { return }
             guard response.ok else { throw HelperClientError.commandFailed(response.message) }
             if response.details["available"]?.bool == false {
-                decisionSettingsAvailable = false; decisionSettings = nil; return
+                if !quiet { decisionSettingsAvailable = false; decisionSettings = nil }
+                return
             }
             guard let settings = DecisionProviderSettings(details: response.details) else {
                 throw HelperClientError.commandFailed("The server returned unsupported decision settings.")

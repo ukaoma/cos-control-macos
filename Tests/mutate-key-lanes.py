@@ -87,6 +87,7 @@ MUTANTS = [
     ("P11 a keyed session opens in its app", "pins", MODEL,
      "        if let line = KeyLanes.refusal(sessionID: session.sessionId) { platformOpenNotice = line; platformOpenFailed = true; return }\n", ""),
     ("P12 Open in platform shown for a keyed session", "pins", WINDOW, "if KeyLanes.refusal(sessionID: row.sessionId) == nil {", "if true {"),
+    ("P12a Continue in offered for a keyed session", "pins", WINDOW, "model.canMessagePetSession(session) && KeyLanes.refusal(sessionID: session.sessionId) == nil", "model.canMessagePetSession(session)"),
     ("P13 the pasteboard keeps the key", "pins", VIEWS,
      "                    if board.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) == text { board.clearContents() }\n", ""),
     ("P14 the same-Mac line drifts from the server", "pins", CORE, "Your provider's spending limit is the real stop.", "Your cap is the real stop."),

@@ -1505,6 +1505,8 @@ enum SetupAssistant {
             var choices: [String: MeaningChoice] = [:]
             /// A refusal that stays true for as long as the panel is open (an older server, a cap): the panel asks no more and says it.
             var settled: MeaningReason? = nil
+            /// When a settled cap or pause comes back, if the server said.
+            var settledResetsAt: Date? = nil
 
             /// The choice for the model that decides now.
             var choice: MeaningChoice { provider.flatMap { choices[$0.rawValue] } ?? .ask }
@@ -1519,6 +1521,39 @@ enum SetupAssistant {
             guard m.offered, m.settled == nil, let provider = m.provider, m.choice == .on else { return nil }
             return provider
         }
+
+        /// The answer to the question, applied at once: a click on Turn on or Never takes effect on this very listing, without waiting for anything
+        /// to be published. The panel keeps the answers it has taken and applies them over what the window hands it.
+        static func choosing(_ m: Meaning, provider: MeaningProvider, choice: MeaningChoice) -> Meaning {
+            var next = m
+            if choice == .ask { next.choices[provider.rawValue] = nil } else { next.choices[provider.rawValue] = choice }
+            return next
+        }
+
+        /// After a refusal that says the model changed: the refusal that stays, or nil. The settings were read again; if they still name the model
+        /// that was asked, the server and Control disagree for good, so nothing asks again while the panel is open. Otherwise the new model is
+        /// asked about on its own terms. Without this a persistent mismatch asks, is refused and reads, over and over.
+        static func staysRefused(_ reason: MeaningReason, asked: MeaningProvider, reread: String?) -> MeaningReason? {
+            reread == asked.rawValue || reread == nil ? reason : nil
+        }
+
+        /// The words a search sends, from what was typed: one line, key shapes and key=value secrets hidden, emails and links hidden, then cut at
+        /// 200 code points. Not `plain`: lowercasing and stripping `@ . : /` would turn an address into words no rule can find. The server hides the
+        /// same things again, and it counts the query in code points too.
+        static func queryWords(_ raw: String) -> String {
+            let line = String(raw.prefix(maxQuestion)).split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
+            var out = mask(line)
+            for pattern in querySecrets { out = out.replacingOccurrences(of: pattern, with: hidden, options: .regularExpression) }
+            return String(String.UnicodeScalarView(out.unicodeScalars.prefix(200))).trimmingCharacters(in: .whitespaces)
+        }
+
+        /// What `mask` does not know and a query should not carry: an email address, a link, and a `key=value` or `key: value` whose key holds a
+        /// credential word in English, Spanish, Portuguese, German or French. Over-hiding a typed word costs a search term; under-hiding costs a secret.
+        private static let querySecrets = [
+            #"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"#,
+            #"(?i)(?:\b[a-z][a-z0-9+.\-]*://|\bwww\.)\S+"#,
+            #"(?i)[\p{L}\p{N}_\-]*(?:key|secret|token|passw|contrase|senha|mot de passe|geheim)[\p{L}\p{N}_\-]*\s*[:=]\s*\S+"#,
+        ]
 
         /// The server and Control disagree about who decides (`consent_required`, `provider_changed`), so what Control believed about the
         /// model is forgotten until the settings are read again. Nothing is asked in between.
@@ -1792,29 +1827,33 @@ enum SetupAssistant {
         private static func meaningPart(_ inputs: Inputs, raw: String, typed: String, listed: (String?) -> Bool) -> (rows: [Row], ask: MeaningAsk?, shown: [String]) {
             let m = inputs.meaning
             guard m.offered, let provider = m.provider, meaningWordCount(typed) >= meaningMinWords else { return ([], nil, []) }
-            if let settled = m.settled {
-                let said = line(for: settled, resetsAt: nil, now: inputs.now, calendar: inputs.calendar)
-                return ([info("meaning-" + settled.rawValue, .meaning, said.title, detail: said.detail)], nil, [])
-            }
             switch m.choice {
             case .never: return ([], nil, [])
             case .ask: return (consentRows(provider), nil, [])
             case .on: break
             }
-            // The key shapes in the words are hidden before they are sent, from what was typed (plain words have lost their hyphens). The
-            // server removes them as well. The words that are sent are the words the result is kept under.
-            let sent = String(plain(mask(String(raw.prefix(maxQuestion)))).prefix(200))
+            // What is sent is `queryWords(raw)`, never the plain words (they have lost the @ . : / that the server's rules read). The words
+            // that are sent are the words the result is kept under.
+            let sent = queryWords(raw)
             let ask = consentedProvider(m).map { MeaningAsk(words: sent, provider: $0) }
             let found = inputs.meaningFound
-            guard found.words == sent else { return ([], ask, []) }
+            guard found.words == sent else {
+                // A refusal that stays true says so for any words, with the time it comes back.
+                if let settled = m.settled {
+                    let said = line(for: settled, resetsAt: m.settledResetsAt, now: inputs.now, calendar: inputs.calendar)
+                    return ([info("meaning-" + settled.rawValue, .meaning, said.title, detail: said.detail)], nil, [])
+                }
+                return ([], ask, [])
+            }
             var rows: [Row] = []
             var shown: [String] = []
             func already(_ id: String?) -> Bool { listed(id) || (id.map { id in shown.contains { sameListed($0, id) } } ?? false) }
             for item in found.hits where rows.count < meaningCap && !item.keepWarm && !already(item.sessionID) {
                 let ago = when(item.date, now: inputs.now, calendar: inputs.calendar)
                 let detail = [item.strength?.word, item.detail.map(clean), ago].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
+                // "Recent" says nothing here: the age is on the line. Running, Waiting and Idle do.
                 rows.append(Row(id: "hit:" + item.id, kind: .hit(item.id), group: .meaning, title: hitTitle(item.title), detail: detail.isEmpty ? nil : detail,
-                                state: item.state, trailing: item.openLabel, match: matchLine(item.match, title: item.title), leavesSession: item.leavesSession))
+                                state: item.state == "Recent" ? nil : item.state, trailing: item.openLabel, match: matchLine(item.match, title: item.title), leavesSession: item.leavesSession))
                 if let id = item.sessionID { shown.append(id) }
             }
             // "Continue in this session": the one strong match with a clear gap, offered above the rows. Only when its own row is shown.
@@ -1823,13 +1862,20 @@ enum SetupAssistant {
                                 trailing: "Continue", leavesSession: true), at: 0)
             }
             func status(_ said: MeaningLine, _ id: String) -> Row { info(id, .meaning, said.title, detail: said.detail) }
+            if let settled = m.settled {
+                // Rows for these words stay; the refusal that stays true is said below them, with the time it comes back.
+                let said = line(for: settled, resetsAt: m.settledResetsAt, now: inputs.now, calendar: inputs.calendar)
+                rows.append(info("meaning-" + settled.rawValue, .meaning, said.title, detail: said.detail))
+                return (rows, nil, shown)
+            }
             switch found.phase {
             case .idle: break
             case .searching: rows.append(info("meaning-searching", .meaning, "Looking for sessions by meaning…"))
             case .partial:
-                if rows.isEmpty { rows.append(info("meaning-further", .meaning, "Looking further back…")) }
+                if found.hits.isEmpty { rows.append(info("meaning-further", .meaning, "Looking further back…")) }
             case .done:
-                if rows.isEmpty {
+                // Nothing came back at all. Rows that are all already listed by title are not "nothing close".
+                if found.hits.isEmpty {
                     rows.append(status(nothingClose(asked: found.asked, reachedBack: found.reachedBack, skipped: found.skipped, calendar: inputs.calendar), "meaning-none"))
                 }
             case .unavailable(let reason):
@@ -2429,7 +2475,8 @@ enum SetupAssistant {
 
             // Word search: hits in their own group, after the sessions that matched by title. Return never moves onto one and never
             // runs one. An arrow or a click does. A hit the list already shows is not shown twice.
-            let exact = ranked.contains { $0.1 == 0 } || placed.contains { $0.rank == 0 } || groups.contains { $0.rank == 0 }
+            // A Settings group never highlights itself and runs nothing, so its exact name does not stop the searches: "performance" is still a topic.
+            let exact = ranked.contains { $0.1 == 0 } || placed.contains { $0.rank == 0 }
             if typed.count >= 3, span == nil, !exact, !inputs.sessionsOff, searchTokens(typed).isEmpty {
                 // Only common words ("the", "of to"): nothing to look for, so no search runs and no "no match" is claimed.
                 rows.append(info("search-words", .found, "Add a word that names what you want.", detail: "Common words like the, of and to are skipped."))

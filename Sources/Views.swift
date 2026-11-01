@@ -1161,8 +1161,13 @@ struct ControlPanel: View {
     /// JV-13 (0.5.362): the answer to ⌘K's question, shown and reversible here, for the model that decides search. Hidden with Today home
     /// off (the panel is not there) and for a server that cannot find sessions by meaning. Ask first sends nothing; On sends each ⌘K search's
     /// words and session titles to that model; Never stops asking.
+    /// Whether the control draws at all, so the hub does not draw an empty strip where it is hidden.
+    var meaningSearchShown: Bool {
+        todayHomeEnabled && model.decisionSettings?.canFindSessions == true && model.decisionSettings?.effective["search"] != nil
+    }
+
     @ViewBuilder var meaningSearchControls: some View {
-        if todayHomeEnabled, let settings = model.decisionSettings, settings.canFindSessions, let decides = settings.effective["search"],
+        if meaningSearchShown, let settings = model.decisionSettings, let decides = settings.effective["search"],
            let provider = SetupAssistant.Center.MeaningProvider(rawValue: decides.rawValue) {
             let stored = provider == .jev ? meaningJev : meaningSubQ
             VStack(alignment: .leading, spacing: 2) {
@@ -3972,7 +3977,7 @@ private extension ControlPanel {
                 SettingsHubBlock { decisionDefaultControls }
                 SettingsHubBlock { jevKeyControls }
                 SettingsHubBlock { subQKeyControls; decisionMessageLine }
-                SettingsHubBlock { meaningSearchControls }
+                if meaningSearchShown { SettingsHubBlock { meaningSearchControls } }
             }
             .disabled(model.busy)
         } advanced: {

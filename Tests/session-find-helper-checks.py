@@ -181,6 +181,15 @@ try:
     check([x["probability"] for x in rows] == sorted((x["probability"] for x in rows), reverse=True), "[rows keep the server's order]", str([x["probability"] for x in rows]))
     check(len(set(ids)) == len(ids), "[one row per session]", "")
 
+    # A title and a project are one line each, and an answer far bigger than the contract's is not read.
+    state["body"] = answer([row("4444aaaa-0000-4000-8000-000000000004", "T" * 900, 0.5, project="P" * 600)])
+    _, got, _, _ = find()
+    r = got["details"]["rows"][0]
+    check(len(r["name"]) == 300 and len(r["workspace"]) <= 200, "[a title and a project are bounded]", f"{len(r['name'])} {len(r['workspace'])}")
+    state["body"] = answer([row("5555aaaa-0000-4000-8000-000000000005", "Big", 0.5, judged_text="j" * 400, filler="z" * 300_000)])
+    _, got, _, _ = find()
+    check(got["details"] == {"available": False, "reason": "failed"}, "[an answer far bigger than the contract's is not read]", str(got["details"])[:120])
+
     # A compressed row: no file, the flag carries.
     state["body"] = answer([row("rollout-2026-10-01T09-00-00-3333aaaa-0000-4000-8000-000000000003", "Quarterly planning", 0.71, "strong", provider="codex", compressed=True)])
     _, got, _, _ = find()

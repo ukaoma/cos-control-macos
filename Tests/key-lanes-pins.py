@@ -91,8 +91,8 @@ check('if let line = KeyLanes.refusal(sessionID: session.sessionId) { platformOp
 window = read('Sources/ActivityWindow.swift')
 check('if KeyLanes.refusal(sessionID: row.sessionId) == nil {\n                        Button("Open in platform")' in window, 'Open in platform is hidden for a keyed session (QA C9)')
 check('if let line = KeyLanes.refusal(sessionID: native) { error = line; return }\n        appOpening.insert(row.id)' in work, 'Work never opens a keyed session in its app (QA C9)')
-check(model.count('KeyLanes.refusal(') == 3 and work.count('KeyLanes.refusal(') == 3 and window.count('KeyLanes') == 2, 'seven guards, no more')
-check('model.canMessagePetSession(session) && KeyLanes.refusal(sessionID: session.sessionId) == nil' in window, 'the eighth, in the Open in platform sense: ⌘K offers and runs Continue in only for a session the key lanes allow (0.5.362)')
+check(model.count('KeyLanes.refusal(') == 3 and work.count('KeyLanes.refusal(') == 3 and window.count('KeyLanes') == 2, 'eight guards, no more: three in the model, three in Work, two in the window')
+check('model.canMessagePetSession(session) && KeyLanes.refusal(sessionID: session.sessionId) == nil' in window, 'the eighth guard: ⌘K offers and runs Continue in only for a session the key lanes allow (0.5.362)')
 
 # ── The helper verb.
 check(helper.count('case "key-lanes": try emitKeyLanes(args: args)') == 1, 'one key-lanes verb in the helper')

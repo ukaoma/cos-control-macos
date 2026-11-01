@@ -147,7 +147,7 @@ enum SettingsHubCatalog {
 
     /// Rows the hub adds that the inventory does not list (it is the hub's own rollback).
     static let extras: [SettingsHubItem] = [
-        .init("JV-13", "Find sessions by meaning", "Each ⌘K search sends your words and session titles to the model that decides search. Shown with Today home on.", old: "", group: "ai.decision", advanced: false, mount: .group,
+        .init("JV-13", "Find sessions by meaning", "Each ⌘K search sends your words, plus session titles and the start of first prompts, to the model that decides search. Shown with Today home on.", old: "", group: "ai.decision", advanced: false, mount: .group,
               keywords: ["meaning", "command k", "sessions", "consent", "jev", "subq"]),
         .init("HUB-CL", "Use classic Settings", "Show the earlier one-page Settings in Activity.", old: "", group: "general.app", advanced: true, mount: .group,
               keywords: ["classic", "old settings", "rollback", "one page"]),

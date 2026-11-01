@@ -434,6 +434,11 @@ _all = _json.loads(read("Resources/WhatsNew.json"))["whatsNew"]["sections"]
 _notes = " ".join(_all[0]["items"])
 _older = " ".join(i for section in _all[1:2] for i in section["items"])
 _sent = "plus the title and first 150 characters of the first prompt from up to 508 recent sessions"
+_summary = _json.loads(read("Resources/WhatsNew.json"))["whatsNew"]["summary"]
+pin("first prompts" in _summary and "sends your words" in _summary and "Settings, Decision models shows and changes your choice for the model that decides search" in _notes and "changes the choice for each model" not in _notes,
+    "the summary and the notes say what leaves, first prompts included, and name the choice truly")
+_blurb = read("Sources/SettingsHubCatalog.swift")
+pin("session titles and the start of first prompts" in _blurb and 'sends your words and session titles' not in _blurb, "Settings' own line for the control says first prompts too")
 pin(_all[0]["title"] == "0.5.362" and "each search sends the words you type in ⌘K, " + _sent in _notes and "Emails, links and key-shaped text are removed first. Names and other details are not." in _notes
     and "SubQ keeps what it is sent" in _notes and "off until you say yes" in _notes and "sends nothing off it" in _notes and _notes.index("off until you say yes") < _notes.index("sends nothing off it"),
     "the notes say plainly what leaves after a yes, and that nothing does before")
@@ -669,7 +674,7 @@ pin(before(open_fn, "commandKeys.hitSessions[id]", "commandKeys.meaningSessions[
 pin("only the Codex app can open it" in open_fn and open_fn.count("only the Codex app can open it") == 2, "a compressed row says so when the Codex app does not open it")
 open_center = block(ext, "    func openCommandCenter() {", "    func closeCommandCenter() {")
 pin(open_center.count("loadDecisionSettings(quiet: true)") == 1 and "commandKeys.meaningSessions = [:]" in open_center, "one quiet settings read when the panel opens, and no meaning rows carried over")
-pin(ext.count("loadDecisionSettings") == 2 and "reread: { await model.loadDecisionSettings(quiet: true) }" in ext, "the settings are read on open and again after a refusal that says the model changed, nowhere else")
+pin(ext.count("loadDecisionSettings") == 2 and "await model.loadDecisionSettings(quiet: true)\n                                   return model.decisionSettings?.effective[\"search\"]?.rawValue" in ext, "the settings are read on open and again after a refusal that says the model changed, nowhere else")
 pin("loadDecisionSettings" not in ticker_fn, "the tick reads no settings")
 pin("decisionMessage" not in ext and "decisionSettings = nil" not in ext, "the panel never touches Settings' decision line")
 choose = block(ext, "    func commandChooseMeaning(", "\n    }\n")
@@ -687,7 +692,7 @@ pin(before(mean_task, "Task.sleep(nanoseconds: 800_000_000)", "askMeaning(ask, s
 pin(panel.count("try await find(") == 1 and "find: { ask, stage in try await commandFindSessions(ask, stage: stage) }" in ext, "the panel reaches meaning search only through the window's one function")
 ask_fn = block(panel, "    private func askMeaning(", "    private func move(_ delta: Int) -> Bool {")
 pin(before(ask_fn, "reason.againstConsent", "forgetting = true", "await reread()", "forgetting = false"), "a refusal that says the model changed forgets it, reads the settings again, and asks nothing meanwhile")
-pin("if let reason = result.reason, reason.settles { settled = reason }" in ask_fn and "keys.meaningSessions = sessions.merging(" in ask_fn and "keys.hitSessions" not in ask_fn,
+pin("if let reason = result.reason, reason.settles {\n            settled = reason\n            settledResets = result.resetsAt\n        }" in ask_fn and "keys.meaningSessions = sessions.merging(" in ask_fn and "keys.hitSessions" not in ask_fn,
     "a refusal that stays true is remembered, and the meaning rows keep their own map")
 pin("C.adoptingShownIDs(" in ask_fn and "C.adoptingShownIDs(hits.map(\\.item), shown: meaning.hits)" in panel_search, "a session on screen keeps its id whichever list found it second")
 ann = [line.strip() for line in ask_fn.split("\n") if "Announcement(" in line]
@@ -703,9 +708,17 @@ pin(read("Sources/ControllerModel.swift").count("func loadDecisionSettings(quiet
 pin('"capabilities"' in helper and "sessionFind" in helper and "session-find-helper-checks.py" in read("Tests/run.sh"), "the helper carries the capability and its checks run in the suite")
 
 # A session the helper reads as running that has not moved in hours is not called Running in the panel (the pet's own state is not touched).
-pin("SetupAssistant.Center.staleRunning(state: session.state, updated: session.updatedDate, now: now) ? \"recent\" : session.state" in inputs
+_state_word = block(window, "    static func commandStateWord(_ session: ClaudeSession, now: Date) -> String? {", "\n    }\n")
+pin('SetupAssistant.Center.staleRunning(state: session.state, updated: session.updatedDate, now: now) ? "Idle" : commandStateWord(session.state)' in _state_word
     and "SetupAssistant.Center.staleRunning(state: $0.state, updated: $0.updatedDate, now: now)" in inputs and "petSessions" not in inputs.replace("todaySessions()", ""),
-    "the panel does not call a session that has gone quiet for hours Running, in its list or in Today's Running rows")
+    "the panel does not call a session that has gone quiet for hours Running: it reads Idle, and Today's Running rows leave the panel's Running list")
+pin(window.count("Self.commandStateWord(session, now:") == 3 and "commandStateWord(session.state)" not in ext.replace("SetupAssistant.Center.staleRunning(state: session.state, updated: session.updatedDate, now: now) ? \"Idle\" : commandStateWord(session.state)", ""),
+    "one state word for every surface: the list, the noun lists, word hits and meaning rows")
+pin("Task { @MainActor in\n                let read = await reread()\n                settled = C.staysRefused(reason, asked: asked, reread: read)\n                forgetting = false" in ask_fn,
+    "the settings are read again in a task of its own, so the request going away never cancels the read, and the refusal stays when the settings agree with it")
+pin("if case .consent(let provider, let choice) = row.kind { answers.append((provider, choice)) }" in panel and "for answer in answers { inputs.meaning = C.choosing(" in panel,
+    "an answer to the question takes effect on the panel at once, not at the next publish")
+pin("inputs.meaning.settledResetsAt = settledResets" in panel, "the reset time of a settled refusal reaches the panel")
 
 # ---- 0.5.362: the rest of the places --------------------------------------------------------------------------------------------------
 
@@ -758,6 +771,15 @@ pin(cm_code.count("chatPrefill.place(") == 1 and "func prefillChat(_ words: Stri
 cmod = block(core, "        static func continueTarget(", "\n        }\n")
 pin("enabledFor.contains(decides)" in cmod and "static let continueProviders: Set<MeaningProvider> = [.jev]" in core and "top.strength == .strong" in cmod and "p >= continueFloor" in cmod and "p - second >= continueGap" in cmod and "top.canContinue" in cmod, "Continue in is Jev only, Strong only, with a clear gap, for a session that can take a message")
 pin("static let continueGap = 0.25" in core and "static let continueFloor = 0.6" in core, "the gap and the floor are named")
+
+pin("let sent = queryWords(raw)" in core and "plain(mask(" not in core, "the words sent are the typed words with secrets hidden, never the plain words")
+pin("Your words are ready. Edit them, or press Send." in window and "if model.chatPrefill.blocksReturn {" in window, "the composer says what to do with placed words")
+cm2 = code(read("Sources/ControllerModel.swift"))
+_quiet = block(cm2, "    func loadDecisionSettings(quiet: Bool = false) async {", "    func setDecisionProvider(")
+pin("let generation = quiet ? decisionReadGeneration : UUID()" in _quiet and "if !quiet { decisionReadGeneration = generation }" in _quiet and "if !quiet { decisionSettingsAvailable = false; decisionSettings = nil }" in _quiet,
+    "a quiet settings read neither supersedes a read in flight nor wipes what Settings shows")
+pin("if meaningSearchShown { SettingsHubBlock { meaningSearchControls } }" in views_src, "the hub draws no empty strip where the control is hidden")
+pin("@Published var chatPrefill" in cm2, "the composer hint follows the placed words")
 
 pin("s.classicSettings = classicSettings" in window and "var classicSettings = false" in core, "the window passes the classic Settings flag")
 

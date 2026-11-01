@@ -6709,6 +6709,12 @@ struct SessionChatComposer: View {
                     .disabled(model.chatSending || model.chatPolling || model.chatForking
                         || model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
+            // 0.5.362: words ⌘K placed here are ready, and Return does not send them. Say what to do.
+            if model.chatPrefill.blocksReturn {
+                Text("Your words are ready. Edit them, or press Send.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.tertiary)
+            }
             if model.chatVerdict?.caution == true {
                 // 0.5.233: the documented fork mode, named on the composer. The turn lands in
                 // the session's transcript through a resume child; the open Desktop tab paints
@@ -9454,7 +9460,14 @@ extension ActivityWindow {
     /// The newest this many sessions of each list become rows. The panel lists a handful; the rest are one search away.
     static let commandSessionLimit = 80
 
-    /// The word on a session row. Idle sessions read Recent; a stopped one reads nothing.
+    /// The word on a session row, one rule for every row the panel draws (the list, the noun lists, word hits and meaning rows): the helper's
+    /// state, except that a session it reads as running that has not moved for hours reads Idle. Not Recent: one long tool call can be running
+    /// for real, so it stays in sight and the panel does not say more than it knows. The pet's own state is untouched.
+    static func commandStateWord(_ session: ClaudeSession, now: Date) -> String? {
+        SetupAssistant.Center.staleRunning(state: session.state, updated: session.updatedDate, now: now) ? "Idle" : commandStateWord(session.state)
+    }
+
+    /// The word for a helper state alone. Idle sessions read Recent; a stopped one reads nothing.
     static func commandStateWord(_ state: String) -> String? {
         switch state {
         case "running": return "Running"
@@ -9559,11 +9572,9 @@ extension ActivityWindow {
         // had nothing in it; with the pet off it already is the whole list. Bounded to the newest before any row is made.
         func item(_ session: ClaudeSession) -> Item {
             let host = today.hosts[session.id]
-            // A session the helper reads as running that has not moved in hours is not called Running here (the pet's own state is untouched).
-            let state = SetupAssistant.Center.staleRunning(state: session.state, updated: session.updatedDate, now: now) ? "recent" : session.state
             let open = TodayHome.openFor(session, host: host, cursorTrusted: model.petJumpTrusted)
             return Item(id: session.id, title: session.title, detail: TodayHome.platform(session, host: host).badge + (session.workspace.isEmpty ? "" : ", " + session.workspace),
-                        openLabel: open.label, sessionID: session.id, state: Self.commandStateWord(state), date: session.updatedDate, keepWarm: session.isKeepWarm,
+                        openLabel: open.label, sessionID: session.id, state: Self.commandStateWord(session, now: now), date: session.updatedDate, keepWarm: session.isKeepWarm,
                         leavesSession: commandLeaves(session))
         }
         let newest = { (list: [ClaudeSession]) in Array(list.sorted { ($0.updatedDate ?? .distantPast) > ($1.updatedDate ?? .distantPast) }.prefix(Self.commandSessionLimit)) }
@@ -9652,7 +9663,10 @@ extension ActivityWindow {
                                run: { row, listing in commandRun(row, listing) }, submit: { words in todaySubmitAsk(words) },
                                search: { words in try await commandSearchSessions(words) },
                                find: { ask, stage in try await commandFindSessions(ask, stage: stage) },
-                               reread: { await model.loadDecisionSettings(quiet: true) },
+                               reread: {
+                                   await model.loadDecisionSettings(quiet: true)
+                                   return model.decisionSettings?.effective["search"]?.rawValue
+                               },
                                recordAfterNotice: { commandAcknowledgeAndRecord() }, close: { closeCommandCenter() },
                                maxListHeight: max(160, windowSize.height - top - 44 - 40 - 28))
                 .frame(width: commandFixture?.panelWidth ?? min(CommandCenterPanel.width, max(320, windowSize.width - rail - 2 * gutter)))
@@ -9873,7 +9887,7 @@ extension ActivityWindow {
             let open = TodayHome.openFor(session, host: host, cursorTrusted: model.petJumpTrusted)
             let item = C.Item(id: session.id, title: session.title,
                               detail: TodayHome.platform(session, host: host).badge + (session.workspace.isEmpty ? "" : ", " + session.workspace),
-                              openLabel: open.label, sessionID: session.id, state: Self.commandStateWord(session.state), date: session.updatedDate,
+                              openLabel: open.label, sessionID: session.id, state: Self.commandStateWord(session, now: Date()), date: session.updatedDate,
                               keepWarm: session.isKeepWarm, match: fields["judgedText"]?.string,
                               strength: C.Strength(wire: fields["strength"]?.string), probability: fields["probability"]?.double,
                               canContinue: !compressed && commandCanContinue(session), leavesSession: compressed ? false : commandLeaves(session))
@@ -9909,7 +9923,7 @@ extension ActivityWindow {
             let open = TodayHome.openFor(session, host: host, cursorTrusted: model.petJumpTrusted)
             let item = SetupAssistant.Center.Item(id: session.id, title: session.title,
                                                   detail: TodayHome.platform(session, host: host).badge + (session.workspace.isEmpty ? "" : ", " + session.workspace),
-                                                  openLabel: open.label, sessionID: session.id, state: Self.commandStateWord(session.state), date: session.updatedDate,
+                                                  openLabel: open.label, sessionID: session.id, state: Self.commandStateWord(session, now: Date()), date: session.updatedDate,
                                                   keepWarm: session.isKeepWarm, match: hit.snippet, leavesSession: commandLeaves(session))
             return CommandHit(item: item, session: session)
         }
@@ -10378,7 +10392,7 @@ struct CommandCenterPanel: View {
     /// Meaning search (ActivityWindow.commandFindSessions), asked only when the engine says the person agreed.
     let find: (C.MeaningAsk, C.MeaningStage) async throws -> CommandMeaning
     /// One more quiet read of the decision settings, after the server says the model that decides is not the one the person agreed to.
-    let reread: () async -> Void
+    let reread: () async -> String?
     let recordAfterNotice: () -> Void
     let close: () -> Void
     let maxListHeight: CGFloat
@@ -10397,6 +10411,11 @@ struct CommandCenterPanel: View {
     @State private var meaning = C.MeaningFound()
     /// A refusal that stays true while the panel is open (an older server, a cap): nothing asks again, and the panel says it.
     @State private var settled: C.MeaningReason?
+    /// When that refusal's cap or pause comes back, as the server said.
+    @State private var settledResets: Date?
+    /// The answers given to the question while this panel is open, applied at once over what the window hands it (a click must not wait for
+    /// the next publish or the next tick).
+    @State private var answers: [(provider: C.MeaningProvider, choice: C.MeaningChoice)] = []
     /// The server said the model that decides is not the one the person agreed to: what the panel believed about the model is forgotten until
     /// the settings are read again.
     @State private var forgetting = false
@@ -10409,6 +10428,8 @@ struct CommandCenterPanel: View {
             inputs.found = found
             inputs.meaningFound = meaning
             inputs.meaning.settled = settled
+            inputs.meaning.settledResetsAt = settledResets
+            for answer in answers { inputs.meaning = C.choosing(inputs.meaning, provider: answer.provider, choice: answer.choice) }
             if forgetting { inputs.meaning = C.forgettingProvider(inputs.meaning) }
         }
         return inputs
@@ -10599,13 +10620,23 @@ struct CommandCenterPanel: View {
         // What went wrong, in fixed words and how long it took: never the words typed, a title or a path.
         todayLog.info("command meaning \(stage.rawValue, privacy: .public) \(result.reason?.rawValue ?? "answered", privacy: .public) ms=\(Int(Date().timeIntervalSince(started) * 1000))")
         if let reason = result.reason, reason.againstConsent {
-            // The server and the panel disagree about who decides. Forget the model, read the settings again, and ask nothing meanwhile.
+            // The server and the panel disagree about who decides. Forget the model and ask nothing meanwhile, and read the settings again
+            // in a task of its own: this one is cancelled the moment the request goes away (the words are no longer asked), which used to
+            // cancel the read too and bring the same request back. If the settings still name the model that was asked, the disagreement
+            // stays: nothing asks again while the panel is open.
             forgetting = true
-            await reread()
-            forgetting = false
+            let asked = ask.provider
+            Task { @MainActor in
+                let read = await reread()
+                settled = C.staysRefused(reason, asked: asked, reread: read)
+                forgetting = false
+            }
             return false
         }
-        if let reason = result.reason, reason.settles { settled = reason }
+        if let reason = result.reason, reason.settles {
+            settled = reason
+            settledResets = result.resetsAt
+        }
         let next = C.meaningArrived(meaning, words: ask.words, stage: stage, outcome, keeping: chosen)
         // A row kept for the person who chose it keeps its session too, or it would say it is not open any more.
         var sessions: [String: ClaudeSession] = [:]
@@ -10682,6 +10713,7 @@ struct CommandCenterPanel: View {
 
     private func perform(_ row: C.Row, _ listing: C.Listing) {
         let effect = run(row, listing)
+        if case .consent(let provider, let choice) = row.kind { answers.append((provider, choice)) }
         // A row that ran has used its words up, and its highlight with them. Left behind, ⌘K would offer the same row again,
         // armed, and one Return would fire it twice. Ask, File and troubleshoot keep theirs until the send is accepted, and the
         // one-time notice has not run anything yet.

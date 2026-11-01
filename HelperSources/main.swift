@@ -5909,11 +5909,17 @@ final class COSControlHelper {
             emit(ok: true, message: "Meaning search unavailable", details: ["available": false, "reason": Self.sessionFindFailureReason(status: response.status, body: response.body)])
             return
         }
+        // An answer holds at most a few rows of cut text. One that is far bigger is not the contract's, and is not read.
+        guard (response.data?.count ?? 0) <= Self.sessionFindAnswerBytes else {
+            emit(ok: true, message: "Meaning search unavailable", details: ["available": false, "reason": "failed"]); return
+        }
         emit(ok: true, message: "Meaning search answered", details: Self.sessionFindAnswer(answer))
     }
 
     /// Seconds the whole call may take: under the 8 the app gives a helper, so the answer is read before the process is stopped.
     static let sessionFindSeconds: TimeInterval = 7
+    /// The most bytes of an answer that are read: a few rows of cut text come to well under a tenth of this.
+    static let sessionFindAnswerBytes = 262_144
 
     /// Exactly `query` (3 to 200 code points once trimmed, counted as the server counts), `consentedProvider` and `stage`: the shape the
     /// server takes. Anything else is refused here, before it can reach the server.
@@ -5966,6 +5972,9 @@ final class COSControlHelper {
                   case let probability = number.doubleValue, probability.isFinite, probability >= 0, probability <= 1 else { return nil }
             let strength = row["strength"] as? String ?? ""
             projected["probability"] = probability
+            // Bounded like the text: a title and a project are one line each.
+            projected["name"] = String((projected["name"] as? String ?? "").prefix(300))
+            projected["workspace"] = String((projected["workspace"] as? String ?? "").prefix(200))
             projected["strength"] = ["strong", "likely", "possible"].contains(strength) ? strength : "possible"
             projected["judgedText"] = String((row["judged_text"] as? String ?? "").prefix(400))
             projected["compressed"] = row["compressed"] as? Bool ?? false
