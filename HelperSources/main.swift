@@ -18198,14 +18198,21 @@ final class COSControlHelper {
         ) : []
         let desktopIndex = loadClaudeDesktopIndex(from: claudeDesktop, newest: desktopNewest)
         var rows: [[String: Any]] = []
-        var seen = Set<String>()
+        var rowAt: [String: Int] = [:]
         func add(_ row: [String: Any]) {
             let id = (row["id"] as? String ?? "").lowercased()
             let provider = row["provider"] as? String ?? "claude"
             guard !id.isEmpty else { return }
             let key = sessionRowKey(provider: provider, id: id)
-            if seen.contains(key) { return }
-            seen.insert(key)
+            if let at = rowAt[key] {
+                // The same session again (a Codex or Cursor name first, with no project or date, then its dated row): the first keeps its place
+                // and takes what it lacks, so a named row is never the undated one.
+                for field in ["workspace", "createdAt", "updatedAt"] where (rows[at][field] as? String ?? "").isEmpty {
+                    if let value = row[field] as? String, !value.isEmpty { rows[at][field] = value }
+                }
+                return
+            }
+            rowAt[key] = rows.count
             rows.append(row)
         }
         for (id, head) in desktopIndex where id == head.id {
@@ -18285,7 +18292,11 @@ final class COSControlHelper {
         )
         // A Claude row is named by 8 characters; Open needs the transcript's full id. Every transcript the scan knows gives it.
         var fullClaudeId: [String: String] = [:]
-        for item in transcripts where item.provider == "claude" { fullClaudeId[String(item.id.lowercased().prefix(8))] = item.id.lowercased() }
+        var fileByKey: [String: URL] = [:]
+        for item in transcripts {
+            fileByKey[sessionRowKey(provider: item.provider, id: item.id)] = item.file
+            if item.provider == "claude" { fullClaudeId[String(item.id.lowercased().prefix(8))] = item.id.lowercased() }
+        }
         var hitsByKey: [String: [String: Any]] = [:]
         var rowByKey: [String: [String: Any]] = [:]
         func keep(_ hit: [String: Any]) {
@@ -18326,11 +18337,20 @@ final class COSControlHelper {
                     : item.provider == "cursor" ? "Cursor session"
                     : "Claude session"
                 let title = (desktop?.title.isEmpty == false) ? (desktop?.title ?? fallback) : fallback
+                // The project from the transcript's own folder (Claude's projects folder, Cursor's project folder), as the titled rows get it:
+                // a transcript past the newest 20 has no row and no record in the newest 30, and read "Claude session" with no project.
+                let folder: String
+                switch item.provider {
+                case "claude": folder = item.file.deletingLastPathComponent().lastPathComponent
+                case "cursor": folder = item.file.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
+                default: folder = ""
+                }
+                let project = workspaceLabel(folder).isEmpty ? workspaceLabel(desktop?.cwd ?? "") : workspaceLabel(folder)
                 row = [
                     "id": item.id,
                     "provider": item.provider,
                     "name": title,
-                    "workspace": workspaceLabel(desktop?.cwd ?? ""),
+                    "workspace": project,
                     "state": "recent",
                     "status": "recent",
                     "waitingFor": "",
@@ -18350,10 +18370,25 @@ final class COSControlHelper {
             if body.isEmpty { continue }
             consider(row: row, haystack: "\(name)\n\(workspace)\n\(body)")
         }
-        return Array(
-            hitsByKey.values.sorted { meetingScore($0["score"]) > meetingScore($1["score"]) }
-                .prefix(max(1, min(limit, 50)))
-        )
+        // Equal scores are common (the same words once in each title), and a Dictionary's order differs from one process to the next, so
+        // ties go to the newest, then by id: the same words always give the same rows in the same order.
+        let ordered = hitsByKey.values.sorted { a, b in
+            let sa = meetingScore(a["score"]), sb = meetingScore(b["score"])
+            if sa != sb { return sa > sb }
+            let da = a["updatedAt"] as? String ?? "", db = b["updatedAt"] as? String ?? ""
+            if da != db { return da > db }
+            return (a["id"] as? String ?? "") < (b["id"] as? String ?? "")
+        }
+        var shown = Array(ordered.prefix(max(1, min(limit, 50))))
+        // A Claude hit with no title yet (a transcript past the newest 20) takes the title the session list would give it, but only the rows
+        // that are shown: a title is a 256 KB read, so it is never made for every transcript the scan peeks into.
+        for at in shown.indices where (shown[at]["provider"] as? String ?? "claude") == "claude" {
+            let name = shown[at]["name"] as? String ?? ""
+            guard name.isEmpty || name == "Claude session",
+                  let id = shown[at]["id"] as? String, let file = fileByKey[sessionRowKey(provider: "claude", id: id)] else { continue }
+            if let title = lastCustomTitle(in: file) ?? firstClaudeUserTitle(in: file), !title.isEmpty { shown[at]["name"] = title }
+        }
+        return shown
     }
 
     /// `claude-sessions-search --local` (0.5.361, the ⌘K panel): this Mac's own session files and nothing else. The words arrive on

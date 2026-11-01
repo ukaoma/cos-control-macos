@@ -16,6 +16,8 @@ import json, os, pathlib, shutil, subprocess, sys, tempfile, time, uuid
 
 helper = str(pathlib.Path(sys.argv[1]).resolve())
 home = pathlib.Path(tempfile.mkdtemp(prefix="cos-local-search-", dir="/tmp"))
+# The process's own HOME is an empty decoy, so a read of the real home directory finds nothing (COS_CONTROL_TEST_HOME is the fixture).
+decoy = pathlib.Path(tempfile.mkdtemp(prefix="cos-local-decoy-", dir="/tmp"))
 failures, ran = [], 0
 
 
@@ -41,7 +43,7 @@ def make_transcript(cli_id, project, words):
 
 
 def run(args, stdin=""):
-    env = dict(os.environ, COS_CONTROL_TEST_HOME=str(home), CFFIXED_USER_HOME=str(home), HOME=str(home))
+    env = dict(os.environ, COS_CONTROL_TEST_HOME=str(home), CFFIXED_USER_HOME=str(decoy), HOME=str(decoy))
     started = time.time()
     result = subprocess.run([helper] + args, input=stdin.encode(), capture_output=True, env=env, timeout=60)
     try:
@@ -103,6 +105,44 @@ try:
     keys = [h["id"].lower()[:8] for h in hits]
     check(len(keys) == len(set(keys)), "no session lists twice, whatever the words", str(keys))
 
+    # QA item 12: the same words always give the same rows, a named row takes the date and project of its dated row, and a transcript
+    # past the titled newest 20 still says what it is and where it is.
+    def make_aged_transcript(session_id, project, words, age_seconds):
+        make_transcript(session_id, project, words)
+        stamp = time.time() - age_seconds
+        os.utime(home / ".claude/projects" / project / f"{session_id}.jsonl", (stamp, stamp))
+
+    tie_new, tie_old = str(uuid.uuid4()), str(uuid.uuid4())
+    make_aged_transcript(tie_old, "-tmp-fx-GitHub-tie-site", "tiebreakword shared opening line", 3600)
+    make_aged_transcript(tie_new, "-tmp-fx-GitHub-tie-site", "tiebreakword shared opening line", 60)
+    orders = []
+    for _ in range(8):
+        code, hits, _, _ = search("tiebreakword")
+        orders.append([h["id"].lower() for h in hits])
+    check(all(order == [tie_new, tie_old] for order in orders), "equal scores order newest first, in every process", str(orders[:2]))
+
+    codex_id = str(uuid.uuid4())
+    codex_folder = home / ".codex/sessions/2026/10/31"
+    codex_folder.mkdir(parents=True, exist_ok=True)
+    meta = {"type": "session_meta", "payload": {"id": codex_id, "cwd": "/tmp/fx/codex-site", "timestamp": "2026-10-31T10:00:00Z"}}
+    said = {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "ibexcrossing notes for the plan"}]}}
+    (codex_folder / f"rollout-2026-10-31T10-00-00-{codex_id}.jsonl").write_text(json.dumps(meta) + "\n" + json.dumps(said) + "\n")
+    (home / ".codex/session_index.jsonl").write_text(json.dumps({"id": codex_id, "thread_name": "Ibex migration notes"}) + "\n")
+    code, hits, _, _ = search("ibex migration")
+    check(len(hits) == 1 and hits[0]["id"].lower() == codex_id, "a named Codex session is found once", str([h["id"] for h in hits]))
+    if hits:
+        check(hits[0].get("workspace") == "codex-site" and hits[0].get("updatedAt"), "a named Codex row takes the project and date of its dated row", str({k: hits[0].get(k) for k in ("workspace", "updatedAt")}))
+
+    quokka = str(uuid.uuid4())
+    make_aged_transcript(quokka, "-tmp-fx-GitHub-quokka-site", "Plan the quokka forecasts\nquokkaweather needs a second look", 3 * 24 * 3600)
+    for _ in range(22):
+        make_aged_transcript(str(uuid.uuid4()), "-tmp-fx-GitHub-filler-site", "fillerwords about nothing in particular", 30)
+    code, hits, _, _ = search("quokkaweather")
+    check(len(hits) == 1 and hits[0]["id"].lower() == quokka, "a transcript past the newest 20 is found by its words", str([h["id"] for h in hits]))
+    if hits:
+        check(hits[0].get("workspace") == "quokka-site", "a transcript past the newest 20 has its project from its folder", str(hits[0].get("workspace")))
+        check(hits[0].get("name") not in ("", "Claude session") and "quokka" in str(hits[0].get("name")).lower(), "a transcript past the newest 20 has a title, not Claude session", str(hits[0].get("name")))
+
     # The open path: reveal resolves each id to the record. With Claude Desktop installed the link is the continue link; without it the
     # reason says so. The one thing it must never say is that the id is incomplete.
     def reveal(session):
@@ -131,6 +171,7 @@ try:
     check("giraffecrossing" not in err, "the words never reach stderr", err[:80])
 finally:
     shutil.rmtree(home, ignore_errors=True)
+    shutil.rmtree(decoy, ignore_errors=True)
 
 if failures:
     for failure in failures:

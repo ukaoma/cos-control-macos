@@ -9690,8 +9690,20 @@ extension ActivityWindow {
         model.platformOpenNotice = nil
         switch TodayHome.openFor(session, host: today.hosts[session.id], cursorTrusted: model.petJumpTrusted).action {
         case .platform:
+            // A session only the server may write opens in Sessions (openSessionInPlatform moves there itself): the panel has done its job.
+            if session.heldByServer { model.openSessionInPlatform(session); return .close }
             model.openSessionInPlatform(session)
             Task { try? await Task.sleep(nanoseconds: 10_000_000_000); if !model.platformOpening { model.platformOpenNotice = nil } }
+            // A refusal (the key guard) answers at once with no open under way. The panel stays and says it in its own result line.
+            guard model.platformOpening else { return .stay }
+            // The app is being asked. The panel stays until it answers: a failure's words land in the panel's result line, where the person
+            // is looking (Today and a matching list row show them only behind the panel), and a clean open closes it.
+            Task {
+                var waited = 0
+                while model.platformOpening, waited < 300 { try? await Task.sleep(nanoseconds: 100_000_000); waited += 1 }
+                if model.petNotice == nil { closeCommandCenter() }
+            }
+            return .stay
         default:
             select(.sessions)
             sessionsPane = .sessions
@@ -10344,8 +10356,10 @@ struct CommandCenterPanel: View {
         // one-time notice has not run anything yet.
         if effect != .notice, !C.sendsWords(row) {
             chosen = nil
-            words = C.draftAfterRun(row, words)
-            keys.draft = words
+            if !(effect == .stay && C.keepsWordsWhileStaying(row)) {
+                words = C.draftAfterRun(row, words)
+                keys.draft = words
+            }
         }
         switch effect {
         case .close: close()

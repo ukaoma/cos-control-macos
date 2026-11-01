@@ -501,6 +501,13 @@ pin("C.noticeHint" in panel and "C.Footer(lead: C.noticeHint)" in panel, "the on
 pin("inputs.sessionsSettingOff = !model.claudeSessionsEnabled" in window and "inputs.sessionsOff =" not in window
     and "var sessionsOff: Bool { sessionsSettingOff && sessionsLoaded }" in core, "the window passes the Show AI sessions setting")
 
+# A hit's open: the panel stays until the app has answered, so a failed open's words land where the person is looking (QA 0.5.361, U10).
+open_hit = block(window, "    func commandOpenHit(_ id: String) -> CommandEffect {", "    func commandSearchAll(_ words: String) -> CommandEffect {")
+pin("guard model.platformOpening else { return .stay }" in open_hit and "if model.petNotice == nil { closeCommandCenter() }" in open_hit
+    and "if session.heldByServer { model.openSessionInPlatform(session); return .close }" in open_hit,
+    "a hit's failed open keeps the panel open until its notice lands")
+pin("C.keepsWordsWhileStaying(row)" in panel and "static func keepsWordsWhileStaying(_ row: Row) -> Bool" in core, "a staying hit keeps its words")
+
 if failures:
     for failure in failures:
         print("Setup assistant pin: " + failure, file=sys.stderr)

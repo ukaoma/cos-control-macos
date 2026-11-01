@@ -1984,6 +1984,13 @@ enum SetupAssistant {
             sendsWords(row) ? draft : ""
         }
 
+        /// Whether the panel keeps its words after this row ran and the panel stayed open. A hit whose open is still under way keeps
+        /// them: if the app does not open it the hits are still there, with the notice (0.5.361). Every other row used them up.
+        static func keepsWordsWhileStaying(_ row: Row) -> Bool {
+            if case .hit = row.kind { return true }
+            return false
+        }
+
         /// Whether a send that has finished uses up the words in the box: it was accepted, and the box still holds what was sent
         /// (ignoring the padding around it). A refused send keeps its words, and so does a box the person has typed more into.
         static func sentWordsAreUsedUp(sent: String, draft: String, accepted: Bool) -> Bool {

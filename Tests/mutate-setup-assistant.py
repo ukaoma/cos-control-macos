@@ -464,6 +464,11 @@ MUTANTS = [
     ("center: voices opens Speakers again", C, '                case .openSpeakers: return opener("speakers")\n', '                case .openSpeakers: return opener("speakers") + opener("voices")\n', "[a name two rows answer to is declared]"),
     ("center: voices is declared a shared name", C, '["sessions": "command:openSessions", "recent": "noun"]', '["voices": "command:openSpeakers", "sessions": "command:openSessions", "recent": "noun"]', "[no stale declared name]"),
     ("center: voices is a near command", C, '"meetings", "speakers", "dictation", "memories", "setup"]', '"meetings", "speakers", "voices", "dictation", "memories", "setup"]', "[voices opens the Voices tab]"),
+    # QA 0.5.361 item 12: a hit's open keeps the panel until it answers
+    ("view: a refused hit closes the panel", W, "            guard model.platformOpening else { return .stay }\n", "", "a hit's failed open keeps the panel open until its notice lands"),
+    ("view: a clean hit open never closes the panel", W, "                if model.petNotice == nil { closeCommandCenter() }\n", "", "a hit's failed open keeps the panel open until its notice lands"),
+    ("view: a server-held hit stays in the panel", W, "            if session.heldByServer { model.openSessionInPlatform(session); return .close }\n", "", "a hit's failed open keeps the panel open until its notice lands"),
+    ("center: a staying hit loses its words", C, "            if case .hit = row.kind { return true }\n            return false\n", "            return false\n", "[a hit keeps its words only while the panel stays]"),
     # QA 0.5.361 item 11: off is claimed only once the list answered, and names the switch
     ("center: off before the list answered", C, "var sessionsOff: Bool { sessionsSettingOff && sessionsLoaded }", "var sessionsOff: Bool { sessionsSettingOff }", "[off is not claimed before the list answered]"),
     ("center: the off row names Sessions", C, 'static let sessionsOffDetail = "Turn on Show AI sessions in Settings, Work and agents."', 'static let sessionsOffDetail = "Turn it on in Sessions to list sessions here."', "[the off row names the switch and opens Settings]"),

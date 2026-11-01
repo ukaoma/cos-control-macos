@@ -460,6 +460,10 @@ import Foundation
             let r = C.Row(id: "x", kind: kind, group: .doing, title: "x")
             check(!C.sendsWords(r) && C.draftAfterRun(r, "open work").isEmpty, "[a row that ran leaves no draft]", "\(kind)")
         }
+        // A hit whose open is under way keeps the words while the panel stays open; nothing else does, and a hit that closes the panel leaves none.
+        let hitRow = C.Row(id: "hit:x", kind: .hit("x"), group: .found, title: "x")
+        check(C.keepsWordsWhileStaying(hitRow) && !C.sendsWords(hitRow) && C.draftAfterRun(hitRow, "pricing").isEmpty, "[a hit keeps its words only while the panel stays]", "")
+        check(others.allSatisfy { !C.keepsWordsWhileStaying(C.Row(id: "x", kind: $0, group: .doing, title: "x")) }, "[only a hit keeps its words while the panel stays]", "")
     }
 
     static func centerKeys() {
