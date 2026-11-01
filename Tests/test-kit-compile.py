@@ -514,6 +514,7 @@ class PersistentKitTests(KitBase):
             for out, err, code in results:
                 self.assertEqual(code, 0, err)
                 self.assertNotIn('changed underneath', err)
+                self.assertNotIn('could not', err)
             self.assertEqual([p.name for p in self.store.glob('.*-building.*')], [])
             for kit in self.dirs('app'):
                 receipt = json.loads((kit / 'receipt.json').read_text())
@@ -528,12 +529,13 @@ class PersistentKitTests(KitBase):
 
     def test_a_store_in_a_synced_or_relative_place_is_refused_in_any_letter_case(self):
         home = self.root / 'home'
-        for sub in ('Documents', 'Desktop', 'Library/CloudStorage', 'Library/Mobile Documents'):
-            (home / sub).mkdir(parents=True)
+        (home / 'Documents').mkdir(parents=True)  # only the symlink case needs a real directory; the rest are refused by name
         self.env['HOME'] = str(home)
         places = [home / 'Documents/cos-kits', home / 'documents/cos-kits', home / 'DESKTOP/cos-kits', home / 'Desktop/a/b/cos-kits',
                   home / 'Library/Mobile Documents/com~apple~CloudDocs/kits', home / 'library/MOBILE DOCUMENTS/kits',
-                  home / 'Library/CloudStorage/OneDrive-x/kits', home / 'Documents/inner/../cos-kits']
+                  home / 'Library/CloudStorage/OneDrive-x/kits', home / 'Documents/inner/../cos-kits',
+                  self.root / 'elsewhere/Mobile Documents/kits', self.root / 'elsewhere/CLOUDSTORAGE/kits',
+                  self.root / 'elsewhere/com~apple~CloudDocs/kits']
         for i, place in enumerate(places):
             with self.subTest(place=str(place)):
                 self.env['COS_TEST_KIT_STORE'] = str(place)

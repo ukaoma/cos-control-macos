@@ -37,7 +37,7 @@ RUN_TMP = re.compile(r'(?:/private)?/tmp/cos-control-tests\.[A-Za-z0-9_]+')
 UNSAFE_ENV = re.compile(r'^(SWIFT_DRIVER_.*_EXEC|DYLD_.*)$')  # change what a compile reads, and nothing hashes it
 # Search paths: refused when set, EXCEPT to the one value /usr/bin/python3 (the CLT shim) puts in every process it starts.
 SEARCH_ENV = {'CPATH': '/usr/local/include', 'C_INCLUDE_PATH': None, 'LIBRARY_PATH': '/usr/local/lib'}
-SYNCED = (('Documents',), ('Desktop',), ('Library', 'Mobile Documents'), ('Library', 'CloudStorage'))
+SYNCED = (('Documents',), ('Desktop',))  # under HOME; Mobile Documents and CloudStorage are caught by CLOUD_PARTS anywhere
 CLOUD_PARTS = {'mobile documents', 'cloudstorage', 'com~apple~clouddocs'}
 
 
@@ -56,16 +56,9 @@ def synced_place(real):
     home = Path(os.path.realpath(Path.home()))
     folded = str(real).casefold()
     for parts in SYNCED:
-        root = home.joinpath(*parts)
-        name = str(root).casefold()
+        name = str(home.joinpath(*parts)).casefold()
         if folded == name or folded.startswith(name + os.sep):
             return True
-        for ancestor in (real, *real.parents):
-            try:
-                if os.path.samefile(ancestor, root):
-                    return True
-            except OSError:
-                pass
     return False
 
 
@@ -190,7 +183,6 @@ class Store:
 
     def __init__(self, base):
         self.dir = base / 'reuse'
-        os.makedirs(self.dir, mode=0o700, exist_ok=True)
         self.lock_fd = os.open(self.dir / '.lock', os.O_CREAT | os.O_RDWR, 0o600)
 
     def __enter__(self):

@@ -67,12 +67,12 @@ class Base(unittest.TestCase):
         (self.root / 'Tests/fixture.json').write_text('{}')
         (self.root / 'Package.resolved').write_text('dependency')
         self.script('Tests/compile-guard.sh', '#!/bin/sh\nexec "$@"\n')
-        self.script('bin/xcrun', '#!/bin/sh\ncase "$1" in --show-sdk-build-version) printf "${FAKE_SDK_BUILD:-1A1}";; *) printf sdk-test;; esac\n')
+        self.script('bin/xcrun', '#!/bin/sh\n[ -n "$FAKE_BREAK_STORE" ] && rm -rf "$FAKE_BREAK_STORE/reuse"\ncase "$1" in --show-sdk-build-version) printf "${FAKE_SDK_BUILD:-1A1}";; *) printf sdk-test;; esac\n')
         self.script('bin/sw_vers', '#!/bin/sh\nprintf "${FAKE_HOST_BUILD:-24A1}"\n')
         self.script('bin/compiler', FAKE_COMPILER)
         self.env = dict(os.environ, PATH=str(self.root/'bin')+os.pathsep+os.environ['PATH'])
         for key in ('COS_TEST_KIT_PERSIST', 'COS_TEST_KIT_STORE', 'COS_TEST_KIT_REUSE_MAX_ENTRIES', 'COS_TEST_KIT_REUSE_MAX_BYTES',
-                    'FAKE_SLEEP', 'FAKE_SDK_BUILD', 'FAKE_HOST_BUILD', 'SDKROOT', 'COS_TEST_COMPILER_MODE',
+                    'FAKE_SLEEP', 'FAKE_SDK_BUILD', 'FAKE_HOST_BUILD', 'FAKE_BREAK_STORE', 'SDKROOT', 'COS_TEST_COMPILER_MODE',
                     'COS_TEST_KIT_MIN_FREE_BYTES', 'DEVELOPER_DIR', 'TOOLCHAINS', 'MACOSX_DEPLOYMENT_TARGET',
                     'SWIFT_DETERMINISTIC_HASHING', 'SOURCE_DATE_EPOCH'):
             self.env.pop(key, None)
@@ -244,6 +244,17 @@ class PersistentReuseTests(Base):
         compiler.write_text(compiler.read_text().replace('compiler-test-1','compiler-test-2'))
         self.assertEqual(self.run_compile(['-flag']).returncode, 0)
         self.assertEqual(self.count(), '5')
+
+    def test_resources_helper_sources_and_package_manifest_are_inputs_narrowed(self):
+        for directory in ('HelperSources', 'Resources'):
+            (self.root/directory).mkdir()
+            (self.root/directory/'x').write_text('one')
+        (self.root/'Package.swift').write_text('manifest')
+        self.run_compile()
+        for index, path in enumerate(('HelperSources/x', 'Resources/x', 'Package.swift'), 2):
+            (self.root/path).write_text('two')
+            self.run_compile()
+            self.assertEqual(self.count(), str(index), path)
 
     def test_every_allowlisted_environment_variable_is_an_input(self):
         self.run_compile()
@@ -421,11 +432,11 @@ class PersistentReuseTests(Base):
     # ---- where it may persist
     def test_an_icloud_or_relative_store_is_refused_in_any_letter_case(self):
         home = self.root/'home'
-        for sub in ('Documents', 'Desktop', 'Library/CloudStorage', 'Library/Mobile Documents'):
-            (home/sub).mkdir(parents=True)
         self.env['HOME'] = str(home)
         places = (home/'Documents/s', home/'documents/s', home/'DESKTOP/s', home/'Desktop/a/b/s', home/'Library/CloudStorage/OneDrive-x/s',
-                  home/'Library/Mobile Documents/com~apple~CloudDocs/s', home/'library/MOBILE DOCUMENTS/s', 'relative-store')
+                  home/'Library/Mobile Documents/com~apple~CloudDocs/s', home/'library/MOBILE DOCUMENTS/s',
+                  self.root/'elsewhere/Mobile Documents/s', self.root/'elsewhere/CLOUDSTORAGE/s',
+                  self.root/'elsewhere/com~apple~CloudDocs/s', 'relative-store')
         for n, place in enumerate(places):
             with self.subTest(place=str(place)):
                 self.env['COS_TEST_KIT_STORE'] = str(place)
@@ -523,12 +534,22 @@ class PersistentReuseTests(Base):
         self.assertIn('not enough free disk', r.stderr)
         self.assertEqual(self.bins(), [])
 
+    def test_a_store_that_vanishes_mid_run_never_fails_the_compile(self):
+        self.run_compile(run=1)
+        self.env['FAKE_BREAK_STORE'] = str(self.store)  # the fake xcrun removes <store>/reuse after the store was found usable
+        r = self.run_compile(run=2)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('could not read the persistent store', r.stderr)
+        self.assertEqual(self.count(), '2')
+        self.assertEqual((self.root/'run2/app').read_text(), 'binary')
+
     def test_processes_racing_on_one_fingerprint_all_succeed_and_leave_one_clean_entry(self):
         env = dict(self.env, FAKE_SLEEP='0.4')
         procs = [self.start(run=i, env=env) for i in range(5)]
         for p in procs:
             out, err = p.communicate(timeout=60)
             self.assertEqual(p.returncode, 0, err)
+            self.assertNotIn('could not', err)
         for i in range(5):
             self.assertEqual((self.root/f'run{i}/app').read_text(), 'binary')
         self.assertEqual(len(self.bins()), 1)
@@ -543,6 +564,7 @@ class PersistentReuseTests(Base):
             for p in procs:
                 out, err = p.communicate(timeout=120)
                 self.assertEqual(p.returncode, 0, err)
+                self.assertNotIn('could not', err)
             names = sorted(p.name for p in (self.store/'reuse').iterdir() if p.name != '.lock')
             self.assertLessEqual(len(self.bins()), 2)
             self.assertEqual([n.rsplit('.', 1)[0] for n in names if n.endswith('.bin')],
