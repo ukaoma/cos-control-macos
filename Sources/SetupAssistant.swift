@@ -902,7 +902,7 @@ enum SetupAssistant {
                 case .openSessions: return opener("sessions")
                 case .openMeetings: return opener("meetings")
                 case .openWork: return opener("work") + opener("tasks")
-                case .openSpeakers: return opener("speakers") + opener("voices")
+                case .openSpeakers: return opener("speakers")
                 case .openDictation: return opener("dictation")
                 case .openMemories: return opener("memories")
                 case .openSettings: return opener("settings")
@@ -998,11 +998,11 @@ enum SetupAssistant {
         /// Every phrase the noun list answers to, for the check that enumerates every exact name.
         static var nounPhrases: [String] { nounForms.keys.sorted() }
 
-        /// Names that two kinds of row both answer to, and who wins. Commands first, then panes, then tabs. "voices" is the
-        /// Speakers opener and the Voices tab: the opener runs, and the tab is listed under it. "sessions" is the Sessions opener
-        /// and the noun list: the opener runs, and the sessions are listed under it. "recent" is Messages > Recent and the noun list:
-        /// the list wins and nothing highlights ("noun"). A new shared name fails a check until it is declared here.
-        static let sharedNames: [String: String] = ["voices": "command:openSpeakers", "sessions": "command:openSessions", "recent": "noun"]
+        /// Names that two kinds of row both answer to, and who wins. Commands first, then panes, then tabs. "sessions" is the Sessions
+        /// opener and the noun list: the opener runs, and the sessions are listed under it. "recent" is Messages > Recent and the noun
+        /// list: the list wins and nothing highlights ("noun"). "voices" is only the Voices tab (0.5.361): it was also a Speakers opener,
+        /// which landed on Meetings to review, so it is no shared name. A new shared name fails a check until it is declared here.
+        static let sharedNames: [String: String] = ["sessions": "command:openSessions", "recent": "noun"]
 
         /// Each place's names, normalized once. The panel builds a listing several times a keystroke, and `normalized` builds a Locale.
         private static let placeNames: [Place: [String]] = Dictionary(uniqueKeysWithValues: Place.allCases.map { place in (place, place.names.map(plain)) })
@@ -1047,12 +1047,17 @@ enum SetupAssistant {
             var out: [String: Span] = [:]
             let days: [(String, Span)] = [("today", .today), ("from today", .today), ("yesterday", .yesterday), ("from yesterday", .yesterday),
                                           ("this week", .week), ("from this week", .week)]
-            for noun in ["session", "sessions", "recent", "running", "recent sessions", "running sessions", "my sessions", "all sessions"] {
+            for noun in ["session", "sessions", "recent", "recent sessions", "my sessions", "all sessions"] {
                 out[noun] = .all
                 for (suffix, span) in days { out[noun + " " + suffix] = span }
             }
+            // "running" lists what runs and what waits (0.5.361), now. It has no day words: nothing runs "yesterday".
+            for noun in ["running", "running sessions"] { out[noun] = .all }
             return out
         }()
+
+        /// "running" and "running sessions" list what runs and what waits. Every other noun lists the whole list.
+        static func isRunningList(_ typed: String) -> Bool { typed == "running" || typed == "running sessions" }
 
         /// The list these words ask for, or nil. `typed` is `plain(words)`. A question mark is a question, never a list.
         static func nounSpan(_ typed: String, question: Bool) -> Span? { question ? nil : nounForms[typed] }
@@ -1598,7 +1603,7 @@ enum SetupAssistant {
 
         /// Words that read as a command when the text is short.
         private static let commandWords: Set<String> = ["start", "stop", "record", "recording", "restart", "repair", "update", "upgrade", "install", "reset", "doctor", "checkup",
-                                                        "troubleshoot", "open", "settings", "sessions", "meetings", "speakers", "voices", "dictation", "memories", "setup"]
+                                                        "troubleshoot", "open", "settings", "sessions", "meetings", "speakers", "dictation", "memories", "setup"]
 
         /// Close to a command without being one ("restart server", "update", "stop recording the demo"). Return never spends
         /// a run on these: it moves to the Ask row first.
@@ -1703,6 +1708,31 @@ enum SetupAssistant {
                                         detail: "Turn it on in Sessions to list sessions here.", trailing: Command.openSessions.title))
                 } else if !inputs.sessionsLoaded {
                     sessions.append(info("sessions-unknown", .sessions, "Sessions: not loaded yet."))
+                } else if isRunningList(typed) {
+                    // What runs (Today's Running: agents, Work runs, a question, a routine), then the sessions that run or wait that it
+                    // does not hold. Idle sessions are "recent", never here. A Work run with no session yet is in the first part.
+                    var items = startedFirst(inputs.running, inputs.startedRunID)
+                    for item in inputs.sessions where item.state == "Running" || item.state == "Waiting" {
+                        guard !items.contains(where: { held in held.sessionID.flatMap { id in item.sessionID.map { sameListed(id, $0) } } ?? false }) else { continue }
+                        items.append(item)
+                    }
+                    if items.isEmpty {
+                        sessions.append(inputs.runningKnown ? info("running-none", .sessions, "Nothing is running.") : info("running-unknown", .sessions, "Running: not loaded yet."))
+                    }
+                    for item in items.prefix(nounCap) {
+                        if inputs.running.contains(where: { $0.id == item.id }) {
+                            var row = runningRow(item)
+                            row.group = .sessions
+                            sessions.append(row)
+                        } else {
+                            sessions.append(listRow(item))
+                        }
+                        if let id = item.sessionID { seen.append(id) }
+                    }
+                    if items.count > nounCap {
+                        sessions.append(Row(id: "sessions:more", kind: .command(.openSessions), group: .sessions, title: "\(items.count - nounCap) more in Sessions",
+                                            trailing: Command.openSessions.title))
+                    }
                 } else {
                     let inside = inputs.sessions.filter { inSpan($0.date, span, now: inputs.now, calendar: inputs.calendar) }
                     if inside.isEmpty {

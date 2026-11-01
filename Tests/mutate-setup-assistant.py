@@ -460,6 +460,20 @@ MUTANTS = [
     ("helper: the local scan reads every transcript", HP, "static let sessionSearchBodyFileLimit = 80", "static let sessionSearchBodyFileLimit = 800", "at most 80 transcripts"),
     ("helper: the local scan reads every Desktop record", HP, "desktopNewest: Self.localSearchDesktopNewest, transcriptNewest: Self.localSearchTranscriptNewest, readCursorPins: false)", "desktopNewest: nil, transcriptNewest: nil, readCursorPins: false)", "the local search bounds its title reads"),
     ("helper: a short Claude id stays short on reveal", HP, "                sessionId: fullId,\n                records: Self.claudeDesktopRecords(for: fullId, sessionsRoot: desktopRoot),", "                sessionId: sessionId,\n                records: Self.claudeDesktopRecords(for: fullId, sessionsRoot: desktopRoot),", "a short Claude id"),
+    # QA 0.5.361 item 9: "voices" is the Voices tab, not a second Speakers opener
+    ("center: voices opens Speakers again", C, '                case .openSpeakers: return opener("speakers")\n', '                case .openSpeakers: return opener("speakers") + opener("voices")\n', "[a name two rows answer to is declared]"),
+    ("center: voices is declared a shared name", C, '["sessions": "command:openSessions", "recent": "noun"]', '["voices": "command:openSpeakers", "sessions": "command:openSessions", "recent": "noun"]', "[no stale declared name]"),
+    ("center: voices is a near command", C, '"meetings", "speakers", "dictation", "memories", "setup"]', '"meetings", "speakers", "voices", "dictation", "memories", "setup"]', "[voices opens the Voices tab]"),
+    # QA 0.5.361 item 10: "running" lists what runs and what waits
+    ("center: running lists the whole list", C, "                } else if isRunningList(typed) {\n", "                } else if false && isRunningList(typed) {\n", "[running with nothing running says so]"),
+    ("center: running skips the runs", C, "                    var items = startedFirst(inputs.running, inputs.startedRunID)\n", "                    var items: [Item] = []\n", "[running lists what runs and what waits]"),
+    ("center: running skips the waiting", C, 'for item in inputs.sessions where item.state == "Running" || item.state == "Waiting" {', 'for item in inputs.sessions where item.state == "Running" {', "[running lists what runs and what waits]"),
+    ("center: running lists a session twice", C, "                        guard !items.contains(where: { held in held.sessionID.flatMap { id in item.sessionID.map { sameListed(id, $0) } } ?? false }) else { continue }\n", "", "[running lists what runs and what waits]"),
+    ("center: running says nothing for nothing", C, 'inputs.runningKnown ? info("running-none", .sessions, "Nothing is running.") : info("running-unknown", .sessions, "Running: not loaded yet.")', 'info("running-none", .sessions, "No sessions yet.")', "[running with nothing running says so]"),
+    ("center: running says none before it loaded", C, 'inputs.runningKnown ? info("running-none", .sessions, "Nothing is running.") : info("running-unknown", .sessions, "Running: not loaded yet.")', 'info("running-none", .sessions, "Nothing is running.")', "[running not loaded says so]"),
+    ("center: running is uncapped", C, "                    for item in items.prefix(nounCap) {\n", "                    for item in items {\n", "[running is capped at eight]"),
+    ("center: running has no more row", C, "                    if items.count > nounCap {\n", "                    if false {\n", "[running is capped at eight]"),
+    ("center: running has day words", C, '            for noun in ["running", "running sessions"] { out[noun] = .all }\n', '            for noun in ["running", "running sessions"] { out[noun] = .all; for (suffix, span) in days { out[noun + " " + suffix] = span } }\n', "[running has no day words]"),
 ]
 
 # Most dangerous first: what would spend a run, record, or change something unasked, then the keys and the saved answers. The

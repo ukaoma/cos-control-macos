@@ -761,7 +761,15 @@ import Foundation
         check(C.visiblePlaces("messages", question: false).map(\.place) == [.messages, .messagesRecent, .messagesArchive], "[a pane before its tabs]", "\(C.visiblePlaces("messages", question: false).map(\.place))")
         check(C.visiblePlaces("usage", question: false, among: [.sessionsCost]).isEmpty, "[places are looked up among the ones given]", "")
         check(row(C.listing(center(), words: "speakers"), "place:speakersVoices") != nil && row(C.listing(center(), words: "dictation"), "place:dictationHistory") != nil, "[a pane lists its tabs under the command]", "")
-        check(C.listing(center(), words: "voices").autoHighlight == "command:openSpeakers" && row(C.listing(center(), words: "voices"), "place:speakersVoices") != nil, "[voices: the opener runs and the tab is listed]", "")
+        // "voices" is the Voices tab and nothing else (QA 0.5.361, U5: it was also a Speakers opener and landed on Meetings to review).
+        let voices = C.listing(center(), words: "voices")
+        check(voices.autoHighlight == "place:speakersVoices" && returned("voices") == returnRuns("place:speakersVoices"), "[voices opens the Voices tab]", "\(rowIDs(voices)) \(String(describing: voices.autoHighlight))")
+        check(!voices.rows.contains { $0.id == "command:openSpeakers" } && C.sharedNames["voices"] == nil, "[voices is no Speakers opener]", "\(rowIDs(voices))")
+        for phrase in ["open voices", "go to voices", "show voices"] {
+            let listing = C.listing(center(), words: phrase)
+            check(listing.autoHighlight == "place:speakersVoices" && returned(phrase) == returnRuns("place:speakersVoices"), "[voices opens the Voices tab]", "\(phrase): \(String(describing: listing.autoHighlight))")
+        }
+        check(!C.Command.openSpeakers.phrases.contains { C.plain($0).contains("voices") }, "[voices is no Speakers opener]", "\(C.Command.openSpeakers.phrases)")
         // Recording is not a place: it lists Start recording first, and a bare word inside a Start phrase is no order (0.5.359's rule).
         let recording = C.listing(center(), words: "recording")
         check(recording.rows.first?.id == "command:startRecording" && recording.autoHighlight == nil && returned("recording") != returnRuns("command:startRecording"), "[recording lists Start recording and does not run it]", "\(rowIDs(recording)) \(returned("recording"))")
@@ -880,13 +888,35 @@ import Foundation
         check(returned("sessions", inputs: inputs) == returnRuns("command:openSessions"), "[sessions then Return opens Sessions]", "")
         check(sessions.searchWords == nil, "[a noun list runs no search]", "")
         // The same list for the other nouns, and Return only waits for a choice.
-        for noun in ["session", "recent", "running", "recent sessions", "running sessions", "my sessions", "all sessions"] {
+        for noun in ["session", "recent", "recent sessions", "my sessions", "all sessions"] {
             let listing = C.listing(inputs, words: noun)
             check(listing.rows.filter({ if case .session = $0.kind { return true } else { return false } }).count == C.nounCap, "[nouns list sessions]", "\(noun): \(rowIDs(listing))")
             check(listing.listOnly && listing.searchWords == nil, "[a noun list is for choosing]", noun)
             if noun != "session" { check(listing.autoHighlight == nil && returned(noun, inputs: inputs) == .nothing, "[recent and running highlight nothing]", "\(noun): \(returned(noun, inputs: inputs))") }
         }
         check(returned("session", inputs: inputs) == .move("command:openSessions"), "[session moves to the pane]", "\(returned("session", inputs: inputs))")
+        // "running" lists what runs and what waits, never the idle sessions (QA 0.5.361, U8); "recent" stays the whole list.
+        for noun in ["running", "running sessions"] {
+            let idle = C.listing(inputs, words: noun)
+            check(row(idle, "info:running-none")?.title == "Nothing is running." && !idle.rows.contains { $0.id.hasPrefix("session:") } && idle.listOnly && idle.autoHighlight == nil,
+                  "[running with nothing running says so]", "\(noun): \(rowIDs(idle))")
+        }
+        let mixed = all + [listed("claude:runn0000001", "Holiday promo page", days: 0, hour: 21, state: "Running"), listed("codex:wait0000001", "Rain schema audit", days: 0, hour: 20, state: "Waiting")]
+        let workRun = C.Item(id: "work:wr1", title: "Pricing QA run", detail: "Work", openLabel: "Open", sessionID: nil)
+        let mixedInputs = withSessions(mixed) { $0.running = [workRun, C.Item(id: "session:claude:runn0000001", title: "Holiday promo page", sessionID: "claude:runn0000001")] }
+        let runningList = C.listing(mixedInputs, words: "running")
+        let runningIDs = runningList.rows.filter { $0.group == .sessions }.map(\.id)
+        check(runningIDs == ["running:work:wr1", "running:session:claude:runn0000001", "session:codex:wait0000001"], "[running lists what runs and what waits]", "\(runningIDs)")
+        check(!runningIDs.contains { $0.contains("Session title") || $0.contains("s0000000") }, "[running never lists an idle session]", "\(runningIDs)")
+        check(row(runningList, "running:work:wr1")?.state == "Running" && row(runningList, "session:codex:wait0000001")?.state == "Waiting", "[running says which runs and which waits]", "")
+        check(returned("running", inputs: mixedInputs) == .nothing && returned("running sessions", inputs: mixedInputs) == .nothing, "[running highlights nothing]", "")
+        check(C.listing(mixedInputs, words: "recent").rows.filter { $0.group == .sessions && $0.id.hasPrefix("session:") }.count == C.nounCap, "[recent stays the full list]", "")
+        check(row(C.listing(withSessions(mixed) { $0.runningKnown = false }, words: "running"), "session:claude:runn0000001") != nil, "[running lists the sessions that run when the running list is unknown]", "")
+        check(row(C.listing(withSessions([]) { $0.runningKnown = false }, words: "running"), "info:running-unknown")?.title == "Running: not loaded yet.", "[running not loaded says so]", "")
+        check(!C.isRunningList("running today") && C.nounSpan("running today", question: false) == nil && !C.listing(mixedInputs, words: "running today").listOnly, "[running has no day words]", "")
+        let manyRunning = withSessions([]) { $0.running = (0..<10).map { C.Item(id: "r\($0)", title: "Run \($0)", sessionID: nil) } }
+        let capped = C.listing(manyRunning, words: "running")
+        check(capped.rows.filter { $0.id.hasPrefix("running:") }.count == C.nounCap && row(capped, "sessions:more")?.title == "2 more in Sessions", "[running is capped at eight]", "\(rowIDs(capped))")
         // A question or a sentence is not a list.
         for sentence in ["sessions?", "recent sessions about pricing", "running late today", "show my recent sessions please"] {
             check(!C.listing(inputs, words: sentence).listOnly, "[a sentence is not a list]", sentence)
