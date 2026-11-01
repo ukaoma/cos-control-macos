@@ -247,6 +247,9 @@ try:
     code, answer, err, _ = run(["claude-sessions-search", "--local", "--limit", "5", "--query", "giraffecrossing"], "")
     check(code != 0 or answer.get("ok") is False or not answer.get("details", {}).get("hits"), "an argument is not a query: nothing on stdin finds nothing", f"code {code}")
     check("giraffecrossing" not in err, "the words never reach stderr", err[:80])
+    # A Sessions query of exactly --local is a query, not the flag: it takes the server path (no server here, so the local fallback answers).
+    code, answer, err, _ = run(["claude-sessions-search", "--query", "--local", "--limit", "5"], "")
+    check(code == 0 and answer.get("ok") is True, "a query of the flag's own characters is a query", f"code {code} ok {answer.get('ok')}")
 finally:
     shutil.rmtree(home, ignore_errors=True)
     shutil.rmtree(decoy, ignore_errors=True)

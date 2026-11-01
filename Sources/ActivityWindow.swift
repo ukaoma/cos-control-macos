@@ -9351,6 +9351,8 @@ extension ActivityWindow {
     /// The sessions the word search found, by hit id, so a row opens the hit's own object and a session older than the list opens too.
     /// Written by the panel when the hits arrive; not observed, so it never redraws anything.
     var hitSessions: [String: ClaudeSession] = [:]
+    /// The words the last Search all put in Sessions' box, so opening Sessions later can take them out again.
+    var searchAllWords: String?
     /// The next section change came from the panel, which stays open to say something.
     var keepOpen = false
     /// This panel ran a helper command, so model.notice is its result, and a failure was shown in place.
@@ -9520,6 +9522,7 @@ extension ActivityWindow {
         let newest = { (list: [ClaudeSession]) in Array(list.sorted { ($0.updatedDate ?? .distantPast) > ($1.updatedDate ?? .distantPast) }.prefix(Self.commandSessionLimit)) }
         inputs.sessions = SetupAssistant.Center.merged(live: newest(todaySessions()).map(item), listed: model.petEnabled ? newest(model.claudeSessions).map(item) : [])
         inputs.sessionsLoaded = commandFixture?.sessionsLoaded ?? frame.counts.sessionsKnown
+        inputs.sessionsLimit = Self.commandSessionLimit
         inputs.now = now
         inputs.found = commandFixture?.found ?? SetupAssistant.Center.Found()
         inputs.sessionsSettingOff = !model.claudeSessionsEnabled
@@ -9731,6 +9734,7 @@ extension ActivityWindow {
         select(.sessions)
         sessionsPane = .sessions
         model.sessionQuery = String(words.prefix(200))
+        commandKeys.searchAllWords = model.sessionQuery
         model.scheduleSessionSearch()
         return .close
     }
@@ -9831,6 +9835,9 @@ extension ActivityWindow {
             // `select` never resets the tab, so Open Sessions would otherwise land on Usage when that was the last one showing.
             select(.sessions)
             sessionsPane = .sessions
+            // Search all put its words in Sessions' box for that one search. Opening Sessions on its own does not keep them there.
+            if let said = commandKeys.searchAllWords, model.sessionQuery == said { model.sessionQuery = ""; model.scheduleSessionSearch() }
+            commandKeys.searchAllWords = nil
         case .openMeetings: select(.meetings)
         case .openWork: select(.work)
         case .openSpeakers: select(.speakers)
@@ -10294,8 +10301,11 @@ struct CommandCenterPanel: View {
         do {
             let hits = try await search(words)
             guard !Task.isCancelled else { return }
-            keys.hitSessions = Dictionary(hits.map { ($0.item.id, $0.session) }, uniquingKeysWith: { first, _ in first })
-            found = C.refreshed(found, words: words, hits: hits.map(\.item), keeping: chosen)
+            let refreshed = C.refreshed(found, words: words, hits: hits.map(\.item), keeping: chosen)
+            // A hit kept for the person who chose it (`refreshed`) keeps its session too, or its row would say it is not open any more.
+            let incoming = Dictionary(hits.map { ($0.item.id, $0.session) }, uniquingKeysWith: { first, _ in first })
+            keys.hitSessions = incoming.merging(keys.hitSessions.filter { old in refreshed.hits.contains { $0.id == old.key } }, uniquingKeysWith: { new, _ in new })
+            found = refreshed
             let shown = C.listing(live, words: self.words).rows.filter { if case .hit = $0.kind { return true } else { return false } }.count
             if shown > 0 { AccessibilityNotification.Announcement(C.foundAnnouncement(shown)).post() }
         } catch is CancellationError {

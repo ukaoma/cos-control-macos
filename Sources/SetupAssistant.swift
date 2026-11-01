@@ -1415,6 +1415,8 @@ enum SetupAssistant {
             var sessions: [Item] = []
             /// The session list answered. Until then the noun list says "not loaded yet", never "no sessions".
             var sessionsLoaded = false
+            /// How many sessions the list holds at most (the window's cap). A day with none in a full list may only be past it.
+            var sessionsLimit = 0
             /// For "today", "yesterday" and "3 days ago". The tests set both.
             var now = Date(timeIntervalSince1970: 0)
             var calendar = Calendar(identifier: .gregorian)
@@ -1804,7 +1806,9 @@ enum SetupAssistant {
                 } else {
                     let inside = inputs.sessions.filter { inSpan($0.date, span, now: inputs.now, calendar: inputs.calendar) }
                     if inside.isEmpty {
-                        sessions.append(info("sessions-none", .sessions, span == .all ? "No sessions yet." : "No sessions " + spanWords(span) + "."))
+                        let capped = span != .all && inputs.sessionsLimit > 0 && inputs.sessions.count >= inputs.sessionsLimit
+                        sessions.append(info("sessions-none", .sessions, span == .all ? "No sessions yet."
+                                             : "No sessions " + spanWords(span) + (capped ? " in your newest \(inputs.sessionsLimit)." : ".")))
                     }
                     for item in inside.prefix(nounCap) {
                         sessions.append(listRow(item))
@@ -1845,11 +1849,11 @@ enum SetupAssistant {
                     switch found.phase {
                     case .idle: break
                     case .searching: rows.append(info("searching", .found, "Searching sessions…"))
-                    case .failed: rows.append(info("search-failed", .found, "The search did not run.", detail: "The sessions listed here still open."))
+                    case .failed: rows.append(info("search-failed", .found, "The search did not run.", detail: sessions.isEmpty ? nil : "The sessions listed here still open."))
                     case .timedOut: rows.append(info("search-timeout", .found, "The search took too long.", detail: "Try fewer words, or Search all sessions."))
                     case .done:
                         var shown = 0
-                        for item in found.hits where shown < hitCap && !listed(item.sessionID) {
+                        for item in found.hits where shown < hitCap && !item.keepWarm && !listed(item.sessionID) {
                             let ago = when(item.date, now: inputs.now, calendar: inputs.calendar)
                             let detail = [item.detail.map(clean), ago].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
                             rows.append(Row(id: "hit:" + item.id, kind: .hit(item.id), group: .found, title: hitTitle(item.title),

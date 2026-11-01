@@ -35,6 +35,8 @@ MUTANTS = [
      "a snippet never begins inside a key"),
     ("the window may end inside a key", "haystack.distance(from: from, to: space) >= 40 { to = space }", "haystack.distance(from: from, to: space) >= 40 { to = upper }",
      "a snippet never ends inside a key"),
+    ("a query of --local is the flag", "        if let at = args.firstIndex(of: \"--local\"), !(at > 0 && args[at - 1] == \"--query\") { try emitLocalSessionsSearch(args: args); return }\n", "        if args.contains(\"--local\") { try emitLocalSessionsSearch(args: args); return }\n",
+     "a query of the flag's own characters is a query"),
     ("a hit keeps its 8 characters", "            if (hit[\"provider\"] as? String ?? \"claude\") == \"claude\", let id = hit[\"id\"] as? String, id.count == 8, let full = fullClaudeId[id.lowercased()] { hit[\"id\"] = full }\n", "",
      "found under its full id"),
     ("reveal does not resolve a short id", "                sessionId: fullId,\n                records: Self.claudeDesktopRecords(for: fullId, sessionsRoot: desktopRoot),", "                sessionId: sessionId,\n                records: Self.claudeDesktopRecords(for: fullId, sessionsRoot: desktopRoot),",

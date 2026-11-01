@@ -621,7 +621,7 @@ import Foundation
         // A waiting or running row that matches is the same: the first session-group row, in the order listed.
         let waitingMatch = center { $0.waiting = [waiting("w", "Holiday promo review")]; $0.sessions = [C.Item(id: "s1", title: "Holiday promo landing page", sessionID: "s1")] }
         check(returned("holiday promo", inputs: waitingMatch) == .move("waiting:session:w"), "[a session match moves to the first session row]", "\(returned("holiday promo", inputs: waitingMatch))")
-        // Words that match no title are what they were: a Work run for three words, Ask for fewer.
+        // Words that match no title: Return moves to Ask, however many words there are, and a second Return runs it.
         check(returned("holiday promo landing", inputs: center { $0.sessions = [C.Item(id: "s2", title: "Rain audit", sessionID: "s2")] }) == .move("ask"), "[no match moves to Ask]", "")
         // A command's row still comes before a session row.
         let both = center { $0.sessions = [C.Item(id: "s1", title: "Open sessions guide", sessionID: "s1")] }
@@ -1059,6 +1059,17 @@ import Foundation
         // The phases are text lines.
         check(row(C.listing(withFound(sessions, words: "persona", phase: .searching, hits: []), words: "persona"), "info:searching")?.title == "Searching sessions…", "[searching is a text line]", "")
         check(row(C.listing(withFound(sessions, words: "persona", phase: .failed, hits: []), words: "persona"), "info:search-failed")?.title == "The search did not run.", "[a failed search says so]", "")
+        // Small things (QA 0.5.361): a failed search points at the listed sessions only when some are listed; a warm-up is no hit; a day with
+        // nothing in a full list says how far the list reaches.
+        check(row(C.listing(withFound(withSessions([]), words: "persona", phase: .failed, hits: []), words: "persona"), "info:search-failed")?.detail == nil, "[a failed search names no list when none is listed]", "")
+        check(row(C.listing(withFound(withSessions([listed("claude:per000011", "Persona planning", days: 0)]), words: "persona", phase: .failed, hits: []), words: "persona"), "info:search-failed")?.detail == "The sessions listed here still open.", "[a failed search names the list when sessions are listed]", "")
+        let warmHit = C.Item(id: "claude:warm0001", title: "Persona warm-up", sessionID: "claude:warm0001", keepWarm: true)
+        check(row(C.listing(withFound(sessions, words: "persona", hits: [warmHit]), words: "persona"), "hit:claude:warm0001") == nil, "[a warm-up session is no hit]", "")
+        let oldOnes = (0..<3).map { listed("claude:old0000" + String($0) + "1234", "Old \($0)", days: 5) }
+        let fullList = withSessions(oldOnes) { $0.sessionsLimit = 3 }
+        check(row(C.listing(fullList, words: "sessions today"), "info:sessions-none")?.title == "No sessions today in your newest 3."
+              && row(C.listing(withSessions(oldOnes) { $0.sessionsLimit = 80 }, words: "sessions today"), "info:sessions-none")?.title == "No sessions today."
+              && row(C.listing(fullList, words: "sessions"), "info:sessions-none") == nil, "[a day with none in a full list says how far it reaches]", "")
         // A timeout is its own line: the search ran for its whole time, which is not "did not run" (QA 0.5.361, G8).
         let timedOut = C.listing(withFound(sessions, words: "persona", phase: .timedOut, hits: []), words: "persona")
         check(row(timedOut, "info:search-timeout")?.title == "The search took too long." && row(timedOut, "info:search-timeout")?.detail == "Try fewer words, or Search all sessions."

@@ -18493,7 +18493,8 @@ final class COSControlHelper {
     }
 
     private func emitClaudeSessionsSearch(args: [String]) throws {
-        if args.contains("--local") { try emitLocalSessionsSearch(args: args); return }
+        // `--local` is the flag, unless it is the value of --query (a Sessions search for those very characters).
+        if let at = args.firstIndex(of: "--local"), !(at > 0 && args[at - 1] == "--query") { try emitLocalSessionsSearch(args: args); return }
         guard let query = option("--query", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines),
               query.count >= 2 else {
             throw HelperError.message("--query must be at least 2 characters")

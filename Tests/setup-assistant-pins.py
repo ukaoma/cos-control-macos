@@ -456,7 +456,10 @@ reveal = block(helper, "    private func emitSessionReveal(args: [String]) throw
 pin("let fullId = transcript.map { $0.deletingPathExtension().lastPathComponent.lowercased() }.flatMap { UUID(uuidString: $0) == nil ? nil : $0 } ?? sessionId" in reveal
     and "sessionId: fullId,\n                records: Self.claudeDesktopRecords(for: fullId, sessionsRoot: desktopRoot)," in reveal and "Self.claudeDesktopMentions(fullId, sessionsRoot: desktopRoot)" in reveal,
     "a short Claude id (how a search hit names a session) reveals through its transcript's full id, which Desktop's links need")
-pin('if args.contains("--local") { try emitLocalSessionsSearch(args: args); return }' in helper, "the verb's --local flag is the first thing it checks")
+pin('if let at = args.firstIndex(of: "--local"), !(at > 0 && args[at - 1] == "--query") { try emitLocalSessionsSearch(args: args); return }' in helper, "the verb's --local flag is the first thing it checks, and a query of those characters is not the flag")
+pin("commandKeys.searchAllWords = model.sessionQuery" in window and "if let said = commandKeys.searchAllWords, model.sessionQuery == said { model.sessionQuery = \"\"; model.scheduleSessionSearch() }" in window,
+    "opening Sessions on its own takes out the words Search all left in its box")
+pin("incoming.merging(keys.hitSessions.filter { old in refreshed.hits.contains { $0.id == old.key } }" in panel, "a hit kept for the person who chose it keeps its session")
 pin("static let sessionSearchBodyFileLimit = 80\n" in helper, "the scan reads at most 80 transcripts")
 panel_search = block(panel, "    private func runSearch(_ words: String?) async {", "    private func move(_ delta: Int) -> Bool {")
 pin(".task(id: listing.searchWords) { await runSearch(listing.searchWords) }" in panel, "one search at a time: the task is keyed by the words, so a key cancels the last one")
@@ -468,8 +471,9 @@ announce = [line.strip() for line in panel_search.split("\n") if "Announcement("
 pin(announce == ["if shown > 0 { AccessibilityNotification.Announcement(C.foundAnnouncement(shown)).post() }"], f"on arrival VoiceOver hears only the fixed count: {announce}")
 for forbidden in ("sessionSearchHits", "sessionSearching", "sessionSearchError", "sessionSemantic"):
     pin(forbidden not in ext and forbidden not in panel, f"the command center never reads the Sessions tab's {forbidden}")
-pin(ext.count("model.sessionQuery") == 1 and ext.count("scheduleSessionSearch()") == 1 and "model.sessionQuery = String(words.prefix(200))" in block(ext, "    func commandSearchAll(_ words: String) -> CommandEffect {", "\n    }\n"),
-    "Search all sessions is the one place the Sessions tab's box is written, and only when that row is chosen")
+pin("model.sessionQuery = String(words.prefix(200))" in block(ext, "    func commandSearchAll(_ words: String) -> CommandEffect {", "\n    }\n")
+    and ext.count("model.sessionQuery = String(") == 1 and ext.count("model.sessionQuery = \"\"") == 1 and ext.count("scheduleSessionSearch()") == 2,
+    "Search all sessions is the one place the Sessions tab's box is filled, and only when that row is chosen; the Sessions opener empties it again, only of those words")
 pin("let session = ClaudeSession.listed(hit: hit.session, loaded: loaded, workSessionIDs: workIDs, runningWorkSessionIDs: runningIDs)" in search_fn
     and "model.workSessionIDs" in search_fn and "model.runningWorkSessionIDs" in search_fn and "model.claudeSessions" in search_fn,
     "a hit passes the server-hold guard the list rows have: the loaded row, else marked as Work or running Work")
@@ -484,7 +488,7 @@ pin(re.search(r"runHelper|model\.", panel) is None, "the panel itself calls no m
 open_hit = block(ext, "    func commandOpenHit(_ id: String) -> CommandEffect {", "\n    }\n")
 pin("commandKeys.hitSessions[id]" in open_hit and "petSession(" not in open_hit and "claudeSessions" not in open_hit, "a hit opens its own session object, not a list lookup")
 pin("model.openSessionInPlatform(session)" in open_hit and "model.openClaudeSession(session)" in open_hit and "TodayHome.openFor(" in open_hit, "a hit opens the way a list row does: the platform, or Sessions' reader")
-pin(window.count("hitSessions =") == 2 and "keys.hitSessions = Dictionary(" in panel_search, "the hit sessions are written when the panel opens (cleared) and when hits arrive, nowhere else")
+pin(window.count("hitSessions =") == 2 and "keys.hitSessions = incoming.merging(" in panel_search, "the hit sessions are written when the panel opens (cleared) and when hits arrive, nowhere else")
 pin("case .hit(let id): return commandOpenHit(id)" in row_run and "case .searchAll: return commandSearchAll(listing.words)" in row_run and "case .place(let place): return commandGo(place)" in row_run, "a hit, Search all sessions and a place are each dispatched")
 
 # The panel's list refreshes on open, not on the tick.
