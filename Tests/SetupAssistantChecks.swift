@@ -77,6 +77,10 @@ import Foundation
         centerRecording()
         centerRecordingRows()
         centerSessions()
+        centerPlaces()
+        centerNouns()
+        centerSearch()
+        centerFooter()
         centerConfirms()
         centerAsk()
         centerResultLine()
@@ -182,15 +186,24 @@ import Foundation
         check(row(notLoaded, "info:no-waiting") == nil && row(notLoaded, "info:no-running") == nil, "[overview not loaded]", "never says nothing is waiting")
         check(row(notLoaded, "info:running-unknown")?.title == "Running: not loaded yet.", "[overview not loaded]", "")
         // Loaded and empty does say so, with what the fold holds for tomorrow.
-        let clear = C.listing(center { $0.foldedLine = "For tomorrow: 2 more things" }, words: "")
-        check(row(clear, "info:no-waiting")?.title == "Nothing is waiting on you." && row(clear, "info:no-waiting")?.detail == "For tomorrow: 2 more things", "[no sessions]", "")
+        let clear = C.listing(center(), words: "")
+        check(row(clear, "info:no-waiting")?.title == "Nothing urgent right now." && row(clear, "info:no-waiting")?.detail == nil, "[no sessions]", "\(String(describing: row(clear, "info:no-waiting")))")
+        // The fold: everything folded reads as the count, in the words Today's headline uses. None folded reads as nothing urgent.
+        let folded = C.listing(center { $0.foldedCount = 6 }, words: "")
+        check(row(folded, "info:no-waiting")?.title == "6 things can wait until tomorrow", "[the fold reads the same in both]", "\(String(describing: row(folded, "info:no-waiting")))")
+        check(C.canWaitLine(1) == "1 thing can wait until tomorrow" && C.canWaitLine(2) == "2 things can wait until tomorrow", "[the fold reads the same in both]", "")
+        let someFolded = C.listing(center { $0.waiting = [waiting("a", "First")]; $0.foldedCount = 3 }, words: "")
+        check(row(someFolded, "info:folded")?.title == "3 more can wait until tomorrow." && row(someFolded, "info:no-waiting") == nil, "[the fold count shows when something waits]", "\(rowIDs(someFolded))")
+        check(row(C.listing(center { $0.waiting = [waiting("a", "First")]; $0.foldedCount = 1 }, words: ""), "info:folded")?.title == "1 more can wait until tomorrow.", "[the fold count shows when something waits]", "")
+        check(row(C.listing(center { $0.waiting = [waiting("a", "First")] }, words: ""), "info:folded") == nil, "[no fold, no count line]", "")
         check(row(clear, "info:no-running")?.title == "Nothing is running.", "[no sessions]", "")
 
         // Sessions off: says so, and opens where the switch is.
         let off = C.listing(center { $0.sessionsOff = true }, words: "")
         check(row(off, "command:openSessions")?.title == "Session tracking is off" && row(off, "command:openSessions")?.selectable == true, "[sessions off]", "\(rowIDs(off))")
         check(row(off, "info:no-running") == nil, "[sessions off]", "")
-        check(row(off, "info:no-waiting")?.title == "Nothing else is waiting on you.", "[sessions off never says nothing waits]", "")
+        check(row(off, "info:no-waiting")?.title == "Nothing else urgent right now.", "[sessions off never says nothing waits]", "")
+        check(row(C.listing(center { $0.sessionsOff = true; $0.foldedCount = 2 }, words: ""), "info:no-waiting")?.title == "2 things can wait until tomorrow", "[the fold reads the same in both]", "with sessions off too")
 
         // Fix rows only when something is broken, at most two.
         check(!clear.rows.contains { $0.group == .fixing }, "[fix only when broken]", "\(rowIDs(clear))")
@@ -267,11 +280,12 @@ import Foundation
     }
 
     static func centerReturn() {
-        // Nothing highlighted: one Work run, only for three or more words with no answer or command match.
-        check(returned("draft the note to Dana") == .startRun, "[Return with no highlight runs Work]", "")
-        check(returned("email Gina about pricing") == .startRun, "[Return with no highlight runs Work]", "")
-        // A long text with a command word in it is still a run.
-        check(returned("open the pricing page and check the hero copy") == .startRun, "[a long sentence is a run]", "")
+        // 0.5.361, one rule: free text never starts a run on the first Return. It moves to Ask COS, and the second Return runs it.
+        // The same keystroke does the same thing before and after anything arrives, so there is no race to lose.
+        check(returned("draft the note to Dana") == .move("ask"), "[free text moves to Ask first]", "\(returned("draft the note to Dana"))")
+        check(returned("email Gina about pricing") == .move("ask"), "[free text moves to Ask first]", "")
+        check(returned("open the pricing page and check the hero copy") == .move("ask"), "[a long sentence moves to Ask first]", "")
+        check(returned("draft the note to Dana", chosen: "ask") == returnRuns("ask"), "[the second Return runs Ask]", "")
         // Fewer than three words never starts a run.
         check(returned("hello") == .move("ask"), "[under three words moves to Ask]", "\(returned("hello"))")
         check(returned("call Gina") == .move("ask"), "[under three words moves to Ask]", "")
@@ -332,7 +346,8 @@ import Foundation
         check(returned("draft the note to Dana", chosen: "file") == returnRuns("file"), "[Return runs the highlight]", "")
         check(returned("hello", chosen: "ask") == returnRuns("ask"), "[a second Return runs the Ask row]", "")
         // A highlight that went away is no highlight.
-        check(returned("draft the note to Dana", chosen: "command:gone") == .startRun, "[a stale highlight is none]", "")
+        check(returned("draft the note to Dana", chosen: "command:gone") == .nothing, "[a chosen row that is gone returns nothing]", "\(returned("draft the note to Dana", chosen: "command:gone"))")
+        check(returned("hello", chosen: "hit:gone") == .nothing, "[a chosen row that is gone returns nothing]", "a hit that went with a new search")
         // Option-Return always files.
         check(returned("start recording", option: true) == .file, "[Option-Return always files]", "")
         check(returned("hello", option: true, chosen: "ask") == .file, "[Option-Return always files]", "")
@@ -453,7 +468,6 @@ import Foundation
         // The foot says what Return does.
         let typed = C.listing(center(), words: "hello")
         check(C.hint(.move("ask"), typed, healthy()) == "Return moves to Ask COS. Return again runs it.", "[the hint says what Return does]", "")
-        check(C.hint(.startRun, typed, healthy()).contains("one Work run"), "[the hint says what Return does]", "")
         let start = C.listing(center(), words: "start recording")
         check(C.hint(returnRuns("command:startRecording"), start, healthy()) == "Return runs: Start recording", "[the hint says what Return does]", "")
         let live = center { $0.recording.stoppable = true; $0.recording.occupied = true }
@@ -575,7 +589,7 @@ import Foundation
         let title = C.listing(center { $0.sessions = [C.Item(id: "s1", title: "Holiday promo landing page", sessionID: "s1")] }, words: "holiday promo")
         check(title.autoHighlight == nil && row(title, "session:s1")?.kind == .session("s1") && !title.nearCommand, "[a session match never highlights]", "\(rowIDs(title))")
         check(returnedFor(title) == .move("session:s1"), "[a session match moves to the session]", "\(returnedFor(title))")
-        check(C.hint(.move("session:s1"), title, healthy()) == "Return moves to Holiday promo landing page. Return again opens it.", "[the hint says what Return does]", "\(C.hint(.move("session:s1"), title, healthy()))")
+        check(C.hint(.move("session:s1"), title, healthy()) == "Return moves to the session Holiday promo landing page. Return again opens it.", "[the hint says what Return does]", "\(C.hint(.move("session:s1"), title, healthy()))")
         // Three words or more, Start Work on or off: a title that matches is a session to open, never a Work run or a filed task.
         let threeWords = center { $0.sessions = [C.Item(id: "s1", title: "Holiday promo landing page", sessionID: "s1")] }
         let threeList = C.listing(threeWords, words: "holiday promo landing")
@@ -588,14 +602,14 @@ import Foundation
         let waitingMatch = center { $0.waiting = [waiting("w", "Holiday promo review")]; $0.sessions = [C.Item(id: "s1", title: "Holiday promo landing page", sessionID: "s1")] }
         check(returned("holiday promo", inputs: waitingMatch) == .move("waiting:session:w"), "[a session match moves to the first session row]", "\(returned("holiday promo", inputs: waitingMatch))")
         // Words that match no title are what they were: a Work run for three words, Ask for fewer.
-        check(returned("holiday promo landing", inputs: center { $0.sessions = [C.Item(id: "s2", title: "Rain audit", sessionID: "s2")] }) == .startRun, "[no match, no change]", "")
+        check(returned("holiday promo landing", inputs: center { $0.sessions = [C.Item(id: "s2", title: "Rain audit", sessionID: "s2")] }) == .move("ask"), "[no match moves to Ask]", "")
         // A command's row still comes before a session row.
         let both = center { $0.sessions = [C.Item(id: "s1", title: "Open sessions guide", sessionID: "s1")] }
         check(returned("open sess", inputs: both) == .move("command:openSessions"), "[a command row comes before a session row]", "\(returned("open sess", inputs: both))")
-        // `.startRun` always has an Ask row to send it through.
+        // A move to Ask always has an Ask row to land on.
         check(C.listing(center(), words: "draft the note to Dana").rows.contains { $0.kind == .ask && $0.selectable }, "[a Work run goes through Ask]", "")
         let long = C.listing(center { $0.sessions = [C.Item(id: "s1", title: "start recording the holiday promo", sessionID: "s1")] }, words: "holiday promo landing")
-        check(returnedFor(long) == .startRun, "[a title never changes Return]", "")
+        check(returnedFor(long) == .move("ask"), "[a title never changes Return]", "")
         // A session lists once, and the search is capped.
         let same = C.listing(center { $0.waiting = [waiting("one", "Rain audit")]; $0.running = [running("one", "Rain audit")]; $0.sessions = [C.Item(id: "one", title: "Rain audit", sessionID: "one")] }, words: "rain")
         check(same.rows.filter { $0.group == .sessions }.count == 1, "[a session lists once]", "\(rowIDs(same))")
@@ -610,6 +624,388 @@ import Foundation
 
     static func returnedFor(_ listing: C.Listing) -> C.ReturnOutcome {
         C.onReturn(option: false, chosen: nil, confirming: false, noticeShowing: false, listing, healthy())
+    }
+
+
+    // MARK: Places, the noun list, word search and the footer (0.5.361)
+
+    static let zone = TimeZone(identifier: "America/Chicago")!
+    /// Gregorian, Sunday first, Austin's zone: "this week" and "yesterday" are the same on every Mac that runs the check.
+    static var gregorian: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        calendar.firstWeekday = 1
+        return calendar
+    }
+    /// Saturday 2026-10-31, 3 PM.
+    static let fixedNow: Date = gregorian.date(from: DateComponents(year: 2026, month: 10, day: 31, hour: 15))!
+
+    static func daysAgo(_ days: Int, hour: Int = 9) -> Date {
+        let day = gregorian.date(byAdding: .day, value: -days, to: gregorian.startOfDay(for: fixedNow))!
+        return gregorian.date(byAdding: .hour, value: hour, to: day)!
+    }
+
+    static func listed(_ id: String, _ title: String, days: Int? = 0, hour: Int = 9, state: String? = nil, warm: Bool = false) -> C.Item {
+        C.Item(id: id, title: title, detail: "Claude Code, MU-Chief-Staff", openLabel: "Open in Claude", sessionID: id, state: state, date: days.map { daysAgo($0, hour: hour) }, keepWarm: warm)
+    }
+
+    /// A healthy Mac with a loaded session list, a fixed clock, and these sessions already merged.
+    static func withSessions(_ items: [C.Item], _ build: (inout C.Inputs) -> Void = { _ in }) -> C.Inputs {
+        center {
+            $0.sessions = C.merged(live: [], listed: items)
+            $0.sessionsLoaded = true
+            $0.now = fixedNow
+            $0.calendar = gregorian
+            build(&$0)
+        }
+    }
+
+    static func hit(_ id: String, _ title: String, match: String? = nil, days: Int? = 12) -> C.Item {
+        C.Item(id: id, title: title, detail: "Claude Code, Quilt", openLabel: "Open in Claude", sessionID: id, state: "Recent", date: days.map { daysAgo($0) }, match: match)
+    }
+
+    static func withFound(_ inputs: C.Inputs, words: String, phase: C.SearchPhase = .done, hits: [C.Item]) -> C.Inputs {
+        var next = inputs
+        next.found = C.Found(words: C.plain(words), phase: phase, hits: hits)
+        return next
+    }
+
+    static func ownersOfEveryExactName() -> [String: [String]] {
+        var owners: [String: [String]] = [:]
+        func claim(_ name: String, _ owner: String) { owners[C.plain(name), default: []].append(owner) }
+        for command in C.Command.allCases { for phrase in command.phrases { claim(phrase, "command:" + command.rawValue) } }
+        for place in C.Place.allCases { for name in place.names { for form in [name, "open " + name, "go to " + name, "show " + name] { claim(form, "place:" + place.rawValue) } } }
+        for noun in C.nounPhrases { claim(noun, "noun") }
+        return owners
+    }
+
+    static func baseName(_ name: String) -> String {
+        for verb in ["open ", "go to ", "show "] where name.hasPrefix(verb) { return String(name.dropFirst(verb.count)) }
+        return name
+    }
+
+    static func centerPlaces() {
+        // The closed list, with a title, a parent for a tab, and names that are all plain words.
+        check(C.Place.allCases.count == 17, "[places are a closed list]", "\(C.Place.allCases.count)")
+        for place in C.Place.allCases {
+            check(!place.title.isEmpty && !place.names.isEmpty, "[places are a closed list]", "\(place)")
+            for name in place.names { check(C.plain(name).trimmingCharacters(in: .whitespaces) == name, "[place names are plain words]", name) }
+        }
+        check(C.Place.allCases.filter { $0.parent == nil } == [.today, .messages, .threads], "[panes with no Open command are places]", "")
+
+        // Every exact name is enumerated. A name two kinds of row answer to must be declared with its winner, and the winner is the
+        // row that highlights. Anything else with more than one owner fails here.
+        let owners = ownersOfEveryExactName()
+        var shared = Set<String>()
+        for (name, list) in owners {
+            let unique = Set(list)
+            let listing = C.listing(center(), words: name)
+            if unique.count > 1 {
+                shared.insert(baseName(name))
+                check(C.sharedNames[baseName(name)] != nil, "[a name two rows answer to is declared]", "\(name): \(unique.sorted())")
+                check(listing.autoHighlight == C.sharedNames[baseName(name)], "[the declared winner highlights]", "\(name): \(String(describing: listing.autoHighlight))")
+            } else if let only = unique.first, only.hasPrefix("place:") {
+                check(listing.autoHighlight == "place:" + only.dropFirst("place:".count), "[an exact place name highlights its row]", "\(name): \(String(describing: listing.autoHighlight))")
+                check(returned(name) == returnRuns(listing.autoHighlight ?? "?"), "[Return opens an exact place name]", name)
+            } else if let only = unique.first, only == "noun", name != "sessions" {
+                check(listing.autoHighlight == nil && listing.listOnly, "[a noun list highlights nothing]", "\(name): \(String(describing: listing.autoHighlight))")
+            }
+        }
+        check(shared == Set(C.sharedNames.keys), "[no stale declared name]", "\(shared.sorted()) vs \(C.sharedNames.keys.sorted())")
+        // Stop and Doctor words are never a place.
+        let stopAndDoctor = Set((C.Command.stopRecording.phrases + C.Command.runDoctor.phrases).map(C.plain))
+        for place in C.Place.allCases {
+            check(Set(place.names.flatMap { [$0, "open " + $0, "go to " + $0, "show " + $0] }.map(C.plain)).isDisjoint(with: stopAndDoctor), "[no place equals a Stop or Doctor phrase]", "\(place)")
+        }
+
+        // The journeys.
+        let usage = C.listing(center(), words: "usage")
+        check(usage.autoHighlight == "place:sessionsUsage" && rowIDs(usage).first == "place:sessionsUsage", "[usage then Return opens Usage]", "\(rowIDs(usage))")
+        check(row(usage, "place:sessionsUsage")?.title == "Usage" && row(usage, "place:sessionsUsage")?.detail == "In Sessions", "[a tab row names its parent]", "")
+        check(returned("usage") == returnRuns("place:sessionsUsage"), "[usage then Return opens Usage]", "")
+        check(C.hint(returnRuns("place:sessionsUsage"), usage, healthy()) == "Return opens: Usage", "[the footer says Return opens]", "\(C.hint(returnRuns("place:sessionsUsage"), usage, healthy()))")
+        check(C.listing(center(), words: "cos cost").autoHighlight == "place:sessionsCost" && C.listing(center(), words: "go to usage").autoHighlight == "place:sessionsUsage", "[a tab by name]", "")
+        check(C.listing(center(), words: "go to usage").nearCommand && C.listing(center(), words: "usa").nearCommand, "[a place counts as a near-command]", "")
+        check(returned("go to usage") == returnRuns("place:sessionsUsage"), "[go to usage opens, never a run]", "\(returned("go to usage"))")
+
+        let messages = C.listing(center(), words: "messages")
+        check(messages.autoHighlight == "place:messages" && row(messages, "place:messagesRecent") != nil && row(messages, "place:messagesArchive") != nil, "[messages lists its tabs]", "\(rowIDs(messages))")
+        let work = C.listing(center(), words: "work")
+        check(work.autoHighlight == "command:openWork", "[the pane command wins over its tabs]", "")
+        for tab in ["place:workAll", "place:workNeeds", "place:workProgress", "place:workCompleted"] { check(row(work, tab) != nil, "[work lists its four scopes]", tab) }
+        let tasks = C.listing(center(), words: "tasks")
+        check(tasks.autoHighlight == "command:openWork" && tasks.rows.filter { $0.group == .commands || $0.group == .places }.count == 1, "[tasks is one row, Work]", "\(rowIDs(tasks))")
+        for pane in ["speakers", "dictation", "settings", "memories", "meetings", "sessions"] {
+            let listing = C.listing(center(), words: pane)
+            check(listing.rows.filter { $0.group == .places }.count <= C.placeCap && C.placeCap == 6, "[the place list is capped]", "\(pane): \(rowIDs(listing))")
+            check(listing.autoHighlight?.hasPrefix("command:") == true, "[a pane with an Open command highlights the command]", "\(pane): \(String(describing: listing.autoHighlight))")
+        }
+        check(row(C.listing(center(), words: "speakers"), "place:speakersVoices") != nil && row(C.listing(center(), words: "dictation"), "place:dictationHistory") != nil, "[a pane lists its tabs under the command]", "")
+        check(C.listing(center(), words: "voices").autoHighlight == "command:openSpeakers" && row(C.listing(center(), words: "voices"), "place:speakersVoices") != nil, "[voices: the opener runs and the tab is listed]", "")
+        // Recording is not a place: it lists Start recording first, and a bare word inside a Start phrase is no order (0.5.359's rule).
+        let recording = C.listing(center(), words: "recording")
+        check(recording.rows.first?.id == "command:startRecording" && recording.autoHighlight == nil && returned("recording") != returnRuns("command:startRecording"), "[recording lists Start recording and does not run it]", "\(rowIDs(recording)) \(returned("recording"))")
+        check(returned("recording") == .move("ask"), "[recording moves to Ask, never onto Start recording]", "\(returned("recording"))")
+        check(C.listing(center(), words: "start recording").autoHighlight == "command:startRecording" && returned("start recording") == returnRuns("command:startRecording"), "[start recording runs]", "")
+
+        // A name that only begins a sentence is listed, and Return passes over it.
+        for sentence in ["usage limit reached", "messages from Jeremy", "threads about pricing", "usage?"] {
+            let listing = C.listing(center(), words: sentence)
+            let id = sentence.hasPrefix("usage") ? "place:sessionsUsage" : (sentence.hasPrefix("messages") ? "place:messages" : "place:threads")
+            check(row(listing, id) != nil && listing.autoHighlight == nil && listing.returnSkips.contains(id), "[a first-word match in a sentence is listed only]", "\(sentence): \(rowIDs(listing))")
+            check(returned(sentence) == .move("ask"), "[a first-word match in a sentence goes to Ask]", "\(sentence): \(returned(sentence))")
+        }
+        // Two letters reach no place: "us" goes on to a session whose title holds it.
+        let plus = center { $0.sessions = [C.Item(id: "claude:plus0001", title: "Plus one review", sessionID: "claude:plus0001")] }
+        check(!C.listing(plus, words: "us").rows.contains { $0.group == .places } && returned("us", inputs: plus) == .move("session:claude:plus0001"), "[us skips Usage and goes to a session]", "\(returned("us", inputs: plus))")
+        // Three letters do: the start of a name moves to it, and the second Return opens it.
+        check(returned("usa") == .move("place:sessionsUsage") && returned("usa", chosen: "place:sessionsUsage") == returnRuns("place:sessionsUsage"), "[the start of a name moves to it]", "\(returned("usa"))")
+        check(C.hint(.move("place:sessionsUsage"), C.listing(center(), words: "usa"), healthy()) == "Return moves to Usage. Return again opens it.", "[the footer says Return opens]", "")
+        // A command wins over a place for the same name; a place wins over a session titled the same.
+        let titledUsage = center { $0.sessions = [C.Item(id: "claude:usage001", title: "Usage", sessionID: "claude:usage001")] }
+        let usageList = C.listing(titledUsage, words: "usage")
+        check(usageList.autoHighlight == "place:sessionsUsage" && row(usageList, "session:claude:usage001") != nil, "[a place wins over a session titled the same]", "\(rowIDs(usageList))")
+        let titledCommand = center { $0.sessions = [C.Item(id: "claude:rec00001", title: "Start recording", sessionID: "claude:rec00001")] }
+        let commandList = C.listing(titledCommand, words: "start recording")
+        check(commandList.autoHighlight == "command:startRecording" && returned("start recording", inputs: titledCommand) == returnRuns("command:startRecording"), "[a command wins over a session titled the same]", "")
+        check(C.hint(.move("session:claude:rec00001"), commandList, healthy()) == "Return moves to the session Start recording. Return again opens it.", "[a session titled like a command is called a session]", "\(C.hint(.move("session:claude:rec00001"), commandList, healthy()))")
+        check(C.hint(returnRuns("session:claude:rec00001"), commandList, healthy()) == "Return opens the session Start recording", "[a session titled like a command is called a session]", "")
+        // Places are free text too: nothing typed becomes anything but a name match.
+        check(returned("draft the note to Dana") == .move("ask") && !C.listing(center(), words: "draft the note to Dana").rows.contains { $0.group == .places }, "[free text matches no place]", "")
+
+        // An unsent message in an open session is cleared by going anywhere, so a place asks first. Nothing else does.
+        var drafting = healthy(); drafting.unsentSessionDraft = true
+        let placeRow = row(usage, "place:sessionsUsage")!
+        check(C.confirmation(placeRow, drafting) == C.draftConfirm && C.confirmation(placeRow, healthy()) == nil, "[a place with an unsent message asks first]", "")
+        for kind in [C.Kind.hit("h"), .searchAll] {
+            let r = C.Row(id: "x", kind: kind, group: .found, title: "x")
+            check(C.confirmation(r, drafting) == C.draftConfirm && C.confirmation(r, healthy()) == nil, "[a hit and Search all sessions ask first with an unsent message]", "\(kind)")
+        }
+        check(C.hint(returnRuns("place:sessionsUsage"), usage, drafting) == "Return asks first: Usage", "[the footer says it asks first]", "")
+        check(C.draftConfirm.confirm == "Go there" && C.recheck(placeRow, drafting, recordable()) == nil, "[the draft confirm has no force path]", "")
+        for kind in C.Place.allCases.map({ C.Kind.place($0) }) {
+            check(!C.sendsWords(C.Row(id: "x", kind: kind, group: .places, title: "x")) && C.draftAfterRun(C.Row(id: "x", kind: kind, group: .places, title: "x"), "usage").isEmpty, "[a place that ran leaves no draft]", "\(kind)")
+        }
+        // Row ids stay unique with places listed.
+        for words in ["messages", "work", "speakers", "settings", "dictation", "usage", "voices", "meetings", "sessions", "all", "review"] {
+            let listing = C.listing(center(), words: words)
+            check(Set(rowIDs(listing)).count == listing.rows.count, "[row ids are unique]", "\(words): \(rowIDs(listing))")
+        }
+    }
+
+    static func centerNouns() {
+        let all = (0..<12).map { listed("claude:" + String(format: "s%011d", $0), "Session title \($0)", days: $0 % 3 == 0 ? 0 : ($0 % 3 == 1 ? 1 : 5), hour: 20 - $0) }
+        let inputs = withSessions(all)
+        let sessions = C.listing(inputs, words: "sessions")
+        let listedRows = sessions.rows.filter { $0.group == .sessions }
+        check(sessions.autoHighlight == "command:openSessions" && sessions.rows.first?.id == "command:openSessions", "[sessions: the pane first, the list below]", "\(rowIDs(sessions))")
+        check(listedRows.filter { if case .session = $0.kind { return true } else { return false } }.count == C.nounCap && C.nounCap == 8, "[the noun list shows eight]", "\(listedRows.count)")
+        check(row(sessions, "sessions:more")?.title == "4 more in Sessions" && row(sessions, "sessions:more")?.kind == .command(.openSessions), "[then N more in Sessions]", "\(String(describing: row(sessions, "sessions:more")))")
+        let dates = all.sorted { ($0.date ?? .distantPast) > ($1.date ?? .distantPast) }.prefix(8).map { "session:" + $0.id }
+        check(listedRows.compactMap { $0.id.hasPrefix("session:") ? $0.id : nil } == Array(dates), "[newest first]", "\(listedRows.map(\.id)) vs \(Array(dates))")
+        check(row(sessions, listedRows.first { $0.id.hasPrefix("session:") }!.id)?.detail?.hasSuffix(", today") == true, "[a row says when]", "")
+        check(returned("sessions", inputs: inputs) == returnRuns("command:openSessions"), "[sessions then Return opens Sessions]", "")
+        check(sessions.searchWords == nil, "[a noun list runs no search]", "")
+        // The same list for the other nouns, and Return only waits for a choice.
+        for noun in ["session", "recent", "running", "recent sessions", "running sessions", "my sessions", "all sessions"] {
+            let listing = C.listing(inputs, words: noun)
+            check(listing.rows.filter({ if case .session = $0.kind { return true } else { return false } }).count == C.nounCap, "[nouns list sessions]", "\(noun): \(rowIDs(listing))")
+            check(listing.listOnly && listing.searchWords == nil, "[a noun list is for choosing]", noun)
+            if noun != "session" { check(listing.autoHighlight == nil && returned(noun, inputs: inputs) == .nothing, "[recent and running highlight nothing]", "\(noun): \(returned(noun, inputs: inputs))") }
+        }
+        check(returned("session", inputs: inputs) == .move("command:openSessions"), "[session moves to the pane]", "\(returned("session", inputs: inputs))")
+        // A question or a sentence is not a list.
+        for sentence in ["sessions?", "recent sessions about pricing", "running late today", "show my recent sessions please"] {
+            check(!C.listing(inputs, words: sentence).listOnly, "[a sentence is not a list]", sentence)
+        }
+        // The day words.
+        func ids(_ words: String) -> [String] { C.listing(inputs, words: words).rows.filter { if case .session = $0.kind { return true } else { return false } }.map(\.id) }
+        let today = all.filter { gregorian.isDate($0.date!, inSameDayAs: fixedNow) }
+        check(ids("sessions today") == today.map { "session:" + $0.id } && !today.isEmpty, "[sessions today]", "\(ids("sessions today"))")
+        check(ids("sessions from today") == ids("sessions today") && ids("recent today") == ids("sessions today"), "[sessions today]", "")
+        check(ids("sessions yesterday").count == 4 && ids("sessions from yesterday") == ids("sessions yesterday"), "[sessions yesterday]", "\(ids("sessions yesterday"))")
+        check(ids("sessions this week").count == 8 && Set(ids("sessions this week")).isSuperset(of: ids("sessions today")), "[sessions this week]", "\(ids("sessions this week").count)")
+        check(C.listing(withSessions([]), words: "sessions today").rows.contains { $0.id == "info:sessions-none" && $0.title == "No sessions today." }, "[none today says so]", "")
+        check(returned("sessions today", inputs: inputs) == .nothing && returned("sessions yesterday", inputs: inputs) == .nothing, "[a day list waits for a choice]", "")
+        check(C.inSpan(daysAgo(0, hour: 0), .today, now: fixedNow, calendar: gregorian) && !C.inSpan(daysAgo(1, hour: 23), .today, now: fixedNow, calendar: gregorian), "[midnight is the edge of today]", "")
+        check(C.inSpan(nil, .all, now: fixedNow, calendar: gregorian) && !C.inSpan(nil, .today, now: fixedNow, calendar: gregorian), "[an undated session is in all, never in a day]", "")
+        check(!C.inSpan(daysAgo(7), .week, now: fixedNow, calendar: gregorian) && C.inSpan(daysAgo(6), .week, now: fixedNow, calendar: gregorian), "[this week is this calendar week]", "")
+
+        // States: not loaded, off, none. Text lines, no rows to open, and no search.
+        let notLoaded = C.listing(center { $0.sessionsLoaded = false }, words: "sessions")
+        check(row(notLoaded, "info:sessions-unknown")?.title == "Sessions: not loaded yet." && row(notLoaded, "info:sessions-none") == nil, "[sessions not loaded says so]", "\(rowIDs(notLoaded))")
+        let off = C.listing(center { $0.sessionsOff = true; $0.sessionsLoaded = true }, words: "recent")
+        check(row(off, "sessions:off")?.title == "Session tracking is off" && row(off, "sessions:off")?.selectable == true && off.searchWords == nil, "[sessions off shows the off row and no search]", "\(rowIDs(off))")
+        check(row(C.listing(center { $0.sessionsOff = true; $0.sessionsLoaded = true }, words: "sessions"), "sessions:off") != nil, "[sessions off shows the off row]", "")
+        check(C.listing(center { $0.sessionsOff = true }, words: "holiday promo").searchWords == nil, "[sessions off runs no search]", "")
+        check(row(C.listing(withSessions([]), words: "sessions"), "info:sessions-none")?.title == "No sessions yet.", "[no sessions yet]", "")
+
+        // One list from two sources. The loaded list alone holds the recent ones when the pet is on, and the live rows alone hold the running ones.
+        let live = [C.Item(id: "claude:abcd1234", title: "Running now", sessionID: "claude:abcd1234", state: "Running", date: nil)]
+        let loaded = [listed("claude:abcd1234ef56-7890", "Running now", days: 0, hour: 14), listed("claude:old00001", "Older one", days: 2), listed("claude:warm0001", "Ready", days: 0, hour: 15, warm: true), listed("codex:zz000002", "Codex thread", days: 1)]
+        let merged = C.merged(live: live, listed: loaded)
+        check(merged.map(\.id) == ["claude:abcd1234", "codex:zz000002", "claude:old00001"].sorted { a, b in
+            let dateOf = { (id: String) in merged.first { $0.id == id }?.date ?? .distantPast }
+            return dateOf(a) > dateOf(b)
+        } || merged.map(\.id) == ["claude:abcd1234", "codex:zz000002", "claude:old00001"], "[one session lists once, newest first]", "\(merged.map(\.id))")
+        check(merged.count == 3 && !merged.contains { $0.keepWarm }, "[a keep-warm session never lists]", "\(merged.map(\.id))")
+        check(merged.first { $0.id == "claude:abcd1234" }?.date == daysAgo(0, hour: 14) && merged.first { $0.id == "claude:abcd1234" }?.state == "Running", "[the live row wins and takes the list's date]", "")
+        let petOn = withSessions([]) { $0.sessions = merged }
+        check(C.listing(petOn, words: "recent").rows.filter({ if case .session = $0.kind { return true } else { return false } }).count == 3, "[recent has rows with the pet on]", "")
+        check(C.merged(live: [], listed: []).isEmpty && C.merged(live: live, listed: []).count == 1, "[merging nothing]", "")
+        check(C.merged(live: [C.Item(id: "a", title: "A", sessionID: nil), C.Item(id: "b", title: "B", sessionID: nil)], listed: []).map(\.id) == ["a", "b"], "[undated sessions keep their order]", "")
+        // sameSession: the provider matches, and the ids are equal or one is the first 8 or more characters of the other.
+        check(C.sameSession("claude:abcd1234", "claude:ABCD1234ef56") && C.sameSession("claude:abcd1234ef56", "claude:abcd1234"), "[same session by short id]", "")
+        check(!C.sameSession("claude:abcd123", "claude:abcd1234") && !C.sameSession("codex:abcd1234", "claude:abcd1234") && !C.sameSession("abcd1234", "abcd1234") && !C.sameSession("claude:", "claude:"), "[different sessions]", "")
+        check(C.sameSession("cursor:same", "cursor:same") && !C.sameSession("cursor:one", "cursor:two"), "[same session by equal id]", "")
+        check(C.sameListed("one", "one") && !C.sameListed("one", "two"), "[a row id with no provider matches only itself]", "")
+        // when
+        check(C.when(daysAgo(0), now: fixedNow, calendar: gregorian) == "today" && C.when(daysAgo(1), now: fixedNow, calendar: gregorian) == "yesterday" && C.when(daysAgo(5), now: fixedNow, calendar: gregorian) == "5 days ago", "[when words]", "")
+        check(C.when(daysAgo(20), now: fixedNow, calendar: gregorian) == "2 weeks ago" && C.when(daysAgo(90), now: fixedNow, calendar: gregorian) == "3 months ago" && C.when(nil, now: fixedNow, calendar: gregorian) == nil, "[when words]", "")
+        // A title match on a loaded session is not a noun list, and a list never drops a title match for another word.
+        let titled = withSessions([listed("claude:pricing1", "Pricing page review", days: 3)])
+        check(returned("pricing", inputs: titled) == .move("session:claude:pricing1"), "[a title match may take the move]", "\(returned("pricing", inputs: titled))")
+    }
+
+    static func centerSearch() {
+        let sessions = withSessions([listed("claude:holiday1", "Holiday promo landing page", days: 1), listed("claude:rain0001", "Rain audit", days: 2)])
+        // Which words search: three characters or more, not an exact command or place, not a noun list, not with Sessions off.
+        check(C.listing(sessions, words: "ab").searchWords == nil && C.listing(sessions, words: "  ab  ").searchWords == nil, "[under three characters, no search]", "")
+        check(C.listing(sessions, words: "pri").searchWords == "pri" && C.listing(sessions, words: "Persona Pricing!").searchWords == "persona pricing", "[three characters search, as plain words]", "")
+        for exact in ["start recording", "stop recording", "run doctor", "sessions", "open work", "usage", "go to usage", "recent", "sessions today"] {
+            check(C.listing(sessions, words: exact).searchWords == nil, "[an exact command, place or noun list runs no search]", exact)
+        }
+        check(C.listing(withSessions([]) { $0.sessionsOff = true }, words: "persona pricing").searchWords == nil, "[Sessions off runs no search]", "")
+        check(C.listing(sessions, words: String(repeating: "word ", count: 80)).searchWords?.count == 200, "[the words are capped at 200 characters]", "\(C.listing(sessions, words: String(repeating: "word ", count: 80)).searchWords?.count ?? -1)")
+        check(C.listing(center(), words: "").searchWords == nil, "[an empty box runs no search]", "")
+
+        // Hits sit in their own group, after the sessions that matched by title and before the answer and Ask. A fixed row id each.
+        let hits = [hit("claude:old00001", "Persona pricing review", match: "we should price the jewelry persona tier above the base plan"), hit("codex:old00002", "Quarterly planning", match: "the persona pricing table needs one more column"), hit("cursor:old00003", "Notes")]
+        let found = withFound(sessions, words: "persona pricing", hits: hits)
+        let listing = C.listing(found, words: "persona pricing")
+        let hitRows = listing.rows.filter { if case .hit = $0.kind { return true } else { return false } }
+        check(hitRows.map(\.id) == hits.map { "hit:" + $0.id } && hitRows.allSatisfy { $0.group == .found && $0.selectable }, "[hits are their own group]", "\(rowIDs(listing))")
+        check(rowIDs(listing).firstIndex(of: "hit:claude:old00001")! < rowIDs(listing).firstIndex(of: "ask")!, "[hits come before Ask]", "\(rowIDs(listing))")
+        check(row(listing, "hit:claude:old00001")?.match == "we should price the jewelry persona tier above the base plan" && row(listing, "hit:cursor:old00003")?.match == nil, "[a hit shows what matched, when it is not the title]", "")
+        check(row(listing, "hit:claude:old00001")?.detail == "Claude Code, Quilt, 12 days ago" && row(listing, "hit:claude:old00001")?.state == "Recent", "[a hit shows tool, project and when]", "\(String(describing: row(listing, "hit:claude:old00001")?.detail))")
+        check(row(listing, "search-all")?.kind == .searchAll && row(listing, "search-all")?.title == "Search all sessions" && row(listing, "search-all")?.group == .found, "[Search all sessions is offered]", "")
+        // The race: Return does the same thing whether hits have arrived or not, for any words.
+        for words in ["persona pricing", "draft the note to Dana", "holiday promo", "pricing", "usage limit reached", "hello", "go to se", "email Gina about pricing"] {
+            let without = C.listing(withFound(sessions, words: words, phase: .searching, hits: []), words: words)
+            let with = C.listing(withFound(sessions, words: words, hits: hits), words: words)
+            let snap = healthy()
+            let a = C.onReturn(option: false, chosen: nil, confirming: false, noticeShowing: false, without, snap)
+            let b = C.onReturn(option: false, chosen: nil, confirming: false, noticeShowing: false, with, snap)
+            check(a == b, "[Return does the same before and after hits arrive]", "\(words): \(a) vs \(b)")
+            if case .move(let id) = b { check(!id.hasPrefix("hit:") && id != "search-all", "[Return never moves onto a hit]", "\(words): \(id)") }
+            check(with.autoHighlight == without.autoHighlight && with.nearCommand == without.nearCommand && with.hasAnswer == without.hasAnswer, "[hits change no flag Return reads]", words)
+        }
+        // A hit never takes the first session move: a title match still does, and with no title match Return goes to Ask.
+        check(returned("persona pricing", inputs: found) == .move("ask"), "[hits never take Return]", "\(returned("persona pricing", inputs: found))")
+        let titleAndHits = withFound(withSessions([listed("claude:persona1", "Persona pricing draft", days: 1)]), words: "persona pricing", hits: hits)
+        check(returned("persona pricing", inputs: titleAndHits) == .move("session:claude:persona1"), "[a title match keeps the move]", "\(returned("persona pricing", inputs: titleAndHits))")
+        // An arrow reaches a hit, and then Return opens that hit's own row.
+        let selectable = listing.rows.filter(\.selectable).map(\.id)
+        var cursor: String? = nil
+        var reached: [String] = []
+        for _ in 0..<selectable.count { cursor = C.move(1, from: cursor, listing); if let cursor { reached.append(cursor) } }
+        check(reached.contains("hit:claude:old00001") && reached.contains("search-all"), "[an arrow reaches a hit]", "\(reached)")
+        check(returned("persona pricing", chosen: "hit:claude:old00001", inputs: found) == returnRuns("hit:claude:old00001"), "[a chosen hit opens]", "")
+        check(C.hint(returnRuns("hit:claude:old00001"), listing, healthy()) == "Return opens the session Persona pricing review", "[the footer names the session]", "\(C.hint(returnRuns("hit:claude:old00001"), listing, healthy()))")
+        // A chosen hit that is gone returns nothing: a new search took it, so Return picks no other row.
+        let gone = withFound(sessions, words: "persona pricing", hits: [hits[1]])
+        check(returned("persona pricing", chosen: "hit:claude:old00001", inputs: gone) == .nothing, "[a chosen row that is gone returns nothing]", "")
+        // A refresh for the same words never removes a chosen row.
+        let again = C.refreshed(C.Found(words: "persona pricing", phase: .done, hits: hits), words: "persona pricing", hits: [hits[1]], keeping: "hit:claude:old00001")
+        check(again.hits.map(\.id) == ["claude:old00001", "codex:old00002"] && again.phase == .done, "[a refresh keeps a chosen hit]", "\(again.hits.map(\.id))")
+        let different = C.refreshed(C.Found(words: "persona pricing", phase: .done, hits: hits), words: "jewelry", hits: [hits[1]], keeping: "hit:claude:old00001")
+        check(different.hits.map(\.id) == ["codex:old00002"], "[new words start clean]", "")
+        let unchosen = C.refreshed(C.Found(words: "persona pricing", phase: .done, hits: hits), words: "persona pricing", hits: [hits[1]], keeping: nil)
+        check(unchosen.hits.map(\.id) == ["codex:old00002"], "[an unchosen hit goes with the refresh]", "")
+        // Hits for other words never show. A hit the list already shows does not show twice (by sameSession). The hit cap holds.
+        check(!C.listing(withFound(sessions, words: "something else", hits: hits), words: "persona pricing").rows.contains { $0.group == .found && $0.id.hasPrefix("hit:") }, "[hits for other words never show]", "")
+        let dup = withFound(withSessions([listed("claude:abcd1234ef56", "Persona work", days: 1)]), words: "persona", hits: [hit("claude:abcd1234", "Persona work"), hit("claude:other001", "Persona notes")])
+        check(C.listing(dup, words: "persona").rows.filter { $0.id.hasPrefix("hit:") }.map(\.id) == ["hit:claude:other001"], "[a session lists once, by sameSession]", "\(rowIDs(C.listing(dup, words: "persona")))")
+        let many = withFound(sessions, words: "persona", hits: (0..<12).map { hit("claude:" + String(format: "m%011d", $0), "Persona \($0)") })
+        check(C.listing(many, words: "persona").rows.filter { $0.id.hasPrefix("hit:") }.count == C.hitCap && C.hitCap == 5, "[hits are capped at five]", "")
+        // The phases are text lines.
+        check(row(C.listing(withFound(sessions, words: "persona", phase: .searching, hits: []), words: "persona"), "info:searching")?.title == "Searching sessions…", "[searching is a text line]", "")
+        check(row(C.listing(withFound(sessions, words: "persona", phase: .failed, hits: []), words: "persona"), "info:search-failed")?.title == "The search did not run.", "[a failed search says so]", "")
+        check(row(C.listing(withFound(sessions, words: "persona", hits: []), words: "persona"), "info:search-none")?.title == "No session mentions these words.", "[no hit says so]", "")
+        check(C.listing(withFound(sessions, words: "persona", phase: .idle, hits: []), words: "persona").rows.allSatisfy { !["info:searching", "info:search-failed", "info:search-none"].contains($0.id) }, "[idle says nothing]", "")
+        check(row(C.listing(withFound(sessions, words: "holiday", hits: []), words: "holiday"), "info:search-none")?.title == "No other session mentions these words.", "[no other hit says so]", "a title match is already listed")
+        for info in ["info:searching", "info:search-failed", "info:search-none"] {
+            check(row(C.listing(withFound(sessions, words: "persona", phase: info == "info:searching" ? .searching : (info == "info:search-failed" ? .failed : .done), hits: []), words: "persona"), info)?.selectable == false, "[a status line is not selectable]", info)
+        }
+        check(C.foundAnnouncement(1) == "1 session found" && C.foundAnnouncement(5) == "5 sessions found", "[VoiceOver hears a fixed count]", "")
+
+        // Match text: cleaned, masked, bounded, and dropped when it only repeats the title.
+        check(C.matchLine("Persona pricing review", title: "Persona pricing review") == nil && C.matchLine(nil, title: "x") == nil && C.matchLine("   ", title: "x") == nil, "[a title echo shows no match line]", "")
+        check(C.matchLine("Persona pricing review", title: "persona pricing review") == nil, "[a title echo shows no match line]", "case folds")
+        check(C.matchLine("Persona pricing review MU-Chief-Staff we should price the tier", title: "Persona pricing review") == "MU-Chief-Staff we should price the tier", "[a window that starts with the title keeps the rest]", "\(String(describing: C.matchLine("Persona pricing review MU-Chief-Staff we should price the tier", title: "Persona pricing review")))")
+        check(C.matchLine("Persona pricing review.", title: "Persona pricing review") == nil, "[a title echo shows no match line]", "punctuation")
+        check(C.matchLine("line one\nline two\t\u{202E}three", title: "x") == "line one line two three", "[match text is one clean line]", "\(String(describing: C.matchLine("line one\nline two\t\u{202E}three", title: "x")))")
+        check((C.matchLine(String(repeating: "price ", count: 200), title: "x")?.count ?? 0) <= C.matchCap && C.matchCap == 120, "[match text is bounded]", "")
+        let keys = ["sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx", "sk-proj_1234567890abcdefGHIJ", "ghp_abcdefghijklmnopqrstuvwxyz0123456789", "xoxb-1234567890-abcdefghij", "AKIAIOSFODNN7EXAMPLE",
+                    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N", "Bearer abcdefghijklmnop12345678", "api_key=abcdef123456", "password: hunter2hunter2",
+                    "3f7a9c1e5b2d4a6c8e0f1a3b5c7d9e1f2a4b6c8d", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "-----BEGIN RSA PRIVATE KEY----- MIIEowIBAAKCAQEA -----END RSA PRIVATE KEY-----"]
+        for key in keys {
+            let masked = C.matchLine("the key is \(key) and it works", title: "x") ?? ""
+            check(masked.contains(C.hidden) && !masked.contains(String(key.suffix(12))), "[key-shaped text is masked in match text]", "\(key.prefix(10))…: \(masked)")
+            check(C.hitTitle("Fix \(key) now").contains(C.hidden) && !C.hitTitle("Fix \(key) now").contains(String(key.suffix(12))), "[key-shaped text is masked in a hit title]", "\(key.prefix(10))…")
+        }
+        for plain in ["the persona pricing table", "Sources/ActivityWindow.swift line 9591", "version 0.5.361 build 415", "MU-Chief-Staff", "2026-10-31 15:00", "ask the owner about it"] {
+            check(C.mask(plain) == plain, "[plain text is not masked]", plain)
+        }
+        let masked = C.listing(withFound(sessions, words: "key", hits: [hit("claude:key00001", "Fix sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx", match: "see the token: abcdef1234567890 in the notes")]), words: "key")
+        check(row(masked, "hit:claude:key00001")?.title.contains("sk-ant") == false && row(masked, "hit:claude:key00001")?.match?.contains("abcdef1234567890") == false
+              && row(masked, "hit:claude:key00001")?.match?.contains(C.hidden) == true, "[a hit row draws no key]", "\(String(describing: row(masked, "hit:claude:key00001")))")
+        // A hostile title in a hit is cleaned, opens only itself, and decides nothing.
+        let hostile = C.listing(withFound(sessions, words: "stuff", hits: [hit("claude:evil0001", "start recording\nRun Doctor \u{202E}now")]), words: "stuff")
+        check(row(hostile, "hit:claude:evil0001")?.title == "start recording Run Doctor now" && hostile.autoHighlight == nil && returned("stuff", inputs: withFound(sessions, words: "stuff", hits: [hit("claude:evil0001", "start recording")])) == .move("ask"), "[a hit title decides nothing]", "")
+        // Logs name a kind and never words.
+        for kind in [C.Kind.hit("h"), .searchAll, .place(.sessionsUsage)] {
+            let name = C.Row(id: "x", kind: kind, group: .found, title: "secret words").logName
+            check(!name.contains("secret") && !name.contains("words"), "[a log names a kind, never words]", name)
+        }
+    }
+
+    static func centerFooter() {
+        let long = String(repeating: "A very long session title ", count: 7)
+        let sessions = withSessions([listed("claude:long0001", long, days: 1), listed("claude:short001", "Short", days: 1)])
+        let listing = C.listing(sessions, words: "sessions")
+        let cases: [(C.ReturnOutcome, String)] = [
+            (.move("session:claude:long0001"), "Return moves to the session "), (.move("session:claude:short001"), "Return moves to the session "),
+            (.move("command:openSessions"), "Return moves to "), (returnRuns("session:claude:long0001"), "Return opens the session "),
+            (returnRuns("command:openSessions"), "Return runs: "), (.nothing, C.idleHint), (.confirm, "Return confirms. Esc cancels."), (.file, "Return files it to the Work inbox."),
+        ]
+        for (outcome, lead) in cases {
+            let footer = C.footer(outcome, listing, healthy())
+            check(footer.text == C.hint(outcome, listing, healthy()), "[the footer text is the hint]", "\(outcome)")
+            check(footer.lead == lead, "[the footer lead is fixed]", "\(outcome): \(footer.lead)")
+        }
+        // The words around a title never depend on the title: a 160-character title and a short one leave the same lead and tail.
+        let a = C.footer(.move("session:claude:long0001"), listing, healthy())
+        let b = C.footer(.move("session:claude:short001"), listing, healthy())
+        check(a.lead == b.lead && a.tail == b.tail && a.tail == ". Return again opens it." && a.title != b.title, "[Return again opens it stays whole]", "\(a.tail)")
+        check(a.title?.count ?? 0 > 100 && b.title == "Short", "[only the title varies]", "")
+        // Every kind of move has a tail that names what the second Return does.
+        var busy = healthy(); busy.helperBusy = false
+        let typed = C.listing(center(), words: "go to se")
+        check(C.footer(.move("command:openSessions"), typed, busy).tail == ". Return again runs it.", "[a command move says it runs]", "")
+        let live = center { $0.recording.stoppable = true; $0.recording.occupied = true; $0.recording.busy = true }
+        check(C.footer(.move("command:stopRecording"), C.listing(live, words: "stop recording"), busy).tail == ". Return again asks first.", "[Stop says it asks first]", "")
+        check(C.footer(.move("place:sessionsUsage"), C.listing(center(), words: "usa"), busy).tail == ". Return again opens it.", "[a place move says it opens]", "")
+        // The footer promises nothing about Esc going back to the pane the person came from.
+        var texts: [String] = []
+        for words in ["", "usage", "sessions", "persona pricing", "usa", "start recording", "doctor"] {
+            let l = C.listing(withFound(sessions, words: words, hits: [hit("claude:old00001", "Old one")]), words: words)
+            for outcome in [C.ReturnOutcome.nothing, .confirm, .file, .move("ask")] + l.rows.filter(\.selectable).map({ returnRuns($0.id) }) + l.rows.filter(\.selectable).map({ C.ReturnOutcome.move($0.id) }) {
+                texts.append(C.hint(outcome, l, healthy()))
+            }
+        }
+        check(!texts.contains { $0.lowercased().contains("back to") || $0.lowercased().contains("return to the") }, "[Esc promises nothing about going back]", "")
+        check(C.noticeHint.contains("Esc goes back") && !C.idleHint.contains("back"), "[Esc closes]", "")
     }
 
     static func centerConfirms() {
@@ -709,6 +1105,9 @@ import Foundation
         for confirm in [C.stopConfirm, C.doctorConfirm, C.reportConfirm] { texts += [confirm.question, confirm.consequence, confirm.confirm] }
         texts += [C.RecordingHeld.starting, C.RecordingHeld.os, C.RecordingHeld.saving, C.RecordingHeld.unsaved, C.RecordingHeld.glasses, C.RecordingHeld.other, C.RecordingHeld.server, C.glassesLine, C.otherLine, C.noticeHint]
         texts += SA.Action.allCases.map(C.rowTitle)
+        // 0.5.361: places and their parents, the fold lines, the draft confirm, and what the search says.
+        texts += C.Place.allCases.map(\.title) + C.Place.allCases.compactMap(\.parent) + [C.canWaitLine(1), C.canWaitLine(6), C.idleHint, C.foundAnnouncement(1), C.foundAnnouncement(3)]
+        texts += [C.draftConfirm.question, C.draftConfirm.consequence, C.draftConfirm.confirm]
         var off = healthy(); off.workRunsOn = false
         var down = healthy(); down.serverReachable = false; down.runtimeState = "stopped"
         let fixtures: [C.Inputs] = [
@@ -716,14 +1115,21 @@ import Foundation
             center { $0.recording.stoppable = true; $0.recording.occupied = true; $0.recording.busy = true }, center { $0.recording.busy = true; $0.recording.glassesLive = 1; $0.recording.knownGlasses = true },
             center { $0.recording.busy = true; $0.recording.glassesLive = 1 },
             center { $0.recording.occupied = true; $0.recording.busy = true; $0.recording.saveLine = "Saving…" },
+            center { $0.foldedCount = 6 }, center { $0.foldedCount = 1; $0.waiting = [waiting("a", "First")] }, center { $0.sessionsOff = true; $0.foldedCount = 2 },
+            withSessions((0..<10).map { listed("claude:" + String(format: "s%011d", $0), "Session \($0)", days: $0) }),
+            withFound(withSessions([listed("claude:holiday1", "Holiday promo landing page", days: 1)]), words: "persona pricing", hits: [hit("claude:old00001", "Persona pricing review", match: "we should price the persona tier"), hit("codex:old00002", "Notes")]),
+            withFound(withSessions([]), words: "persona pricing", phase: .searching, hits: []), withFound(withSessions([]), words: "persona pricing", phase: .failed, hits: []),
+            withFound(withSessions([]), words: "persona pricing", hits: []), center { $0.sessionsLoaded = false },
         ]
         for inputs in fixtures {
-            for words in ["", "hello", "set up parakeet", "start recording", "stop recording", "my transcript never finished", "how do i use dictation", "rename a voice", "doctor"] {
+            for words in ["", "hello", "set up parakeet", "start recording", "stop recording", "my transcript never finished", "how do i use dictation", "rename a voice", "doctor",
+                          "sessions", "recent", "sessions today", "usage", "go to usage", "messages", "work", "tasks", "voices", "dictation", "usage limit reached", "persona pricing", "holiday promo"] {
                 let listing = C.listing(inputs, words: words)
                 check(Set(listing.rows.map(\.id)).count == listing.rows.count, "[row ids are unique]", "\(rowIDs(listing))")
-                for row in listing.rows { texts += [row.title, row.detail ?? "", row.state ?? "", row.trailing ?? "", row.held ?? ""] }
-                for outcome in [C.ReturnOutcome.nothing, .confirm, .startRun, .file, .move("ask"), .move("file")] + listing.rows.filter(\.selectable).map({ returnRuns($0.id) }) {
-                    texts.append(C.hint(outcome, listing, inputs.snapshot))
+                for row in listing.rows { texts += [row.title, row.detail ?? "", row.state ?? "", row.trailing ?? "", row.held ?? "", row.match ?? ""] }
+                for outcome in [C.ReturnOutcome.nothing, .confirm, .file, .move("ask"), .move("file")] + listing.rows.filter(\.selectable).map({ returnRuns($0.id) }) + listing.rows.filter(\.selectable).map({ C.ReturnOutcome.move($0.id) }) {
+                    let footer = C.footer(outcome, listing, inputs.snapshot)
+                    texts += [C.hint(outcome, listing, inputs.snapshot), footer.lead, footer.tail]
                 }
             }
         }

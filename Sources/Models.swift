@@ -14422,6 +14422,9 @@ enum TodayHome {
 
     struct Counts: Equatable {
         var needs = 0
+        /// How many of `needs` the quiet-hours fold moved to tomorrow (TodayHome.fold). The window sets it, because only it knows the
+        /// time; the headline reads it so it agrees with ⌘K, which folds too. A session question never folds.
+        var folded = 0
         var running = 0
         var sessionsWaiting = 0
         var agentsWorking = 0
@@ -14639,8 +14642,12 @@ enum TodayHome {
         var first: String?
         if c.sessionsWaiting > 0 {
             first = number(c.sessionsWaiting, capital: true) + (c.sessionsWaiting == 1 ? " session is waiting on you" : " sessions are waiting on you")
-        } else if c.needs > 0 {
-            first = number(c.needs, capital: true) + (c.needs == 1 ? " thing needs you" : " things need you") + (c.settled ? "" : " so far")
+        } else if c.needs - c.folded > 0 {
+            let now = c.needs - c.folded
+            first = number(now, capital: true) + (now == 1 ? " thing needs you" : " things need you") + (c.settled ? "" : " so far")
+        } else if c.folded > 0 {
+            // Everything that is left can wait. The same count and words as ⌘K (SetupAssistant.Center.canWaitLine), not "needs you".
+            first = number(c.folded, capital: true) + (c.folded == 1 ? " thing can wait until tomorrow" : " things can wait until tomorrow") + (c.settled ? "" : " so far")
         } else if c.settled {
             first = "Nothing is waiting on you"
         }
@@ -14659,7 +14666,7 @@ enum TodayHome {
         var sentences: [String] = []
         if let first { sentences.append(first + ".") }
         if !parts.isEmpty { let second = list(parts); sentences.append(second.prefix(1).uppercased() + second.dropFirst() + ".") }
-        if !c.settled && c.needs == 0 {
+        if !c.settled && c.needs == 0 && c.folded == 0 {
             sentences.append(c.failedSources.isEmpty ? "Still reading what needs you."
                              : "Couldn't read " + list(c.failedSources.map(\.name)) + ", so this may not be everything.")
         }

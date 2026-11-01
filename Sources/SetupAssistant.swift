@@ -9,9 +9,11 @@ import Foundation
 // HARD RULES
 //   1. Local first. Every suggestion comes from a Snapshot of state COS Control already holds. No model call, no network,
 //      no shell, so it answers when the server is down, which is when people need it most.
-//   2. Actions and Center.Command are closed enums. Each maps to an existing helper command (HelperSources/main.swift, the
-//      command switch) or an existing opener in the app. Text a person types picks a knowledge-base entry or a command by
-//      keyword and never becomes a command or an argument.
+//   2. Actions, Center.Command and Center.Place are closed enums. Each maps to an existing helper command (HelperSources/main.swift,
+//      the command switch) or an existing opener in the app. Text a person types picks a knowledge-base entry, a command or a
+//      place by keyword and never becomes a command or an argument. One stated exception (0.5.361): the words of the local
+//      session search go to the helper's stdin, never its arguments, for the one fixed verb `claude-sessions-search --local`,
+//      which reads this Mac's own session files, calls no server and sends nothing off the Mac.
 //   3. A change is confirmed inline first, with one consequence line read from the code that runs it. The restart gates
 //      COS Control already has hold here too (a job, a recording, a meeting still saving, an ownership conflict, an
 //      interrupted update). There is no force path. Doctor changes nothing but spends a real question, so the panel
@@ -21,6 +23,10 @@ import Foundation
 //      changing anything. "Ask COS" is the same run without Doctor.
 //   5. Session titles are untrusted. They are cleaned to one line, drawn verbatim, only open their own session, are never
 //      matched for dispatch and never go into a prompt.
+//   6. Match text (0.5.361) is a line from inside a session that the local search found. It is held to rule 5, masked when it
+//      looks like a key, shown on its row only and never decides anything. A hit sits in its own group: Return never moves
+//      onto one and never runs one. It is reached by an arrow or a click. This is the one stated exception to "a question's
+//      words never reach the panel": the panel shows what a session said, and nothing else from a question.
 //
 // Imports Foundation only and needs no other source file: Tests/run-setup-assistant.sh compiles it alone with
 // Tests/SetupAssistantChecks.swift. Everything lives inside `enum SetupAssistant`, so it cannot collide with app types.
@@ -101,6 +107,9 @@ enum SetupAssistant {
         var microphoneAllowed: Bool?
         /// Settings > Activity: Start Work runs from Today (TodayHome.workRunsOn).
         var workRunsOn = false
+        /// A message typed into an open session and not sent (ControllerModel.chatDraft). Going anywhere else clears it, so a
+        /// place row asks first.
+        var unsentSessionDraft = false
 
         init() {}
     }
@@ -892,7 +901,7 @@ enum SetupAssistant {
                     return ["stop recording", "stop a recording", "stop the recording", "stop and save", "stop mac recording", "end recording", "save recording"]
                 case .openSessions: return opener("sessions")
                 case .openMeetings: return opener("meetings")
-                case .openWork: return opener("work")
+                case .openWork: return opener("work") + opener("tasks")
                 case .openSpeakers: return opener("speakers") + opener("voices")
                 case .openDictation: return opener("dictation")
                 case .openMemories: return opener("memories")
@@ -911,19 +920,300 @@ enum SetupAssistant {
             }
         }
 
+        // MARK: Places
+
+        /// A pane or a tab the panel can go to (Miles, 2026-10-31: "the tabs that are available for each of those panes would be
+        /// surfaced and I'd be able to navigate to them"). Closed, local and instant: no model, no network. Separate from
+        /// `Command`, which keeps its openers. Where a pane has an Open command (Sessions, Meetings, Work, Speakers, Dictation,
+        /// Memories, Settings) that command is the pane's row and only its tabs are places; Today, Messages and Threads have no
+        /// command, so they are places. The window runs one with `commandGo`, a switch with no default. Not in 0.5.361: the Settings
+        /// hub groups (the hub has its own search), the Dictation settings sections, Work's layout (it needs a new setter) and the
+        /// Memories tabs (they are a web view that reads its view once, when it is made).
+        enum Place: String, CaseIterable, Sendable {
+            case today, messages, threads
+            case messagesRecent, messagesArchive
+            case speakersMeetings, speakersSamples, speakersVoices
+            case sessionsUsage, sessionsCost
+            case workAll, workNeeds, workProgress, workCompleted
+            case dictationHistory, dictationDictionary, dictationSettings
+
+            var title: String {
+                switch self {
+                case .today: return "Open Today"
+                case .messages: return "Open Messages"
+                case .threads: return "Open Threads"
+                case .messagesRecent: return "Recent"
+                case .messagesArchive: return "Archive"
+                case .speakersMeetings: return "Meetings to review"
+                case .speakersSamples: return "Samples to review"
+                case .speakersVoices: return "Voices"
+                case .sessionsUsage: return "Usage"
+                case .sessionsCost: return "COS cost"
+                case .workAll: return "All work"
+                case .workNeeds: return "Needs attention"
+                case .workProgress: return "In progress"
+                case .workCompleted: return "Completed"
+                case .dictationHistory: return "History"
+                case .dictationDictionary: return "Dictionary"
+                case .dictationSettings: return "Dictation settings"
+                }
+            }
+
+            /// The pane a tab lives in. Nil for a pane.
+            var parent: String? {
+                switch self {
+                case .today, .messages, .threads: return nil
+                case .messagesRecent, .messagesArchive: return "Messages"
+                case .speakersMeetings, .speakersSamples, .speakersVoices: return "Speakers"
+                case .sessionsUsage, .sessionsCost: return "Sessions"
+                case .workAll, .workNeeds, .workProgress, .workCompleted: return "Work"
+                case .dictationHistory, .dictationDictionary, .dictationSettings: return "Dictation"
+                }
+            }
+
+            /// The words that name it. "open", "go to" and "show" are added when the words are read, not stored.
+            var names: [String] {
+                switch self {
+                case .today: return ["today", "home"]
+                case .messages: return ["messages"]
+                case .threads: return ["threads"]
+                case .messagesRecent: return ["messages recent", "recent messages"]
+                case .messagesArchive: return ["archive", "messages archive"]
+                case .speakersMeetings: return ["meetings to review", "speakers meetings", "speaker meetings"]
+                case .speakersSamples: return ["samples to review", "voice samples", "speakers samples"]
+                case .speakersVoices: return ["voices", "speakers voices", "voice directory"]
+                case .sessionsUsage: return ["usage", "session usage", "sessions usage", "token usage"]
+                case .sessionsCost: return ["cos cost", "sessions cost", "cost"]
+                case .workAll: return ["all work", "work all"]
+                case .workNeeds: return ["needs attention", "work needs attention"]
+                case .workProgress: return ["in progress", "work in progress"]
+                case .workCompleted: return ["completed", "work completed"]
+                case .dictationHistory: return ["dictation history", "history"]
+                case .dictationDictionary: return ["dictionary", "dictation dictionary"]
+                case .dictationSettings: return ["dictation settings"]
+                }
+            }
+        }
+
+        /// Every phrase the noun list answers to, for the check that enumerates every exact name.
+        static var nounPhrases: [String] { nounForms.keys.sorted() }
+
+        /// Names that two kinds of row both answer to, and who wins. Commands first, then panes, then tabs. "voices" is the
+        /// Speakers opener and the Voices tab: the opener runs, and the tab is listed under it. "sessions" is the Sessions opener
+        /// and the noun list: the opener runs, and the sessions are listed under it. A new shared name fails a check until it is
+        /// declared here.
+        static let sharedNames: [String: String] = ["voices": "command:openSpeakers", "sessions": "command:openSessions"]
+
+        /// Each place's names, normalized once. The panel builds a listing several times a keystroke, and `normalized` builds a Locale.
+        private static let placeNames: [Place: [String]] = Dictionary(uniqueKeysWithValues: Place.allCases.map { place in (place, place.names.map(plain)) })
+
+        private static let openerVerbs = ["open ", "go to ", "show "]
+
+        /// How a place matches the words, as `commandRank` does for a command: 0 is a whole name ("usage", "go to usage"), 1 the start
+        /// of a name (three letters or more, so "us" reaches nothing), 2 a name that begins a longer sentence ("usage limit reached")
+        /// or a question. A 2 is listed and Return passes over it. Nil: no match. `typed` is `plain(words)`.
+        static func placeRank(_ place: Place, _ typed: String, question: Bool) -> Int? {
+            var core = typed
+            for verb in openerVerbs where typed.hasPrefix(verb) && typed.count > verb.count {
+                core = String(typed.dropFirst(verb.count))
+                break
+            }
+            guard !core.isEmpty, let names = placeNames[place] else { return nil }
+            if names.contains(core) { return question ? 2 : 0 }
+            guard core.count >= 3 else { return nil }
+            if names.contains(where: { $0.hasPrefix(core) || $0.split(separator: " ").contains { $0.hasPrefix(core) } }) { return 1 }
+            if names.contains(where: { core.hasPrefix($0 + " ") }) { return 2 }
+            return nil
+        }
+
+        // MARK: The noun list
+
+        /// How far back "sessions today" reads.
+        enum Span: Sendable { case all, today, yesterday, week }
+
+        /// "session", "sessions", "recent" and "running" list sessions (Miles: searching "sessions" should "pull up all of my existing
+        /// sessions"), alone or with a day. A closed set of whole phrases: a sentence that holds one of these words is not a list.
+        private static let nounForms: [String: Span] = {
+            var out: [String: Span] = [:]
+            let days: [(String, Span)] = [("today", .today), ("from today", .today), ("yesterday", .yesterday), ("from yesterday", .yesterday),
+                                          ("this week", .week), ("from this week", .week)]
+            for noun in ["session", "sessions", "recent", "running", "recent sessions", "running sessions", "my sessions", "all sessions"] {
+                out[noun] = .all
+                for (suffix, span) in days { out[noun + " " + suffix] = span }
+            }
+            return out
+        }()
+
+        /// The list these words ask for, or nil. `typed` is `plain(words)`. A question mark is a question, never a list.
+        static func nounSpan(_ typed: String, question: Bool) -> Span? { question ? nil : nounForms[typed] }
+
+        static func inSpan(_ date: Date?, _ span: Span, now: Date, calendar: Calendar) -> Bool {
+            switch span {
+            case .all: return true
+            case .today: return date.map { calendar.isDate($0, inSameDayAs: now) } ?? false
+            case .yesterday:
+                guard let date, let day = calendar.date(byAdding: .day, value: -1, to: now) else { return false }
+                return calendar.isDate(date, inSameDayAs: day)
+            case .week:
+                guard let date, let week = calendar.dateInterval(of: .weekOfYear, for: now) else { return false }
+                return week.contains(date)
+            }
+        }
+
+        static func spanWords(_ span: Span) -> String {
+            switch span {
+            case .all: return ""
+            case .today: return "today"
+            case .yesterday: return "yesterday"
+            case .week: return "this week"
+            }
+        }
+
+        /// "today", "yesterday", "5 days ago". Nil with no date.
+        static func when(_ date: Date?, now: Date, calendar: Calendar) -> String? {
+            guard let date else { return nil }
+            let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: now)).day ?? 0
+            if days <= 0 { return "today" }
+            if days == 1 { return "yesterday" }
+            if days < 14 { return "\(days) days ago" }
+            if days < 60 { return "\(days / 7) weeks ago" }
+            return "\(days / 30) months ago"
+        }
+
+        // MARK: One session, listed once
+
+        /// Two `provider:native` ids name one session when the provider matches and the native ids are equal, or one is the first 8 or
+        /// more characters of the other (the live list gives a Claude session by its first 8). The same rule as
+        /// `ClaudeSession.sameSession` (Sources/Models.swift), which this file cannot import; Tests/setup-assistant-pins.py holds the
+        /// two bodies equal.
+        static func sameSession(_ a: String, _ b: String) -> Bool {
+            let x = a.split(separator: ":", maxSplits: 1).map { String($0).lowercased() }
+            let y = b.split(separator: ":", maxSplits: 1).map { String($0).lowercased() }
+            guard x.count == 2, y.count == 2, x[0] == y[0], !x[1].isEmpty, !y[1].isEmpty else { return false }
+            if x[1] == y[1] { return true }
+            let (short, long) = x[1].count <= y[1].count ? (x[1], y[1]) : (y[1], x[1])
+            return short.count >= 8 && long.hasPrefix(short)
+        }
+
+        /// The same session, or the same row id with no provider in it (a Today row id is not always `provider:native`).
+        static func sameListed(_ a: String, _ b: String) -> Bool { a == b || sameSession(a, b) }
+
+        /// Ids that can be the same session share this key, so a list of hundreds merges in one pass.
+        private static func sessionKey(_ id: String) -> String {
+            let parts = id.split(separator: ":", maxSplits: 1).map { String($0).lowercased() }
+            guard parts.count == 2, !parts[1].isEmpty else { return id.lowercased() }
+            return parts[0] + ":" + String(parts[1].prefix(8))
+        }
+
+        /// The loaded list and the live rows as one list: a session in both lists once (the live row wins and takes the list's date
+        /// when it has none), warm-ups gone, newest first, undated last. With the pet on the live rows are all `todaySessions` has,
+        /// so a list built from them alone had no "recent" in it.
+        static func merged(live: [Item], listed: [Item]) -> [Item] {
+            var out: [Item] = []
+            var byKey: [String: [Int]] = [:]
+            for item in live + listed where !item.keepWarm {
+                if let id = item.sessionID {
+                    let key = sessionKey(id)
+                    if let at = byKey[key]?.first(where: { out[$0].sessionID.map { sameListed($0, id) } ?? false }) {
+                        if out[at].date == nil { out[at].date = item.date }
+                        continue
+                    }
+                    byKey[key, default: []].append(out.count)
+                }
+                out.append(item)
+            }
+            return out.enumerated().sorted { a, b in
+                switch (a.element.date, b.element.date) {
+                case let (x?, y?): return x != y ? x > y : a.offset < b.offset
+                case (_?, nil): return true
+                case (nil, _?): return false
+                case (nil, nil): return a.offset < b.offset
+                }
+            }.map(\.element)
+        }
+
+        // MARK: Word search
+
+        enum SearchPhase: Sendable { case idle, searching, done, failed }
+
+        /// What the local word search found for one set of words. The panel owns the search (its words, its debounce, its one run at a
+        /// time); the core only draws the result, and only for the words that are in the box now.
+        struct Found: Equatable, Sendable {
+            /// `plain(words)` these hits are for.
+            var words = ""
+            var phase = SearchPhase.idle
+            var hits: [Item] = []
+        }
+
+        /// A search for the same words that finishes again never takes away a hit the person has already chosen with a key.
+        static func refreshed(_ old: Found, words: String, hits: [Item], keeping chosen: String?) -> Found {
+            var kept = hits
+            if old.words == words, let chosen, let gone = old.hits.first(where: { "hit:" + $0.id == chosen }), !kept.contains(where: { $0.id == gone.id }) {
+                kept.insert(gone, at: 0)
+            }
+            return Found(words: words, phase: .done, hits: kept)
+        }
+
+        /// What VoiceOver hears when hits arrive: fixed words and a count, never what a session said.
+        static func foundAnnouncement(_ count: Int) -> String { count == 1 ? "1 session found" : "\(count) sessions found" }
+
+        static let hidden = "[hidden]"
+        static let matchCap = 120
+
+        /// Text that looks like a key, a token or a secret, replaced by shape (not by a list of known secrets).
+        private static let keyShapes = [
+            #"\b(?:sk|pk|rk|sess)[-_][A-Za-z0-9_\-]{16,}"#,
+            #"\bgh[pousr]_[A-Za-z0-9]{16,}|\bgithub_pat_[A-Za-z0-9_]{16,}"#,
+            #"\bxox[abprs]-[A-Za-z0-9\-]{10,}"#,
+            #"\b(?:AKIA|ASIA)[0-9A-Z]{12,}"#,
+            #"\beyJ[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}"#,
+            #"(?i)\bbearer\s+[A-Za-z0-9._~+/\-]{16,}=*"#,
+            #"-----BEGIN [A-Z ]*PRIVATE KEY-----[^-]*(?:-----END [A-Z ]*PRIVATE KEY-----)?"#,
+            #"(?i)\b(?:api[_-]?key|token|secret|password|passwd)\s*[:=]\s*\S{6,}"#,
+            #"(?<![A-Za-z0-9_\-])(?=[A-Za-z0-9_\-]*[A-Za-z])(?=[A-Za-z0-9_\-]*[0-9])[A-Za-z0-9_\-]{32,}(?![A-Za-z0-9_\-])"#,
+        ]
+
+        static func mask(_ text: String) -> String {
+            keyShapes.reduce(text) { $0.replacingOccurrences(of: $1, with: hidden, options: .regularExpression) }
+        }
+
+        /// A hit's title: one line like every title, and masked.
+        static func hitTitle(_ title: String) -> String { mask(clean(title)) }
+
+        /// The line a hit shows under its title, or nil. Cleaned like a title, masked, bounded, and dropped when all it says is the title
+        /// again (the helper's window can begin with the title itself). Match text only draws; it decides nothing.
+        static func matchLine(_ snippet: String?, title: String) -> String? {
+            guard let snippet else { return nil }
+            var text = mask(clean(snippet))
+            let own = hitTitle(title)
+            if !own.isEmpty, let range = text.range(of: own, options: [.caseInsensitive, .anchored]) {
+                text = String(text[range.upperBound...]).trimmingCharacters(in: CharacterSet.whitespaces.union(.punctuationCharacters))
+            }
+            let said = plain(text)
+            let named = plain(own)
+            if said.count < 4 || said == named || named.contains(said) { return nil }
+            return String(text.prefix(matchCap))
+        }
+
         // MARK: Rows
 
         enum Kind: Equatable, Sendable {
             /// Opens by id: the window looks the row up again at open, so a session that went away never opens stale.
             case recording(String), waiting(String), running(String), session(String)
             case command(Command), action(Action)
+            /// A pane or a tab (Place). It opens by a closed switch in the window, like a command.
+            case place(Place)
+            /// A word-search hit. The panel keeps the hit's own session and opens that object, so a session older than the list opens too.
+            case hit(String)
+            /// Opens Sessions with the words in its search box, for anything older than the local search reaches.
+            case searchAll
             case ask, file
             /// Words only: the saved answer, and lines like "Nothing is running."
             case savedAnswer, info
         }
 
         /// What a row is. A rule between groups is the only section marking.
-        enum Group: Int, Sendable { case recording, waiting, running, doing, fixing, commands, sessions, answer, asking }
+        enum Group: Int, Sendable { case recording, waiting, running, doing, fixing, commands, places, sessions, found, answer, asking }
 
         struct Row: Identifiable, Equatable, Sendable {
             var id: String
@@ -937,6 +1227,8 @@ enum SetupAssistant {
             var trailing: String? = nil
             /// Why it waits. A held row has no action.
             var held: String? = nil
+            /// The line the local search matched, for a hit. Not named `why`: that word is banned in the view half.
+            var match: String? = nil
 
             var selectable: Bool {
                 switch kind {
@@ -953,6 +1245,9 @@ enum SetupAssistant {
                 case .session: return "session"
                 case .command(let command): return "command." + command.rawValue
                 case .action(let action): return "action." + action.rawValue
+                case .place(let place): return "place." + place.rawValue
+                case .hit: return "hit"
+                case .searchAll: return "search"
                 case .ask: return "ask"
                 case .file: return "file"
                 case .savedAnswer: return "answer"
@@ -972,6 +1267,12 @@ enum SetupAssistant {
             /// The session behind the row, so one session lists once.
             var sessionID: String? = nil
             var state: String? = nil
+            /// When it last moved: newest first in the noun list, and what "sessions today" reads.
+            var date: Date? = nil
+            /// A warm-up the app keeps open. Never listed.
+            var keepWarm = false
+            /// The text the local search matched. Cleaned, masked and shortened where the row is made.
+            var match: String? = nil
         }
 
         /// One live recording, for the rows above everything else. Stop and save reaches only this Mac's own capture.
@@ -1014,12 +1315,20 @@ enum SetupAssistant {
             var waiting: [Item] = []
             /// False while the overview has not loaded: "not loaded", never "nothing waiting".
             var waitingKnown = false
-            /// "For tomorrow: N more things", from the fold.
-            var foldedLine: String? = nil
+            /// How many things the quiet-hours fold moved to tomorrow. Today's headline reads the same count.
+            var foldedCount = 0
             var running: [Item] = []
             var runningKnown = false
-            /// Listed sessions, searched by title only once words are typed.
+            /// Listed sessions: the loaded list and the live rows merged (`merged`), newest first. Searched by title once words are
+            /// typed, and listed whole by the noun list.
             var sessions: [Item] = []
+            /// The session list answered. Until then the noun list says "not loaded yet", never "no sessions".
+            var sessionsLoaded = false
+            /// For "today", "yesterday" and "3 days ago". The tests set both.
+            var now = Date(timeIntervalSince1970: 0)
+            var calendar = Calendar(identifier: .gregorian)
+            /// What the word search found so far for the words in the box. The panel owns the search; this is only its result.
+            var found = Found()
             /// Settings: session tracking is off, so waiting and running sessions cannot show.
             var sessionsOff = false
             var recording = Recording()
@@ -1031,7 +1340,13 @@ enum SetupAssistant {
         static let runningCap = 3
         static let fixCap = 2
         static let commandCap = 4
+        /// Tabs under one pane name: "work" lists its four.
+        static let placeCap = 6
         static let sessionCap = 5
+        /// The noun list shows this many, then "N more in Sessions".
+        static let nounCap = 8
+        /// Word-search hits shown at once.
+        static let hitCap = 5
         static let titleCap = 160
 
         /// One line, control and direction characters gone, whitespace collapsed, bounded. Session titles come from outside
@@ -1150,6 +1465,11 @@ enum SetupAssistant {
             return out
         }
 
+        /// "6 things can wait until tomorrow". Today's headline (TodayHome.brief) reads the same count in the same words.
+        static func canWaitLine(_ count: Int) -> String {
+            count == 1 ? "1 thing can wait until tomorrow" : "\(count) things can wait until tomorrow"
+        }
+
         /// An empty box: what waits, what runs, what to do, and what is broken.
         private static func emptyRows(_ inputs: Inputs) -> [Row] {
             let s = inputs.snapshot
@@ -1162,9 +1482,17 @@ enum SetupAssistant {
                 rows.append(info("more-waiting", .waiting, more == 1 ? "1 more is waiting on you." : "\(more) more are waiting on you."))
             }
             if waiting.isEmpty {
-                // Session tracking off: sessions cannot be seen, so this cannot say nothing is waiting.
-                rows.append(inputs.waitingKnown ? info("no-waiting", .waiting, inputs.sessionsOff ? "Nothing else is waiting on you." : "Nothing is waiting on you.", detail: inputs.foldedLine)
-                                                : info("waiting-unknown", .waiting, "Waiting on you: not loaded yet."))
+                // The same words as Today's headline. Everything folded to tomorrow reads as that count; nothing at all reads as
+                // "urgent", never "waiting": with session tracking off, sessions cannot be seen, so this cannot say nothing waits.
+                if !inputs.waitingKnown {
+                    rows.append(info("waiting-unknown", .waiting, "Waiting on you: not loaded yet."))
+                } else if inputs.foldedCount > 0 {
+                    rows.append(info("no-waiting", .waiting, canWaitLine(inputs.foldedCount)))
+                } else {
+                    rows.append(info("no-waiting", .waiting, inputs.sessionsOff ? "Nothing else urgent right now." : "Nothing urgent right now."))
+                }
+            } else if inputs.foldedCount > 0 {
+                rows.append(info("folded", .waiting, inputs.foldedCount == 1 ? "1 more can wait until tomorrow." : "\(inputs.foldedCount) more can wait until tomorrow."))
             }
 
             let running = startedFirst(inputs.running, inputs.startedRunID)
@@ -1267,14 +1595,28 @@ enum SetupAssistant {
             var rows: [Row] = []
             /// Trimmed and whole, as typed: Return and File to Work take all of it. Matching reads a bounded start of it.
             var words = ""
-            /// Runs on Return with nothing else highlighted. Only a full exact phrase of a command that allows it.
+            /// Runs on Return with nothing else highlighted. Only a full exact phrase of a command or a place that allows it.
             var autoHighlight: String? = nil
             var hasAnswer = false
             var nearCommand = false
             var entry: Entry? = nil
-            /// Command rows Return may list but never move to: a Start phrase inside a longer sentence ("how do I record a meeting
-            /// with two speakers"). Start recording asks nothing before it runs, so a second Return from there would record.
+            /// Rows Return may list but never move to: a Start phrase inside a longer sentence ("how do I record a meeting with two
+            /// speakers", which asks nothing before it records), a place that only begins a sentence ("usage limit reached"), and every
+            /// place while the words ask for a session list.
             var returnSkips: Set<String> = []
+            /// The words ask for a session list ("sessions", "recent"). Return has nothing to do but wait for a choice.
+            var listOnly = false
+            /// What the panel's word search should look for, or nil: under three characters, an exact command or place, a noun list,
+            /// and Sessions off all skip it. `plain` words, at most 200 characters.
+            var searchWords: String? = nil
+        }
+
+        /// A row Return may move onto from the top of the list: a command or a place. Never a hit.
+        private static func isOrder(_ row: Row) -> Bool {
+            switch row.kind {
+            case .command, .place: return true
+            default: return false
+            }
         }
 
         /// Everything the panel shows for these words.
@@ -1287,6 +1629,8 @@ enum SetupAssistant {
                 return result
             }
             let s = inputs.snapshot
+            let typed = plain(words)
+            let question = words.contains("?")
             var rows: [Row] = []
 
             // Commands, closest first. Only a whole phrase highlights itself, and only where the command allows it.
@@ -1303,23 +1647,96 @@ enum SetupAssistant {
                 }
             }
 
-            // Sessions: what waits, what runs, then the list. Titles only filter here. They choose no command and no answer.
-            let typed = plain(words)
-            var seen = Set<String>()
-            var sessions: [Row] = []
-            func take(_ item: Item, _ make: (Item) -> Row) {
-                guard sessions.count < sessionCap, typed.count >= 2, plain(item.title).contains(typed) else { return }
-                if let session = item.sessionID { guard seen.insert(session).inserted else { return } }
-                var row = make(item)
-                row.group = .sessions
-                sessions.append(row)
+            // Places: panes and tabs, after the commands. An exact name highlights its row unless a command already has, and a noun
+            // list ("recent") is the list, not Messages > Recent.
+            let span = nounSpan(typed, question: question)
+            let placed = Place.allCases.enumerated().compactMap { index, place in
+                placeRank(place, typed, question: question).map { (place: place, rank: $0, order: index) }
+            }.sorted { ($0.rank, $0.place.parent == nil ? 0 : 1, $0.order) < ($1.rank, $1.place.parent == nil ? 0 : 1, $1.order) }
+            for found in placed.prefix(placeCap) {
+                let row = Row(id: "place:" + found.place.rawValue, kind: .place(found.place), group: .places, title: found.place.title,
+                              detail: found.place.parent.map { "In " + $0 })
+                if found.rank == 0, span == nil, result.autoHighlight == nil { result.autoHighlight = row.id }
+                if found.rank == 2 || span != nil { result.returnSkips.insert(row.id) }
+                rows.append(row)
             }
-            for item in byTier(inputs.waiting) { take(item, waitingRow) }
-            for item in inputs.running { take(item, runningRow) }
-            for item in inputs.sessions {
-                take(item) { Row(id: "session:" + $0.id, kind: .session($0.id), group: .sessions, title: clean($0.title), detail: $0.detail.map(clean), state: $0.state, trailing: $0.openLabel) }
+
+            // Sessions: a noun list ("sessions", "recent sessions today"), or else what waits, what runs and the list by title. Titles
+            // only filter here. They choose no command and no answer.
+            var seen: [String] = []
+            var sessions: [Row] = []
+            func listed(_ id: String?) -> Bool { id.map { id in seen.contains { sameListed($0, id) } } ?? false }
+            func listRow(_ item: Item) -> Row {
+                let ago = when(item.date, now: inputs.now, calendar: inputs.calendar)
+                let detail = [item.detail.map(clean), ago].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
+                return Row(id: "session:" + item.id, kind: .session(item.id), group: .sessions, title: clean(item.title),
+                           detail: detail.isEmpty ? nil : detail, state: item.state, trailing: item.openLabel)
+            }
+            if let span {
+                result.listOnly = true
+                if inputs.sessionsOff {
+                    sessions.append(Row(id: "sessions:off", kind: .command(.openSessions), group: .sessions, title: "Session tracking is off",
+                                        detail: "Turn it on in Sessions to list sessions here.", trailing: Command.openSessions.title))
+                } else if !inputs.sessionsLoaded {
+                    sessions.append(info("sessions-unknown", .sessions, "Sessions: not loaded yet."))
+                } else {
+                    let inside = inputs.sessions.filter { inSpan($0.date, span, now: inputs.now, calendar: inputs.calendar) }
+                    if inside.isEmpty {
+                        sessions.append(info("sessions-none", .sessions, span == .all ? "No sessions yet." : "No sessions " + spanWords(span) + "."))
+                    }
+                    for item in inside.prefix(nounCap) {
+                        sessions.append(listRow(item))
+                        if let id = item.sessionID { seen.append(id) }
+                    }
+                    if inside.count > nounCap {
+                        sessions.append(Row(id: "sessions:more", kind: .command(.openSessions), group: .sessions, title: "\(inside.count - nounCap) more in Sessions",
+                                            trailing: Command.openSessions.title))
+                    }
+                }
+            } else {
+                func take(_ item: Item, _ make: (Item) -> Row) {
+                    guard sessions.count < sessionCap, typed.count >= 2, plain(item.title).contains(typed), !listed(item.sessionID) else { return }
+                    if let session = item.sessionID { seen.append(session) }
+                    var row = make(item)
+                    row.group = .sessions
+                    sessions.append(row)
+                }
+                for item in byTier(inputs.waiting) { take(item, waitingRow) }
+                for item in inputs.running { take(item, runningRow) }
+                for item in inputs.sessions {
+                    take(item) { Row(id: "session:" + $0.id, kind: .session($0.id), group: .sessions, title: clean($0.title), detail: $0.detail.map(clean), state: $0.state, trailing: $0.openLabel) }
+                }
             }
             rows += sessions
+
+            // Word search: hits in their own group, after the sessions that matched by title. Return never moves onto one and never
+            // runs one. An arrow or a click does. A hit the list already shows is not shown twice.
+            let exact = ranked.contains { $0.1 == 0 } || placed.contains { $0.rank == 0 }
+            if typed.count >= 3, span == nil, !exact, !inputs.sessionsOff {
+                let search = String(typed.prefix(200))
+                result.searchWords = search
+                let found = inputs.found
+                if found.words == search {
+                    switch found.phase {
+                    case .idle: break
+                    case .searching: rows.append(info("searching", .found, "Searching sessions…"))
+                    case .failed: rows.append(info("search-failed", .found, "The search did not run.", detail: "The sessions listed here still open."))
+                    case .done:
+                        var shown = 0
+                        for item in found.hits where shown < hitCap && !listed(item.sessionID) {
+                            let ago = when(item.date, now: inputs.now, calendar: inputs.calendar)
+                            let detail = [item.detail.map(clean), ago].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
+                            rows.append(Row(id: "hit:" + item.id, kind: .hit(item.id), group: .found, title: hitTitle(item.title),
+                                            detail: detail.isEmpty ? nil : detail,
+                                            state: item.state, trailing: item.openLabel, match: matchLine(item.match, title: item.title)))
+                            shown += 1
+                        }
+                        if shown == 0 { rows.append(info("search-none", .found, sessions.isEmpty ? "No session mentions these words." : "No other session mentions these words.")) }
+                    }
+                }
+                rows.append(Row(id: "search-all", kind: .searchAll, group: .found, title: "Search all sessions",
+                                detail: "Opens Sessions with your words in its search box. It reaches older ones.", trailing: "Open Sessions"))
+            }
 
             // The saved answer, unless a whole-phrase command already runs on Return. A miss says so.
             let saved = result.autoHighlight == nil ? answer(words, s) : nil
@@ -1330,7 +1747,7 @@ enum SetupAssistant {
                 for offer in saved.offers {
                     rows.append(Row(id: "action:" + offer.action.rawValue, kind: .action(offer.action), group: .answer, title: rowTitle(offer.action), held: offer.held))
                 }
-            } else if result.autoHighlight == nil, ranked.isEmpty, sessions.isEmpty {
+            } else if result.autoHighlight == nil, ranked.isEmpty, placed.isEmpty, sessions.isEmpty {
                 rows.append(info("no-answer", .answer, "No saved answer for this."))
             }
 
@@ -1345,8 +1762,9 @@ enum SetupAssistant {
             rows.append(Row(id: "file", kind: .file, group: .asking, title: "File to Work", detail: "Saves your words to the Work inbox. No run.", trailing: "Option-Return"))
 
             result.rows = rows
-            // Any command in the list counts: "go to se" shows Open Sessions, and Return must not spend a run on it.
-            result.nearCommand = !ranked.isEmpty || nearCommand(words)
+            // Any command or place in the list counts: "go to se" shows Open Sessions, "go to usage" shows Usage, and Return must not
+            // spend a run on them.
+            result.nearCommand = !ranked.isEmpty || !placed.isEmpty || nearCommand(words)
             return result
         }
 
@@ -1373,61 +1791,87 @@ enum SetupAssistant {
             case activate(String)
             /// The confirm that is open.
             case confirm
-            case startRun
             case file
             /// Highlight this row. A second Return runs it.
             case move(String)
         }
 
-        /// What Return does now. Option-Return always files. A command or a session the words point at is where Return goes
-        /// first; a saved answer, a near-command or a short text never starts a run either: Return moves to the Ask row, and a
-        /// second Return runs it.
+        /// What Return does now. Option-Return always files. Free text never starts a run on the first Return (0.5.361): it moves
+        /// to the Ask row, and a second Return runs it. That is one rule, not a race: the same keystroke does the same thing before and
+        /// after anything arrives. A command, a place or a loaded session the words point at is where Return goes first; a word-search
+        /// hit is never one of them, so it only opens by an arrow or a click. A highlight that is gone returns nothing.
         static func onReturn(option: Bool, chosen: String?, confirming: Bool, noticeShowing: Bool, _ listing: Listing, _ s: Snapshot) -> ReturnOutcome {
             if option { return listing.words.isEmpty ? .nothing : .file }
             if noticeShowing { return .nothing }
             if confirming { return .confirm }
+            // A row the person chose that is not there any more (a hit that went with a new search) is no reason to act on another.
+            if let chosen, !listing.rows.contains(where: { $0.id == chosen && $0.selectable }) { return .nothing }
             if let id = effective(chosen, listing) { return .activate(id) }
             guard !listing.words.isEmpty else { return .nothing }
-            // The top row is a command that Return may not run on its own (Stop, Doctor, or words that only start its phrase):
-            // Return goes to that row, never past it to a Work run on the same words. Its own confirm still applies. Start
-            // recording inside a longer sentence has no confirm, so Return skips it and goes to Ask like any near-command.
-            if let top = listing.rows.first, case .command = top.kind, top.selectable, !listing.returnSkips.contains(top.id) { return .move(top.id) }
+            // The top row is a command or a place that Return may not run on its own (Stop, Doctor, a name that only starts one): Return
+            // goes to that row, never past it to a Work run on the same words. Its own confirm still applies. Start recording inside a
+            // longer sentence has no confirm, so Return skips it and goes to Ask like any near-command.
+            if let top = listing.rows.first, isOrder(top), top.selectable, !listing.returnSkips.contains(top.id) { return .move(top.id) }
+            // A session list asked for by name is for choosing from.
+            if listing.listOnly { return .nothing }
             // A title that matches is a session to open, not a request: Return goes to the first of them.
             if let session = listing.rows.first(where: { $0.group == .sessions && $0.selectable }) { return .move(session.id) }
             let askable = listing.rows.first { $0.kind == .ask && $0.selectable }
             let cautious = listing.hasAnswer || listing.nearCommand
             if !s.workRunsOn, !cautious { return .file }
-            let longEnough = plain(listing.words).split(separator: " ").count >= 3
-            if askable != nil, !cautious, longEnough { return .startRun }
             if let target = askable ?? listing.rows.first(where: { $0.kind == .file }) { return .move(target.id) }
             return .nothing
         }
 
-        /// What Return will do, in words. The foot of the panel and VoiceOver both read it.
-        static func hint(_ outcome: ReturnOutcome, _ listing: Listing, _ s: Snapshot) -> String {
+        /// The foot of the panel, in three parts so a long title is cut and the words around it never are. `text` is the whole line,
+        /// which VoiceOver reads.
+        struct Footer: Equatable, Sendable {
+            /// Always drawn whole.
+            var lead: String
+            /// The one part that may be cut.
+            var title: String? = nil
+            /// Always drawn whole: "Return again opens it."
+            var tail = ""
+            var text: String { lead + (title ?? "") + tail }
+        }
+
+        static let idleHint = "Up and Down choose. Esc closes."
+
+        /// What Return will do, in parts. The foot of the panel and VoiceOver both read it.
+        static func footer(_ outcome: ReturnOutcome, _ listing: Listing, _ s: Snapshot) -> Footer {
             switch outcome {
             case .nothing:
-                return "Up and Down choose. Esc closes."
+                return Footer(lead: idleHint)
             case .confirm:
-                return "Return confirms. Esc cancels."
-            case .startRun:
-                return "Return starts one Work run. Option-Return files it."
+                return Footer(lead: "Return confirms. Esc cancels.")
             case .file:
-                return "Return files it to the Work inbox."
+                return Footer(lead: "Return files it to the Work inbox.")
             case .move(let id):
-                guard let row = listing.rows.first(where: { $0.id == id }) else { return "Up and Down choose. Esc closes." }
+                guard let row = listing.rows.first(where: { $0.id == id }) else { return Footer(lead: idleHint) }
                 switch row.kind {
-                case .recording, .waiting, .running, .session: return "Return moves to \(row.title). Return again opens it."
-                default: return "Return moves to \(row.title). Return again " + (confirmation(row, s) != nil ? "asks first." : "runs it.")
+                case .session, .hit:
+                    // A list session is called what its title says, and a title can be anything, even "Start recording".
+                    return Footer(lead: "Return moves to the session ", title: row.title, tail: ". Return again opens it.")
+                case .recording, .waiting, .running, .place, .searchAll:
+                    return Footer(lead: "Return moves to ", title: row.title, tail: ". Return again opens it.")
+                default:
+                    return Footer(lead: "Return moves to ", title: row.title, tail: ". Return again " + (confirmation(row, s) != nil ? "asks first." : "runs it."))
                 }
             case .activate(let id):
-                guard let row = listing.rows.first(where: { $0.id == id }) else { return "Up and Down choose. Esc closes." }
+                guard let row = listing.rows.first(where: { $0.id == id }) else { return Footer(lead: idleHint) }
                 switch row.kind {
-                case .recording, .waiting, .running, .session: return "Return opens: \(row.title)"
-                default: return (confirmation(row, s) != nil ? "Return asks first: " : "Return runs: ") + row.title
+                case .session, .hit:
+                    return Footer(lead: confirmation(row, s) != nil ? "Return asks first: the session " : "Return opens the session ", title: row.title)
+                case .recording, .waiting, .running, .place, .searchAll:
+                    return Footer(lead: confirmation(row, s) != nil ? "Return asks first: " : "Return opens: ", title: row.title)
+                default:
+                    return Footer(lead: (confirmation(row, s) != nil ? "Return asks first: " : "Return runs: "), title: row.title)
                 }
             }
         }
+
+        /// What Return will do, in words.
+        static func hint(_ outcome: ReturnOutcome, _ listing: Listing, _ s: Snapshot) -> String { footer(outcome, listing, s).text }
 
         /// While the one-time notice shows: its Record is a click, so a quick second Return can never accept it.
         static let noticeHint = "Choose Record on the card to start. Esc goes back."
@@ -1480,10 +1924,15 @@ enum SetupAssistant {
         static let reportConfirm = Confirmation(question: "Copy a redacted report?",
                                                 consequence: "This runs Doctor first, which asks your AI app one real question, then copies the report.", confirm: "Copy report")
 
-        /// The inline confirm a row needs. Stop and Doctor always ask, as does anything in `changesSomething`. An opener,
-        /// Start recording, Ask COS and File to Work never do.
+        /// A message typed into an open session and not sent is cleared by going anywhere else (the session closes, and its chat resets).
+        static let draftConfirm = Confirmation(question: "Leave your unsent message?",
+                                               consequence: "You started a message in a session and have not sent it. Going there clears it.", confirm: "Go there")
+
+        /// The inline confirm a row needs. Stop and Doctor always ask, as does anything in `changesSomething`. A place, a hit and
+        /// Search all sessions ask only when an unsent message would be lost. An opener, Start recording, Ask COS and File to Work never do.
         static func confirmation(_ row: Row, _ s: Snapshot) -> Confirmation? {
             switch row.kind {
+            case .place, .hit, .searchAll: return s.unsentSessionDraft ? draftConfirm : nil
             case .command(.stopRecording): return stopConfirm
             case .command(.runDoctor), .action(.runDoctor): return doctorConfirm
             case .action(.copyReport): return reportConfirm

@@ -8634,6 +8634,13 @@ extension ActivityWindow {
 
     // MARK: Home
 
+    /// The headline's counts with the quiet-hours fold applied, so it says the same as ⌘K (SetupAssistant.Center.canWaitLine).
+    func todayBriefCounts(_ frame: TodayHome.Frame, now: Date) -> TodayHome.Counts {
+        var counts = frame.counts
+        counts.folded = TodayHome.fold(frame.needs, quiet: TodayHome.isQuiet(now: now, enabled: TodayHome.quietHoursOn(.standard))).tomorrow.count
+        return counts
+    }
+
     func todayHomeView(_ frame: TodayHome.Frame, width: CGFloat, now: Date) -> some View {
         let pad = TodayHome.padding(windowWidth: width)
         let wide = TodayHome.twoColumns(windowWidth: width)
@@ -8649,7 +8656,7 @@ extension ActivityWindow {
                     TodayRecordingSection(rows: frame.recordings, now: now, store: model.macRecording, initialConfirm: commandFixture?.todayStopConfirm,
                                           recording: { commandRecording() }, open: { todayOpen($0) }, stop: { commandStopRecording() })
                 }
-                Text(TodayHome.brief(frame.counts))
+                Text(TodayHome.brief(todayBriefCounts(frame, now: now)))
                     .font(COSType.display(wide ? 25 : 22))
                     .lineSpacing(wide ? 8 : 6)
                     .foregroundStyle(TodayInk.ink)
@@ -9336,6 +9343,9 @@ extension ActivityWindow {
     var clearWords: (() -> Void)?
     /// The words typed so far, kept when a click outside closes the panel. Esc clears them, and so does anything that took them.
     var draft = ""
+    /// The sessions the word search found, by hit id, so a row opens the hit's own object and a session older than the list opens too.
+    /// Written by the panel when the hits arrive; not observed, so it never redraws anything.
+    var hitSessions: [String: ClaudeSession] = [:]
     /// The next section change came from the panel, which stays open to say something.
     var keepOpen = false
     /// This panel ran a helper command, so model.notice is its result, and a failure was shown in place.
@@ -9368,6 +9378,18 @@ struct CommandCenterFixture {
     var noticeShowing = false
     var recording: SetupAssistant.Center.Recording? = nil
     var result: SetupAssistant.Center.ResultInputs? = nil
+    /// What the word search found. Under a fixture no search runs, so this is all there is.
+    var found: SetupAssistant.Center.Found? = nil
+    /// The session list answered (nil: as the model has it).
+    var sessionsLoaded: Bool? = nil
+    var foldedCount: Int? = nil
+    var unsentSessionDraft = false
+}
+
+/// One word-search hit: the row's plain values, and the session itself so the row opens that object.
+struct CommandHit {
+    let item: SetupAssistant.Center.Item
+    let session: ClaudeSession
 }
 
 /// What a row does to the panel once it has run.
@@ -9379,6 +9401,21 @@ enum CommandEffect {
 
 extension ActivityWindow {
     // MARK: Command center: what it reads
+
+    /// The newest this many sessions of each list become rows. The panel lists a handful; the rest are one search away.
+    static let commandSessionLimit = 80
+
+    /// The word on a session row. Idle sessions read Recent; a stopped one reads nothing.
+    static func commandStateWord(_ state: String) -> String? {
+        switch state {
+        case "running": return "Running"
+        case "waiting": return "Waiting"
+        case "error": return "Failed"
+        case "stale": return "Stale"
+        case "recent": return "Recent"
+        default: return nil
+        }
+    }
 
     /// Plain values from state COS Control already holds, so it answers with the server down. Setup rows are left out on
     /// purpose: the panel's Fix rows are repairs only, and setup stays with Finish setup and the setup guide.
@@ -9420,6 +9457,7 @@ extension ActivityWindow {
         default: s.microphoneAllowed = nil
         }
         s.workRunsOn = TodayHome.workRunsOn(.standard)
+        s.unsentSessionDraft = commandFixture?.unsentSessionDraft ?? !model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return s
     }
 
@@ -9457,17 +9495,24 @@ extension ActivityWindow {
         // A question's own words (NeedRow.quote) never reach this panel.
         inputs.waiting = folded.now.map { Item(id: $0.id, title: $0.title, detail: $0.source, openLabel: $0.openLabel ?? "Open", tier: $0.tier, sessionID: $0.session?.id) }
         inputs.waitingKnown = frame.line != .loading
-        inputs.foldedLine = folded.tomorrow.isEmpty ? nil : TodayHome.tomorrowLine(folded.tomorrow)
+        inputs.foldedCount = commandFixture?.foldedCount ?? folded.tomorrow.count
         inputs.running = frame.running.map { row in
             Item(id: row.id, title: row.title, detail: row.detail, openLabel: row.openLabel, sessionID: row.id.hasPrefix("session:") ? String(row.id.dropFirst("session:".count)) : nil)
         }
         inputs.runningKnown = frame.counts.sessionsKnown
-        inputs.sessions = todaySessions().map { session in
+        // The loaded list and the live rows as one list (0.5.361). With the pet on, `todaySessions()` is the live rows alone, so "recent"
+        // had nothing in it; with the pet off it already is the whole list. Bounded to the newest before any row is made.
+        func item(_ session: ClaudeSession) -> Item {
             let host = today.hosts[session.id]
             let open = TodayHome.openFor(session, host: host, cursorTrusted: model.petJumpTrusted)
             return Item(id: session.id, title: session.title, detail: TodayHome.platform(session, host: host).badge + (session.workspace.isEmpty ? "" : ", " + session.workspace),
-                        openLabel: open.label, sessionID: session.id, state: session.state == "recent" ? "Recent" : nil)
+                        openLabel: open.label, sessionID: session.id, state: Self.commandStateWord(session.state), date: session.updatedDate, keepWarm: session.isKeepWarm)
         }
+        let newest = { (list: [ClaudeSession]) in Array(list.sorted { ($0.updatedDate ?? .distantPast) > ($1.updatedDate ?? .distantPast) }.prefix(Self.commandSessionLimit)) }
+        inputs.sessions = SetupAssistant.Center.merged(live: newest(todaySessions()).map(item), listed: model.petEnabled ? newest(model.claudeSessions).map(item) : [])
+        inputs.sessionsLoaded = commandFixture?.sessionsLoaded ?? frame.counts.sessionsKnown
+        inputs.now = now
+        inputs.found = commandFixture?.found ?? SetupAssistant.Center.Found()
         inputs.sessionsOff = !model.claudeSessionsEnabled
         inputs.recording = commandRecording()
         inputs.startedRunID = today.lastStartedRunID.map { "work:" + $0 }
@@ -9499,7 +9544,10 @@ extension ActivityWindow {
         model.refreshPetJumpTrust()
         commandKeys.keepOpen = false
         commandKeys.recordFailed = false
+        commandKeys.hitSessions = [:]
         commandOpen = true
+        // The list refreshes when the panel opens (0.5.361), not forced: it walks only when the saved list is stale. The tick is unchanged.
+        if commandFixture == nil { Task { await model.loadClaudeSessions() } }
         todayLog.info("command center opened")
     }
 
@@ -9534,6 +9582,7 @@ extension ActivityWindow {
             CommandCenterPanel(base: commandInputs(frame: frame, now: now), keys: commandKeys, store: model.macRecording, fixture: commandFixture,
                                recording: { commandRecording() }, snapshot: { commandSnapshot() }, resultInputs: { commandResultInputs() },
                                run: { row, listing in commandRun(row, listing) }, submit: { words in todaySubmitAsk(words) },
+                               search: { words in try await commandSearchSessions(words) },
                                recordAfterNotice: { commandAcknowledgeAndRecord() }, close: { closeCommandCenter() },
                                maxListHeight: max(160, windowSize.height - top - 44 - 40 - 28))
                 .frame(width: min(CommandCenterPanel.width, max(320, windowSize.width - rail - 2 * gutter)))
@@ -9555,6 +9604,9 @@ extension ActivityWindow {
         case .waiting(let id): return commandOpenWaiting(id)
         case .running(let id): return commandOpenRunning(id)
         case .session(let id): return commandOpenSession(id)
+        case .hit(let id): return commandOpenHit(id)
+        case .place(let place): return commandGo(place)
+        case .searchAll: return commandSearchAll(listing.words)
         case .command(let command): return commandRun(command)
         case .action(let action): return commandRun(action, words: listing.words)
         case .ask:
@@ -9597,13 +9649,121 @@ extension ActivityWindow {
         return .close
     }
 
+    /// A word-search hit opens by its own object: the helper found it by reading this Mac's session files, so it may be older than
+    /// the list and the list has no row for it. Opened the way a list row is (the platform, or Sessions' reader), never from a lookup.
+    func commandOpenHit(_ id: String) -> CommandEffect {
+        guard let session = commandKeys.hitSessions[id] else {
+            today.flash("That session is not open any more.")
+            return .stay
+        }
+        model.platformOpenNotice = nil
+        switch TodayHome.openFor(session, host: today.hosts[session.id], cursorTrusted: model.petJumpTrusted).action {
+        case .platform:
+            model.openSessionInPlatform(session)
+            Task { try? await Task.sleep(nanoseconds: 10_000_000_000); if !model.platformOpening { model.platformOpenNotice = nil } }
+        default:
+            select(.sessions)
+            sessionsPane = .sessions
+            selectedSessionID = session.id
+            model.openClaudeSession(session)
+        }
+        return .close
+    }
+
+    /// Sessions with the words in its own search box, for anything older than the local search reaches. The Sessions tab runs its own
+    /// search from there, as if the person had typed it.
+    func commandSearchAll(_ words: String) -> CommandEffect {
+        select(.sessions)
+        sessionsPane = .sessions
+        model.sessionQuery = String(words.prefix(200))
+        model.scheduleSessionSearch()
+        return .close
+    }
+
+    /// The local word search: this Mac's own session files, no server and no OpenAI. The words go to the helper's stdin, never an
+    /// argument, and killing the run (a new keystroke cancels this task) stops the helper process. Each hit keeps its own session, so
+    /// the row opens that object. Share with the Sessions tab: the helper verb and the decoder, never its state.
+    func commandSearchSessions(_ words: String) async throws -> [CommandHit] {
+        let response = try await model.runHelper(["claude-sessions-search", "--local", "--limit", "8"], timeout: 8, stdinData: Data(String(words.prefix(200)).utf8))
+        var seen = Set<String>()
+        return (response.details["hits"]?.array ?? []).compactMap(SessionSearchHit.init).compactMap { hit in
+            let session = hit.session
+            guard seen.insert(session.id).inserted else { return nil }
+            let host = today.hosts[session.id]
+            let open = TodayHome.openFor(session, host: host, cursorTrusted: model.petJumpTrusted)
+            let item = SetupAssistant.Center.Item(id: session.id, title: session.title,
+                                                  detail: TodayHome.platform(session, host: host).badge + (session.workspace.isEmpty ? "" : ", " + session.workspace),
+                                                  openLabel: open.label, sessionID: session.id, state: Self.commandStateWord(session.state), date: session.updatedDate,
+                                                  keepWarm: session.isKeepWarm, match: hit.snippet)
+            return CommandHit(item: item, session: session)
+        }
+    }
+
+    /// Every place. No default, so a new Place does not compile until it is dispatched here. `select` first, because it closes whatever
+    /// detail was open and never resets a pane's own tab: Sessions would otherwise land on Usage, and Archive would stay empty (only a
+    /// tab change loads its days). The one arrival that is not a tab is Today, which is the home.
+    func commandGo(_ place: SetupAssistant.Center.Place) -> CommandEffect {
+        switch place {
+        case .today: goHome()
+        case .messages: select(.messages)
+        case .threads: select(.threads)
+        case .messagesRecent:
+            select(.messages)
+            messagesSubview = .recent
+        case .messagesArchive:
+            select(.messages)
+            messagesSubview = .archive
+            if model.archiveDays.isEmpty { Task { await model.loadArchiveDays() } }
+        case .speakersMeetings:
+            select(.speakers)
+            speakerSubview = .meetings
+        case .speakersSamples:
+            select(.speakers)
+            speakerSubview = .samples
+        case .speakersVoices:
+            select(.speakers)
+            speakerSubview = .voices
+        case .sessionsUsage:
+            select(.sessions)
+            sessionsPane = .usage
+        case .sessionsCost:
+            select(.sessions)
+            sessionsPane = .cost
+        case .workAll:
+            select(.work)
+            workWorkspaceState.scope = .all
+        case .workNeeds:
+            select(.work)
+            workWorkspaceState.scope = .attention
+        case .workProgress:
+            select(.work)
+            workWorkspaceState.scope = .progress
+        case .workCompleted:
+            select(.work)
+            workWorkspaceState.scope = .completed
+        case .dictationHistory:
+            select(.dictation)
+            model.openDictationHistory()
+        case .dictationDictionary:
+            select(.dictation)
+            model.openDictionary()
+        case .dictationSettings:
+            select(.dictation)
+            model.openDictationSettings()
+        }
+        return .close
+    }
+
     func commandRun(_ command: SetupAssistant.Center.Command) -> CommandEffect {
         switch command {
         case .startRecording: return commandStartRecording()
         case .stopRecording:
             commandStopRecording()
             return .stay
-        case .openSessions: select(.sessions)
+        case .openSessions:
+            // `select` never resets the tab, so Open Sessions would otherwise land on Usage when that was the last one showing.
+            select(.sessions)
+            sessionsPane = .sessions
         case .openMeetings: select(.meetings)
         case .openWork: select(.work)
         case .openSpeakers: select(.speakers)
@@ -9925,6 +10085,8 @@ struct CommandCenterPanel: View {
     let resultInputs: () -> C.ResultInputs
     let run: (C.Row, C.Listing) -> CommandEffect
     let submit: (String) -> Void
+    /// The local word search (ActivityWindow.commandSearchSessions).
+    let search: (String) async throws -> [CommandHit]
     let recordAfterNotice: () -> Void
     let close: () -> Void
     let maxListHeight: CGFloat
@@ -9937,11 +10099,14 @@ struct CommandCenterPanel: View {
     @State private var noticeShowing = false
     @State private var hovered: String?
     @State private var loaded = false
+    /// What the word search found for the words in the box. The panel's own state: the Sessions tab's search is never touched.
+    @State private var found = C.Found()
     @FocusState private var focused: Bool
 
     private var live: C.Inputs {
         var inputs = base
         inputs.recording = recording()
+        if fixture == nil { inputs.found = found }
         return inputs
     }
 
@@ -9950,7 +10115,8 @@ struct CommandCenterPanel: View {
         let listing = C.listing(inputs, words: words)
         let highlight = C.effective(chosen, listing)
         let outcome = C.onReturn(option: false, chosen: chosen, confirming: confirming != nil, noticeShowing: noticeShowing, listing, inputs.snapshot)
-        let hint = noticeShowing ? C.noticeHint : C.hint(outcome, listing, inputs.snapshot)
+        let footer = noticeShowing ? C.Footer(lead: C.noticeHint) : C.footer(outcome, listing, inputs.snapshot)
+        let hint = footer.text
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "sparkle").font(.system(size: 14, weight: .medium)).foregroundStyle(TodayInk.accent).accessibilityHidden(true)
@@ -9973,9 +10139,7 @@ struct CommandCenterPanel: View {
             }
             rows(listing, highlight: highlight, inputs: inputs)
             rule
-            Text(verbatim: hint).font(COSType.body(11.5)).foregroundStyle(TodayInk.grey).lineLimit(1).truncationMode(.tail)
-                .padding(.horizontal, 14).padding(.vertical, 8)
-                .accessibilityHidden(true)
+            footerLine(footer)
         }
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(TodayInk.panel))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(TodayInk.btnBorder, lineWidth: 1))
@@ -9992,6 +10156,8 @@ struct CommandCenterPanel: View {
             keys.escape = nil
             keys.clearWords = nil
         }
+        // One search at a time: a new key cancels this task, and cancelling stops the helper process. Nothing runs under a fixture.
+        .task(id: listing.searchWords) { await runSearch(listing.searchWords) }
         .onChange(of: words) { _, value in
             guard loaded else { return }
             keys.draft = value
@@ -10010,6 +10176,20 @@ struct CommandCenterPanel: View {
 
     private var rule: some View { Rectangle().fill(TodayInk.rowBorder).frame(height: 1) }
 
+    /// The foot in three Texts: the words around the title are never cut, the title is, down to the 320 pt floor. VoiceOver already
+    /// hears the whole line as the field's hint.
+    private func footerLine(_ footer: C.Footer) -> some View {
+        HStack(spacing: 0) {
+            Text(verbatim: footer.lead).lineLimit(1).fixedSize(horizontal: footer.title != nil, vertical: false)
+            if let title = footer.title { Text(verbatim: title).lineLimit(1).truncationMode(.tail) }
+            if !footer.tail.isEmpty { Text(verbatim: footer.tail).lineLimit(1).fixedSize(horizontal: true, vertical: false) }
+            Spacer(minLength: 0)
+        }
+        .font(COSType.body(11.5)).foregroundStyle(TodayInk.grey)
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .accessibilityHidden(true)
+    }
+
     private func arrive() {
         if let fixture {
             words = fixture.words
@@ -10027,6 +10207,34 @@ struct CommandCenterPanel: View {
         DispatchQueue.main.async {
             loaded = true
             focused = true
+        }
+    }
+
+    // MARK: Word search
+
+    /// 500 ms of quiet, then the helper reads this Mac's own session files. Skipped (the core says nil) under three characters, on an
+    /// exact command or place, on a noun list and with Sessions off. Hits sit in their own group, so they never take Return.
+    private func runSearch(_ words: String?) async {
+        guard fixture == nil else { return }
+        guard let words else {
+            if found != C.Found() { found = C.Found() }
+            return
+        }
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        guard !Task.isCancelled else { return }
+        if found.words != words { found = C.Found(words: words, phase: .searching) }
+        do {
+            let hits = try await search(words)
+            guard !Task.isCancelled else { return }
+            keys.hitSessions = Dictionary(hits.map { ($0.item.id, $0.session) }, uniquingKeysWith: { first, _ in first })
+            found = C.refreshed(found, words: words, hits: hits.map(\.item), keeping: chosen)
+            let shown = C.listing(live, words: self.words).rows.filter { if case .hit = $0.kind { return true } else { return false } }.count
+            if shown > 0 { AccessibilityNotification.Announcement(C.foundAnnouncement(shown)).post() }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled else { return }
+            found = C.Found(words: words, phase: .failed)
         }
     }
 
@@ -10060,9 +10268,6 @@ struct CommandCenterPanel: View {
         case .nothing: break
         case .confirm: confirmOpen(listing)
         case .activate(let id): activate(id, listing)
-        case .startRun:
-            // The Ask row's own run, so the words go with the saved answer, a short snapshot and the same rules.
-            if let ask = listing.rows.first(where: { $0.kind == .ask && $0.selectable }) { activate(ask.id, listing) }
         case .file: submit(listing.words)
         case .move(let id): chosen = id
         }
@@ -10171,7 +10376,7 @@ struct CommandCenterPanel: View {
     }
 
     private func voiceLabel(_ row: C.Row) -> String {
-        [row.title, row.state, row.detail, row.held, row.trailing].compactMap { $0 }.joined(separator: ", ")
+        [row.title, row.state, row.detail, row.match, row.held, row.trailing].compactMap { $0 }.joined(separator: ", ")
     }
 
     private func rowLabel(_ row: C.Row, highlighted: Bool) -> some View {
@@ -10181,6 +10386,10 @@ struct CommandCenterPanel: View {
                 Text(verbatim: row.title).font(COSType.body(13.5, weight: .semibold)).foregroundStyle(row.held == nil ? TodayInk.ink : TodayInk.sub).lineLimit(2)
                 if let detail = row.detail {
                     Text(verbatim: detail).font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                }
+                // What the search matched: one line, drawn verbatim like a title.
+                if let match = row.match {
+                    Text(verbatim: match).font(COSType.body(12)).foregroundStyle(TodayInk.grey).lineLimit(1).truncationMode(.tail)
                 }
                 if let held = row.held {
                     Text(verbatim: held).font(COSType.body(12)).foregroundStyle(TodayInk.hot).fixedSize(horizontal: false, vertical: true)
@@ -10263,6 +10472,9 @@ struct CommandCenterPanel: View {
         case .waiting: return "hand.raised"
         case .running: return "play"
         case .session: return "text.bubble"
+        case .hit: return "text.magnifyingglass"
+        case .searchAll: return "magnifyingglass"
+        case .place: return "arrow.up.forward.square"
         case .recording: return "record.circle.fill"
         case .ask: return "sparkle"
         case .file: return "tray.and.arrow.down"

@@ -206,6 +206,26 @@ need('"sessions": sessions.map { $0.filter { $0.key != "waitingQuestion" && $0.k
 for key, label in (("TodayHome.enabledKey", "Today home"), ("TodayHome.quietHoursKey", "Quiet hours"), ("TodayHome.workRunsKey", "Work runs from Today")):
     need(key in views and f'Toggle("{label}"' in views, f"[settings] {label}")
 
+# 0.5.361 wording (Miles, 2026-10-31: ⌘K said "Nothing is waiting on you" where Today said "Six things need you"): the headline and ⌘K read the
+# same quiet-hours fold, in the same words. The fold itself is TodayHome.fold, executed in ActivityTodayChecks; this pins who reads it.
+core_text = strip((root / "Sources/SetupAssistant.swift").read_text())
+brief_counts = body(today, "    func todayBriefCounts(", "\n    func todayHomeView(")
+need("counts.folded = TodayHome.fold(frame.needs, quiet: TodayHome.isQuiet(now: now, enabled: TodayHome.quietHoursOn(.standard))).tomorrow.count" in brief_counts
+     and "Text(TodayHome.brief(todayBriefCounts(frame, now: now)))" in today and "Text(TodayHome.brief(frame.counts))" not in today,
+     "[wording] Today's headline reads the quiet-hours fold, so it agrees with the ⌘K panel")
+need("quiet: TodayHome.isQuiet(now: now, enabled: TodayHome.quietHoursOn(.standard)))" in body(today, "    func commandInputs(", "\n    func commandResultInputs()")
+     and "inputs.foldedCount = commandFixture?.foldedCount ?? folded.tomorrow.count" in today, "[wording] ⌘K counts what the same fold moved to tomorrow")
+need("c.needs - c.folded" in logic and "things can wait until tomorrow" in logic and "things can wait until tomorrow" in core_text and "Nothing urgent right now." in core_text,
+     "[wording] the headline and ⌘K say the folded count in the same words")
+need("var folded = 0" in body(logic, "    struct Counts: Equatable {", "    static let agentPlatforms"), "[wording] the fold count is part of the counts the brief reads")
+# The list refreshes when ⌘K opens (not forced), and the tick is unchanged: one refresh in each place.
+need(body(today, "    func openCommandCenter() {", "\n    func closeCommandCenter() {").count("loadClaudeSessions()") == 1
+     and "force: true" not in body(today, "    func openCommandCenter() {", "\n    func closeCommandCenter() {"), "[command center] the session list refreshes when ⌘K opens, not forced")
+need(win.count("if !model.petEnabled { await model.loadClaudeSessions() }") == 1, "[pet off] the tick is unchanged: the one refresh the pet-off home had")
+# One list from the loaded sessions and the live rows (the pet-on home had only the live ones): bounded, merged by the engine's sameSession.
+need("SetupAssistant.Center.merged(live: newest(todaySessions()).map(item), listed: model.petEnabled ? newest(model.claudeSessions).map(item) : [])" in today
+     and "static let commandSessionLimit = 80" in today, "[command center] the panel's sessions are the live rows and the loaded list, merged and bounded")
+
 # Copy rules: no em dash, arrows or attribution in Today's words; no eyebrow, no vanity totals.
 literals = re.findall(r'"((?:[^"\\]|\\.)*)"', today + "\n" + logic)
 for bad, label in (("—", "em dash"), ("→", "arrow"), ("You said", "attribution"), ("known", "vanity total"), ("this week", "vanity total")):

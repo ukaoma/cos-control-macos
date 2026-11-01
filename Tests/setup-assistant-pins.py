@@ -16,6 +16,10 @@
     Option-Return keep their meanings, every command and action has a dispatch case with no default, typed words reach only a
     run or a filed task, recording goes through the store's gates, a confirm checks fresh state, session titles are drawn
     verbatim and open only their own row, breadcrumbs carry no words, and nothing moves.
+  - 0.5.361: free text never starts a run on the first Return (no `.startRun`); a word-search hit is its own group that Return never
+    moves onto; the word search is local (a helper `--local` path, the words on stdin, no server, no OpenAI), panel-owned, debounced
+    and cancelled by the next key; a hit opens by its own session object; every pane and tab the window has is a Place, a Command,
+    or on the explicit exclusion list; `sameSession` in the engine equals `ClaudeSession.sameSession`; the footer is three Texts.
   - The recording section under the Today header: its place, nothing when nothing records, and Stop only through its confirm.
 The engine has no way to run anything, and nothing a person types becomes a command. The views run it through closed switches.
 Comments are stripped before a code pin, so a comment can never satisfy one.
@@ -161,12 +165,17 @@ pin("event.keyCode == 36 || event.keyCode == 76, flags == .option" in monitor an
     "Option-Return goes through the monitor: a single-line field types a line break for it and never submits")
 pin("case .file: submit(listing.words)" in press and "case .move(let id): chosen = id" in press,
     "Option-Return files, and a near-command only moves the highlight")
-# A bare Return run goes through the Ask row: the saved answer, a short snapshot and the rules ride with the words. The raw words
-# never go to the Today box's submit as a run.
-start_run = block(press, "        case .startRun:", "        case .file:")
-pin("submit(" not in start_run and "listing.rows.first(where: { $0.kind == .ask && $0.selectable })" in start_run and "activate(ask.id, listing)" in start_run,
-    "Return with no highlight starts its Work run through the Ask row, never with the raw words")
+# 0.5.361: free text never starts a run on the first Return. It moves to the Ask row, and the second Return runs that row, which
+# carries the saved answer, a short snapshot and the rules. The raw words never go to the Today box's submit as a run.
+pin("case startRun" not in core and "return .startRun" not in core and "case .startRun" not in window, "there is no startRun outcome: a Work run starts only from the Ask row, on a second Return")
 pin(press.count("submit(") == 1, "the panel's submit is Option-Return's filing and nothing else")
+on_return = block(core, "        static func onReturn(option: Bool,", "        struct Footer: Equatable, Sendable {")
+pin("return .startRun" not in on_return and "return .move(target.id)" in on_return, "Return on free text moves to Ask or File, never to a run")
+pin(before(on_return, "if option {", "if noticeShowing { return .nothing }", "if confirming { return .confirm }", "return .nothing }\n            if let id = effective(chosen, listing) { return .activate(id) }"),
+    "a chosen row that is gone returns nothing before any other rule")
+order_row = block(core, "        private static func isOrder(_ row: Row) -> Bool {", "        static func listing(_ inputs: Inputs, words raw: String) -> Listing {")
+pin("case .command, .place: return true" in order_row and ".hit" not in order_row and ".searchAll" not in order_row, "Return moves from the top only onto a command or a place, never a hit")
+pin("listing.rows.first(where: { $0.group == .sessions && $0.selectable })" in on_return and ".found" not in on_return, "a title match keeps the move, and the hit group is never read by Return")
 pin("submit: { words in todaySubmitAsk(words) }" in ext and "file: file" not in window, "Return reaches today's own submit, which only files")
 pin(".onTapGesture { closeCommandCenter() }" in ext, "a click outside closes it")
 
@@ -212,8 +221,14 @@ pin("default:" not in row_run, "every kind of row is dispatched, with no default
 # Typed words reach only a run or a filed task, never a helper argument or an opener.
 pin('model.perform(command)' in ext and ext.count("model.perform(") == 1 and "guard let command = action.helperCommand" in ext, "a helper command comes only from the closed action")
 helpers = re.findall(r"model\.runHelper\(\[([^\]]*)\]", ext)
-pin(len(helpers) == 1 and helpers[0].startswith('"report", "--current-version", ControllerModel.currentVersion'), f"the one helper call has fixed arguments: {helpers}")
-pin("words" not in helpers[0] and "listing" not in helpers[0], "typed words are never a helper argument")
+reports = [h for h in helpers if h.startswith('"report", "--current-version", ControllerModel.currentVersion')]
+searches = [h for h in helpers if h.startswith('"claude-sessions-search"')]
+pin(len(helpers) == 2 and len(reports) == 1 and len(searches) == 1, f"two helper calls, both with fixed arguments: {helpers}")
+pin(searches == ['"claude-sessions-search", "--local", "--limit", "8"'], f"the word search is one fixed verb, local, with a fixed limit: {searches}")
+pin(all("words" not in h and "listing" not in h and "query" not in h for h in helpers), "typed words are never a helper argument")
+search_fn = block(ext, "    func commandSearchSessions(_ words: String) async throws -> [CommandHit] {", "\n    }\n")
+pin("stdinData: Data(String(words.prefix(200)).utf8)" in search_fn and "--query" not in ext, "the one stated exception to hard rule 2: the words go to the helper's stdin, at most 200 characters, never an argument")
+pin("--query" not in window[window.index("    func commandSnapshot() -> SetupAssistant.Snapshot {"):window.index("struct CommandCenterKeyHint: View {")], "the command center never builds a --query argument")
 pin("commandRun(.runDoctor, words: \"\")" in ext, "Doctor from the list carries no words")
 
 # Recording: the store's gates, the same busy rule as the meeting card, Stop on the Mac capture only.
@@ -273,7 +288,7 @@ for motion in ("withAnimation", ".animation(", ".transition(", "TodayPulse", "Ti
 
 # The recording section (Miles, 2026-10-31): under the Today header, above everything else, and nothing when nothing records.
 home = block(window, "    func todayHomeView(", "    func todayHeader(now: Date)")
-pin(before(home, "todayHeader(now: now)", "TodayRecordingSection(", "TodayHome.brief(frame.counts)", "todayNeedsPanel(frame", "todayRunningPanel(run"),
+pin(before(home, "todayHeader(now: now)", "TodayRecordingSection(", "TodayHome.brief(todayBriefCounts(frame, now: now))", "todayNeedsPanel(frame", "todayRunningPanel(run"),
     "the recording section sits under the header, above the brief, Needs you and Running")
 pin("if !frame.recordings.isEmpty {\n                    TodayRecordingSection(" in home, "no recording, no section: it takes no space")
 section = block(window, "struct TodayRecordingSection: View {", "struct CommandCenterKeyHint: View {")
@@ -306,6 +321,130 @@ pin("get: { model.error != nil && !commandOpen }," in window, "a failure shows i
 results = block(ext, "    func commandResultInputs() -> SetupAssistant.Center.ResultInputs {", "\n    }\n")
 for name in ("today.notice", "model.platformOpenNotice", "model.operationProgress", "model.error", "today.runNote"):
     pin(name in results, f"the result line reads {name}")
+
+# ---- 0.5.361: places, the local word search, hits, and the footer ----------------------------------------------------------------
+
+# Every pane and tab the window has is reached by a Command, by a Place, or sits on an explicit exclusion with its reason. The enums are
+# parsed from source, so a new tab fails here until it has a row or a reason. A stale exclusion fails too.
+def enum_cases(text, name):
+    start = text.index(f"enum {name}")
+    body = text[text.index("{", start) + 1:]
+    cases = []
+    for line in body.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("case "):
+            cases += [m.group(0) for c in stripped[5:].split(",") if (m := re.match(r"[A-Za-z_]\w*", c.strip()))]
+        elif stripped and not stripped.startswith(("///", "//", "@", "static", "var", "func", "private")) and cases:
+            break
+        elif stripped.startswith(("static", "var", "func")):
+            break
+    return [c for c in cases if c]
+
+go = block(ext, "    func commandGo(_ place: SetupAssistant.Center.Place) -> CommandEffect {", "\n    }\n")
+opener = block(ext, "    func commandRun(_ command: SetupAssistant.Center.Command) -> CommandEffect {", "\n    }\n")
+reach = go + opener
+sources = {"ActivitySection": window, "SessionsPane": code(read("Sources/SessionUsageView.swift")), "MessagesSubview": window, "SpeakerSubview": window,
+           "ActivityWorkSubview": window, "WorkWorkspaceScope": code(read("Sources/WorkWorkspaceView.swift")), "MemoriesSubview": window}
+reached_by = {
+    "ActivitySection": lambda c: f"select(.{c})" in reach or (c == "threads" and "select(.threads)" in reach),
+    "SessionsPane": lambda c: (f"sessionsPane = .{c}" in reach),
+    "MessagesSubview": lambda c: f"messagesSubview = .{c}" in reach,
+    "SpeakerSubview": lambda c: f"speakerSubview = .{c}" in reach,
+    "WorkWorkspaceScope": lambda c: f"workWorkspaceState.scope = .{c}" in reach,
+    "ActivityWorkSubview": lambda c: False,
+    "MemoriesSubview": lambda c: False,
+}
+# (enum, case) -> why it is not a row. Memories tabs: the page is a web view that reads its view once, when it is made, so a tab change
+# from here needs a new setter (cut from 0.5.361, said in the notes).
+excluded = {
+    ("ActivitySection", "tasks"): "Tasks is a synonym for Work (resolvedLaunch), and Command.openWork answers to it",
+    ("ActivityWorkSubview", "tasks"): "the Work pane's only subview, with no tab to choose",
+    ("ActivityWorkSubview", "meetingFollowUp"): "never set anywhere: Work's workspace replaced it, so there is no tab to reach",
+    ("MemoriesSubview", "recentLearning"): "Memories is a web view that reads its view once; a tab change needs a new setter",
+    ("MemoriesSubview", "allMemories"): "same",
+    ("MemoriesSubview", "toReview"): "same",
+    ("MemoriesSubview", "knowledge"): "same",
+}
+covered_by_command = {("ActivitySection", "meetings"): "openMeetings", ("ActivitySection", "speakers"): "openSpeakers", ("ActivitySection", "memories"): "openMemories",
+                      ("ActivitySection", "sessions"): "openSessions", ("ActivitySection", "work"): "openWork", ("ActivitySection", "dictation"): "openDictation",
+                      ("SessionsPane", "sessions"): "openSessions"}
+seen_exclusions = set()
+for enum_name, text in sources.items():
+    cases = enum_cases(text, enum_name)
+    pin(len(cases) >= 2, f"read the cases of {enum_name}: {cases}")
+    for case in cases:
+        key = (enum_name, case)
+        if key in excluded:
+            seen_exclusions.add(key)
+            pin(not reached_by[enum_name](case) or key == ("ActivitySection", "tasks"), f"{enum_name}.{case} is excluded and also has a row: drop the exclusion")
+            continue
+        pin(reached_by[enum_name](case), f"{enum_name}.{case} has no row (a Command opener or a Place) and no explicit exclusion")
+for key in excluded:
+    pin(key in seen_exclusions, f"the exclusion {key} names a case that does not exist any more")
+pin(re.search(r"case \.openSessions:\s*\n\s*(?://[^\n]*\n\s*)*select\(\.sessions\)\s*\n\s*sessionsPane = \.sessions", opener) is not None,
+    "Open Sessions resets the Sessions tab, so it never lands on Usage")
+pin("loadArchiveDays" in go and "model.archiveDays.isEmpty" in go, "Messages > Archive loads its days, which only a tab change loaded before")
+pin("goHome()" in go and "default:" not in go, "Today is goHome(), and every Place is dispatched with no default")
+place_cases = [c for line in block(core, "        enum Place: String, CaseIterable, Sendable {", "            var title: String {").split("\n") if line.strip().startswith("case ") for c in re.findall(r"\w+", line.split("case ", 1)[1])]
+pin(len(place_cases) == 17, f"read the Place cases: {place_cases}")
+for case in place_cases:
+    pin(re.search(r"case \." + case + r"\b", go) is not None, f"commandGo dispatches .{case}")
+pin("Place" in block(core, "        enum Kind: Equatable, Sendable {", "        enum Group: Int, Sendable {"), "a Place is a kind of row, separate from a Command")
+pin(re.findall(r"^(?:enum|struct|class)\s+Place\b", core, re.M) == [] and core.count("enum Place: String, CaseIterable, Sendable {") == 1, "one Place enum, nested in Center")
+
+# One session lists once: the engine's sameSession is the app's, body for body.
+engine_same = re.sub(r"\s+", " ", block(core, "        static func sameSession(_ a: String, _ b: String) -> Bool {", "        static func sameListed(_ a: String, _ b: String) -> Bool"))
+app_same = re.sub(r"\s+", " ", block(read("Sources/Models.swift"), "    static func sameSession(_ a: String, _ b: String) -> Bool {", "    /// The chip word."))
+engine_same = engine_same.split("{", 1)[1].rsplit("}", 1)[0].strip()
+app_same = app_same.split("{", 1)[1].rsplit("}", 1)[0].strip()
+pin(engine_same == app_same, f"Center.sameSession equals ClaudeSession.sameSession: {engine_same!r} vs {app_same!r}")
+
+# The local word search: a helper path that reads files and nothing else; the panel owns the search.
+local = block(helper, "    private func emitLocalSessionsSearch(args: [String]) throws {", "    private func emitClaudeSessionsSearch(args: [String]) throws {")
+for banned in ("request(", "speakerReviewToken", "readToken", "speakerReviewBody", "URLSession", "Process()", "embedding", "openai", "queryEscape"):
+    pin(banned.lower() not in local.lower(), f"the local search never uses {banned}")
+pin("FileHandle.standardInput.read(upToCount: 4_097 - input.count)" in local and ".prefix(200)" in local and "query.count >= 3" in local, "the local search reads its words from a bounded stdin, 200 characters, at least 3")
+pin("Self.localSessionKeywordHits(query: query, limit: limit, home: FileManager.default.homeDirectoryForCurrentUser)" in local, "the local search is the fallback's own scan, over this Mac's home")
+pin('if args.contains("--local") { try emitLocalSessionsSearch(args: args); return }' in helper, "the verb's --local flag is the first thing it checks")
+pin("static let sessionSearchBodyFileLimit = 80" in helper, "the scan reads at most 80 transcripts")
+panel_search = block(panel, "    private func runSearch(_ words: String?) async {", "    private func move(_ delta: Int) -> Bool {")
+pin(".task(id: listing.searchWords) { await runSearch(listing.searchWords) }" in panel, "one search at a time: the task is keyed by the words, so a key cancels the last one")
+pin("guard fixture == nil else { return }" in panel_search and "Task.sleep(nanoseconds: 500_000_000)" in panel_search, "500 ms of quiet first, and nothing runs under a fixture")
+pin(before(panel_search, "guard let words else", "Task.sleep(nanoseconds: 500_000_000)", "guard !Task.isCancelled else { return }", "try await search(words)", "guard !Task.isCancelled else { return }", "C.refreshed("),
+    "a cancelled search stores nothing")
+pin("@State private var found = C.Found()" in panel and "if fixture == nil { inputs.found = found }" in panel, "the hits are the panel's own state")
+for forbidden in ("sessionSearchHits", "sessionSearching", "sessionSearchError", "sessionSemantic"):
+    pin(forbidden not in ext and forbidden not in panel, f"the command center never reads the Sessions tab's {forbidden}")
+pin(ext.count("model.sessionQuery") == 1 and ext.count("scheduleSessionSearch()") == 1 and "model.sessionQuery = String(words.prefix(200))" in block(ext, "    func commandSearchAll(_ words: String) -> CommandEffect {", "\n    }\n"),
+    "Search all sessions is the one place the Sessions tab's box is written, and only when that row is chosen")
+pin("search: { words in try await commandSearchSessions(words) }" in ext, "the panel reaches the search only through the window's one function")
+pin(re.search(r"runHelper|model\.", panel) is None, "the panel itself calls no model and no helper")
+
+# A hit opens by its own object, never from a lookup that only knows the list.
+open_hit = block(ext, "    func commandOpenHit(_ id: String) -> CommandEffect {", "\n    }\n")
+pin("commandKeys.hitSessions[id]" in open_hit and "petSession(" not in open_hit and "claudeSessions" not in open_hit, "a hit opens its own session object, not a list lookup")
+pin("model.openSessionInPlatform(session)" in open_hit and "model.openClaudeSession(session)" in open_hit and "TodayHome.openFor(" in open_hit, "a hit opens the way a list row does: the platform, or Sessions' reader")
+pin(window.count("hitSessions =") == 2 and "keys.hitSessions = Dictionary(" in panel_search, "the hit sessions are written when the panel opens (cleared) and when hits arrive, nowhere else")
+pin("case .hit(let id): return commandOpenHit(id)" in row_run and "case .searchAll: return commandSearchAll(listing.words)" in row_run and "case .place(let place): return commandGo(place)" in row_run, "a hit, Search all sessions and a place are each dispatched")
+
+# The panel's list refreshes on open, not on the tick.
+open_fn = block(ext, "    func openCommandCenter() {", "    func closeCommandCenter() {")
+pin("Task { await model.loadClaudeSessions() }" in open_fn and "force: true" not in open_fn, "the session list refreshes when the panel opens, and is not forced")
+ticker_fn = block(window, "    func todayTick() async {", "\n    func todayOpenLoads() async {")
+pin("loadClaudeSessions" in ticker_fn and ticker_fn.count("loadClaudeSessions") == 1 and "if !model.petEnabled { await model.loadClaudeSessions() }" in ticker_fn, "the tick is unchanged")
+
+# Match text: its own field, drawn verbatim, never named `why`, never a decision.
+pin("Text(verbatim: match)" in panel and "row.match" in panel and ".match" not in block(core, "        static func onReturn(option: Bool,", "        struct Footer: Equatable, Sendable {"), "match text is drawn verbatim on its row and Return never reads it")
+pin("var match: String? = nil" in core and "whyMatched" not in core and "whyMatched" not in window, "the match field is `match`, never a name the view half bans")
+pin("let masked" not in ext and "C.mask(" not in panel, "masking happens in the engine where the row is made, not in a view")
+pin("hitTitle(item.title)" in block(core, "        static func listing(_ inputs: Inputs, words raw: String) -> Listing {", "        static func effective(_ chosen: String?, _ listing: Listing) -> String? {") and "matchLine(item.match, title: item.title)" in core, "a hit's title and match text are masked where the row is made")
+
+# The footer: the title is cut, the words around it never are, and VoiceOver hears the whole line as the field's hint.
+foot = block(panel, "    private func footerLine(_ footer: C.Footer) -> some View {", "\n    }\n")
+pin(foot.count("Text(verbatim:") == 3 and "footer.lead" in foot and "footer.title" in foot and "footer.tail" in foot, "the footer is three Texts")
+pin(foot.count("truncationMode(.tail)") == 1 and foot.index("truncationMode(.tail)") > foot.index("footer.title") and foot.index("truncationMode(.tail)") < foot.index("footer.tail"), "only the title is cut")
+pin(foot.count("fixedSize(horizontal") == 2 and ".accessibilityHidden(true)" in foot and ".accessibilityHint(hint)" in panel and "let hint = footer.text" in panel, "the lead and tail keep their width, and the field's hint is the whole line")
+pin("C.noticeHint" in panel and "C.Footer(lead: C.noticeHint)" in panel, "the one-time notice has its own line")
 
 if failures:
     for failure in failures:

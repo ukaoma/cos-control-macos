@@ -472,6 +472,21 @@ import Foundation
         check(TodayHome.brief(partial) == "Two things need you so far.", "a count before every source answered says so far", TodayHome.brief(partial))
         var clearUnknown = TodayHome.Counts(); clearUnknown.settled = true
         check(TodayHome.brief(clearUnknown) == "Nothing is waiting on you.", "the calendar is never called clear unless the server said it read it")
+        // 0.5.361: the headline reads the quiet-hours fold, in the words ⌘K uses (SetupAssistant.Center.canWaitLine). Six folded and
+        // nothing else is "can wait", never "need you"; some folded and some not counts only what is left; a session question never folds.
+        var allFolded = TodayHome.Counts(); allFolded.needs = 6; allFolded.folded = 6; allFolded.settled = true
+        check(TodayHome.brief(allFolded) == "Six things can wait until tomorrow.", "everything folded reads as can wait", TodayHome.brief(allFolded))
+        var oneFolded = TodayHome.Counts(); oneFolded.needs = 1; oneFolded.folded = 1; oneFolded.settled = true
+        check(TodayHome.brief(oneFolded) == "One thing can wait until tomorrow.", "everything folded reads as can wait", TodayHome.brief(oneFolded))
+        var someFolded = TodayHome.Counts(); someFolded.needs = 5; someFolded.folded = 3; someFolded.settled = true
+        check(TodayHome.brief(someFolded) == "Two things need you.", "the headline counts only what the fold leaves", TodayHome.brief(someFolded))
+        var questionOverFold = TodayHome.Counts(); questionOverFold.needs = 4; questionOverFold.folded = 3; questionOverFold.sessionsWaiting = 1; questionOverFold.settled = true
+        check(TodayHome.brief(questionOverFold) == "One session is waiting on you.", "a session question is said first, folded things after it", TodayHome.brief(questionOverFold))
+        var foldedOpen = TodayHome.Counts(); foldedOpen.needs = 2; foldedOpen.folded = 2
+        check(TodayHome.brief(foldedOpen) == "Two things can wait until tomorrow so far.",
+              "an unsettled count says so far", TodayHome.brief(foldedOpen))
+        var noFold = TodayHome.Counts(); noFold.needs = 6; noFold.settled = true
+        check(TodayHome.brief(noFold) == "Six things need you.", "no fold, no change", TodayHome.brief(noFold))
         let a = TodayHome.brief(c, calendar: calendar), b = TodayHome.brief(c, calendar: calendar)
         check(a == b, "the brief is deterministic")
         for word in ["\u{2014}", "\u{2192}", "you said", "You said"] { check(!a.contains(word), "no em dash, arrow or attribution in the brief", word) }
