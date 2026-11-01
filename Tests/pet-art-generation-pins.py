@@ -10,13 +10,16 @@ effect. The pin fails when:
   - the highest ledger generation is above the constant in ControllerModel.swift (the constant did not move),
   - the generations are not strictly increasing,
   - a released tag (control-v*) carries bytes the ledger does not give for that tag's own generation (a shipped entry
-    was rewritten, or the bytes changed while the number did not).
+    was rewritten, or the bytes changed while the number did not),
+  - a pack folder under Resources/BundledCharacters is not in the ledger (a new pack would never be watched),
+  - a map that a later entry replaced is not kept in the pack's stock-state-history.json (installs on it would never upgrade).
 The tag check reads git; with no tags in the checkout it says so and checks the rest.
 
 Usage: python3 Tests/pet-art-generation-pins.py <repo root>
 Environment: COS_PIN_GIT_ROOT names the checkout whose tags are read (the mutation lane runs on a scratch copy).
 """
 import hashlib
+import json
 import os
 import pathlib
 import re
@@ -37,6 +40,18 @@ LEDGER = {
     ],
     "DefaultPet": [(27, "af4fc61df77344d955633563cef7b0c55fd7dc39a02753c443d26d9f16f4d134")],
 }
+
+
+# (pack, generation) -> sha256 of the canonical JSON (sorted keys, compact) of the state map that generation shipped. Every entry a
+# later entry replaces needs one, and that map must still be in the pack's stock-state-history.json, which is what recognizes an
+# install on it as stock.
+PREVIOUS_STATE = {
+    ("BundledCharacters/jedi-miles-windu", 27): "07db3f086b1595b779694c20f70e2e1de63822de71ec131eaa22758a0a51f7bf",
+}
+
+
+def canonical_hash(value) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def fail(message: str) -> None:
@@ -74,6 +89,20 @@ for pack, entries in LEDGER.items():
         fail(f"{pack}: the ledger reaches generation {generations[-1]} but petDefaultArtGeneration is {constant}. "
              f"Installs below {generations[-1]} would stay on the old pack.")
 
+for folder in sorted((root / "Resources/BundledCharacters").iterdir()):
+    if folder.is_dir() and f"BundledCharacters/{folder.name}" not in LEDGER:
+        fail(f"BundledCharacters/{folder.name} is not in the ledger. Add its session-pet-states.json hash at the current generation.")
+
+for pack, entries in LEDGER.items():
+    for generation, _ in entries[:-1]:
+        if (pack, generation) not in PREVIOUS_STATE:
+            fail(f"{pack}: generation {generation} was replaced by a later map. Record that map's canonical hash in PREVIOUS_STATE.")
+        history_file = root / "Resources" / pack / "stock-state-history.json"
+        maps = json.loads(history_file.read_text())["maps"] if history_file.is_file() else []
+        if PREVIOUS_STATE[(pack, generation)] not in {canonical_hash(entry.get("state")) for entry in maps}:
+            fail(f"{pack}: the map that shipped at generation {generation} is not in stock-state-history.json, so an install on it "
+                 f"would never be recognized as stock and never receive the newer pack.")
+
 checked = []
 tags = subprocess.run(["git", "-C", str(git_root), "tag", "--list", "control-v*"], capture_output=True, text=True)
 for tag in sorted(tags.stdout.split()) if tags.returncode == 0 else []:
@@ -91,6 +120,9 @@ for tag in sorted(tags.stdout.split()) if tags.returncode == 0 else []:
         expected = effective(entries, tag_generation)
         if expected is None:
             continue
+        for (previous_pack, previous_generation), canon in PREVIOUS_STATE.items():
+            if previous_pack == pack and previous_generation == tag_generation and canonical_hash(json.loads(blob.stdout)) != canon:
+                fail(f"{tag} shipped {pack} with a state map that is not the one PREVIOUS_STATE records for generation {tag_generation}.")
         if shipped != expected:
             fail(f"{tag} shipped {pack} at generation {tag_generation} with bytes the ledger does not give for that "
                  f"generation. A shipped entry was rewritten, or the bytes changed without the number.")

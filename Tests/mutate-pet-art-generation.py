@@ -24,7 +24,8 @@ CONTROLLER = "Sources/ControllerModel.swift"
 WINDU = "Resources/BundledCharacters/jedi-miles-windu/session-pet-states.json"
 NIA = "Resources/BundledCharacters/jedi-nia-solari/session-pet-states.json"
 DEFAULT = "Resources/DefaultPet/session-pet-states.json"
-FILES = [PIN, CONTROLLER, WINDU, NIA, DEFAULT,
+HISTORY = "Resources/BundledCharacters/jedi-miles-windu/stock-state-history.json"
+FILES = [PIN, CONTROLLER, WINDU, NIA, DEFAULT, HISTORY,
          "Resources/BundledCharacters/jedi-elara-vale/session-pet-states.json",
          "Resources/BundledCharacters/jedi-rowan-vale/session-pet-states.json"]
 V2_HASH = "0292c01a15077ee7c28d61fb7d82b86b6959c2137fd55a30dc9375f18c7a2313"
@@ -53,6 +54,15 @@ MUTANTS = [
     ("two ledger entries claim the same generation",
      [(PIN, ENTRY_28, ENTRY_28 + ENTRY_28)], "ledger generations must strictly increase"),
 ]
+MUTANTS += [
+    ("the Motion V1 map leaves the Windu history",
+     [(HISTORY, '"windu-motion-v1-working-b-full-2x-s2.png"', '"windu-motion-v1-working-b-full-2x-s2.png.edited"')], "is not in stock-state-history.json"),
+    ("a pack folder is not in the ledger",
+     [("NEWPACK", "", "{}")], "is not in the ledger"),
+    ("a replaced map has no recorded hash",
+     [(PIN, '    ("BundledCharacters/jedi-miles-windu", 27): "07db3f086b1595b779694c20f70e2e1de63822de71ec131eaa22758a0a51f7bf",\n', "")],
+     "was replaced by a later map"),
+]
 # The one the local checks cannot see: the shipped 0.5.358 entry is rewritten to match a changed map and the number
 # stays at 27. Disk, ledger and constant agree with each other; only the released tag disagrees.
 TAG_MUTANT = ("a released entry is rewritten to match a changed map and the generation stays 27",
@@ -69,8 +79,11 @@ def run_pin(work: pathlib.Path):
 
 
 def apply(work: pathlib.Path, edits) -> None:
-    """Each edit lands exactly once. {SHA:<path>} in new text is that file's sha256 as edited so far."""
+    """Each edit lands exactly once. {SHA:<path>} in new text is that file's sha256 as edited so far. NEWPACK adds a pack folder."""
     for relative, old, new in edits:
+        if relative == "NEWPACK":
+            (work / "Resources/BundledCharacters/jedi-extra").mkdir(exist_ok=True)
+            continue
         text = (work / relative).read_text()
         if text.count(old) != 1:
             sys.exit(f"edit in {relative} targets {text.count(old)} sites; it must land exactly once")
@@ -98,6 +111,9 @@ try:
             survivors.append(name)
         for relative, text in originals.items():
             (work / relative).write_text(text)
+        extra = work / "Resources/BundledCharacters/jedi-extra"
+        if extra.exists():
+            extra.rmdir()
     if survivors:
         sys.exit(f"{len(survivors)} mutant(s) not killed by the check that names them: {survivors}")
     print(f"PASS pet art generation mutation gate: {len(MUTANTS) + 1} mutants, each killed by the named check, green baseline")
