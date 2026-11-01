@@ -920,6 +920,9 @@ import Foundation
         check(row(listing, "hit:claude:old00001")?.match == "we should price the jewelry persona tier above the base plan" && row(listing, "hit:cursor:old00003")?.match == nil, "[a hit shows what matched, when it is not the title]", "")
         check(row(listing, "hit:claude:old00001")?.detail == "Claude Code, Quilt, 12 days ago" && row(listing, "hit:claude:old00001")?.state == "Recent", "[a hit shows tool, project and when]", "\(String(describing: row(listing, "hit:claude:old00001")?.detail))")
         check(row(listing, "search-all")?.kind == .searchAll && row(listing, "search-all")?.title == "Search all sessions" && row(listing, "search-all")?.group == .found, "[Search all sessions is offered]", "")
+        // Typing stays on this Mac; Search all sessions does not, and its row says where it goes (QA item 4).
+        let searchAllDetail = row(listing, "search-all")?.detail ?? ""
+        check(searchAllDetail.contains("COS server") && searchAllDetail.contains("OpenAI"), "[Search all sessions says where it searches]", searchAllDetail)
         // The race: Return does the same thing whether hits have arrived or not, for any words.
         for words in ["persona pricing", "draft the note to Dana", "holiday promo", "pricing", "usage limit reached", "hello", "go to se", "email Gina about pricing"] {
             let without = C.listing(withFound(sessions, words: words, phase: .searching, hits: []), words: words)

@@ -409,6 +409,13 @@ reveal_call = helper_lines.split("let transcript = Self.findClaudeSessionFile(",
 pin("desktopSessionsRoot" not in reveal_call, "open never passes the Desktop root to the transcript lookup (it reads every record head, about 9 s)")
 pin("local-session-search-checks.py" in read("Tests/run.sh") and "COS_CONTROL_TEST_HOME" in read("Tests/local-session-search-checks.py"), "the open path is tested through the compiled helper against a fixture home")
 
+# Privacy words (QA item 4): the bundled notes say typing stays on this Mac, say what Search all sessions uses, and say the first before the second.
+import json as _json
+_notes = " ".join(_json.loads(read("Resources/WhatsNew.json"))["whatsNew"]["sections"][0]["items"])
+pin("sends nothing off it" in _notes and "asks the COS server" in _notes and "OpenAI" in _notes and _notes.index("sends nothing off it") < _notes.index("Search all sessions"),
+    "the notes say typing stays on this Mac and Search all sessions asks the COS server, in that order")
+pin("COS server" in read("CHANGELOG.md").split("## 0.5.360")[0] and "OpenAI key" in read("CHANGELOG.md").split("## 0.5.360")[0], "the changelog says what Search all sessions uses")
+
 # The local word search: a helper path that reads files and nothing else; the panel owns the search.
 local = block(helper, "    private func emitLocalSessionsSearch(args: [String]) throws {", "    private func emitClaudeSessionsSearch(args: [String]) throws {")
 for banned in ("request(", "speakerReviewToken", "readToken", "speakerReviewBody", "URLSession", "Process()", "embedding", "openai", "queryEscape"):

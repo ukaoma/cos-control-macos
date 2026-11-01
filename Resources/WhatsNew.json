@@ -8,7 +8,7 @@
         "items": [
           "With Today home on in Settings, ⌘K goes to any pane or tab. Type usage, cos cost, messages, archive, voices or work, and press Return.",
           "Type sessions, recent or running to list your sessions, newest first. Add today, yesterday or this week to narrow the list.",
-          "⌘K searches what was said inside your sessions on this Mac and shows the line that matched. For anything older, Search all sessions opens Sessions with your words filled in. The search reads files on this Mac only and sends nothing off it.",
+          "Typing in ⌘K searches what was said in your recent sessions on this Mac only, and sends nothing off it. It shows the line that matched and reads the start of each session. Search all sessions opens Sessions with your words filled in, and Sessions' search asks the COS server and can use your OpenAI key.",
           "Return on words that are not a command now takes two presses. The first moves to Ask COS and the second runs it, so nothing starts on the first press.",
           "The session list refreshes when you open ⌘K.",
           "After hours, Today and ⌘K agree: when everything left can wait, both say how many things can wait until tomorrow.",

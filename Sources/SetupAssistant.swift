@@ -1746,7 +1746,7 @@ enum SetupAssistant {
                     }
                 }
                 rows.append(Row(id: "search-all", kind: .searchAll, group: .found, title: "Search all sessions",
-                                detail: "Opens Sessions with your words in its search box. It reaches older ones.", trailing: "Open Sessions"))
+                                detail: "Opens Sessions with your words in its search box. Sessions' search asks the COS server and can use your OpenAI key.", trailing: "Open Sessions"))
             }
 
             // The saved answer, unless a whole-phrase command already runs on Return. A miss says so.
