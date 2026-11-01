@@ -69,7 +69,7 @@ M = [
  ("owned set follows only the command's direct children", G, "for (p in alive) if (!(p in own) && (ppid[p] in own))", "for (p in alive) if (!(p in own) && (ppid[p] == root))", WATCH),
  ("owned set is not carried across samples", G, '-v prev="$OWNED"', '-v prev=""', WATCH),
  ("owned set ignores a changed start time (reused pid)", G, "if ((kv[1] in alive) && st[kv[1]] == kv[2])", "if (kv[1] in alive)", WATCH),
- ("trip counts foreign frontends", G, 'else if (rss[p] > max) forbig = forbig " " p ":" rss[p]', 'else if (rss[p] > max) { forbig = forbig " " p ":" rss[p]; ownbig = ownbig " " p }', WATCH),
+ ("trip counts foreign frontends", G, 'if (rss[p] > max) forbig = forbig " " p ":" rss[p] }', 'if (rss[p] > max) { forbig = forbig " " p ":" rss[p]; ownbig = ownbig " " p } }', WATCH),
  ("foreign frontend is not named", G, '    echo "compile-guard: NOTE: swift-frontend pid $pid holds', '    : "compile-guard: NOTE: swift-frontend pid $pid holds', WATCH),
  ("foreign frontend is named on every sample", G, '    [[ -n "${WARNED[$pid]:-}" ]] && continue\n', "", WATCH),
  ("machine total over the cap does not stop this run", G, "    elif (( ALL_FE_KB > MAX_TOTAL_GB * 1048576 )); then\n", "    elif (( 0 )); then\n", WATCH),
