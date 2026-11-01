@@ -541,6 +541,76 @@ pin("case .timedOut: return (\"timed out\", .timedOut)" in failure_fn and "let o
 pin("todayLog.error(\"command search \\(outcome.kind, privacy: .public) ms=\\(Int(Date().timeIntervalSince(started) * 1000))\")" in search_fn
     and "words" not in search_fn.split("todayLog.error(", 1)[1].split("\n", 1)[0], "the search log names the kind and the elapsed time only")
 
+# ---- QA 0.5.361 item 16: pins that can fail --------------------------------------------------------------------------------------
+
+# (G3) Each tab write sits inside the case block of the place or opener that owns it, and no block writes a tab that is not listed. The old
+# check searched one pool of text for each tab, so it passed with Usage and COS cost swapped, with a write under the wrong case, and with a
+# new tab nobody listed.
+def case_blocks(text):
+    marks = list(re.finditer(r"^[ \t]*case \.(\w+)(?:, \.\w+)*:", text, re.M))
+    return {m.group(1): text[m.end():(marks[i + 1].start() if i + 1 < len(marks) else len(text))] for i, m in enumerate(marks)}
+
+def tab_writes(text):
+    found = set(re.findall(r"select\(\.\w+\)|\w*[sS]ubview = \.\w+|sessionsPane = \.\w+|commandOpenWork\(scope: \.\w+\)|goHome\(\)|model\.open\w+\(\)", text))
+    return found
+
+go_cases = case_blocks(go)
+want_go = {
+    "today": {"goHome()"}, "messages": {"select(.messages)"}, "threads": {"select(.threads)"},
+    "messagesRecent": {"select(.messages)", "messagesSubview = .recent"}, "messagesArchive": {"select(.messages)", "messagesSubview = .archive"},
+    "speakersMeetings": {"select(.speakers)", "speakerSubview = .meetings"}, "speakersSamples": {"select(.speakers)", "speakerSubview = .samples"},
+    "speakersVoices": {"select(.speakers)", "speakerSubview = .voices"},
+    "sessionsUsage": {"select(.sessions)", "sessionsPane = .usage"}, "sessionsCost": {"select(.sessions)", "sessionsPane = .cost"},
+    "workAll": {"commandOpenWork(scope: .all)"}, "workNeeds": {"commandOpenWork(scope: .attention)"}, "workProgress": {"commandOpenWork(scope: .progress)"},
+    "workCompleted": {"commandOpenWork(scope: .completed)"},
+    "dictationHistory": {"select(.dictation)", "model.openDictationHistory()"}, "dictationDictionary": {"select(.dictation)", "model.openDictionary()"},
+    "dictationSettings": {"select(.dictation)", "model.openDictationSettings()"},
+}
+pin(set(go_cases) == set(want_go) == set(place_cases), f"commandGo has exactly the Place cases: {sorted(set(go_cases) ^ set(want_go))}")
+for name, expected in want_go.items():
+    got = tab_writes(go_cases.get(name, ""))
+    pin(got == expected, f"commandGo .{name} reaches exactly {sorted(expected)}, not {sorted(got)}")
+open_cases = case_blocks(opener)
+want_open = {"startRecording": set(), "stopRecording": set(), "openSessions": {"select(.sessions)", "sessionsPane = .sessions"}, "openMeetings": {"select(.meetings)"},
+             "openWork": {"select(.work)"}, "openSpeakers": {"select(.speakers)"}, "openDictation": {"select(.dictation)"}, "openMemories": {"select(.memories)"},
+             "openSettings": set(), "runDoctor": set()}
+pin(set(open_cases) == set(want_open), f"the opener switch has exactly the Command cases: {sorted(set(open_cases) ^ set(want_open))}")
+for name, expected in want_open.items():
+    got = tab_writes(open_cases.get(name, "")) - {"model.openSettings()"}
+    pin(got == expected, f"the opener .{name} reaches exactly {sorted(expected)}, not {sorted(got)}")
+search_all = block(window, "    func commandSearchAll(_ words: String) -> CommandEffect {", "\n    }\n")
+pin(tab_writes(search_all) == {"select(.sessions)", "sessionsPane = .sessions"} and "model.sessionQuery = String(words.prefix(200))" in search_all and "model.scheduleSessionSearch()" in search_all,
+    "Search all opens Sessions on its list and starts that tab's own search")
+# A new tab enum nobody listed fails here (a ThreadsSubview, say), as a new case does above.
+every_tab_enum = set()
+for file in sorted((root / "Sources").glob("*.swift")):
+    every_tab_enum |= set(re.findall(r"^(?:private |fileprivate )?enum (\w+(?:Subview))\b", file.read_text(encoding="utf-8"), re.M))
+pin(every_tab_enum <= set(sources), f"every Subview enum has its cases checked: {sorted(every_tab_enum - set(sources))}")
+
+# (G4) The local scan and everything it calls: nothing reaches the network, no embedding, no key, and no process except the one sqlite3
+# read the scan skips (a Cursor pin read, behind `readCursorPins`, which the panel's search passes false). `loadCursorComposerNames`
+# reads the Cursor state file through the sqlite3 library on this Mac: a local file, no process.
+def helper_function(name):
+    match = re.search(r"\n    (?:private )?static func " + name + r"\b", helper_lines)
+    if match is None:
+        failures.append(f"the scan's callee {name} is not in the helper")
+        return ""
+    rest = helper_lines[match.start() + 10:]
+    nxt = re.search(r"\n    (?:private |fileprivate )?(?:static )?(?:func|let|var|struct|enum|final class|class) ", rest)
+    return rest[:nxt.start()] if nxt else rest[:4000]
+
+scan_callees = ["localSessionKeywordHits", "listSessionSearchTranscripts", "peekSessionSearchBody", "isRegularTranscript", "recentClaudeConversations", "recentCodexConversations",
+                "recentCursorConversations", "loadClaudeDesktopIndex", "loadCursorComposerNames", "loadClaudeStarredIds", "loadCodexThreadNames", "loadCodexPinnedIds",
+                "scoreSessionKeyword", "tokenizeSessionQuery", "peekClaudeDesktopHead", "lastCustomTitle", "firstClaudeUserTitle", "firstCursorUserTitle", "lastCursorUserTitle",
+                "peekCodexMeta", "listCodexJsonlFiles", "cursorWorkingState", "workspaceLabel", "sessionSearchBodyChunk", "claudeMessageText"]
+for callee in scan_callees:
+    body = helper_function(callee)
+    pin(len(body) > 40, f"read the scan's callee {callee}")
+    for banned in ("URLSession", "request(", "speakerReviewToken", "readToken", "embedding", "openai", "Process()", "NSWorkspace", "/usr/bin/"):
+        pin(banned.lower() not in body.lower(), f"the scan's callee {callee} never uses {banned}")
+pin("Process()" in helper_function("loadCursorPinnedIds") and "readCursorPins ? loadCursorPinnedIds(" in helper_function("localSessionKeywordHits"),
+    "the one process the scan can reach is the Cursor pin read, and only behind readCursorPins")
+
 if failures:
     for failure in failures:
         print("Setup assistant pin: " + failure, file=sys.stderr)
