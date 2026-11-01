@@ -152,7 +152,7 @@ MUTANTS = [
     ("center: an exact command still shows the answer", C, "            let saved = result.autoHighlight == nil ? answer(words, s) : nil\n", "            let saved = answer(words, s)\n", "[an exact command skips the answer]"),
     # The command center: the closed list
     ("center: a command's title changes", C, '                case .openSessions: return "Open Sessions"\n', '                case .openSessions: return "Sessions"\n', "[command list]"),
-    ("center: a phrase is not exact", C, "            if phrases.contains(typed) { return 0 }\n", "", "[a command's phrase is exact]"),
+    ("center: a phrase is not exact", C, "            if phrases.contains(typed) { return words.contains(\"?\") ? 2 : 0 }\n", "", "[a command's phrase is exact]"),
     # The command center: Return
     ("center: a saved answer starts a run", C, "            let cautious = listing.hasAnswer || listing.nearCommand\n", "            let cautious = listing.nearCommand\n", "[a saved answer moves to Ask]"),
     ("center: a near-command starts a run", C, "            let cautious = listing.hasAnswer || listing.nearCommand\n", "            let cautious = listing.hasAnswer\n", "[a near-command moves to Ask]"),
@@ -323,7 +323,7 @@ MUTANTS = [
     ("center: Return moves onto a Start phrase in a sentence", C, "top.selectable, !listing.returnSkips.contains(top.id) { return .move(top.id) }", "top.selectable { return .move(top.id) }", "[a Start phrase inside a sentence moves to Ask]"),
     ("center: a Start phrase in a sentence is not marked", C, "                    if command == .startRecording, rank != 0, !(rank == 1 && startsAPhrase(command, words)) { result.returnSkips.insert(row.id) }\n", "", "[a Start phrase inside a sentence stays listed, and Return skips it]"),
     ("center: every command in a sentence is skipped", C, "if command == .startRecording, rank != 0, !(rank == 1 && startsAPhrase(command, words)) {", "if rank != 0, !(rank == 1 && startsAPhrase(command, words)) {", "[Return moves to the command row]"),
-    ("center: the start of a Start phrase is skipped too", C, "if command == .startRecording, rank != 0, !(rank == 1 && startsAPhrase(command, words)) {", "if command == .startRecording, rank != 0, rank != 1 {", "[the start of a Start phrase moves to its row]"),
+    ("center: the start of a Start phrase is skipped too", C, "if command == .startRecording, rank != 0, !(rank == 1 && startsAPhrase(command, words)) {", "if command == .startRecording, rank != 0 {", "[the start of a Start phrase moves to its row]"),
     ("center: a word inside a Start phrase is an order", C, "if command == .startRecording, rank != 0, !(rank == 1 && startsAPhrase(command, words)) {", "if command == .startRecording, rank == 2 {", "[Start recording is reached only by an order, never by a word inside it or a question]"),
     ("center: a phrase start counts any word of the phrase", C, "command.phrases.map(plain).contains { $0.hasPrefix(typed) }", "command.phrases.map(plain).contains { $0.hasPrefix(typed) || $0.split(separator: \" \").contains { $0.hasPrefix(typed) } }", "[Start recording is reached only by an order, never by a word inside it or a question]"),
     ("center: a question mark is the whole phrase", C, "return words.contains(\"?\") ? 2 : 0", "return 0", "[Start recording is reached only by an order, never by a word inside it or a question]"),
