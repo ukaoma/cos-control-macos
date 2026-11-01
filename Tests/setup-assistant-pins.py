@@ -431,6 +431,9 @@ for forbidden in ("sessionSearchHits", "sessionSearching", "sessionSearchError",
     pin(forbidden not in ext and forbidden not in panel, f"the command center never reads the Sessions tab's {forbidden}")
 pin(ext.count("model.sessionQuery") == 1 and ext.count("scheduleSessionSearch()") == 1 and "model.sessionQuery = String(words.prefix(200))" in block(ext, "    func commandSearchAll(_ words: String) -> CommandEffect {", "\n    }\n"),
     "Search all sessions is the one place the Sessions tab's box is written, and only when that row is chosen")
+pin("let session = ClaudeSession.listed(hit: hit.session, loaded: loaded, workSessionIDs: workIDs, runningWorkSessionIDs: runningIDs)" in search_fn
+    and "model.workSessionIDs" in search_fn and "model.runningWorkSessionIDs" in search_fn and "model.claudeSessions" in search_fn,
+    "a hit passes the server-hold guard the list rows have: the loaded row, else marked as Work or running Work")
 pin("search: { words in try await commandSearchSessions(words) }" in ext, "the panel reaches the search only through the window's one function")
 pin(re.search(r"runHelper|model\.", panel) is None, "the panel itself calls no model and no helper")
 

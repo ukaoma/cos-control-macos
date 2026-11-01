@@ -9687,10 +9687,13 @@ extension ActivityWindow {
     /// the row opens that object. Share with the Sessions tab: the helper verb and the decoder, never its state.
     func commandSearchSessions(_ words: String) async throws -> [CommandHit] {
         let response = try await model.runHelper(["claude-sessions-search", "--local", "--limit", "8"], timeout: 8, stdinData: Data(String(words.prefix(200)).utf8))
-        var seen = Set<String>()
+        var seen: [String] = []
+        let workIDs = model.workSessionIDs, runningIDs = model.runningWorkSessionIDs, loaded = model.claudeSessions
         return (response.details["hits"]?.array ?? []).compactMap(SessionSearchHit.init).compactMap { hit in
-            let session = hit.session
-            guard seen.insert(session.id).inserted else { return nil }
+            // The loaded row when the list has the session, else marked as Work or running Work: a hit alone knows neither (0.5.250's rule).
+            let session = ClaudeSession.listed(hit: hit.session, loaded: loaded, workSessionIDs: workIDs, runningWorkSessionIDs: runningIDs)
+            guard !seen.contains(where: { SetupAssistant.Center.sameListed($0, session.id) }) else { return nil }
+            seen.append(session.id)
             let host = today.hosts[session.id]
             let open = TodayHome.openFor(session, host: host, cursorTrusted: model.petJumpTrusted)
             let item = SetupAssistant.Center.Item(id: session.id, title: session.title,

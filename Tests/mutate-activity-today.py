@@ -80,6 +80,11 @@ MUTANTS = [
     ("states: settled while a source failed", M, "return !counted.isEmpty && counted.allSatisfy { $0 == .answered }\n    }", "return !counted.isEmpty && counted.allSatisfy { $0 != .pending }\n    }", "[never nothing waiting while a source is down]"),
     ("brief: nothing waiting while still reading", M, "        } else if c.settled {\n            first = \"Nothing is waiting on you\"", "        } else {\n            first = \"Nothing is waiting on you\"", "[no false caught up while loading]"),
     ("brief: no clear-day claim when clear", M, '            first = first.map { $0 + ", and your calendar is clear for the rest of the day" } ?? "Your calendar is clear for the rest of the day"\n', "", "[the caught-up brief]"),
+    # 0.5.361 QA item 2: a search hit keeps the guards a list row has
+    ("hit: the loaded row is ignored", M, "        if let row = loaded.first(where: { sameSession($0.id, hit.id) }) { return row }\n", "", "[a hit the list holds is the list's row]"),
+    ("hit: never marked as Work", M, "        return markingWork([hit], workSessionIDs: workSessionIDs, runningWorkSessionIDs: runningWorkSessionIDs)[0]\n", "        return hit\n", "[a hit of a running Work session is held by the server]"),
+    ("hit: the running set is dropped", M, "        return markingWork([hit], workSessionIDs: workSessionIDs, runningWorkSessionIDs: runningWorkSessionIDs)[0]\n", "        return markingWork([hit], workSessionIDs: workSessionIDs, runningWorkSessionIDs: [])[0]\n", "[a hit of a running Work session is held by the server]"),
+    ("hit: the loaded row matches on exact ids only", M, "loaded.first(where: { sameSession($0.id, hit.id) })", "loaded.first(where: { $0.id == hit.id })", "[a hit the list holds is the list's row]"),
     # Quiet hours
     ("quiet: session questions fold", M, "return (rows.filter { $0.tier == 1 }, rows.filter { $0.tier != 1 })", "return ([], rows)", "[tiers 2 to 5 fold"),
     ("quiet: 7 PM, not 6 PM", M, "|| hour >= 18 ||", "|| hour >= 19 ||", "[6 PM is quiet]"),

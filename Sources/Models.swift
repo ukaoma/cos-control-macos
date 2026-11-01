@@ -1824,6 +1824,16 @@ struct ClaudeSession: Identifiable, Sendable {
         }
     }
 
+    /// A ⌘K word-search hit as the session list would hold it (0.5.361). The helper finds a hit in this Mac's own session files, so it
+    /// carries no Work marking and no live state: a Work New session the COS server is still running (but gone quiet for 30 seconds,
+    /// with no pid file) would open in Claude Desktop, a second writer into it (0.5.250). So the loaded row is used when the list has
+    /// the session, and otherwise the hit is marked the way the list marks rows. A routine's transcript that is not in the list is the
+    /// one gap: nothing on this Mac says it is a job.
+    static func listed(hit: ClaudeSession, loaded: [ClaudeSession], workSessionIDs: Set<String>, runningWorkSessionIDs: Set<String>) -> ClaudeSession {
+        if let row = loaded.first(where: { sameSession($0.id, hit.id) }) { return row }
+        return markingWork([hit], workSessionIDs: workSessionIDs, runningWorkSessionIDs: runningWorkSessionIDs)[0]
+    }
+
     /// 0.5.250: two `provider:native` ids name the same session when the provider matches and the native ids are equal,
     /// or one is the first 8 or more characters of the other (the live list's short Claude id).
     static func sameSession(_ a: String, _ b: String) -> Bool {

@@ -76,6 +76,7 @@ import Foundation
         recordingSectionChecks()
         pinChecks()
         briefChecks()
+        hitChecks()
         quietChecks()
         runGuardChecks()
         layoutChecks()
@@ -444,6 +445,36 @@ import Foundation
         check(!text.contains { $0.contains("AskUserQuestion") }, "AskUserQuestion never renders on home or rail")
         // Rail counts use the same functions as the lists (memories: To review's first page).
         check(TodayHome.memoriesStory(7, total: 7) == "7 to review" && TodayHome.memoriesStory(7, total: nil) == "7 to review", "To review opens on the same 7")
+    }
+
+    // MARK: ⌘K word-search hits (0.5.361, QA item 2): the guards the session list already has
+
+    static func hitChecks() {
+        let hit = session("claude:aaaa1111", "recent", name: "Ask COS run about pricing")
+        func openAction(_ s: ClaudeSession) -> TodayHome.OpenAction { TodayHome.openFor(s, host: nil, cursorTrusted: false).action }
+        // Not in the list and no Work receipt: nothing to hold, so Return opens it on its platform.
+        let plain = ClaudeSession.listed(hit: hit, loaded: [], workSessionIDs: [], runningWorkSessionIDs: [])
+        check(!plain.heldByServer && !plain.fromWork && openAction(plain) == .platform(plain.id), "a plain hit opens on its platform")
+        // A Work New session the COS server is still running, named by its full id in the receipt: the hit's 8 characters still match.
+        let full = "claude:aaaa1111-2222-3333-4444-555555555555"
+        let running = ClaudeSession.listed(hit: hit, loaded: [], workSessionIDs: [full], runningWorkSessionIDs: [full])
+        check(running.workRunning && running.heldByServer && running.fromWork, "a hit of a running Work session is held by the server")
+        check(openAction(running) == .inSessions(running.id) && TodayHome.openFor(running, host: nil, cursorTrusted: false).label == "In Sessions",
+              "a hit of a running Work session opens in Sessions and never imports into Claude")
+        // A finished Work session is marked as work and may open.
+        let finished = ClaudeSession.listed(hit: hit, loaded: [], workSessionIDs: [full], runningWorkSessionIDs: [])
+        check(finished.fromWork && !finished.workRunning && !finished.heldByServer, "a hit of a finished Work session is work, and not held")
+        // The loaded row is the truth when the list has the session: it carries the live state and the marks.
+        var row = session("claude:aaaa1111", "running", name: "Ask COS run about pricing")
+        row.workRunning = true
+        let fromList = ClaudeSession.listed(hit: hit, loaded: [session("claude:bbbb2222", "recent", name: "other"), row], workSessionIDs: [], runningWorkSessionIDs: [])
+        check(fromList.workRunning && fromList.state == "running" && fromList.id == row.id, "a hit the list holds is the list's row")
+        check(!ClaudeSession.listed(hit: hit, loaded: [session("claude:bbbb2222", "recent", name: "other")], workSessionIDs: [], runningWorkSessionIDs: []).heldByServer,
+              "another loaded row does not mark a hit")
+        // A scheduled job (origin job) is a routine, held and opened in Sessions.
+        let job = session("claude:cccc3333", "recent", name: "Nightly sync", job: "Nightly sync")
+        let jobHit = ClaudeSession.listed(hit: job, loaded: [], workSessionIDs: [], runningWorkSessionIDs: [])
+        check(jobHit.heldByServer && openAction(jobHit) == .inSessions(jobHit.id), "a hit that says it is a job is held")
     }
 
     // MARK: Pin 4: the brief is built only from the counts
