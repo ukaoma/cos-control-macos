@@ -938,6 +938,9 @@ enum SetupAssistant {
             case sessionsUsage, sessionsCost
             case workAll, workNeeds, workProgress, workCompleted
             case dictationHistory, dictationDictionary, dictationSettings
+            // 0.5.362: the Memories page's five views and Work's three layouts.
+            case memoriesRecent, memoriesApplied, memoriesAll, memoriesReview, memoriesKnowledge
+            case workLayoutReview, workLayoutBoard, workLayoutFocus
 
             var title: String {
                 switch self {
@@ -958,6 +961,14 @@ enum SetupAssistant {
                 case .dictationHistory: return "History"
                 case .dictationDictionary: return "Dictionary"
                 case .dictationSettings: return "Dictation settings"
+                case .memoriesRecent: return "Recent learning"
+                case .memoriesApplied: return "Applied this week"
+                case .memoriesAll: return "All memories"
+                case .memoriesReview: return "To review"
+                case .memoriesKnowledge: return "Knowledge"
+                case .workLayoutReview: return "Your move"
+                case .workLayoutBoard: return "Board"
+                case .workLayoutFocus: return "Focus"
                 }
             }
 
@@ -970,6 +981,8 @@ enum SetupAssistant {
                 case .sessionsUsage, .sessionsCost: return "Sessions"
                 case .workAll, .workNeeds, .workProgress, .workCompleted: return "Work"
                 case .dictationHistory, .dictationDictionary, .dictationSettings: return "Dictation"
+                case .memoriesRecent, .memoriesApplied, .memoriesAll, .memoriesReview, .memoriesKnowledge: return "Memories"
+                case .workLayoutReview, .workLayoutBoard, .workLayoutFocus: return "Work"
                 }
             }
 
@@ -993,6 +1006,15 @@ enum SetupAssistant {
                 case .dictationHistory: return ["dictation history", "history"]
                 case .dictationDictionary: return ["dictionary", "dictation dictionary"]
                 case .dictationSettings: return ["dictation settings"]
+                case .memoriesRecent: return ["recent learning", "memories recent", "learning"]
+                case .memoriesApplied: return ["applied this week", "memories applied", "applied"]
+                case .memoriesAll: return ["all memories", "memories all"]
+                case .memoriesReview: return ["to review", "memories to review"]
+                case .memoriesKnowledge: return ["knowledge", "memories knowledge", "knowledge graph"]
+                // No name holds the word "work", or "work" would list these three before it lists its own tabs.
+                case .workLayoutReview: return ["your move", "your move layout"]
+                case .workLayoutBoard: return ["board", "board layout"]
+                case .workLayoutFocus: return ["focus", "focus layout"]
                 }
             }
         }
@@ -1030,12 +1052,112 @@ enum SetupAssistant {
                 core = String(typed.dropFirst(verb.count))
                 break
             }
-            guard !core.isEmpty, let names = placeNames[place] else { return nil }
+            guard let names = placeNames[place] else { return nil }
+            return nameRank(names, core, question: question)
+        }
+
+        /// The ranking every place name shares: a whole name 0, the start of a name or of one of its words (three letters or more) 1, a name that
+        /// begins a longer sentence or a question 2. `core` is `plain(words)` with any opener verb taken off.
+        private static func nameRank(_ names: [String], _ core: String, question: Bool) -> Int? {
+            guard !core.isEmpty else { return nil }
             if names.contains(core) { return question ? 2 : 0 }
             guard core.count >= 3 else { return nil }
             if names.contains(where: { $0.hasPrefix(core) || $0.split(separator: " ").contains { $0.hasPrefix(core) } }) { return 1 }
             if names.contains(where: { core.hasPrefix($0 + " ") }) { return 2 }
             return nil
+        }
+
+        // MARK: Settings groups (0.5.362)
+
+        /// A group of the Settings hub, as a place ("Decision models", "Microphone"). Closed, and equal to `SettingsHubCatalog.groups`
+        /// (Tests/setup-assistant-pins.py holds the two lists equal, since this file cannot import the catalog). A group row never highlights
+        /// itself, hides under the classic Settings, and hides while the hub does not draw that group (a conditional card).
+        struct SettingsGroup: Sendable, Equatable {
+            let id: String
+            let title: String
+            /// The hub's category.
+            let parent: String
+        }
+
+        static let settingsGroups: [SettingsGroup] = [
+            SettingsGroup(id: "general.app", title: "App", parent: "General"),
+            SettingsGroup(id: "general.home", title: "Activity home", parent: "General"),
+            SettingsGroup(id: "general.guide", title: "Setup guide", parent: "General"),
+            SettingsGroup(id: "ai.apps", title: "Your AI apps", parent: "AI and accounts"),
+            SettingsGroup(id: "ai.local", title: "Local model", parent: "AI and accounts"),
+            SettingsGroup(id: "ai.decision", title: "Decision models", parent: "AI and accounts"),
+            SettingsGroup(id: "ai.keys", title: "Your own key", parent: "AI and accounts"),
+            SettingsGroup(id: "ai.search", title: "Search", parent: "AI and accounts"),
+            SettingsGroup(id: "glasses.devices", title: "Devices", parent: "Glasses and iPhone"),
+            SettingsGroup(id: "glasses.video", title: "Video uploads", parent: "Glasses and iPhone"),
+            SettingsGroup(id: "meetings.recording", title: "Recording", parent: "Meetings"),
+            SettingsGroup(id: "meetings.assistant", title: "Meeting assistant", parent: "Meetings"),
+            SettingsGroup(id: "meetings.cues", title: "Live cues", parent: "Meetings"),
+            SettingsGroup(id: "meetings.library", title: "Library and sync", parent: "Meetings"),
+            SettingsGroup(id: "meetings.fireflies", title: "Fireflies import", parent: "Meetings"),
+            SettingsGroup(id: "dictation.dictation", title: "Dictation", parent: "Dictation"),
+            SettingsGroup(id: "dictation.microphone", title: "Microphone", parent: "Dictation"),
+            SettingsGroup(id: "dictation.shortcuts", title: "Shortcuts", parent: "Dictation"),
+            SettingsGroup(id: "dictation.sounds", title: "Sounds and audio", parent: "Dictation"),
+            SettingsGroup(id: "dictation.text", title: "Text", parent: "Dictation"),
+            SettingsGroup(id: "dictation.polish", title: "AI polish", parent: "Dictation"),
+            SettingsGroup(id: "dictation.history", title: "History", parent: "Dictation"),
+            SettingsGroup(id: "voice.setup", title: "Voice setup", parent: "Transcription and voice"),
+            SettingsGroup(id: "voice.models", title: "Models", parent: "Transcription and voice"),
+            SettingsGroup(id: "voice.performance", title: "Performance", parent: "Transcription and voice"),
+            SettingsGroup(id: "work.sessions", title: "Sessions", parent: "Work and agents"),
+            SettingsGroup(id: "work.chat", title: "Work chat", parent: "Work and agents"),
+            SettingsGroup(id: "work.background", title: "Background", parent: "Work and agents"),
+            SettingsGroup(id: "work.folders", title: "Folders and notes", parent: "Work and agents"),
+            SettingsGroup(id: "work.brief", title: "Morning brief", parent: "Work and agents"),
+            SettingsGroup(id: "work.domains", title: "Domains", parent: "Work and agents"),
+            SettingsGroup(id: "work.fences", title: "Paused threads", parent: "Work and agents"),
+            SettingsGroup(id: "privacy.permissions", title: "Permissions", parent: "Privacy and permissions"),
+            SettingsGroup(id: "pet.pet", title: "Session pet", parent: "Pet and appearance"),
+            SettingsGroup(id: "pet.characters", title: "Characters", parent: "Pet and appearance"),
+            SettingsGroup(id: "system.server", title: "Server", parent: "System and updates"),
+            SettingsGroup(id: "system.updates", title: "App updates", parent: "System and updates"),
+            SettingsGroup(id: "system.troubleshooting", title: "Troubleshooting", parent: "System and updates"),
+        ]
+
+        /// Settings rows shown at once. The panel's place list is capped too; Settings has the most names, so a one-word search stays readable.
+        static let settingsCap = 3
+
+        /// Each group's names, normalized once: the title, "<title> settings" and "settings <title>", less any that is already another place's,
+        /// command's or noun list's exact name ("sessions", "history", "dictation settings" belong to them).
+        private static let settingsNames: [String: [String]] = {
+            var taken = Set<String>()
+            for command in Command.allCases { for phrase in command.phrases { taken.insert(plain(phrase)) } }
+            for place in Place.allCases { for name in place.names { for form in [name, "open " + name, "go to " + name, "show " + name] { taken.insert(plain(form)) } } }
+            for noun in nounForms.keys { taken.insert(noun) }
+            var out: [String: [String]] = [:]
+            for group in settingsGroups {
+                let title = plain(group.title)
+                let names = [title, title + " settings", "settings " + title].filter { name in
+                    ["open ", "go to ", "show "].allSatisfy { !taken.contains($0 + name) } && !taken.contains(name)
+                }
+                out[group.id] = names
+            }
+            return out
+        }()
+
+        /// A group's exact names, for the check that enumerates every exact name.
+        static func settingsGroupNames(_ id: String) -> [String] { settingsNames[id] ?? [] }
+
+        /// The groups these words reach, closest first, at most `settingsCap`. Nothing under the classic Settings, which has no hub to land
+        /// in, and nothing for a group the hub is not drawing now. `typed` is `plain(words)`.
+        static func visibleSettings(_ typed: String, question: Bool, classic: Bool, hidden: Set<String>) -> [(group: SettingsGroup, rank: Int)] {
+            guard !classic else { return [] }
+            var core = typed
+            for verb in openerVerbs where typed.hasPrefix(verb) && typed.count > verb.count {
+                core = String(typed.dropFirst(verb.count))
+                break
+            }
+            let found = settingsGroups.enumerated().compactMap { index, group -> (group: SettingsGroup, rank: Int, order: Int)? in
+                guard !hidden.contains(group.id), let names = settingsNames[group.id], let rank = nameRank(names, core, question: question) else { return nil }
+                return (group, rank, index)
+            }.sorted { ($0.rank, $0.order) < ($1.rank, $1.order) }
+            return found.prefix(settingsCap).map { (group: $0.group, rank: $0.rank) }
         }
 
         // MARK: The noun list
@@ -1684,6 +1806,8 @@ enum SetupAssistant {
             /// The one-time question before meaning search sends anything (0.5.362): turn it on for this model, or never ask again. Reached by an
             /// arrow or a click. Return never moves onto it.
             case consent(MeaningProvider, MeaningChoice)
+            /// A Settings hub group (a `Center.settingsGroups` id). It opens by a closed switch in the window, like a place.
+            case settingsGroup(String)
             case ask, file
             /// Words only: the saved answer, and lines like "Nothing is running."
             case savedAnswer, info
@@ -1728,6 +1852,7 @@ enum SetupAssistant {
                 case .place(let place): return "place." + place.rawValue
                 case .hit: return "hit"
                 case .consent: return "consent"
+                case .settingsGroup: return "settings"
                 case .searchAll: return "search"
                 case .ask: return "ask"
                 case .file: return "file"
@@ -1816,6 +1941,8 @@ enum SetupAssistant {
             var calendar = Calendar(identifier: .gregorian)
             /// What the word search found so far for the words in the box. The panel owns the search; this is only its result.
             var found = Found()
+            /// Settings hub groups the hub is not drawing now (a card for a feature this Mac or server lacks). Their rows are not listed.
+            var hiddenSettingsGroups: Set<String> = []
             /// Whether meaning search may be offered and asked (0.5.362), and what the person chose.
             var meaning = Meaning()
             /// What meaning search found so far for the words in the box. The panel owns the search, as it does the word search.
@@ -2117,7 +2244,7 @@ enum SetupAssistant {
         /// or "N more in Sessions" line of a session list, which is for choosing from.
         private static func isOrder(_ row: Row) -> Bool {
             switch row.kind {
-            case .command, .place: return row.group != .sessions
+            case .command, .place, .settingsGroup: return row.group != .sessions
             default: return false
             }
         }
@@ -2159,6 +2286,15 @@ enum SetupAssistant {
                               detail: found.place.parent.map { "In " + $0 })
                 if found.rank == 0, span == nil, result.autoHighlight == nil { result.autoHighlight = row.id }
                 if found.rank == 2 || span != nil { result.returnSkips.insert(row.id) }
+                rows.append(row)
+            }
+
+            // Settings groups (0.5.362): after the places, and never highlighted by themselves.
+            let groups = visibleSettings(typed, question: question, classic: s.classicSettings, hidden: inputs.hiddenSettingsGroups)
+            for found in groups {
+                let row = Row(id: "settings:" + found.group.id, kind: .settingsGroup(found.group.id), group: .places, title: found.group.title, detail: "In Settings, " + found.group.parent)
+                // Only a whole name takes Return. A word that starts a group's name ("update" starts App updates) is listed, and "update" still goes to Ask.
+                if found.rank != 0 || span != nil { result.returnSkips.insert(row.id) }
                 rows.append(row)
             }
 
@@ -2239,7 +2375,7 @@ enum SetupAssistant {
 
             // Word search: hits in their own group, after the sessions that matched by title. Return never moves onto one and never
             // runs one. An arrow or a click does. A hit the list already shows is not shown twice.
-            let exact = ranked.contains { $0.1 == 0 } || placed.contains { $0.rank == 0 }
+            let exact = ranked.contains { $0.1 == 0 } || placed.contains { $0.rank == 0 } || groups.contains { $0.rank == 0 }
             if typed.count >= 3, span == nil, !exact, !inputs.sessionsOff, searchTokens(typed).isEmpty {
                 // Only common words ("the", "of to"): nothing to look for, so no search runs and no "no match" is claimed.
                 rows.append(info("search-words", .found, "Add a word that names what you want.", detail: "Common words like the, of and to are skipped."))
@@ -2292,7 +2428,7 @@ enum SetupAssistant {
                     rows.append(Row(id: "action:" + offer.action.rawValue, kind: .action(offer.action), group: .answer, title: rowTitle(offer.action), held: offer.held,
                                     leavesSession: offer.action == .openDictationSettings && s.classicSettings))
                 }
-            } else if result.autoHighlight == nil, ranked.isEmpty, placed.isEmpty, sessions.isEmpty {
+            } else if result.autoHighlight == nil, ranked.isEmpty, placed.isEmpty, groups.isEmpty, sessions.isEmpty {
                 rows.append(info("no-answer", .answer, "No saved answer for this."))
             }
 
@@ -2309,7 +2445,7 @@ enum SetupAssistant {
             result.rows = rows
             // Any command or place in the list counts: "go to se" shows Open Sessions, "go to usage" shows Usage, and Return must not
             // spend a run on them.
-            result.nearCommand = !ranked.isEmpty || !placed.isEmpty || nearCommand(words)
+            result.nearCommand = !ranked.isEmpty || !placed.isEmpty || !groups.isEmpty || nearCommand(words)
             return result
         }
 
@@ -2404,7 +2540,7 @@ enum SetupAssistant {
                 switch row.kind {
                 case .session, .hit:
                     return Footer(lead: "Return moves to " + sessionWord(row.title), title: row.title, tail: ". Return again opens it.")
-                case .recording, .waiting, .running, .place, .searchAll:
+                case .recording, .waiting, .running, .place, .settingsGroup, .searchAll:
                     return Footer(lead: "Return moves to ", title: row.title, tail: ". Return again opens it.")
                 case .consent:
                     return Footer(lead: "Return moves to ", title: row.title, tail: ". Return again chooses it.")
@@ -2416,7 +2552,7 @@ enum SetupAssistant {
                 switch row.kind {
                 case .session, .hit:
                     return Footer(lead: (confirmation(row, s) != nil ? "Return asks first: " : "Return opens: ") + sessionWord(row.title), title: row.title)
-                case .recording, .waiting, .running, .place, .searchAll:
+                case .recording, .waiting, .running, .place, .settingsGroup, .searchAll:
                     return Footer(lead: confirmation(row, s) != nil ? "Return asks first: " : "Return opens: ", title: row.title)
                 case .consent(_, let choice):
                     return Footer(lead: choice == .on ? "Return turns on search by meaning for this model." : "Return stops asking about search by meaning for this model.")
@@ -2498,7 +2634,7 @@ enum SetupAssistant {
         /// not, and neither does a session that opens in its own app: the window says which, per row.
         static func leavesSession(_ row: Row) -> Bool {
             switch row.kind {
-            case .place, .searchAll, .recording: return true
+            case .place, .settingsGroup, .searchAll, .recording: return true
             case .command(let command):
                 switch command {
                 case .openSessions, .openMeetings, .openWork, .openSpeakers, .openDictation, .openMemories: return true

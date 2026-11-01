@@ -598,6 +598,8 @@ struct ActivityWindow: View {
     @State private var todayRetrying = false
     /// 0.5.259: the view Memories opens on when an item asks for one ("review"); cleared by the next tab choice.
     @State private var memoriesOpenView: String?
+    /// 0.5.362: counts the times ⌘K asked the Memories page for a view, so the page, already open and read once, is told again.
+    @State private var memoriesViewRequest = 0
     /// One indicator that travels between tabs instead of six that blink.
     @Namespace private var railIndicator
 
@@ -4331,7 +4333,7 @@ struct ActivityWindow: View {
     @ViewBuilder
     private func memoriesSurface() -> some View {
         if MemoriesWebView.bundleURL != nil {
-            MemoriesWebView(model: model, initialView: memoriesOpenView, openSection: { section in select(section) })
+            MemoriesWebView(model: model, initialView: memoriesOpenView, request: memoriesViewRequest, openSection: { section in select(section) })
         } else {
             memoriesPane()
         }
@@ -7070,6 +7072,8 @@ struct MemoriesWebView: NSViewRepresentable {
     /// 0.5.259: the view the page opens on ("review" from the home's memories item), through the page's own
     /// cosBridge.show once it has loaded. nil opens it as before.
     var initialView: String? = nil
+    /// 0.5.362: ⌘K's count of asks for a view. A change tells a page that is already open to show `initialView` (it reads it once, when made).
+    var request = 0
     var openSection: (ActivitySection) -> Void
 
     /// The script that opens the page on `view`. Only the page's own view names pass.
@@ -7227,6 +7231,8 @@ struct MemoriesWebView: NSViewRepresentable {
         view.appearance = NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)
         context.coordinator.model = model
         context.coordinator.openSection = openSection
+        if request != context.coordinator.request, let script = Self.openScript(initialView) { view.evaluateJavaScript(script) }
+        context.coordinator.request = request
     }
 
     static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
@@ -7239,6 +7245,7 @@ struct MemoriesWebView: NSViewRepresentable {
         var model: ControllerModel
         var openSection: (ActivitySection) -> Void
         weak var webView: WKWebView?
+        var request = 0
 
         init(model: ControllerModel, openSection: @escaping (ActivitySection) -> Void) {
             self.model = model
@@ -9566,6 +9573,7 @@ extension ActivityWindow {
         inputs.now = now
         inputs.found = commandFixture?.found ?? SetupAssistant.Center.Found()
         inputs.meaning = commandMeaning()
+        inputs.hiddenSettingsGroups = Set(SettingsHubCatalog.groups.map(\.id).filter { !ControlPanel.hubGroupShown($0, model: model) })
         inputs.meaningFound = commandFixture?.meaningFound ?? SetupAssistant.Center.MeaningFound()
         inputs.sessionsSettingOff = !model.claudeSessionsEnabled
         inputs.recording = commandRecording()
@@ -9670,6 +9678,7 @@ extension ActivityWindow {
         case .place(let place): return commandGo(place)
         case .searchAll: return commandSearchAll(listing.words)
         case .consent(let provider, let choice): return commandChooseMeaning(provider, choice)
+        case .settingsGroup(let id): return commandGoSettings(id)
         case .command(let command): return commandRun(command)
         case .action(let action): return commandRun(action, words: listing.words)
         case .ask:
@@ -9964,7 +9973,39 @@ extension ActivityWindow {
         case .dictationSettings:
             select(.dictation)
             model.openDictationSettings()
+        case .memoriesRecent: commandOpenMemories("recent", native: .recentLearning)
+        // The page has an Applied view the fallback pane does not: the pane opens on Recent learning, the nearest.
+        case .memoriesApplied: commandOpenMemories("applied", native: .recentLearning)
+        case .memoriesAll: commandOpenMemories("memories", native: .allMemories)
+        case .memoriesReview: commandOpenMemories("review", native: .toReview)
+        case .memoriesKnowledge: commandOpenMemories("knowledge", native: .knowledge)
+        case .workLayoutReview: commandOpenWorkLayout(.review)
+        case .workLayoutBoard: commandOpenWorkLayout(.board)
+        case .workLayoutFocus: commandOpenWorkLayout(.focus)
         }
+        return .close
+    }
+
+    /// The Memories page on one of its own views. `select` clears the view, so it is set after, and the request count tells a page that is
+    /// already open to move. The fallback pane (no page bundle) follows with its own tab.
+    fileprivate func commandOpenMemories(_ view: String, native: MemoriesSubview) {
+        select(.memories)
+        memoriesSubview = native
+        memoriesOpenView = view
+        memoriesViewRequest += 1
+        Task { await loadMemoriesSubview(native) }
+    }
+
+    /// Work on one of its three layouts. The layout is Work's own saved choice (`cos.workLayout`), so the board follows it.
+    func commandOpenWorkLayout(_ layout: WorkLayout) {
+        select(.work)
+        WorkLayout.choose(layout)
+    }
+
+    /// A Settings hub group, by a catalog id the engine's closed table holds. Nothing under the classic Settings, which has no hub to land in.
+    func commandGoSettings(_ id: String) -> CommandEffect {
+        guard !classicSettings, SettingsHubCatalog.group(id) != nil else { return .stay }
+        commandOpenSettings("hub." + id)
         return .close
     }
 
@@ -10801,6 +10842,7 @@ struct CommandCenterPanel: View {
         case .hit: return "text.magnifyingglass"
         case .searchAll: return "magnifyingglass"
         case .consent: return "sparkle"
+        case .settingsGroup: return "gearshape"
         case .place: return "arrow.up.forward.square"
         case .recording: return "record.circle.fill"
         case .ask: return "sparkle"

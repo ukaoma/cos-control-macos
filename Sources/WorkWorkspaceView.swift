@@ -63,6 +63,9 @@ enum WorkLayout: String, CaseIterable, Identifiable {
     case review, board, focus
     var id: String { rawValue }
     var title: String { switch self { case .review: "Your move"; case .board: "Board"; case .focus: "Focus" } }
+    /// Work's saved layout. The board reads it as an @AppStorage, so setting it here moves the open board too (⌘K, 0.5.362).
+    static let key = "cos.workLayout"
+    static func choose(_ layout: WorkLayout, _ defaults: UserDefaults = .standard) { defaults.set(layout.rawValue, forKey: key) }
 }
 
 /// One Work handoff on the board's session row: a session working on, or waiting on you for, one Work item.
@@ -1335,7 +1338,7 @@ struct WorkWorkspaceView: View {
     private var selected: WorkWorkspaceItem? { board.item(id: state.selectedID) }
     private var domains: [String] { Array(Set(model.domainOptions.map(\.name) + items.map(\.domain))).filter { !$0.isEmpty }.sorted() }
     private var hasDetail: Bool { state.selectedID != nil || state.meetingPicker || reviewStore.selectedMeeting != nil }
-    @AppStorage("cos.workLayout") private var layoutRaw = WorkLayout.review.rawValue
+    @AppStorage(WorkLayout.key) private var layoutRaw = WorkLayout.review.rawValue
     @AppStorage("cos.workSessionsRowCollapsed") private var sessionsCollapsed = false
     @State private var noticeHistory = false
     @State private var showAllDecisions = false

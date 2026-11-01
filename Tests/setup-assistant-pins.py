@@ -176,7 +176,7 @@ pin("return .startRun" not in on_return and "return .move(target.id)" in on_retu
 pin(before(on_return, "if option {", "if noticeShowing { return .nothing }", "if confirming { return .confirm }", "return .nothing }\n            if let id = effective(chosen, listing) { return .activate(id) }"),
     "a chosen row that is gone returns nothing before any other rule")
 order_row = block(core, "        private static func isOrder(_ row: Row) -> Bool {", "        static func listing(_ inputs: Inputs, words raw: String) -> Listing {")
-pin("case .command, .place: return row.group != .sessions" in order_row and ".hit" not in order_row and ".searchAll" not in order_row, "Return moves from the top only onto a command or a place, never a hit or a session list line")
+pin("case .command, .place, .settingsGroup: return row.group != .sessions" in order_row and ".hit" not in order_row and ".searchAll" not in order_row, "Return moves from the top only onto a command or a place, never a hit or a session list line")
 pin("listing.rows.first(where: { $0.group == .sessions && $0.selectable })" in on_return and ".found" not in on_return, "a title match keeps the move, and the hit group is never read by Return")
 pin("submit: { words in todaySubmitAsk(words) }" in ext and "file: file" not in window, "Return reaches today's own submit, which only files")
 pin(".onTapGesture { closeCommandCenter() }" in ext, "a click outside closes it")
@@ -360,18 +360,13 @@ reached_by = {
     "SpeakerSubview": lambda c: f"speakerSubview = .{c}" in reach,
     "WorkWorkspaceScope": lambda c: f"commandOpenWork(scope: .{c})" in reach,
     "ActivityWorkSubview": lambda c: False,
-    "MemoriesSubview": lambda c: False,
+    "MemoriesSubview": lambda c: f"native: .{c}" in reach,
 }
-# (enum, case) -> why it is not a row. Memories tabs: the page is a web view that reads its view once, when it is made, so a tab change
-# from here needs a new setter (cut from 0.5.361, said in the notes).
+# (enum, case) -> why it is not a row. The Memories tabs are places since 0.5.362: the page is told again through a request count.
 excluded = {
     ("ActivitySection", "tasks"): "Tasks is a synonym for Work (resolvedLaunch), and Command.openWork answers to it",
     ("ActivityWorkSubview", "tasks"): "the Work pane's only subview, with no tab to choose",
     ("ActivityWorkSubview", "meetingFollowUp"): "never set anywhere: Work's workspace replaced it, so there is no tab to reach",
-    ("MemoriesSubview", "recentLearning"): "Memories is a web view that reads its view once; a tab change needs a new setter",
-    ("MemoriesSubview", "allMemories"): "same",
-    ("MemoriesSubview", "toReview"): "same",
-    ("MemoriesSubview", "knowledge"): "same",
 }
 covered_by_command = {("ActivitySection", "meetings"): "openMeetings", ("ActivitySection", "speakers"): "openSpeakers", ("ActivitySection", "memories"): "openMemories",
                       ("ActivitySection", "sessions"): "openSessions", ("ActivitySection", "work"): "openWork", ("ActivitySection", "dictation"): "openDictation",
@@ -399,7 +394,7 @@ pin(all(f in _work for f in ("select(.work)", 'workWorkspaceState.query = ""', "
 pin("model.closeDictationSettings()" in block(window, "    private func clearDetail() {", "    private func openMemoriesView("), "leaving Dictation closes its settings, as it closes its Dictionary and History")
 pin("goHome()" in go and "default:" not in go, "Today is goHome(), and every Place is dispatched with no default")
 place_cases = [c for line in block(core, "        enum Place: String, CaseIterable, Sendable {", "            var title: String {").split("\n") if line.strip().startswith("case ") for c in re.findall(r"\w+", line.split("case ", 1)[1])]
-pin(len(place_cases) == 17, f"read the Place cases: {place_cases}")
+pin(len(place_cases) == 25, f"read the Place cases: {place_cases}")
 for case in place_cases:
     pin(re.search(r"case \." + case + r"\b", go) is not None, f"commandGo dispatches .{case}")
 pin("Place" in block(core, "        enum Kind: Equatable, Sendable {", "        enum Group: Int, Sendable {"), "a Place is a kind of row, separate from a Command")
@@ -573,7 +568,7 @@ def case_blocks(text):
     return {m.group(1): text[m.end():(marks[i + 1].start() if i + 1 < len(marks) else len(text))] for i, m in enumerate(marks)}
 
 def tab_writes(text):
-    found = set(re.findall(r"select\(\.\w+\)|\w*[sS]ubview = \.\w+|sessionsPane = \.\w+|commandOpenWork\(scope: \.\w+\)|goHome\(\)|model\.open\w+\(\)", text))
+    found = set(re.findall(r"select\(\.\w+\)|\w*[sS]ubview = \.\w+|sessionsPane = \.\w+|commandOpenWork\(scope: \.\w+\)|commandOpenMemories\(\"\w+\", native: \.\w+\)|commandOpenWorkLayout\(\.\w+\)|goHome\(\)|model\.open\w+\(\)", text))
     return found
 
 go_cases = case_blocks(go)
@@ -587,6 +582,10 @@ want_go = {
     "workCompleted": {"commandOpenWork(scope: .completed)"},
     "dictationHistory": {"select(.dictation)", "model.openDictationHistory()"}, "dictationDictionary": {"select(.dictation)", "model.openDictionary()"},
     "dictationSettings": {"select(.dictation)", "model.openDictationSettings()"},
+    "memoriesRecent": {'commandOpenMemories("recent", native: .recentLearning)'}, "memoriesApplied": {'commandOpenMemories("applied", native: .recentLearning)'},
+    "memoriesAll": {'commandOpenMemories("memories", native: .allMemories)'}, "memoriesReview": {'commandOpenMemories("review", native: .toReview)'},
+    "memoriesKnowledge": {'commandOpenMemories("knowledge", native: .knowledge)'},
+    "workLayoutReview": {"commandOpenWorkLayout(.review)"}, "workLayoutBoard": {"commandOpenWorkLayout(.board)"}, "workLayoutFocus": {"commandOpenWorkLayout(.focus)"},
 }
 pin(set(go_cases) == set(want_go) == set(place_cases), f"commandGo has exactly the Place cases: {sorted(set(go_cases) ^ set(want_go))}")
 for name, expected in want_go.items():
@@ -695,6 +694,43 @@ pin('"capabilities"' in helper and "sessionFind" in helper and "session-find-hel
 pin("SetupAssistant.Center.staleRunning(state: session.state, updated: session.updatedDate, now: now) ? \"recent\" : session.state" in inputs
     and "SetupAssistant.Center.staleRunning(state: $0.state, updated: $0.updatedDate, now: now)" in inputs and "petSessions" not in inputs.replace("todaySessions()", ""),
     "the panel does not call a session that has gone quiet for hours Running, in its list or in Today's Running rows")
+
+# ---- 0.5.362: the rest of the places --------------------------------------------------------------------------------------------------
+
+# The Memories page is told again when ⌘K asks for a view (it reads its view once, when it is made), in a few lines.
+mem_web = block(window, "struct MemoriesWebView: NSViewRepresentable {", "    static var bundleURL: URL? {")
+mem_update = block(window, "    func updateNSView(_ view: WKWebView, context: Context) {", "    static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {")
+pin("var request = 0" in mem_web and "if request != context.coordinator.request, let script = Self.openScript(initialView) { view.evaluateJavaScript(script) }" in mem_update
+    and "context.coordinator.request = request" in mem_update and len(mem_update.strip().split("\n")) <= 15, "the Memories page is told again when a view is asked for, in under 15 lines")
+open_mem = block(ext, "    fileprivate func commandOpenMemories(_ view: String, native: MemoriesSubview) {", "\n    }\n")
+pin(before(open_mem, "select(.memories)", "memoriesOpenView = view", "memoriesViewRequest += 1") and "MemoriesWebView(model: model, initialView: memoriesOpenView, request: memoriesViewRequest," in window,
+    "a Memories place sets its view after select clears it, and counts the request")
+# Every page view has a place, and every one the page can show is one the script allows.
+script_views = re.search(r'\["((?:\w+", ")*\w+)"\]\.contains\(view\)', window)
+page_views = set(script_views.group(1).split('", "')) if script_views else set()
+asked_views = set(re.findall(r'commandOpenMemories\("(\w+)"', go))
+pin(page_views == asked_views == {"recent", "applied", "memories", "review", "knowledge"}, f"every view the Memories page has is a place: {page_views} {asked_views}")
+layout = code(read("Sources/WorkWorkspaceView.swift"))
+pin('static let key = "cos.workLayout"' in layout and '@AppStorage(WorkLayout.key) private var layoutRaw' in layout and 'defaults.set(layout.rawValue, forKey: key)' in layout, "Work's layout has one key and one setter, and the board reads that key")
+pin(before(block(ext, "    func commandOpenWorkLayout(_ layout: WorkLayout) {", "\n    }\n"), "select(.work)", "WorkLayout.choose(layout)"), "a Work layout place opens Work, then sets the layout")
+pin(sorted(set(re.findall(r"commandOpenWorkLayout\(\.(\w+)\)", go))) == ["board", "focus", "review"], "every Work layout has a place")
+# Settings groups: the engine's table is the hub catalog's, row for row.
+cat = read("Sources/SettingsHubCatalog.swift")
+cat_groups = re.findall(r'\.init\(id: "([a-z.]+)", category: \.(\w+), title: "([^"]+)", blurb:', cat)
+cat_titles = dict(re.findall(r'case \.(\w+): "([^"]+)"', block(cat, "enum SettingsHubCategory: String, CaseIterable, Identifiable, Sendable {", "    /// SF Symbols")))
+eng_groups = re.findall(r'SettingsGroup\(id: "([a-z.]+)", title: "([^"]+)", parent: "([^"]+)"\)', block(core, "        static let settingsGroups: [SettingsGroup] = [", "        ]\n"))
+pin(len(eng_groups) == len(cat_groups) >= 30 and [(i, t, cat_titles[c]) for i, c, t in cat_groups] == eng_groups, "the engine's Settings groups are the hub catalog's groups, with the same titles and categories")
+pin("case .settingsGroup(let id): return commandGoSettings(id)" in row_run, "a Settings group row is dispatched")
+go_settings = block(ext, "    func commandGoSettings(_ id: String) -> CommandEffect {", "\n    }\n")
+pin("guard !classicSettings, SettingsHubCatalog.group(id) != nil else { return .stay }" in go_settings and 'commandOpenSettings("hub." + id)' in go_settings, "a Settings group opens the hub on that group, and nothing under the classic Settings")
+pin("inputs.hiddenSettingsGroups = Set(SettingsHubCatalog.groups.map(\\.id).filter { !ControlPanel.hubGroupShown($0, model: model) })" in inputs, "a group the hub is not drawing is not listed")
+views_src = code(read("Sources/Views.swift"))
+pin("func hubGroupShown(_ id: String) -> Bool { Self.hubGroupShown(id, model: model) }" in views_src and "static func hubGroupShown(_ id: String, model: ControllerModel) -> Bool {" in views_src,
+    "the hub's cards and ⌘K share one test for whether a group is drawn")
+vs = block(core, "        static func visibleSettings(", "\n        }\n")
+pin("guard !classic else { return [] }" in vs and "!hidden.contains(group.id)" in vs and "prefix(settingsCap)" in vs and "static let settingsCap = 3" in core, "Settings rows hide under the classic Settings and for hidden groups, and are capped at three")
+settings_listing = block(core, "            let groups = visibleSettings(", "            var seen: [String] = []")
+pin("autoHighlight" not in settings_listing, "Settings rows never highlight themselves")
 
 pin("s.classicSettings = classicSettings" in window and "var classicSettings = false" in core, "the window passes the classic Settings flag")
 

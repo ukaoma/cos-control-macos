@@ -78,6 +78,7 @@ import Foundation
         centerRecordingRows()
         centerSessions()
         centerPlaces()
+        centerSettingsGroups()
         centerNouns()
         centerSearch()
         centerMeaning()
@@ -709,6 +710,7 @@ import Foundation
         for command in C.Command.allCases { for phrase in command.phrases { claim(phrase, "command:" + command.rawValue) } }
         for place in C.Place.allCases { for name in place.names { for form in [name, "open " + name, "go to " + name, "show " + name] { claim(form, "place:" + place.rawValue) } } }
         for noun in C.nounPhrases { claim(noun, "noun") }
+        for group in C.settingsGroups { for name in C.settingsGroupNames(group.id) { for form in [name, "open " + name, "go to " + name, "show " + name] { claim(form, "settings:" + group.id) } } }
         return owners
     }
 
@@ -717,9 +719,50 @@ import Foundation
         return name
     }
 
+    static func centerSettingsGroups() {
+        // The table: 38 groups, each with a title, a category and at least one name no other row answers to.
+        check(C.settingsGroups.count == 38 && Set(C.settingsGroups.map(\.id)).count == 38, "[the Settings groups are a closed list]", "\(C.settingsGroups.count)")
+        for group in C.settingsGroups {
+            let names = C.settingsGroupNames(group.id)
+            check(!names.isEmpty && !group.title.isEmpty && !group.parent.isEmpty, "[every Settings group has a name of its own]", group.id)
+            for name in names { check(C.plain(name) == name, "[Settings names are plain words]", name) }
+        }
+        let owners = ownersOfEveryExactName()
+        for (name, list) in owners where list.contains(where: { $0.hasPrefix("settings:") }) {
+            check(Set(list).count == 1, "[a Settings group name is no other row's name]", "\(name): \(list)")
+        }
+        func rows(_ words: String, classic: Bool = false, hidden: Set<String> = []) -> C.Listing {
+            var inputs = center { $0.hiddenSettingsGroups = hidden }
+            inputs.snapshot.classicSettings = classic
+            return C.listing(inputs, words: words)
+        }
+        let micro = rows("microphone")
+        check(micro.rows.map(\.id).contains("settings:dictation.microphone") && micro.autoHighlight == nil, "[a Settings group is listed and never highlights itself]", "\(rowIDs(micro))")
+        check(row(micro, "settings:dictation.microphone")?.title == "Microphone" && row(micro, "settings:dictation.microphone")?.detail == "In Settings, Dictation", "[a Settings group names its category]", "")
+        check(returned("go to microphone") == .move("settings:dictation.microphone") && returned("go to microphone", chosen: "settings:dictation.microphone") == returnRuns("settings:dictation.microphone"), "[a whole Settings name takes Return twice]", "\(returned("go to microphone"))")
+        check(returned("update") == .move("ask"), "[a word that starts a Settings name does not take Return]", "\(returned("update"))")
+        check(rows("microphone", classic: true).rows.allSatisfy { !$0.id.hasPrefix("settings:") }, "[Settings groups hide under the classic Settings]", "")
+        check(rows("microphone", hidden: ["dictation.microphone"]).rows.allSatisfy { $0.id != "settings:dictation.microphone" }, "[a group the hub is not drawing is not listed]", "")
+        check(rows("decision models").rows.contains { $0.id == "settings:ai.decision" }, "[Decision models is a place]", "")
+        // A one-word search stays readable: at most three Settings rows, and the places before them are capped as they were.
+        for word in ["settings", "model", "voice", "work", "sessions", "dictation", "meeting", "pet", "update", "server", "app"] {
+            let l = rows(word)
+            check(l.rows.filter { $0.id.hasPrefix("settings:") }.count <= C.settingsCap && C.settingsCap == 3, "[a one-word search lists at most three Settings groups]", word)
+            check(l.rows.filter { $0.id.hasPrefix("place:") }.count <= C.placeCap, "[a one-word search lists at most six places]", word)
+            check(l.rows.filter { $0.id.hasPrefix("settings:") }.allSatisfy { $0.selectable }, "[Settings rows can be chosen]", word)
+        }
+        // A Settings group is one more place to leave from: it asks first when a reply is typed and unsent.
+        var draft = healthy(); draft.unsentSessionDraft = true
+        check(C.confirmation(row(micro, "settings:dictation.microphone")!, draft) == C.draftConfirm && C.leavesSession(row(micro, "settings:dictation.microphone")!), "[a Settings group with an unsent message asks first]", "")
+        // The exact name finds no session search, and a topic with one of these words in a sentence is listed only.
+        check(rows("go to microphone").searchWords == nil, "[an exact Settings name runs no search]", "")
+        check(rows("microphone settings never works when the headset is on").rows.first { $0.id == "settings:dictation.microphone" } != nil && returned("microphone settings never works when the headset is on") == .move("ask"),
+              "[a Settings name that begins a sentence is listed and Return goes to Ask]", "")
+    }
+
     static func centerPlaces() {
         // The closed list, with a title, a parent for a tab, and names that are all plain words.
-        check(C.Place.allCases.count == 17, "[places are a closed list]", "\(C.Place.allCases.count)")
+        check(C.Place.allCases.count == 25, "[places are a closed list]", "\(C.Place.allCases.count)")
         for place in C.Place.allCases {
             check(!place.title.isEmpty && !place.names.isEmpty, "[places are a closed list]", "\(place)")
             for name in place.names { check(C.plain(name).trimmingCharacters(in: .whitespaces) == name, "[place names are plain words]", name) }
@@ -747,6 +790,8 @@ import Foundation
                 check(returned(name) == returnRuns(listing.autoHighlight ?? "?"), "[Return opens an exact place name]", name)
             } else if let only = unique.first, only == "noun" {
                 check(listing.autoHighlight == nil && listing.listOnly, "[a noun list highlights nothing]", "\(name): \(String(describing: listing.autoHighlight))")
+            } else if let only = unique.first, only.hasPrefix("settings:") {
+                check(listing.autoHighlight == nil && listing.rows.contains { $0.id == only }, "[a Settings group never highlights itself]", "\(name): \(String(describing: listing.autoHighlight))")
             }
         }
         check(shared == Set(C.sharedNames.keys), "[no stale declared name]", "\(shared.sorted()) vs \(C.sharedNames.keys.sorted())")
@@ -1622,7 +1667,7 @@ import Foundation
         ]
         for inputs in fixtures {
             for words in ["", "hello", "set up parakeet", "start recording", "stop recording", "my transcript never finished", "how do i use dictation", "rename a voice", "doctor",
-                          "sessions", "recent", "sessions today", "usage", "go to usage", "messages", "work", "tasks", "voices", "dictation", "usage limit reached", "persona pricing", "holiday promo", "persona pricing for the jewelry tier"] {
+                          "sessions", "recent", "sessions today", "usage", "go to usage", "messages", "work", "tasks", "voices", "dictation", "usage limit reached", "persona pricing", "holiday promo", "persona pricing for the jewelry tier", "microphone", "memories", "board", "decision models", "update"] {
                 let listing = C.listing(inputs, words: words)
                 check(Set(listing.rows.map(\.id)).count == listing.rows.count, "[row ids are unique]", "\(rowIDs(listing))")
                 for row in listing.rows { texts += [row.title, row.detail ?? "", row.state ?? "", row.trailing ?? "", row.held ?? "", row.match ?? ""] }

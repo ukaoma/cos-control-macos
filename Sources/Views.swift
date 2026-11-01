@@ -3895,23 +3895,7 @@ private extension ControlPanel {
         SettingsHubCatalog.groups(in: category).filter { hubGroupShown($0.id) }
     }
 
-    func hubGroupShown(_ id: String) -> Bool {
-        switch id {
-        case "ai.keys": return SettingsHubOwnKeyCard.shown(model)
-        case "glasses.video": return model.status.videoUploadV2Supported
-        case "dictation.engine": return voiceGuide.voice?.dictationSelected != nil
-        case "dictation.microphone", "dictation.shortcuts", "dictation.sounds", "dictation.text", "dictation.polish": return model.dictation.enabled
-        case "voice.models": return model.transcriptionSettings.visible
-        case "voice.performance":
-            return model.status.idleMetalHqSupported || model.status.adaptiveAudioCleanupSupported || model.status.progressiveHqEnabled != nil
-        case "work.background": return model.status.backgroundJobsSupported
-        case "work.brief": return model.status.morningBriefSupported
-        case "work.domains": return model.status.tasksGate != nil
-        case "work.fences": return !model.fenceRecords.isEmpty
-        case "pet.characters": return model.petEnabled
-        default: return true
-        }
-    }
+    func hubGroupShown(_ id: String) -> Bool { Self.hubGroupShown(id, model: model) }
 
     @ViewBuilder func hubCategoryContent(_ category: SettingsHubCategory) -> some View {
         switch category {
@@ -7010,5 +6994,27 @@ struct IntervalWordNameConfirmationView: View {
                 if model.mergeInFlight { ProgressView().controlSize(.small) }
             }
         }.padding(12)
+    }
+}
+
+extension ControlPanel {
+    /// Whether the hub draws a group now. The one set of tests, shared by the hub's cards and by ⌘K, which lists a Settings group only while the
+    /// hub is drawing it (0.5.362). A feature this Mac or server lacks leaves its card out.
+    static func hubGroupShown(_ id: String, model: ControllerModel) -> Bool {
+        switch id {
+        case "ai.keys": return SettingsHubOwnKeyCard.shown(model)
+        case "glasses.video": return model.status.videoUploadV2Supported
+        case "dictation.engine": return model.setupGuide.voice?.dictationSelected != nil
+        case "dictation.microphone", "dictation.shortcuts", "dictation.sounds", "dictation.text", "dictation.polish": return model.dictation.enabled
+        case "voice.models": return model.transcriptionSettings.visible
+        case "voice.performance":
+            return model.status.idleMetalHqSupported || model.status.adaptiveAudioCleanupSupported || model.status.progressiveHqEnabled != nil
+        case "work.background": return model.status.backgroundJobsSupported
+        case "work.brief": return model.status.morningBriefSupported
+        case "work.domains": return model.status.tasksGate != nil
+        case "work.fences": return !model.fenceRecords.isEmpty
+        case "pet.characters": return model.petEnabled
+        default: return true
+        }
     }
 }
