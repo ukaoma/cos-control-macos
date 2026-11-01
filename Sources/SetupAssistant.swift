@@ -1189,7 +1189,8 @@ enum SetupAssistant {
         /// Text that looks like a key, a token or a secret, replaced by shape (not by a list of known secrets). Each shape starts at a
         /// non-alphanumeric, never at `\b`: an underscore is a word character, so `\b` failed in `OPENAI_API_KEY` and `my_sk-...`.
         private static let keyShapes = [
-            #"(?<![A-Za-z0-9])(?:sk|pk|rk|sess)[-_][A-Za-z0-9_\-]{16,}"#,
+            #"(?<![A-Za-z0-9])(?:sk|sess)-[A-Za-z0-9_\-]{16,}"#,
+            #"(?<![A-Za-z0-9])(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{8,}"#,
             #"(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{16,}|(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{16,}"#,
             #"(?<![A-Za-z0-9])glpat-[A-Za-z0-9_\-]{16,}"#,
             #"(?<![A-Za-z0-9])xox[abprs]-[A-Za-z0-9\-]{10,}"#,
@@ -1197,14 +1198,18 @@ enum SetupAssistant {
             #"(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{12,}"#,
             #"(?<![A-Za-z0-9])eyJ[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}"#,
             #"(?i)(?<![A-Za-z0-9])bearer\s+[A-Za-z0-9._~+/\-]{16,}=*"#,
-            #"(?i)(?<![A-Za-z0-9])basic\s+(?=[A-Za-z0-9+/]*(?:[0-9+/]|=))[A-Za-z0-9+/]{16,}={0,2}"#,
+            #"(?i)authorization["']?\s*[:=]\s*["']?basic\s+[A-Za-z0-9+/]{8,}={0,2}"#,
+            #"(?i)(?<![A-Za-z0-9])basic\s+[A-Za-z0-9+/]{16,}={1,2}"#,
             #"-----BEGIN [A-Z ]*PRIVATE KEY-----[^-]*(?:-----END [A-Z ]*PRIVATE KEY-----)?"#,
             #"[A-Za-z][A-Za-z0-9+.\-]*://[^/\s:@'"]+:[^/\s@'"]+@"#,
             #"(?i)(?<![A-Za-z0-9])--(?:password|passwd|token|secret|api[_-]?key)(?:=|\s+)\S{4,}"#,
         ]
 
-        /// A `key: value`, `key=value`, `"key": "value"` or `'key': 'value'` pair. Whether the key names a credential is `credentialKey`.
-        private static let pairShape = #"(?<![A-Za-z0-9])(["']?)([A-Za-z_][A-Za-z0-9_.\-]*)\1[ \t]*[:=][ \t]*(?:"[^"\\]{4,}"|'[^'\\]{4,}'|[^\s"',;]{6,})"#
+        /// A `key:`, `key=`, `"key":` or `'key':` and nothing after it. Whether the key names a credential is `credentialKey`, and only then is
+        /// the value read (`pairValueShape`). A key that is not one resumes the scan right after its operator, so a credential inside what
+        /// follows ("Note: password=x", "https://h/p?token=x", "url=https://h/p?secret=x") is still found.
+        private static let pairKeyShape = #"(?<![A-Za-z0-9])(["']?)([A-Za-z_][A-Za-z0-9_.\-]*)\1[ \t]*[:=][ \t]*"#
+        private static let pairValueShape = #"(?:"[^"\\]{4,}"|'[^'\\]{4,}'|[^\s"',;]{6,})"#
 
         /// A run of 32 or more key characters. `mask` decides which of them are keys (a plan name or a UUID is not).
         private static let longRunShape = #"(?<![A-Za-z0-9_\-])[A-Za-z0-9_\-]{32,}(?![A-Za-z0-9_\-])"#
@@ -1235,22 +1240,51 @@ enum SetupAssistant {
             return out
         }
 
-        /// A name, not a key: a plan or file name of words joined by underscores or hyphens ("PLAN_cmdK_find_sessions_2026-10-31"), or a UUID.
+        /// A name, not a key: a UUID, a name that carries one ("local_<uuid>", "session-<uuid>"), or a plan or file name of words joined by
+        /// underscores or hyphens ("PLAN_cmdK_find_sessions_2026-10-31"). A word is letters in one case, or capitalized, or camelCase with one
+        /// hump: "pQrStUv" is a key's alternating case, not a word.
         private static func readsAsName(_ run: String) -> Bool {
-            let uuid = #"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"#
-            if run.range(of: uuid, options: .regularExpression) != nil { return true }
-            let words = run.split(whereSeparator: { $0 == "_" || $0 == "-" }).filter { $0.count >= 4 && $0.allSatisfy(\.isLetter) }
+            let uuid = #"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"#
+            let rest = run.replacingOccurrences(of: uuid, with: "", options: .regularExpression)
+            let segments = rest.split(whereSeparator: { $0 == "_" || $0 == "-" })
+            if rest.count < run.count, segments.allSatisfy({ $0.allSatisfy(\.isLetter) }) { return true }
+            func humps(_ word: Substring) -> Int {
+                var count = 0
+                var previous: Character?
+                for ch in word {
+                    if ch.isUppercase, let prev = previous, prev.isLowercase { count += 1 }
+                    previous = ch
+                }
+                return count
+            }
+            let words = segments.filter { $0.count >= 4 && $0.allSatisfy(\.isLetter) && humps($0) <= 1 }
             return words.count >= 2
         }
 
         static func mask(_ text: String) -> String {
             var out = keyShapes.reduce(text) { $0.replacingOccurrences(of: $1, with: hidden, options: .regularExpression) }
-            if let pairs = try? NSRegularExpression(pattern: pairShape) {
-                let found = pairs.matches(in: out, range: NSRange(out.startIndex..., in: out))
-                out = replacing(out, matches: found) { match, current in
-                    guard let key = Range(match.range(at: 2), in: current) else { return false }
-                    return credentialKey(String(current[key]))
+            if let keys = try? NSRegularExpression(pattern: pairKeyShape), let values = try? NSRegularExpression(pattern: pairValueShape) {
+                var hide: [Range<String.Index>] = []
+                var resume = out.startIndex
+                for match in keys.matches(in: out, range: NSRange(out.startIndex..., in: out)) {
+                    guard let whole = Range(match.range, in: out), whole.lowerBound >= resume, let keyRange = Range(match.range(at: 2), in: out) else { continue }
+                    let key = String(out[keyRange])
+                    guard credentialKey(key) else { continue }
+                    guard let found = values.firstMatch(in: out, options: .anchored, range: NSRange(whole.upperBound..<out.endIndex, in: out)),
+                          let value = Range(found.range, in: out) else { continue }
+                    // A bare "pass" is a word as often as a password ("First pass: reviewed"): it hides only a value that has a digit in it.
+                    if key.lowercased() == "pass", !out[value].contains(where: \.isNumber) { continue }
+                    hide.append(whole.lowerBound..<value.upperBound)
+                    resume = value.upperBound
                 }
+                var result = ""
+                var cursor = out.startIndex
+                for range in hide {
+                    result += out[cursor..<range.lowerBound]
+                    result += hidden
+                    cursor = range.upperBound
+                }
+                out = result + out[cursor...]
             }
             if let runs = try? NSRegularExpression(pattern: longRunShape) {
                 let found = runs.matches(in: out, range: NSRange(out.startIndex..., in: out))
@@ -1529,12 +1563,12 @@ enum SetupAssistant {
         }
 
         private static func waitingRow(_ item: Item) -> Row {
-            Row(id: "waiting:" + item.id, kind: .waiting(item.id), group: .waiting, title: clean(item.title), detail: item.detail.map(clean),
+            Row(id: "waiting:" + item.id, kind: .waiting(item.id), group: .waiting, title: hitTitle(item.title), detail: item.detail.map(clean),
                 state: item.tier == 1 ? "Waiting" : nil, trailing: item.openLabel, leavesSession: item.leavesSession)
         }
 
         private static func runningRow(_ item: Item) -> Row {
-            Row(id: "running:" + item.id, kind: .running(item.id), group: .running, title: clean(item.title), detail: item.detail.map(clean),
+            Row(id: "running:" + item.id, kind: .running(item.id), group: .running, title: hitTitle(item.title), detail: item.detail.map(clean),
                 state: "Running", trailing: item.openLabel, leavesSession: item.leavesSession)
         }
 

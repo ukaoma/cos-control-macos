@@ -1123,6 +1123,12 @@ import Foundation
             ("Authorization: Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA"), ("use postgres://admin:hunter2hunter2@db.example/prod now", "hunter2hunter2"),
             ("post to https://hooks.slack.com/services/T0ABC123/B0DEF456/abcdefghijklmnopqrstuvwx", "abcdefghijklmnopqrstuvwx"), ("glpat-abcdefghij1234567890", "abcdefghij1234567890"),
             ("my_sk-abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz"), ("stripeSecretKey: abcdefgh12345678", "abcdefgh12345678"),
+            // A credential after a key that is not one: prose, a URL query and a command (QA 0.5.361 round 2: the whole value used to go under any key).
+            ("https://x.example/v1?token=abcdef123456", "abcdef123456"), ("Note: password=hunter22", "hunter22"), ("url=https://x.example/a?secret=abcdef123456", "abcdef123456"),
+            ("Run: DB_PASSWORD=hunter22", "hunter22"), ("login pass=hunter22x today", "hunter22x"),
+            // The Stripe forms, a padded Basic value, and a key with no name at all.
+            ("sk_live_abcdef1234567890ab", "abcdef1234567890ab"), ("sent Basic dXNlcjpwYXNzd29yZGhlbGxv== to the proxy", "dXNlcjpwYXNzd29yZGhlbGxv"),
+            ("the id Xj3kLmN9_pQrStUv-WxYzAbCd_EfGh1234IjKl9 was leaked", "Xj3kLmN9_pQrStUv-WxYzAbCd_EfGh1234IjKl9"),
         ]
         for (text, secret) in shaped {
             let out = C.mask("note \(text) end")
@@ -1131,8 +1137,17 @@ import Foundation
         }
         // A plan name, a UUID and a key-like word that is not a credential stay readable.
         for stays in ["PLAN_cmdK_find_sessions_2026-10-31", "3f2504e0-4f89-41d3-9a0c-0305e82c3301", "TOKEN_COUNT=12345678", "MAX_TOKENS: 4096", "secretName: fred", "token: the one",
-                      "claude-code-sessions_find_local_words_2026-10-31_final.md", "basic setup of the pricing table", "a pneumonoultramicroscopicsilicovolcanoconiosis case"] {
+                      "claude-code-sessions_find_local_words_2026-10-31_final.md", "basic setup of the pricing table", "a pneumonoultramicroscopicsilicovolcanoconiosis case",
+                      "PASS: test_x", "First pass: reviewed the code", "customer_pk_constraint_name_here", "a basic src/components/Button.tsx",
+                      "local_3f2504e0-4f89-41d3-9a0c-0305e82c3301", "session-3f2504e0-4f89-41d3-9a0c-0305e82c3301", "Note: the task is done", "https://x.example/docs?page=intro"] {
             check(C.mask(stays) == stays, "[a name or a plain word is not hidden]", "\(stays): \(C.mask(stays))")
+        }
+        // A waiting row and a running row are titles too: masked like a hit's.
+        let keyed = "Fix sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx and OPENAI_API_KEY=abcdef123456"
+        let drawn = C.listing(center { $0.waiting = [waiting("w", keyed)]; $0.running = [running("r", keyed)] }, words: "")
+        for id in ["waiting:session:w", "running:r"] {
+            let title = row(drawn, id)?.title ?? ""
+            check(title.contains(C.hidden) && !title.contains("sk-ant") && !title.contains("abcdef123456"), "[a waiting or running row draws no key]", "\(id): \(title)")
         }
         // The same words from a loaded row and from a title search: a listed row's title is masked too.
         let leaky = [listed("claude:leak0001", "Fix sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx and OPENAI_API_KEY=abcdef123456", days: 0)]
