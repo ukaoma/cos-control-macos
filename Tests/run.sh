@@ -283,6 +283,9 @@ python3 "$ROOT/Tests/key-lanes-helper-checks.py" "$TMP/cos-control-helper"
 # 0.5.361: the ⌘K local session search and the open path it reaches, against a fixture home (a Desktop record whose cliSessionId
 # differs from its id is found once and resolves; session-reveal resolves a short id; the words only ever reach stdin).
 python3 "$ROOT/Tests/local-session-search-checks.py" "$TMP/cos-control-helper"
+# 0.5.362: the ⌘K meaning search verb against a stand-in server (a strict body on stdin, rows in the contract's shape, three strength words,
+# fixed reasons, the 7 second deadline, a missing token as an answer, one capability boolean, no words or token echoed).
+python3 "$ROOT/Tests/session-find-helper-checks.py" "$TMP/cos-control-helper"
 # Transcription switcher (server 6.72.0): stt-settings, set-stt-settings, install-parakeet against the contract fixture.
 python3 "$ROOT/Tests/transcription-settings-helper-checks.py" "$TMP/cos-control-helper" "$ROOT/Tests/fixtures/stt-settings-6.72.0.json"
 python3 "$ROOT/Tests/HeldNamingGuardMutations.py"

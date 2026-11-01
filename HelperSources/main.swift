@@ -593,6 +593,7 @@ final class COSControlHelper {
         case "work-session-recommend": try emitWorkSessionRecommend()
         case "work-completion-check": try emitWorkCompletionCheck()
         case "work-search": try emitWorkSearch()
+        case "agent-sessions-find": try emitAgentSessionsFind()
         case "decision-provider-status": try emitDecisionProvider(change: false)
         case "decision-provider-set": try emitDecisionProvider(change: true)
         case "subq-status": try emitSubQKey(action: "status")
@@ -5883,6 +5884,100 @@ final class COSControlHelper {
         return result
     }
 
+    /// 0.5.362: which sessions a person means, judged by their own decision model (server `POST /api/agent-sessions/find`). Control sends
+    /// the words, the provider the person agreed to, and a stage (`first` asks the newest sessions, `full` goes further back). The
+    /// server reads the sessions itself and sends a cut, masked title and first prompt to that provider, so no session text crosses
+    /// this process. Like `work-search`, every failure is an answer with a reason, never an error, so word search goes on. Three
+    /// differences: a missing token is an answer, the whole call has a deadline (7 s, inside the 8 s the app allows a helper), and an
+    /// answer past it is `timed_out`, not `unreachable`. The words arrive on stdin only. Nothing here logs them.
+    private func emitAgentSessionsFind() throws {
+        let data = try readBoundedStdin(4_096)
+        guard let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any], Self.sessionFindBodyValid(body) else {
+            throw HelperError.message("Searching by meaning needs 3 to 200 characters, a provider and a stage.")
+        }
+        let candidate = try reviewCandidateTransport()
+        guard let token = try? (candidate?.token ?? readToken()) else {
+            emit(ok: true, message: "Meaning search unavailable", details: ["available": false, "reason": "no_token"]); return
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + Self.sessionFindSeconds
+        guard let response = request("/api/agent-sessions/find", method: "POST", token: token, body: String(decoding: data, as: UTF8.self),
+                                      timeout: 8, deadlineUptime: deadline, reviewCandidatePort: candidate?.port) else {
+            let late = ProcessInfo.processInfo.systemUptime >= deadline - 0.25
+            emit(ok: true, message: "Meaning search unavailable", details: ["available": false, "reason": late ? "timed_out" : "unreachable"]); return
+        }
+        guard response.status == 200, let answer = response.body else {
+            emit(ok: true, message: "Meaning search unavailable", details: ["available": false, "reason": Self.sessionFindFailureReason(status: response.status, body: response.body)])
+            return
+        }
+        emit(ok: true, message: "Meaning search answered", details: Self.sessionFindAnswer(answer))
+    }
+
+    /// Seconds the whole call may take: under the 8 the app gives a helper, so the answer is read before the process is stopped.
+    static let sessionFindSeconds: TimeInterval = 7
+
+    /// Exactly `query` (3 to 200 code points once trimmed, counted as the server counts), `consentedProvider` and `stage`: the shape the
+    /// server takes. Anything else is refused here, before it can reach the server.
+    static func sessionFindBodyValid(_ body: [String: Any]) -> Bool {
+        guard Set(body.keys) == ["query", "consentedProvider", "stage"],
+              let query = body["query"] as? String, let provider = body["consentedProvider"] as? String, let stage = body["stage"] as? String,
+              ["jev", "subq"].contains(provider), ["first", "full"].contains(stage) else { return false }
+        return (3...200).contains(query.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars.count)
+    }
+
+    /// A refusal as one fixed word. 404 is a server without the route, 503 is a server that is busy; anything else is `failed`.
+    /// The server's own text is never forwarded.
+    static func sessionFindFailureReason(status: Int, body: [String: Any]?) -> String {
+        switch status {
+        case 401, 403: return "unauthorized"
+        case 404: return "server_too_old"
+        case 503: return "try_later"
+        default: return "failed"
+        }
+    }
+
+    /// The server's answer, in its own shape only. A reason is a short code. A row keeps the session fields the list returns (through the
+    /// Sessions search's projection), a probability from 0 to 1, one of three strength words, the redacted text it was judged on (cut),
+    /// whether its file is compressed, and when it last did anything. At most 8 rows, none without a usable probability.
+    static func sessionFindAnswer(_ body: [String: Any]) -> [String: Any] {
+        guard let available = body["available"] as? Bool else { return ["available": false, "reason": "failed"] }
+        func count(_ raw: Any?) -> Int {
+            guard let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.isFinite else { return 0 }
+            return Int(min(max(number.doubleValue, 0), 100_000))
+        }
+        func stamp(_ raw: Any?) -> String? {
+            guard let text = raw as? String, (1...40).contains(text.count), text.range(of: "^[0-9TZ:.+-]+$", options: .regularExpression) != nil else { return nil }
+            return text
+        }
+        var out: [String: Any] = ["available": available, "asked": count(body["asked"]), "skipped": count(body["skipped"]), "cached": body["cached"] as? Bool ?? false]
+        if let provider = body["provider"] as? String, ["jev", "subq"].contains(provider) { out["provider"] = provider }
+        if let stores = body["storesData"] as? Bool { out["storesData"] = stores }
+        if let reached = stamp(body["reachedBack"]) { out["reachedBack"] = reached }
+        if let resets = stamp(body["resetsAt"]) { out["resetsAt"] = resets }
+        guard available else {
+            let reason = (body["reason"] as? String).flatMap { $0.range(of: "^[a-z_]{3,48}$", options: .regularExpression) != nil ? $0 : nil }
+            out["reason"] = reason ?? "failed"
+            out["rows"] = [[String: Any]]()
+            return out
+        }
+        guard let raw = body["rows"] as? [[String: Any]] else { return ["available": false, "reason": "failed"] }
+        let projectedRows = raw.prefix(32).compactMap { row -> [String: Any]? in
+            guard var projected = sessionSearchHitProjection(row),
+                  let number = row["probability"] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  case let probability = number.doubleValue, probability.isFinite, probability >= 0, probability <= 1 else { return nil }
+            let strength = row["strength"] as? String ?? ""
+            projected["probability"] = probability
+            projected["strength"] = ["strong", "likely", "possible"].contains(strength) ? strength : "possible"
+            projected["judgedText"] = String((row["judged_text"] as? String ?? "").prefix(400))
+            projected["compressed"] = row["compressed"] as? Bool ?? false
+            // The list's `modified` is a file time and can be days off; the last record is when the session did something.
+            if let last = stamp(row["last_activity_at"]) { projected["lastActivityAt"] = last; projected["updatedAt"] = last }
+            projected["snippet"] = nil
+            return projected
+        }
+        out["rows"] = Array(projectedRows.prefix(8))
+        return out
+    }
+
     /// Exactly `domain`, a 12-hex task `id`, a `provider` and its `sessionId`, and optionally `after` (an ISO time: judge
     /// only replies from then on).
     static func completionCheckBodyValid(_ body: [String: Any]) -> Bool {
@@ -6076,6 +6171,11 @@ final class COSControlHelper {
         }
         for key in ["configured", "models"] {
             result[key] = (body[key] as? [String: Any])?.filter { ["jev", "subq"].contains($0.key) }
+        }
+        // 0.5.362: what this server can do, read by name and never by version. Only the one fact Control asks for, and only a real
+        // boolean: absent (an older server) is false, so nothing about meaning search is offered and nothing is asked.
+        if let capabilities = body["capabilities"] as? [String: Any], let find = capabilities["sessionFind"] as? NSNumber, CFGetTypeID(find) == CFBooleanGetTypeID() {
+            result["capabilities"] = ["sessionFind": find.boolValue]
         }
         result["available"] = true
         return result
