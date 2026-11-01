@@ -6,8 +6,8 @@
 # (WindowServer watchdog panic). This guard makes that impossible:
 #   1. ONE guarded command machine-wide at a time (lockf on a shared lock file; others wait, up to 30 min).
 #   2. It starts only when at least COS_COMPILE_MIN_FREE_GB of memory is free or reclaimable.
-#   3. A watchdog kills any swift-frontend above COS_COMPILE_MAX_FRONTEND_GB and the whole run if all
-#      swift-frontends together pass COS_COMPILE_MAX_TOTAL_GB.
+#   3. A watchdog stops the run (its own process tree only, never another session's compile) when any swift-frontend
+#      passes COS_COMPILE_MAX_FRONTEND_GB or all swift-frontends together pass COS_COMPILE_MAX_TOTAL_GB.
 # Large-profile defaults scale with the Mac (0.5.267, the repo is public): free floor min(40 GB, 60% of RAM), one frontend
 # min(48 GB, 75% of RAM), all frontends min(60 GB, 85% of RAM). A 96 GB Mac gets 40 / 48 / 60; a 16 GB Mac gets
 # 9 / 12 / 13, so the serial test compiles (about 3 GB each since the tracker checks were split) still run there.
@@ -26,6 +26,95 @@ free_gb() {
   local f=$(sysctl -n vm.page_free_count) s=$(sysctl -n vm.page_speculative_count)
   local i=$(vm_stat | awk '/Pages inactive/ {gsub("\\.","",$3); print $3}')
   echo $(( (f + s + i) * page / 1073741824 ))
+}
+
+# 2026-10-31 (build-speed A5 + review 1): what the large-profile watchdog may count and stop is THIS run's own processes, never a
+# name match across the machine (`pkill -9 -f swift-frontend` also killed every other session's compile). scan() takes ONE ps
+# snapshot and refreshes $OWNED, the run's processes as "pid|start;pid|start..." (start = ps lstart, so a reused pid is never
+# mistaken for ours). $OWNED is a running union across samples, like ProcessTree in compile-bounded.py: a process seen as our
+# descendant stays ours after its parent exits and launchd adopts it, and anything it forks later joins through its parent.
+# Also sets OWN_FE_KB (our swift-frontends' RSS), OWN_BIG (ours over the per-frontend cap), ALL_FE_KB (every swift-frontend on
+# the machine), FOREIGN_BIG (swift-frontends over the per-frontend cap that are NOT ours, "pid:kb") and FOREIGN_ALL (every swift-frontend
+# that is not ours, "kb:pid"). A failed snapshot changes nothing.
+OWNED=""; OWN_FE_KB=0; OWN_BIG=""; ALL_FE_KB=0; FOREIGN_BIG=""; FOREIGN_ALL=""
+scan() {
+  local out line
+  out=$(ps -Ao pid=,ppid=,rss=,lstart=,comm= 2>/dev/null | awk -v root=$CMD -v prev="$OWNED" -v max=$(( MAX_FRONTEND_GB * 1048576 )) '
+    { p = $1; ppid[p] = $2; rss[p] = $3; st[p] = $4 " " $5 " " $6 " " $7 " " $8; alive[p] = 1
+      c = ""; for (i = 9; i <= NF; i++) c = c (i > 9 ? " " : "") $i
+      fe[p] = (c ~ /swift-frontend$/) }
+    END {
+      n = split(prev, held, ";")
+      for (i = 1; i <= n; i++) { split(held[i], kv, "|"); if ((kv[1] in alive) && st[kv[1]] == kv[2]) own[kv[1]] = 1 }
+      if (root in alive) own[root] = 1
+      do { grew = 0
+           for (p in alive) if (!(p in own) && (ppid[p] in own)) { own[p] = 1; grew = 1 } }
+      while (grew)
+      state = ""; ownfe = 0; allfe = 0; ownbig = ""; forbig = ""; forall = ""
+      for (p in alive) {
+        if (fe[p]) {
+          allfe += rss[p]
+          if (p in own) { ownfe += rss[p]; if (rss[p] > max) ownbig = ownbig " " p }
+          else { forall = forall " " rss[p] ":" p; if (rss[p] > max) forbig = forbig " " p ":" rss[p] }
+        }
+        if (p in own) state = state (state == "" ? "" : ";") p "|" st[p]
+      }
+      print "STATE|" state; print "OWNFE|" ownfe; print "OWNBIG|" ownbig; print "ALLFE|" allfe; print "FORBIG|" forbig; print "FORALL|" forall
+    }')
+  [[ "$out" == *STATE\|* ]] || return 1
+  for line in ${(f)out}; do
+    case $line in
+      STATE\|*)  OWNED=${line#STATE\|} ;;
+      OWNFE\|*)  OWN_FE_KB=${line#OWNFE\|} ;;
+      OWNBIG\|*) OWN_BIG=${line#OWNBIG\|} ;;
+      ALLFE\|*)  ALL_FE_KB=${line#ALLFE\|} ;;
+      FORBIG\|*) FOREIGN_BIG=${line#FORBIG\|} ;;
+      FORALL\|*) FOREIGN_ALL=${line#FORALL\|} ;;
+    esac
+  done
+}
+
+# A swift-frontend over the cap that is not in this run's tree is named, once, and left alone: it is not ours to stop, and
+# stopping our own innocent compile would not help. (The old pkill stopped it, and every other session's frontends with it.)
+typeset -A WARNED
+note_foreign() {
+  local item pid
+  for item in ${=FOREIGN_BIG}; do
+    pid=${item%%:*}
+    [[ -n "${WARNED[$pid]:-}" ]] && continue
+    WARNED[$pid]=1
+    echo "compile-guard: NOTE: swift-frontend pid $pid holds $(( ${item#*:} / 1048576 )) GB, over the ${MAX_FRONTEND_GB} GB cap, but it is not part of this run (not a descendant of the guarded command). It was NOT stopped and this run continues." >&2
+  done
+}
+
+# 2026-10-31 (Miles' lead): the machine's swift-frontends together over the total cap stop THIS run (it must not add memory while
+# the machine is over the line: the 10/07 failure), whoever the memory belongs to. The others are named, never signalled.
+# "pid 123 (45 GB), pid 456 (7 GB)": the five biggest swift-frontends that are not this run's.
+foreign_top() {
+  local item out="" n=0
+  local -a items
+  items=( ${=FOREIGN_ALL} ); items=( ${(On)items} )
+  for item in $items; do
+    (( n++ >= 5 )) && break
+    out+="${out:+, }pid ${item#*:} ($(( ${item%%:*} / 1048576 )) GB)"
+  done
+  print -r -- "${out:-none}"
+}
+
+# Stop this run: freeze the whole owned tree first (SIGSTOP), re-scan until no new process appears, then SIGKILL the set. A frozen
+# parent cannot fork another child or exit and orphan one, so the set cannot move between the last scan and the kill.
+stop_owned() {
+  local -a pids; local key last="" i
+  pids=( ${(s:;:)OWNED} ); pids=( ${pids%%|*} )
+  for i in {1..20}; do
+    scan || break
+    pids=( ${(s:;:)OWNED} ); pids=( ${pids%%|*} )
+    kill -STOP "${pids[@]}" 2>/dev/null
+    key="${(j: :)${(on)pids}}"
+    [[ "$key" == "$last" ]] && break
+    last=$key
+  done
+  kill -9 "${pids[@]}" $CMD 2>/dev/null
 }
 
 # Choose direct Swift jobs from available memory. The bounded profile passed
@@ -73,14 +162,17 @@ done
 CMD=$!
 REASON=""
 while kill -0 $CMD 2>/dev/null; do
-  stats=$(ps -Ao pid=,rss=,comm= | awk -v max=$(( MAX_FRONTEND_GB * 1048576 )) '
-    $3 ~ /swift-frontend$/ { total += $2; if ($2 > max) big = big " " $1 }
-    END { printf "%d|%s", total, big }')
-  total_kb=${stats%%|*}; big=${stats#*|}
-  if [[ -n "${big// /}" ]]; then REASON="a swift-frontend passed ${MAX_FRONTEND_GB} GB"; fi
-  if (( total_kb > MAX_TOTAL_GB * 1048576 )); then REASON="all swift-frontends passed ${MAX_TOTAL_GB} GB together"; fi
+  if scan; then
+    if [[ -n "${OWN_BIG// /}" ]]; then REASON="a swift-frontend passed ${MAX_FRONTEND_GB} GB"; fi
+    if (( OWN_FE_KB > MAX_TOTAL_GB * 1048576 )); then
+      REASON="all of this run's swift-frontends passed ${MAX_TOTAL_GB} GB together"
+    elif (( ALL_FE_KB > MAX_TOTAL_GB * 1048576 )); then
+      REASON="all swift-frontends on this Mac passed ${MAX_TOTAL_GB} GB together ($(( ALL_FE_KB / 1048576 )) GB; this run's own: $(( OWN_FE_KB / 1048576 )) GB), so this run stops and adds no more. Not stopped, not touched: $(foreign_top)"
+    fi
+    note_foreign
+  fi
   if [[ -n "$REASON" ]]; then
-    pkill -9 -f swift-frontend; pkill -9 -P $CMD 2>/dev/null; kill -9 $CMD 2>/dev/null
+    stop_owned
     echo "compile-guard: STOPPED: $REASON" >&2
     wait $CMD 2>/dev/null
     exit 137

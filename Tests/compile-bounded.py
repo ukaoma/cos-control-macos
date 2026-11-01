@@ -36,7 +36,9 @@ SAMPLE_SECONDS = .2
 # one of LOCK.slot0..N-1 exclusively; every exclusive user (the large profile, SLOTS=1, and any older checkout) keeps
 # taking LOCK EXCLUSIVE, so a 30+ GB compile never runs beside a slotted one. Unset or 1 is exactly the single lock.
 MAX_SLOTS = 8
-SLOT_WAIT = 1800  # a slotted compile waits for a slot like the large profile waits for the lock; SLOTS=1 keeps 120 s
+SLOT_WAIT = 1800  # a compile waits for the lock or a slot like the large profile waits for the lock; SLOTS=1 too since 2026-10-31 (was 120 s)
+PROGRESS_SECONDS = 60  # a waiting SLOTS=1 compile says so about this often (stderr)
+MAX_JOBS = 8  # --jobs, a trial-only argument of this wrapper (never an environment variable); the default stays 1
 
 
 def slot_count(environ):
@@ -57,7 +59,11 @@ def total_cap_bytes(environ):
     return int(float(raw) * GIB)
 
 
-def normalize(command, environ):
+def normalize(command, environ, jobs=1):
+    # 2026-10-31 (build-speed B4): jobs comes only from the wrapper's --jobs argument, for the measured trial. Never from
+    # `environ`, and a caller's own -j on the swiftc line is still refused below. 1 is today's lane, byte for byte.
+    if isinstance(jobs, bool) or not isinstance(jobs, int) or not 1 <= jobs <= MAX_JOBS:
+        raise ValueError(f'--jobs must be a whole number from 1 to {MAX_JOBS}')
     forbidden_env = ('COS_COMPILE_GUARD_HELD', 'COS_COMPILE_LOCK',
                      'COS_COMPILE_MIN_FREE_GB', 'COS_COMPILE_MAX_FRONTEND_GB',
                      'COS_COMPILE_MAX_TOTAL_GB', 'SWIFT_EXEC', 'SWIFT_DRIVER_SWIFT_FRONTEND_EXEC')
@@ -104,7 +110,7 @@ def normalize(command, environ):
         raise ValueError('unsupported bounded compiler argument: ' + arg)
     if not sources:
         raise ValueError('no Swift sources')
-    return [executable, '-j', '1', '-disable-batch-mode', '-no-whole-module-optimization',
+    return [executable, '-j', str(jobs), '-disable-batch-mode', '-no-whole-module-optimization',
             '-num-threads', '1', *args]
 
 
@@ -442,21 +448,46 @@ def lock_fds(lock_fd):
 
 
 def acquire(slots, wait=None, poll=.2):
-    """The lock this compile holds: ([fds], slot or None). SLOTS=1 is today's single exclusive lock, 120 s."""
+    """The lock this compile holds: ([fds], slot or None). SLOTS=1 is the single exclusive lock, taken behind the gate."""
     def open_lock(path):
         return os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     base = open_lock(LOCK)
     if slots == 1:
-        deadline = time.monotonic() + (120 if wait is None else wait)
-        while True:
-            try:
-                fcntl.flock(base, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return [base], None
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    os.close(base)
-                    raise TimeoutError('shared compile lock busy after 120 seconds')
+        # 2026-10-31 (build-speed A6): wait the way the large profile does. Take the gate and KEEP it while waiting for LOCK, so
+        # a stream of slotted compiles cannot hold LOCK shared forever, then wait up to SLOT_WAIT (it gave up after 120 s with
+        # no gate: 196 "busy after 120 seconds" refusals), saying so about every PROGRESS_SECONDS. The gate is let go once LOCK is
+        # held (LOCK exclusive already keeps slotted compiles out), so the compile holds just LOCK, as before.
+        gate = open_lock(LOCK + '.gate')
+        limit = SLOT_WAIT if wait is None else wait
+        started = last = time.monotonic()
+        have_gate = False
+        try:
+            while True:
+                try:
+                    if not have_gate:
+                        fcntl.flock(gate, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        have_gate = True
+                    fcntl.flock(base, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(gate, fcntl.LOCK_UN)
+                    os.close(gate)
+                    return [base], None
+                except BlockingIOError:
+                    pass
+                now = time.monotonic()
+                if now - started >= limit:
+                    raise TimeoutError(f'shared compile lock busy after {int(limit)} seconds')
+                if now - last >= PROGRESS_SECONDS:
+                    last = now
+                    print(f'compile-bounded: waiting for the shared compile lock ({int(now - started)} s of {int(limit)} s)',
+                          file=sys.stderr, flush=True)
                 time.sleep(poll)
+        except BaseException:
+            for fd in (base, gate):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            raise
     # Pass the gate (an exclusive compile waiting holds it, so slotted compiles cannot starve it), take LOCK shared,
     # leave the gate, then any free slot. Nothing is held while waiting, so no order can deadlock.
     gate = open_lock(LOCK + '.gate')
@@ -629,10 +660,13 @@ def write_receipt(path, report):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--receipt', required=True, type=Path)
+    # TRIAL ONLY (build-speed B4): parallel swiftc jobs for the measured -j trial, 1 to MAX_JOBS. compile-guard.sh never passes
+    # it, so every suite and release compile stays at 1; the trial calls this wrapper directly. Recorded in the receipt.
+    parser.add_argument('--jobs', type=int, default=1)
     parser.add_argument('command', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ['--'] else args.command
-    report = {'schema': 1, 'profile': 'bounded', 'pid': os.getpid(),
+    report = {'schema': 1, 'profile': 'bounded', 'jobs': args.jobs, 'pid': os.getpid(),
               'policy': {'startupAvailableBytes': START_FREE, 'runningAvailableBytes': RUN_FREE,
                          'ownedRSSCapBytes': RSS_CAP, 'swapGrowthCapBytes': SWAP_GROWTH,
                          'sampleSeconds': SAMPLE_SECONDS, 'timeoutSeconds': TIME_LIMIT},
@@ -645,7 +679,7 @@ def main():
     lock = None
     slot = None
     try:
-        normalized = normalize(command, os.environ)
+        normalized = normalize(command, os.environ, args.jobs)
         report['commandSHA256'] = hashlib.sha256('\0'.join(normalized).encode()).hexdigest()
         slots = slot_count(os.environ)
         lock, slot = acquire(slots)

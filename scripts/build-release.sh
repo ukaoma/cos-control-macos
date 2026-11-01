@@ -2,6 +2,12 @@
 set -euo pipefail
 
 ROOT="${0:A:h:h}"
+# 2026-10-31 (build-speed A5): every guarded compile in a release is the measured bounded lane (one frontend, 8 GiB cap,
+# a receipt), never the large profile that compile-guard.sh's auto mode picks above 40 GB free. Exported before the first
+# compile, including the ones Tests/run-work-board-perf.sh and Tests/run-control-instance.sh start below.
+export COS_COMPILE_PROFILE=bounded
+# Review 1 (2026-10-31): a persistent test-kit store inherited from a suite run must not feed a release's gate lanes.
+export COS_TEST_KIT_PERSIST=0
 PLIST_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/Resources/Info.plist")"
 VERSION="${1:-$PLIST_VERSION}"
 if [ "$VERSION" != "$PLIST_VERSION" ]; then
