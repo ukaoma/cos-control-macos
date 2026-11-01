@@ -614,6 +614,9 @@ enum SessionUsagePresentation {
     /// Busy passes in a row that still come back at the pending pace: five minutes of them. Past that, something is holding
     /// the history and the slow pace spares it, instead of starting a decoder every 15 seconds for as long as that lasts.
     static let busyRetryLimit = 20
+    /// Said on the page once the busy streak reaches the limit and the loop slows to the slow pace.
+    static var heldNote: String { "Another COS command is holding the usage history, so Usage waits \(slowSeconds / 60) minutes before it tries again." }
+    static func isHeld(busyPasses: Int) -> Bool { busyPasses >= busyRetryLimit }
     /// How long to wait after a pass, and the busy passes in a row so far. A busy pass keeps no progress and is not an error.
     static func wait(pending: Bool, busy: Bool, busyPasses: Int) -> (seconds: Int, busyPasses: Int) {
         let passes = busy ? busyPasses + 1 : 0
@@ -1606,7 +1609,8 @@ struct CosWorkRun: Equatable, Sendable {
 
 extension CosCostRules {
     /// A handed-in prompt lands within seconds of its handoff. Anything later is not this run's own prompt. A prompt placed in the
-    /// app is sent by the person, whenever they get to it, so it has no limit.
+    /// app is sent by the person, whenever they get to it, so it has no limit: a typed row in a Claude log, and the turn that opens a
+    /// Codex rollout (which has no typed marker, so its first turn is read as handed in).
     static let deliverySeconds = 120.0
 
     /// A Claude log row. A tool result is a `user` row the person never wrote, a background task's notice and a compaction
@@ -1650,7 +1654,7 @@ extension CosCostRules {
         // The run's own prompt is not the person moving on, so the first row that fits is passed over.
         if let first = after.firstIndex(where: { $0.kind != .end }),
            (after[first].at - run.start <= deliverySeconds && (after[first].kind == .handedIn || after[first].kind == .peer))
-            || (run.openedInApp && after[first].kind == .typed) {
+            || (run.openedInApp && (after[first].kind == .typed || after[first].kind == .handedIn)) {
             rest = after[after.index(after: first)...]
         }
         if let closer = rest.first(where: { $0.kind != .end }) { return closer.at }
@@ -2005,6 +2009,16 @@ enum CosCostPresentation {
         default: return .plain
         }
     }
+    /// COS's side of the share leaves something out: dollars without calls that have no price, calls with only character counts,
+    /// session logs not yet read or that cannot be read, and sessions whose log is gone. Only when none of that is so can a partial
+    /// total make the share a ceiling. The figure and the footer both read this, so they cannot disagree.
+    static func measuredShort(_ report: CosUsageReport) -> Bool {
+        let s = report.sessions
+        return measuredPartial(report) || estimatedCalls(report) > 0 || s.compressed > 0 || s.noLogs > 0 || s.reading
+    }
+    static func shareLean(_ report: CosUsageReport, ranPartial: Bool) -> ShareLean {
+        shareLean(ranPartial: ranPartial, measuredPartial: measuredShort(report))
+    }
     static func percent(_ fraction: Double) -> String {
         let p = fraction * 100
         if p > 0 && p < 0.1 { return "under 0.1%" }
@@ -2164,12 +2178,19 @@ enum CosCostPresentation {
     /// usage has no price, the total is low and the share reads high, so it is said as a ceiling.
     static func compareLine(share: Double?, price: Double?, lean: ShareLean = .plain) -> String? {
         guard let share, let price else { return nil }
+        let eitherWay = "Both figures leave something out, so the true share can be higher or lower."
+        // A sum under a cent is a bound too, not "roughly under 1¢" or "up to under 1¢".
+        let small = share * price > 0 && share * price < 0.01
+        let amount = small ? "under 1¢" : "roughly " + money(share * price)
         // Under a tenth of a percent has no "about" or "up to": it is a bound.
-        if share < 0.001 { return "Under 0.1% of your usage, so under \(money(price * 0.001)) of your \(money(price))." + (lean == .either ? " Some models have no price in either figure, so the true share can be higher or lower." : "") }
+        if share < 0.001 {
+            let bound = price * 0.001 < 0.01 ? "under 1¢" : "under " + money(price * 0.001)
+            return "Under 0.1% of your usage, so \(bound) of your \(money(price))." + (lean == .either ? " " + eitherWay : "")
+        }
         switch lean {
-        case .ceiling: return "Up to about \(percent(share)) of your usage, so up to \(money(share * price)) of your \(money(price))."
-        case .either: return "About \(percent(share)) of your usage, roughly \(money(share * price)) of your \(money(price)). Some models have no price in either figure, so the true share can be higher or lower."
-        case .plain: return "About \(percent(share)) of your usage, roughly \(money(share * price)) of your \(money(price))."
+        case .ceiling: return small ? "Up to about \(percent(share)) of your usage, so under 1¢ of your \(money(price))." : "Up to about \(percent(share)) of your usage, so up to \(money(share * price)) of your \(money(price))."
+        case .either: return "About \(percent(share)) of your usage, \(amount) of your \(money(price)). \(eitherWay)"
+        case .plain: return "About \(percent(share)) of your usage, \(amount) of your \(money(price))."
         }
     }
     /// The Work line: each run's own window in its session log, plus real rows for work no log holds.
@@ -2223,11 +2244,12 @@ enum CosCostPresentation {
     /// How long the open page waits after a pass, and the passes in a row that read nothing new. Reading is real progress
     /// and is never counted against the limit; a busy history or a failed pass is.
     static func wait(tracking: Bool, report: CosUsageReport?, failedToRefresh: Bool, quickTries: Int) -> (seconds: Int, quickTries: Int) {
-        let stalled = failedToRefresh || report?.sessions.busy == true
+        let stalled = failedToRefresh || report == nil || report?.sessions.busy == true
         let tries = stalled ? quickTries + 1 : 0
         let quick = tries < quickTryLimit
         if failedToRefresh { return (quick ? failedSeconds : slowSeconds, tries) }
-        let reading = tracking && (report?.sessions.reading ?? false)
+        // No report yet is the spinner on screen, which a five minute wait would leave there.
+        let reading = tracking && (report?.sessions.reading ?? true)
         return (reading && quick ? readingSeconds : slowSeconds, tries)
     }
     static func stillReadingNote(_ report: CosUsageReport) -> String {
@@ -2237,7 +2259,9 @@ enum CosCostPresentation {
         return "Still reading \(n.formatted()) \(n == 1 ? "session" : "sessions"). These figures will grow until it finishes."
     }
     /// The line under the price field. It says what the field does, or why it cannot yet.
-    static func compareHint(share: Double?, price: Double?, measured: Bool = true) -> String {
+    static func compareHint(share: Double?, price: Double?, measured: Bool = true, measuredCalls: Int = 0) -> String {
+        // Measured calls with no price at all: the headline says they were measured, so the hint cannot say there are none.
+        if !measured && measuredCalls > 0 { return "COS has measured calls, but none has a verified price, so there is no dollar share yet. Your price stays on this Mac." }
         if !measured { return "There are no measured calls yet. Once COS has some, this shows its share of what you pay. Your price stays on this Mac." }
         if price == nil { return "Add it to see COS's share of what you pay. It stays on this Mac and is never sent." }
         if share == nil { return "The comparison needs a current Usage total and a measured figure. Your price stays on this Mac." }
@@ -2265,8 +2289,8 @@ enum CosCostPresentation {
     static func sessionNotes(_ report: CosUsageReport, ranPartial: Bool = false) -> [String] {
         var notes: [String] = []
         if ranPartial {
-            notes.append(measuredPartial(report)
-                ? "Some of your own sessions and some of COS's calls use models with no verified price. Neither figure holds them, so the share can be higher or lower."
+            notes.append(shareLean(report, ranPartial: true) == .either
+                ? "Some of your own sessions use models with no verified price, and COS's own figure leaves some calls out too. Neither side is complete, so the share can be higher or lower."
                 : "Some of your own sessions use models with no verified price. They aren't in the total you ran, so it is higher than shown and COS's share of it is lower.")
         }
         let s = report.sessions

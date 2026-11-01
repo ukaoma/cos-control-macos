@@ -140,9 +140,9 @@ PINS = [
      lambda t: once(t[VIEW], "if usage.enabled && report.sessions.reading {"), VIEW, "if usage.enabled && report.sessions.reading {", "if report.sessions.reading {"),
     ("a busy pass reads again at the reading pace, not in five minutes",
      lambda t: once(t[VIEW], "CosCostPresentation.wait(tracking: usage.enabled, report: report, failedToRefresh: error != nil, quickTries: quickTries)")
-               and once(t[CORE], "let reading = tracking && (report?.sessions.reading ?? false)")
+               and once(t[CORE], "let reading = tracking && (report?.sessions.reading ?? true)")
                and once(t[CORE], "return (reading && quick ? readingSeconds : slowSeconds, tries)"),
-     CORE, "let reading = tracking && (report?.sessions.reading ?? false)", "let reading = tracking && ((report?.sessions.stillReading ?? 0) > 0)"),
+     CORE, "let reading = tracking && (report?.sessions.reading ?? true)", "let reading = tracking && ((report?.sessions.stillReading ?? 0) > 0)"),
     ("Usage's loop paces itself through Core, so a busy history is not a five minute sleep",
      lambda t: once(t[VIEW], "SessionUsagePresentation.wait(pending: pending, busy: self?.report?.historyBusy == true, busyPasses: self?.busyPasses ?? 0)")
                and once(t[VIEW], "self?.busyPasses = next.busyPasses") and once(t[CORE], "return (pending && passes < busyRetryLimit ? pendingSeconds : slowSeconds, passes)"),
@@ -152,9 +152,24 @@ PINS = [
                and between(t[VIEW], "func refresh(importSessions: Bool", "COS cost could not refresh").count("catch is CancellationError {") == 1,
      VIEW, "        } catch is CancellationError {\n            return\n        } catch { self.error = \"Usage could not refresh", "        } catch { self.error = \"Usage could not refresh"),
     ("the share is said as a ceiling when some of the person's own usage has no price",
-     lambda t: once(t[VIEW], "P.compareLine(share: share, price: price, lean: P.shareLean(ranPartial: ranPartial(report), measuredPartial: P.measuredPartial(report)))") and once(t[VIEW], "usage: usageState, ranPartial: ranPartial(report))")
+     lambda t: once(t[VIEW], "P.compareLine(share: share, price: price, lean: P.shareLean(report, ranPartial: ranPartial(report)))") and once(t[VIEW], "usage: usageState, ranPartial: ranPartial(report))")
                and once(t[VIEW], "P.sessionNotes(report, ranPartial: ranPartial(report))"),
-     VIEW, "lean: P.shareLean(ranPartial: ranPartial(report), measuredPartial: P.measuredPartial(report))", "lean: .plain"),
+     VIEW, "lean: P.shareLean(report, ranPartial: ranPartial(report))", "lean: .plain"),
+    ("the footer's share note reads the same rule as the figure",
+     lambda t: once(t[CORE], "notes.append(shareLean(report, ranPartial: true) == .either") and once(t[CORE], "shareLean(ranPartial: ranPartial, measuredPartial: measuredShort(report))"),
+     CORE, "notes.append(shareLean(report, ranPartial: true) == .either", "notes.append(measuredPartial(report)"),
+    ("the price-field hint is told how many calls were measured",
+     lambda t: once(t[VIEW], "P.compareHint(share: share, price: price, measured: P.measuredUSD(report) > 0, measuredCalls: P.measuredCalls(report))"),
+     VIEW, ", measuredCalls: P.measuredCalls(report))", ")"),
+    ("Usage says why it waits longer once a held history slows it",
+     lambda t: once(t[VIEW], "self?.busyHeld = SessionUsagePresentation.isHeld(busyPasses: next.busyPasses)") and once(t[VIEW], "if store.busyHeld {"),
+     VIEW, "if store.busyHeld {", "if false {"),
+    ("a held history is not reported as Cursor failing to answer",
+     lambda t: once(t[HELPER], "catch let failure as SessionUsageCollector.Failure where failure.busy {}") and before(t[HELPER], "catch let failure as SessionUsageCollector.Failure where failure.busy {}", "catch { cursorSyncFailed = true }"),
+     HELPER, "catch let failure as SessionUsageCollector.Failure where failure.busy {}", "catch let failure as SessionUsageCollector.Failure where failure.busy { cursorSyncFailed = true }"),
+    ("a note taken to the app that is still queued is not an opened-in-app run",
+     lambda t: once(t[COLLECTOR], 'openedInApp: receipt.channel == "app" && receipt.status != "queued"))'),
+     COLLECTOR, 'receipt.channel == "app" && receipt.status != "queued"', 'receipt.channel == "app"'),
     ("a share is not shown when the record of calls would not open",
      lambda t: once(t[VIEW], "P.share(measured: P.measuredUSD($0), ran: ran, usage: usageState, auditUnreadable: $0.auditUnreadable)"),
      VIEW, ", auditUnreadable: $0.auditUnreadable)", ")"),

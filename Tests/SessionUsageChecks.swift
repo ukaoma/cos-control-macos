@@ -759,6 +759,18 @@ import SQLite3
         check(try mixRun([timeout, timeout, timeout, timeout]).state == .blocked, "four timeouts in a row stop asking")
         check(try mixRun([timeout, timeout, timeout, noStart, timeout]).state == .keychainBusy, "a launch failure breaks a run of timeouts")
         check(try mixRun([timeout, timeout, timeout, .token("SECRET_SIGN_IN_NEVER_LOGGED"), timeout]).state == .keychainBusy, "a good read starts the timeouts over")
+        // A history another command holds comes out of a Cursor sync as a busy Failure, which the helper does not report as Cursor not answering.
+        let syncDir = home.appendingPathComponent("cursor-sync-busy")
+        try FileManager.default.createDirectory(at: syncDir, withIntermediateDirectories: true)
+        let syncDB = syncDir.appendingPathComponent("s.sqlite")
+        let syncFeed = try SessionUsageCollector(home: syncDir, database: syncDB, timeZone: TimeZone(identifier: "America/Chicago")!)
+        var syncHolder: OpaquePointer?
+        check(sqlite3_open(syncDB.path, &syncHolder) == SQLITE_OK && sqlite3_exec(syncHolder, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK, "the test holds the write lock during a Cursor sync")
+        var syncWasBusy = false
+        do { try syncFeed.syncCursorFeed(force: true, now: t0, readToken: { _ in .token("t") }, fetch: { _, _, _, _ in .init(status: 200, body: page([])) }) }
+        catch let failure as SessionUsageCollector.Failure { syncWasBusy = failure.busy } catch {}
+        sqlite3_exec(syncHolder, "COMMIT", nil, nil, nil); sqlite3_close(syncHolder)
+        check(syncWasBusy, "a history another command holds comes out of a Cursor sync as busy")
         let oversized = String(repeating: "x", count: 70_000)
         try oversized.write(to: keyLog, atomically: true, encoding: .utf8)
         try keyPass(dayFour, .unavailable(.launchFailed), force: true)
@@ -1502,6 +1514,11 @@ extension Checks {
         check(turn.measuredTokens == 300, "a prompt the person sent minutes after opening it in the app is still the run's own")
         turn = workTurns([mark("2026-10-30T12:04:00Z", .typed), mark("2026-10-30T12:09:30Z", .typed)])
         check(turn.measuredTokens == 100, "a typed turn minutes after a handed-in run is the person moving on")
+        // A Codex rollout has no typed marker: the turn the person sent opens with task_started, which reads as handed in.
+        turn = workTurns([mark("2026-10-30T12:04:00Z", .handedIn), mark("2026-10-30T12:09:30Z", .handedIn)], handoffs: [CosWorkRun(session: "claude:s1", start: handoff, openedInApp: true)])
+        check(turn.measuredTokens == 300, "a Codex turn the person sent minutes after opening it in the app is the run's own prompt")
+        turn = workTurns([mark("2026-10-30T12:04:00Z", .handedIn), mark("2026-10-30T12:09:30Z", .handedIn)])
+        check(turn.measuredTokens == 100, "a Codex turn minutes after a handed-in run is not its prompt")
         turn = workTurns([mark("2026-10-30T12:00:03Z", .handedIn), mark("2026-10-30T12:04:00Z", .handedIn), mark("2026-10-30T12:04:03Z", .end), mark("2026-10-30T12:09:00Z", .end)],
                          handoffs: [CosWorkRun(session: "claude:s1", start: handoff), CosWorkRun(session: "claude:s1", start: R.epoch("2026-10-30T12:03:59Z")!)])
         check(turn.measuredTokens == 300 && turn.widerTokens == 700, "two runs in one session do not count a turn twice")
@@ -1650,10 +1667,22 @@ extension Checks {
         // A model with no price sits in both figures, so with both partial the share is not a ceiling and not a floor.
         check(P.shareLean(ranPartial: true, measuredPartial: false) == .ceiling && P.shareLean(ranPartial: true, measuredPartial: true) == .either && P.shareLean(ranPartial: false, measuredPartial: true) == .plain && P.shareLean(ranPartial: false, measuredPartial: false) == .plain, "only a partial total beside complete calls is a ceiling")
         let either = P.compareLine(share: 0.015, price: 200, lean: .either) ?? ""
-        check(either.hasPrefix("About 1.5% of your usage") && !either.contains("Up to") && either.hasSuffix("the true share can be higher or lower."), "with both partial the words say it can go either way")
+        check(either.hasPrefix("About 1.5% of your usage") && !either.contains("Up to") && either.hasSuffix("the true share can be higher or lower.") && either.contains("Both figures leave something out"), "with both partial the words say it can go either way")
+        // A ceiling needs COS's side complete: calls with only character counts, logs not read, logs gone or unreadable all shorten it.
+        check(P.shareLean(report([m]), ranPartial: true) == .ceiling, "a partial total beside a complete COS side is a ceiling")
+        check(P.shareLean(report([m, e]), ranPartial: true) == .either, "estimated calls shorten COS's side, so no ceiling")
+        for (label, change) in [("compressed logs not read", { (r: inout CosUsageReport) in r.sessions.compressed = 1 }), ("sessions with no log", { (r: inout CosUsageReport) in r.sessions.noLogs = 1 }),
+                                ("sessions still being read", { (r: inout CosUsageReport) in r.sessions.stillReading = 1 }), ("a busy pass", { (r: inout CosUsageReport) in r.sessions.busy = true })] {
+            var short = report([m]); change(&short)
+            check(P.shareLean(short, ranPartial: true) == .either && P.shareLean(short, ranPartial: false) == .plain, "\(label) shorten COS's side, so no ceiling")
+        }
+        check(P.sessionNotes(report([m, e]), ranPartial: true).contains { $0.hasSuffix("so the share can be higher or lower.") } && P.sessionNotes(report([m]), ranPartial: true).contains { $0.contains("COS's share of it is lower") }, "the footer reads the same rule as the figure")
+        // A sum under a cent has no 'roughly' or 'up to' in front of it.
+        check(P.compareLine(share: 0.05, price: 0.1) == "About 5.0% of your usage, under 1¢ of your $0.10." && P.compareLine(share: 0.05, price: 0.1, lean: .ceiling) == "Up to about 5.0% of your usage, so under 1¢ of your $0.10.", "a small sum is a bound, not roughly under")
+        check(P.compareLine(share: 0.0004, price: 0.5) == "Under 0.1% of your usage, so under 1¢ of your $0.50.", "under a tenth of a percent of a small price is under a cent, not under under")
         check(P.compareLine(share: 0.0004, price: 200) == "Under 0.1% of your usage, so under $0.20 of your $200." && !(P.compareLine(share: 0.0004, price: 200, lean: .ceiling) ?? "").contains("about under"), "a share under a tenth of a percent has no 'about under'")
         var bothPartial = report([m]); bothPartial.rows[0].unpricedMeasuredCalls = 1
-        check(P.sessionNotes(bothPartial, ranPartial: true).contains { $0.hasPrefix("Some of your own sessions and some of COS's calls") && $0.hasSuffix("the share can be higher or lower.") } && !P.sessionNotes(bothPartial, ranPartial: true).contains { $0.contains("COS's share of it is lower") }, "the footer does not claim the share is lower when both figures are partial")
+        check(P.sessionNotes(bothPartial, ranPartial: true).contains { $0.hasPrefix("Some of your own sessions use models with no verified price, and COS's own figure leaves some calls out too.") && $0.hasSuffix("the share can be higher or lower.") } && !P.sessionNotes(bothPartial, ranPartial: true).contains { $0.contains("COS's share of it is lower") }, "the footer does not claim the share is lower when both figures are partial")
         check(P.sessionNotes(report([m]), ranPartial: true).contains { $0.hasPrefix("Some of your own sessions use models with no verified price") } && !P.sessionNotes(report([m])).contains { $0.hasPrefix("Some of your own sessions") }, "one line says the total is low when it is")
         check(P.method(report([m])).contains { $0.contains("ends in a +") }, "the method says what a + means")
         // Estimated calls with a price for only some of them do not say "the rest".
@@ -1723,6 +1752,9 @@ extension Checks {
         check(P.showsDollars(report([m])) && P.showsDollars(report([e])) && !P.showsDollars(report([one])), "the page says what the dollars are only when it shows some")
         check(P.compareHint(share: nil, price: nil).contains("never sent") && P.compareHint(share: nil, price: 20).contains("needs a current Usage total") && P.compareHint(share: nil, price: nil, measured: false) == "There are no measured calls yet. Once COS has some, this shows its share of what you pay. Your price stays on this Mac.", "the price field says what it does and why it cannot yet")
         check(!P.compareHint(share: nil, price: nil, measured: false).contains("server"), "the price field promises nothing of a server")
+        let unpricedHint = P.compareHint(share: nil, price: nil, measured: false, measuredCalls: 4)
+        check(unpricedHint.hasPrefix("COS has measured calls, but none has a verified price") && !unpricedHint.contains("no measured calls") && !unpricedHint.contains("server"), "measured calls with no price are not 'no measured calls'")
+        check(P.compareHint(share: nil, price: nil, measured: true, measuredCalls: 4).contains("never sent"), "a priced measured figure keeps its ordinary hint")
         var quietReport = report([]); quietReport.runLedgersFound = false
         check(P.sessionNotes(quietReport).isEmpty && !P.sessionNotes({ var r = report([m]); r.runLedgersFound = false; return r }()).isEmpty, "the run record note appears when there are answers for it to explain")
         check(P.sessionNotes({ var r = report([e]); r.runLedgersFound = false; return r }()).isEmpty, "the run record note is about the Answers row, so dictation alone does not get it")
@@ -1885,6 +1917,29 @@ extension Checks {
         check(turns.work.widerTokens == 8000, "the wider figure holds the later turns, from the run's start")
         check(turns.work.unprovenRuns == 0 && turns.work.runsWithoutLogs == 0 && turns.work.runs == 3, "each scratch run has a provable end")
         check(!Data(try Data(contentsOf: turnsDB)).contains(Data("SECRET_PROMPT_NEVER_STORE".utf8)), "no words from a typed turn reach the usage history")
+        // A Codex note taken to the app: once delivered, the turn the person sent ten minutes later is the run's own and the later one
+        // ends it. Still queued, nothing of it has reached the log, so the first turn there is not its prompt. A job is handed in.
+        let appThread = "44444444-4444-4444-4444-444444444444"
+        func appRun(_ channel: String, _ status: String) throws -> Int64 {
+            let dir = root.appendingPathComponent("app-\(channel)-\(status)")
+            func put(_ relative: String, _ text: String) throws {
+                let file = dir.appendingPathComponent(relative)
+                try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try text.write(to: file, atomically: true, encoding: .utf8)
+            }
+            try put(".codex/sessions/2026/10/30/rollout-2026-10-30T13-00-00-\(appThread).jsonl",
+                try json(["type": "session_meta", "payload": ["id": appThread, "model_provider": "openai"]]) + json(["type": "turn_context", "payload": ["model": "gpt-6.1-sol"]])
+                + json(["type": "event_msg", "timestamp": "2026-10-30T13:10:00Z", "payload": ["type": "task_started"]]) + codexTurn("2026-10-30T13:10:10Z", 1000)
+                + json(["type": "event_msg", "timestamp": "2026-10-30T13:10:20Z", "payload": ["type": "task_complete"]])
+                + json(["type": "event_msg", "timestamp": "2026-10-30T13:40:00Z", "payload": ["type": "task_started"]]) + codexTurn("2026-10-30T13:40:10Z", 2000))
+            try put("Library/Application Support/COS Control/work-handoffs/handoffs.json", try json(["receipts": [
+                ["createdAt": R.epoch("2026-10-30T13:00:00Z")!, "sessionID": "codex:\(appThread)", "provider": "codex", "status": status, "channel": channel]]]))
+            let reader = try SessionUsageCollector(home: dir, database: dir.appendingPathComponent("a.sqlite"), timeZone: chicago)
+            return try reader.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: true, now: now).work.measuredTokens
+        }
+        check(try appRun("app", "delivered") == 1000, "a delivered app note: the turn the person sent is the run's own, and the next one ends it")
+        check(try appRun("app", "queued") == 0, "a queued app note has not reached the log, so a turn there is not its prompt")
+        check(try appRun("job", "completed") == 0, "a handed-in job keeps the delivery limit")
         // A log that grows is read from where it stopped, and its rows are not counted twice.
         let again = try collector.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: true, now: now)
         check(row(.answers, again).measuredTokens == answers.measuredTokens, "a second pass over unchanged logs adds nothing")
@@ -2018,6 +2073,7 @@ extension Checks {
         check(wait.seconds == U.pendingSeconds && wait.busyPasses == U.busyRetryLimit - 1, "a busy pass comes back soon")
         wait = U.wait(pending: true, busy: true, busyPasses: U.busyRetryLimit - 1)
         check(wait.seconds == U.slowSeconds, "a history busy for the whole limit is left alone for a while")
+        check(U.isHeld(busyPasses: wait.busyPasses) && !U.isHeld(busyPasses: U.busyRetryLimit - 1) && U.heldNote.contains("\(U.slowSeconds / 60) minutes") && !U.heldNote.contains("\u{2014}"), "once Usage slows down for a held history, the page says why")
         check(U.wait(pending: false, busy: true, busyPasses: 0).seconds == U.slowSeconds, "nothing pending waits at the slow pace, busy or not")
         var costReport = CosUsageReport(windowStart: "2026-10-02", windowEnd: "2026-10-31", timeZone: "America/Chicago", updatedAt: "2026-10-31T12:00:00Z")
         costReport.sessions.stillReading = 3
@@ -2032,6 +2088,9 @@ extension Checks {
         check(cost.seconds == P.failedSeconds && cost.quickTries == 1, "a failed pass tries again in a minute")
         cost = P.wait(tracking: true, report: costReport, failedToRefresh: true, quickTries: P.quickTryLimit - 1)
         check(cost.seconds == P.slowSeconds, "a failed pass that keeps failing slows down")
+        cost = P.wait(tracking: true, report: nil, failedToRefresh: false, quickTries: 0)
+        check(cost.seconds == P.readingSeconds && cost.quickTries == 1, "no report yet is the spinner on screen, which comes back at the reading pace")
+        check(P.wait(tracking: true, report: nil, failedToRefresh: false, quickTries: P.quickTryLimit - 1).seconds == P.slowSeconds && P.wait(tracking: false, report: nil, failedToRefresh: false, quickTries: 0).seconds == P.slowSeconds, "no report for many passes, or a paused page, does not hurry")
         costReport.sessions = CosSliceProgress(failed: true)
         cost = P.wait(tracking: true, report: costReport, failedToRefresh: false, quickTries: 0)
         check(cost.seconds == P.slowSeconds && cost.quickTries == 0, "a history that cannot be read waits at the slow pace")

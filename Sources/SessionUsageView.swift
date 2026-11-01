@@ -23,6 +23,8 @@ final class SessionUsageStore: ObservableObject {
     private var loop: Task<Void, Never>?
     /// Passes in a row that found the history busy. A busy pass is not an error: it keeps what the page has and comes back soon.
     private var busyPasses = 0
+    /// The busy streak has reached its limit, so the page says why it is waiting longer.
+    @Published private(set) var busyHeld = false
     func start() {
         guard loop == nil else { return }
         loop = Task { [weak self] in
@@ -33,6 +35,7 @@ final class SessionUsageStore: ObservableObject {
                 let pending = self?.enabled == true && ((self?.report?.pendingFiles ?? 0) > 0 || self?.report?.cursorFeed?.pending == true) && self?.error == nil
                 let next = SessionUsagePresentation.wait(pending: pending, busy: self?.report?.historyBusy == true, busyPasses: self?.busyPasses ?? 0)
                 self?.busyPasses = next.busyPasses
+                self?.busyHeld = SessionUsagePresentation.isHeld(busyPasses: next.busyPasses)
                 try? await Task.sleep(for: .seconds(next.seconds))
             }
         }
@@ -449,6 +452,9 @@ struct SessionUsageView: View {
     @ViewBuilder private var statusLines: some View {
         if let error = store.error {
             Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger).padding(.top, 10)
+        }
+        if store.busyHeld {
+            Text(P.heldNote).font(COSType.body(12)).foregroundStyle(COSPalette.subtle).padding(.top, 10)
         }
         let feed = store.report?.cursorFeed
         ForEach(P.pendingNotes(tracking: store.enabled, pendingFiles: store.report?.pendingFiles ?? 0, feedMessage: feed?.pending == true ? feed?.message : nil), id: \.self) { note in
@@ -1952,10 +1958,10 @@ struct CosCostView: View {
                     .textFieldStyle(.plain).cosField().frame(width: 104)
                     .monospacedDigit().accessibilityLabel("What you pay a month for these tools")
             }
-            if let line = P.compareLine(share: share, price: price, lean: P.shareLean(ranPartial: ranPartial(report), measuredPartial: P.measuredPartial(report))) {
+            if let line = P.compareLine(share: share, price: price, lean: P.shareLean(report, ranPartial: ranPartial(report))) {
                 Text(line).font(COSType.display(narrow ? 19 : 21)).fixedSize(horizontal: false, vertical: true)
             }
-            Text(P.compareHint(share: share, price: price, measured: P.measuredUSD(report) > 0)).font(COSType.body(12.5)).foregroundStyle(COSPalette.subtle).fixedSize(horizontal: false, vertical: true)
+            Text(P.compareHint(share: share, price: price, measured: P.measuredUSD(report) > 0, measuredCalls: P.measuredCalls(report))).font(COSType.body(12.5)).foregroundStyle(COSPalette.subtle).fixedSize(horizontal: false, vertical: true)
         }
     }
 

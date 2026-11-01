@@ -1250,8 +1250,10 @@ extension SessionUsageCollector {
                 let parts = value.split(separator: ":", maxSplits: 1).map(String.init)
                 let target = parts.count == 2 ? CosSliceTarget(provider: parts[0], id: parts[1]) : CosSliceTarget(provider: receipt.provider ?? "", id: value)
                 if target.provider == "claude" || target.provider == "codex" {
+                    // A note taken to the app is marked delivered once its session shows it arriving (WorkProgressTracker), so a queued
+                    // one is not in the log yet and a later typed turn is not its prompt.
                     workStarts[target] = min(workStarts[target] ?? at, at)
-                    workHandoffs.append(CosWorkRun(session: target.provider + ":" + target.id, start: at, openedInApp: receipt.channel == "app"))
+                    workHandoffs.append(CosWorkRun(session: target.provider + ":" + target.id, start: at, openedInApp: receipt.channel == "app" && receipt.status != "queued"))
                     named = true
                 }
             }

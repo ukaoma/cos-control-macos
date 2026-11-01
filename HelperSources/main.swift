@@ -470,7 +470,10 @@ final class COSControlHelper {
             // A feed failure must never cost the local logs their refresh. The feed reports its own state.
             var cursorSyncFailed = false
             if cursorEnabled && !readOnly {
-                do { try collector.syncCursorFeed(force: args.contains("--cursor-now")) } catch { cursorSyncFailed = true }
+                do { try collector.syncCursorFeed(force: args.contains("--cursor-now")) }
+                // A history another command holds is not Cursor failing to answer, and the refresh below reports it as busy.
+                catch let failure as SessionUsageCollector.Failure where failure.busy {}
+                catch { cursorSyncFailed = true }
             }
             // Control waits 45 seconds for this command, so a slow feed pass shortens the log import.
             let importSeconds = max(2, min(12, 40 - Date().timeIntervalSince(started)))
