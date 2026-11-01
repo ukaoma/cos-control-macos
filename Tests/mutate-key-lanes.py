@@ -85,7 +85,7 @@ MUTANTS = [
     ("P10 Remove all keys without a confirmation", "pins", VIEWS, "                Button(KeyLanes.removeAllLabel) { removingAll = true }",
      "                Button(KeyLanes.removeAllLabel) { Task { await store.removeAll(exportLedger: exportLedger, run: keyLanesRun(model)) } }"),
     ("P11 a keyed session opens in its app", "pins", MODEL,
-     "        if let line = KeyLanes.refusal(sessionID: session.sessionId) { platformOpenNotice = line; return }\n", ""),
+     "        if let line = KeyLanes.refusal(sessionID: session.sessionId) { platformOpenNotice = line; platformOpenFailed = true; return }\n", ""),
     ("P12 Open in platform shown for a keyed session", "pins", WINDOW, "if KeyLanes.refusal(sessionID: row.sessionId) == nil {", "if true {"),
     ("P13 the pasteboard keeps the key", "pins", VIEWS,
      "                    if board.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) == text { board.clearContents() }\n", ""),

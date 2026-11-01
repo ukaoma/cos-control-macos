@@ -120,7 +120,7 @@ desk_open = body(win, "private func openDesk(", "\n    }\n")
 need("select(.sessions)" in desk_open and "selectedSessionID = desk.openRow.id" in desk_open and "model.openClaudeSession(desk.openRow)" in desk_open,
      "[open routes] a desk opens its session the way a Sessions row does")
 session_row = body(win, "private func sessionRow(", "} label: {")
-need("selectedSessionID = session.id" in session_row and "model.openClaudeSession(session)" in session_row, "[open routes] the Sessions row still opens this way")
+need("selectedSessionID = opened.id" in session_row and "model.openClaudeSession(opened)" in session_row, "[open routes] the Sessions row still opens this way")
 
 # 4. One set of seats for the line, the cards and the desks, from the pet's live list when the pet is on; with the pet
 #    off, the home reads the sessions list again once a minute while it shows.

@@ -86,7 +86,7 @@ for signature, src, guard in (
     check(guard in b, f'the keyed-session refusal is displayed by {signature.strip()}')
     head = b[b.index(') async {\n') if ') async {\n' in b[:600] else b.index('() {\n'):]
     check(guard in '\n'.join(head.splitlines()[:4]), f'the refusal comes before anything runs in {signature.strip()}')
-check('if let line = KeyLanes.refusal(sessionID: session.sessionId) { platformOpenNotice = line; return }' in body(model, '    func openSessionInPlatform(_ session: ClaudeSession) {'),
+check('if let line = KeyLanes.refusal(sessionID: session.sessionId) { platformOpenNotice = line; platformOpenFailed = true; return }' in body(model, '    func openSessionInPlatform(_ session: ClaudeSession) {'),
       'a keyed session never opens in its app (QA C9)')
 window = read('Sources/ActivityWindow.swift')
 check('if KeyLanes.refusal(sessionID: row.sessionId) == nil {\n                        Button("Open in platform")' in window, 'Open in platform is hidden for a keyed session (QA C9)')
