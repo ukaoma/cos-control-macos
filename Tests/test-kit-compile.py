@@ -466,7 +466,8 @@ class PersistentKitTests(KitBase):
         (self.store / 'out' / ('a' * 64)).write_text('interrupted copy')
         (self.store / 'out' / ('b' * 64 + '.sha256')).write_text('orphan receipt')
         self.compile(helper, flags=('-D', 'X1'), out='h1')
-        self.assertEqual(sorted(p.name for p in (self.store / 'out').iterdir() if p.name[0] in 'ab'), [])
+        self.assertFalse((self.store / 'out' / ('a' * 64)).exists())
+        self.assertFalse((self.store / 'out' / ('b' * 64 + '.sha256')).exists())
 
     def test_racing_processes_cannot_corrupt_the_store(self):
         env = dict(self.env, FAKE_SLEEP='0.4', FAKE_SLEEP_HARNESS='0.3')
