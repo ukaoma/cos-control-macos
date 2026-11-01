@@ -123,7 +123,7 @@ likelihood". The COS server reads the sessions and asks the model that decides s
   The panel reads the decision settings once when it opens, quietly, so Settings' own line is untouched. Nothing is asked before a yes.
   Settings, Decision models shows and reverses the choice for the model that decides search, with the same words as the panel.
 - **What leaves.** After a yes: the words typed in the box, and the title and first 150 characters of the first prompt of up to 508
-  recent sessions, to the model, through the COS server; emails, links, file paths and key-shaped text removed first; names and other details not.
+  recent sessions, to the model, through the COS server; emails, links, home-folder paths and key-shaped text removed first; names and other details not.
   SubQ keeps what it is sent. This reverses 0.5.361's "typing sends nothing off this Mac", for a person who said yes.
 - **Timing.** The first stage 800 ms after the last key, at three words or more, one at a time (a new key cancels the task and the helper
   process). The full stage at 2 s of quiet in all, unless the first stage's top row is Strong. Never on an exact command, place,

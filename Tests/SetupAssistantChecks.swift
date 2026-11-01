@@ -1364,7 +1364,7 @@ import Foundation
         check(askListing.rows.filter { $0.id.hasPrefix("consent:") }.allSatisfy { $0.group == .meaning && $0.selectable }, "[the question is a group of its own, reached by arrow or click]", "")
         check(rowIDs(askListing).firstIndex(of: "consent:jev:never")! < rowIDs(askListing).firstIndex(of: "search-all")! && rowIDs(askListing).firstIndex(of: "search-all")! < rowIDs(askListing).firstIndex(of: "ask")!,
               "[the question comes before Search all and Ask]", "\(rowIDs(askListing))")
-        let jevText = "Each search sends the words you type here, plus the title and first 150 characters of the first prompt from up to 508 recent sessions, to Jev. Emails, links, file paths and key-shaped text are removed first. Names and other details are not."
+        let jevText = "Each search sends the words you type here, plus the title and first 150 characters of the first prompt from up to 508 recent sessions, to Jev. Emails, links, home-folder paths and key-shaped text are removed first. Names and other details are not."
         check(row(askListing, "consent:jev:on")?.detail == jevText && C.consentText(.jev) == jevText, "[the question says what leaves, in full]", row(askListing, "consent:jev:on")?.detail ?? "")
         check(C.consentText(.subq) == jevText.replacingOccurrences(of: "to Jev.", with: "to SubQ.") + " SubQ keeps what it is sent.", "[the question for SubQ says it keeps what it is sent]", C.consentText(.subq))
         check(!C.consentText(.jev).contains("keeps"), "[nothing is claimed about what Jev keeps]", "")

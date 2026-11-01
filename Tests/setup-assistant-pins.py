@@ -439,11 +439,11 @@ pin("first prompts" in _summary and "sends your words" in _summary and "Settings
     "the summary and the notes say what leaves, first prompts included, and name the choice truly")
 _blurb = read("Sources/SettingsHubCatalog.swift")
 pin("session titles and the start of first prompts" in _blurb and 'sends your words and session titles' not in _blurb, "Settings' own line for the control says first prompts too")
-pin(_all[0]["title"] == "0.5.363" and "each search sends the words you type in ⌘K, " + _sent in _notes and "Emails, links, file paths and key-shaped text are removed first. Names and other details are not." in _notes
+pin(_all[0]["title"] == "0.5.363" and "each search sends the words you type in ⌘K, " + _sent in _notes and "Emails, links, home-folder paths and key-shaped text are removed first. Names and other details are not." in _notes
     and "SubQ keeps what it is sent" in _notes and "off until you say yes" in _notes and "sends nothing off it" in _notes and _notes.index("off until you say yes") < _notes.index("sends nothing off it"),
     "the notes say plainly what leaves after a yes, and that nothing does before")
 _consent = block(core_raw, '            let sent = "Each search sends the words you type here, ', '"\n')
-pin(_sent in _consent and "Emails, links, file paths and key-shaped text are removed first. Names and other details are not." in _consent and "SubQ keeps what it is sent." in core_raw,
+pin(_sent in _consent and "Emails, links, home-folder paths and key-shaped text are removed first. Names and other details are not." in _consent and "SubQ keeps what it is sent." in core_raw,
     "the question in the panel says what the notes say")
 pin("asks the COS server" in _older and "OpenAI" in _older, "the 0.5.361 notes still say what Search all sessions uses")
 _log = read("CHANGELOG.md").split("## 0.5.361")[0]

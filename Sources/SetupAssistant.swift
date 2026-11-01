@@ -27,7 +27,7 @@ import Foundation
 //      changing anything. "Ask COS" is the same run without Doctor.
 //   5. Session titles are untrusted. They are cleaned to one line, drawn verbatim, only open their own session, are never
 //      matched for dispatch and never go into a prompt. The one place a title or a first prompt leaves this Mac is search by meaning,
-//      after a yes: the COS server reads them itself, removes emails, links, file paths and key-shaped text, and asks the model. Control sends none.
+//      after a yes: the COS server reads them itself, removes emails, links, home-folder paths and key-shaped text, and asks the model. Control sends none.
 //   6. Match text (0.5.361) is a line from inside a session that the local search found. It is held to rule 5, masked when it
 //      looks like a key, shown on its row only and never decides anything. A hit sits in its own group (a word hit, or a meaning
 //      row with its strength): Return never moves onto one and never runs one. It is reached by an arrow or a click. The
@@ -1815,10 +1815,10 @@ enum SetupAssistant {
             mutating func clear() { text = nil }
         }
 
-        /// The question before anything is sent. The first part says what leaves, in full; SubQ's adds what it keeps. Emails, links, file paths and
+        /// The question before anything is sent. The first part says what leaves, in full; SubQ's adds what it keeps. Emails, links, home-folder paths and
         /// key-shaped text are removed on the server before anything is sent.
         static func consentText(_ provider: MeaningProvider) -> String {
-            let sent = "Each search sends the words you type here, plus the title and first 150 characters of the first prompt from up to 508 recent sessions, to \(provider.title). Emails, links, file paths and key-shaped text are removed first. Names and other details are not."
+            let sent = "Each search sends the words you type here, plus the title and first 150 characters of the first prompt from up to 508 recent sessions, to \(provider.title). Emails, links, home-folder paths and key-shaped text are removed first. Names and other details are not."
             return sent + (provider.keeps.map { " " + $0 } ?? "")
         }
 
