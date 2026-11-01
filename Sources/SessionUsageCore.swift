@@ -1179,6 +1179,8 @@ enum SessionUsagePresentation {
 
 enum CosCostCategory: String, Codable, CaseIterable, Sendable {
     case dictation, transcription, dictationBeforeSplit, meetingNotes, answers, liveAndUpkeep, memoryIndexing, other, work
+    /// 0.5.362: ⌘K's search by meaning. The COS server keeps a count by the day for it, in its own ledgers, apart from Work search.
+    case sessionFinding
     var title: String {
         switch self {
         case .dictation: return "Dictation"
@@ -1190,6 +1192,7 @@ enum CosCostCategory: String, Codable, CaseIterable, Sendable {
         case .memoryIndexing: return "Memory indexing"
         case .other: return "Other"
         case .work: return "Work"
+        case .sessionFinding: return "Finding sessions"
         }
     }
     /// What a person got, in words. Plain counts, so a row reads as work done before it reads as money.
@@ -1205,6 +1208,7 @@ enum CosCostCategory: String, Codable, CaseIterable, Sendable {
         case .memoryIndexing: word = one ? "indexing call" : "indexing calls"
         case .other: word = one ? "other call" : "other calls"
         case .work: word = one ? "background call" : "background calls"
+        case .sessionFinding: word = one ? "search" : "searches"
         }
         return n.formatted() + " " + word
     }
@@ -1485,6 +1489,8 @@ enum CosCostRules {
         ("jev-usage.json", .work, true), ("jev-search-usage.json", .work, true), ("jev-cues-usage.json", .liveAndUpkeep, true),
         ("subq-session-usage.json", .work, false), ("subq-search-usage.json", .work, false), ("subq-decisions-usage.json", .work, false),
         ("subq-cues-usage.json", .liveAndUpkeep, false), ("subq-completion-usage.json", .other, false),
+        // ⌘K's search by meaning (0.5.362). Jev is priced; SubQ's rate is not verified, so its tokens are counted and its dollars left out.
+        ("session-find-jev-usage.json", .sessionFinding, true), ("session-find-subq-usage.json", .sessionFinding, false),
     ]
     /// Every file `cos-usage` may open in the server's data folder. Nothing outside this list is ever read there.
     static let dataFiles = ["claude-runs.jsonl", "codex-runs.jsonl", "lens-gist-runs.jsonl"] + dailyLedgers.map(\.file)

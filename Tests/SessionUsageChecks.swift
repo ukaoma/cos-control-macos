@@ -1820,6 +1820,9 @@ extension Checks {
         try write(".cos-glasses/data/lens-gist-runs.jsonl", try json(["engine": "claude", "model": "claude-sonnet-5-5", "ok": true, "ms": 900, "at": "2026-10-30T17:00:00.020Z", "kind": "session", "usage": ["inputTokens": 1000, "cachedInputTokens": 0, "outputTokens": 100, "costUsd": 0.25]]))
         try write(".cos-glasses/data/jev-cues-usage.json", try json(["2026-10-30": 1_000_000, "2026-08-01": 5_000_000]))
         try write(".cos-glasses/data/subq-completion-usage.json", try json(["2026-10-30": 3000]))
+        // ⌘K's search by meaning (0.5.362): two ledgers of its own. Jev is priced; SubQ's rate is not verified, so its tokens add no dollars.
+        try write(".cos-glasses/data/session-find-jev-usage.json", try json(["2026-10-30": 2_000_000, "2026-08-01": 9_000_000]))
+        try write(".cos-glasses/data/session-find-subq-usage.json", try json(["2026-10-30": 500_000]))
         // Shaped like a day ledger on purpose: if anything reads these, their tokens land on a row and the checks below fail.
         for name in ["subq-key.json", "jev-key.json", "subq-usage-key.json"] {
             try write(".cos-glasses/data/\(name)", try json(["2026-10-30": 777_000_000, "key": "SECRET_KEY_NEVER_READ"]))
@@ -1851,6 +1854,12 @@ extension Checks {
         check(full.rows.reduce(Int64(0)) { $0 + $1.measuredTokens } + full.work.measuredTokens < 700_000_000, "a key file's numbers never reach a row")
         check(full.auditFound && full.runLedgersFound && full.gistLedgerFound && full.work.handoffsFound, "the reader finds each ledger")
         check(row(.other, full).calls == 0, "the server's audit is read and the home file does not mix in")
+        let finding = row(.sessionFinding, full)
+        check(finding.measuredTokens == 2_500_000 && finding.calls == 0 && abs(finding.measuredUSD - 2_000_000 * CosCostRates.jevPerInputToken) < 1e-9 && finding.unpricedLedgerTokens == 500_000,
+              "search by meaning is counted by the day in its own row: Jev priced, SubQ's tokens counted and left out of the dollars, and nothing from before the window")
+        check(R.dailyLedgers.filter { $0.category == .sessionFinding }.map(\.file) == ["session-find-jev-usage.json", "session-find-subq-usage.json"] && R.dailyLedgers.filter { $0.category == .sessionFinding }.map(\.priced) == [true, false],
+              "the two search by meaning ledgers are named, Jev priced and SubQ not")
+        check(CosCostPresentation.rowLine(finding).count == "Counted by the day" && finding.category.title == "Finding sessions", "search by meaning reads Counted by the day")
         check(full.undatedCalls == 1, "the reader counts an undated audit row")
         check(full.unreadableRows == 1, "a torn line is unreadable and a half-written last line waits")
         let answers = row(.answers, full)
