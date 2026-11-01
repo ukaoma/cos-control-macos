@@ -18311,7 +18311,34 @@ final class COSControlHelper {
         )
     }
 
+    /// `claude-sessions-search --local` (0.5.361, the ⌘K panel): this Mac's own session files and nothing else. The words arrive on
+    /// stdin, at most 200 characters, never as an argument, so `ps` never shows them. No server token is read, no request is made and
+    /// nothing is embedded: the scan is `localSessionKeywordHits`, the same code the verb falls back to when the server cannot answer,
+    /// bounded to 80 transcripts. Killing this process stops the scan. The answer has the shape the Sessions tab already decodes.
+    private func emitLocalSessionsSearch(args: [String]) throws {
+        var input = Data()
+        while input.count <= 4_096 {
+            let chunk = try FileHandle.standardInput.read(upToCount: 4_097 - input.count) ?? Data()
+            if chunk.isEmpty { break }
+            input.append(chunk)
+        }
+        let query = String(String(decoding: input.prefix(4_096), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))
+        guard query.count >= 3 else { throw HelperError.message("The words must be at least 3 characters.") }
+        let limit = min(max(Int(option("--limit", in: args) ?? "8") ?? 8, 1), 20)
+        let rows = Self.localSessionKeywordHits(query: query, limit: limit, home: FileManager.default.homeDirectoryForCurrentUser)
+        emit(ok: true, message: rows.isEmpty ? "No matching sessions" : "Session lookup ready", details: [
+            "state": rows.isEmpty ? "empty" : "ready",
+            "hits": rows,
+            "count": rows.count,
+            "keywordCount": rows.count,
+            "semanticCount": 0,
+            "semanticAvailable": false,
+            "semanticReason": "local",
+        ])
+    }
+
     private func emitClaudeSessionsSearch(args: [String]) throws {
+        if args.contains("--local") { try emitLocalSessionsSearch(args: args); return }
         guard let query = option("--query", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines),
               query.count >= 2 else {
             throw HelperError.message("--query must be at least 2 characters")
