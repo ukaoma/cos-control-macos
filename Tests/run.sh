@@ -329,6 +329,8 @@ zsh "$ROOT/Tests/run-illustrated-pet.sh"
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediGalleryContract.swift" \
   -framework AppKit -o "$TMP/jedi-gallery-contract"
 "$TMP/jedi-gallery-contract" "$ROOT/Resources"
+# Speed plan B3 (2026-10-31): with ControlSetup.swift and ControlInstance.swift this lane's Sources are exactly the app kit's
+# set (everything but COSControlApp.swift), so it reuses the app kit instead of building the 55-file app-core kit again.
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/HelperClient.swift" "$ROOT/Sources/ControllerModel.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/SettingsHubCatalog.swift" "$ROOT/Sources/SettingsHubViews.swift" "$ROOT/Sources/SessionUsageView.swift" "$ROOT/Sources/SetupAssistant.swift" \
   "$ROOT/Sources/AppQuit.swift" "$ROOT/Sources/MacRecordingCore.swift" "$ROOT/Sources/MacAudioCapture.swift" "$ROOT/Sources/MacRecording.swift" "$ROOT/Sources/MacDictationCore.swift" "$ROOT/Sources/MacDictation.swift" \
@@ -337,6 +339,7 @@ zsh "$ROOT/Tests/run-illustrated-pet.sh"
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" \
   "$ROOT/Sources/SessionPet.swift" \
+  "$ROOT/Sources/ControlSetup.swift" "$ROOT/Sources/ControlInstance.swift" \
   "$ROOT/Tests/JediIdleContract.swift" -framework AppKit -framework SwiftUI -o "$TMP/jedi-idle-contract"
 "$TMP/jedi-idle-contract" "$ROOT/Resources"
 # The executable pixel test must cover the same loader the gallery calls.
