@@ -11709,7 +11709,7 @@ final class COSControlHelper {
             }
             return found
         }
-        let headTitle = scan(handle.readData(ofLength: 256 * 1024))
+        let headTitle = scan((try? handle.read(upToCount: 256 * 1024)) ?? Data())
         let size = (try? jsonl.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         if size > 256 * 1024 {
             handle.seek(toFileOffset: UInt64(max(0, size - 64 * 1024)))
@@ -11721,8 +11721,7 @@ final class COSControlHelper {
     static func firstClaudeUserTitle(in jsonl: URL) -> String? {
         guard let handle = try? FileHandle(forReadingFrom: jsonl) else { return nil }
         defer { try? handle.close() }
-        let data = handle.readData(ofLength: 256 * 1024)
-        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        guard let data = try? handle.read(upToCount: 256 * 1024), let text = String(data: data, encoding: .utf8) else { return nil }
         for line in text.split(whereSeparator: \.isNewline) {
             guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
                   obj["type"] as? String == "user",
@@ -12915,8 +12914,7 @@ final class COSControlHelper {
     static func peekCodexMeta(in jsonl: URL) -> (id: String, cwd: String, title: String, subagent: Bool, created: String)? {
         guard let handle = try? FileHandle(forReadingFrom: jsonl) else { return nil }
         defer { try? handle.close() }
-        let data = handle.readData(ofLength: 256 * 1024)
-        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        guard let data = try? handle.read(upToCount: 256 * 1024), let text = String(data: data, encoding: .utf8) else { return nil }
         var id = ""
         var cwd = ""
         var title = ""
@@ -18277,7 +18275,7 @@ final class COSControlHelper {
             rowAt[key] = rows.count
             rows.append(row)
         }
-        for (id, head) in desktopIndex where id == head.id {
+        for (id, head) in desktopIndex.sorted(by: { $0.value.mtime != $1.value.mtime ? $0.value.mtime > $1.value.mtime : $0.key < $1.key }) where id == head.id {
             let title = head.title.isEmpty ? "Claude session" : head.title
             // The session's transcript is named by the record's cliSessionId, which is not always the record's own id (20 of the newest 30
             // records on one Mac). Open and the transcript row both need that id, so the record's row carries it: one id, one row, and
@@ -18356,17 +18354,33 @@ final class COSControlHelper {
         // A Claude row is named by 8 characters; Open needs the transcript's full id. Every transcript the scan knows gives it.
         var fullClaudeId: [String: String] = [:]
         var fileByKey: [String: URL] = [:]
+        var transcriptByKey: [String: SessionSearchTranscript] = [:]
         for item in transcripts {
             fileByKey[sessionRowKey(provider: item.provider, id: item.id)] = item.file
+            transcriptByKey[sessionRowKey(provider: item.provider, id: item.id)] = item
             if item.provider == "claude" { fullClaudeId[String(item.id.lowercased().prefix(8))] = item.id.lowercased() }
         }
         var hitsByKey: [String: [String: Any]] = [:]
         var rowByKey: [String: [String: Any]] = [:]
-        func keep(_ hit: [String: Any]) {
+        func projectLabel(_ item: SessionSearchTranscript) -> String {
+            switch item.provider {
+            case "claude": return workspaceLabel(item.file.deletingLastPathComponent().lastPathComponent)
+            case "cursor": return workspaceLabel(item.file.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().lastPathComponent)
+            default: return ""
+            }
+        }
+        func keep(_ found: [String: Any]) {
+            var hit = found
             let id = (hit["id"] as? String ?? "").lowercased()
             let provider = hit["provider"] as? String ?? "claude"
             guard !id.isEmpty else { return }
             let key = sessionRowKey(provider: provider, id: id)
+            // A named Codex or Cursor row past the newest 20 has no date and no project (its transcript was not opened for a row). Its transcript
+            // has both, so the hit takes them: it sorts by its age and says where it is.
+            if (hit["updatedAt"] as? String ?? "").isEmpty, let item = transcriptByKey[key] {
+                hit["updatedAt"] = isoString(from: item.mtime)
+                if (hit["workspace"] as? String ?? "").isEmpty { hit["workspace"] = projectLabel(item) }
+            }
             if let existing = hitsByKey[key], meetingScore(existing["score"]) >= meetingScore(hit["score"]) { return }
             hitsByKey[key] = hit
         }
@@ -18402,13 +18416,7 @@ final class COSControlHelper {
                 let title = (desktop?.title.isEmpty == false) ? (desktop?.title ?? fallback) : fallback
                 // The project from the transcript's own folder (Claude's projects folder, Cursor's project folder), as the titled rows get it:
                 // a transcript past the newest 20 has no row and no record in the newest 30, and read "Claude session" with no project.
-                let folder: String
-                switch item.provider {
-                case "claude": folder = item.file.deletingLastPathComponent().lastPathComponent
-                case "cursor": folder = item.file.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().lastPathComponent
-                default: folder = ""
-                }
-                let project = workspaceLabel(folder).isEmpty ? workspaceLabel(desktop?.cwd ?? "") : workspaceLabel(folder)
+                let project = projectLabel(item).isEmpty ? workspaceLabel(desktop?.cwd ?? "") : projectLabel(item)
                 row = [
                     "id": item.id,
                     "provider": item.provider,

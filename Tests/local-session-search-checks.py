@@ -184,6 +184,20 @@ try:
     check(finished and code == 0, "a FIFO named like a transcript does not stop the search", f"code {code}")
     check(hits == [], "a symlink is not read", str([h.get("id") for h in hits]))
 
+    # Round 2: two Desktop records that name one transcript list it once, under the newer record's title; a named Codex row past the newest 20
+    # has no date of its own, and takes its transcript's.
+    pair_c = str(uuid.uuid4())
+    pair_a, pair_b = sorted([str(uuid.uuid4()), str(uuid.uuid4())])   # the older record's id sorts first, so an order by id alone would pick it
+    make_record(pair_a, pair_c, "Marmot older title", "/tmp/fx/marmot-site")
+    make_record(pair_b, pair_c, "Marmot newer title", "/tmp/fx/marmot-site")
+    stamp_old, stamp_new = time.time() - 7200, time.time() - 60
+    base = home / "Library/Application Support/Claude/claude-code-sessions/acct/workspace"
+    os.utime(base / f"local_{pair_a}.json", (stamp_old, stamp_old))
+    os.utime(base / f"local_{pair_b}.json", (stamp_new, stamp_new))
+    for _ in range(4):
+        code, hits, _, _ = search("marmot")
+        check(len(hits) == 1 and hits[0]["id"].lower() == pair_c and hits[0].get("name") == "Marmot newer title", "two records for one session list once, under the newer title", str([(h["id"], h.get("name")) for h in hits]))
+
     # QA item 14: Codex and Cursor are bounded like Claude. A rollout or a transcript past the newest 20 is found by its words but is not
     # opened for a title, so it keeps the generic name; one inside the 20 is titled from its first message.
     def make_codex(session_id, text, age_seconds, folder_day="2026/10/31"):
@@ -226,6 +240,12 @@ try:
     check(len(hits) == 1 and "caracalwords" in str(hits[0].get("name")).lower(), "a Codex rollout inside the newest 20 is titled from its first message", str([h.get("name") for h in hits]))
     code, hits, _, _ = search("servalwords")
     check(len(hits) == 1 and "servalwords" in str(hits[0].get("name")).lower(), "a Cursor transcript inside the newest 20 is titled from its first message", str([h.get("name") for h in hits]))
+
+    with open(home / ".codex/session_index.jsonl", "a") as index:
+        index.write(json.dumps({"id": old_codex, "thread_name": "Ocelot named past twenty"}) + "\n")
+    code, hits, _, _ = search("ocelot named")
+    named_hit = [h for h in hits if h["id"].lower() == old_codex]
+    check(len(named_hit) == 1 and bool(named_hit[0].get("updatedAt")), "a named Codex row past the newest 20 takes its transcript's date", str([(h["id"], h.get("updatedAt")) for h in hits]))
 
     # The open path: reveal resolves each id to the record. With Claude Desktop installed the link is the continue link; without it the
     # reason says so. The one thing it must never say is that the id is incomplete.

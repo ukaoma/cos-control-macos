@@ -35,6 +35,8 @@ MUTANTS = [
      "a snippet never ends inside a key"),
     ("a query of --local is the flag", "        if let at = args.firstIndex(of: \"--local\"), !(at > 0 && args[at - 1] == \"--query\") { try emitLocalSessionsSearch(args: args); return }\n", "        if args.contains(\"--local\") { try emitLocalSessionsSearch(args: args); return }\n",
      "a query of the flag's own characters is a query"),
+    ('two records for one session go by id', '        for (id, head) in desktopIndex.sorted(by: { $0.value.mtime != $1.value.mtime ? $0.value.mtime > $1.value.mtime : $0.key < $1.key }) where id == head.id {\n', '        for (id, head) in desktopIndex.sorted(by: { $0.key < $1.key }) where id == head.id {\n', 'two records for one session list once, under the newer title'),
+    ('a named row past the newest 20 stays undated', '                hit["updatedAt"] = isoString(from: item.mtime)\n', '', "a named Codex row past the newest 20 takes its transcript's date"),
     ("a hit keeps its 8 characters", "            if (hit[\"provider\"] as? String ?? \"claude\") == \"claude\", let id = hit[\"id\"] as? String, id.count == 8, let full = fullClaudeId[id.lowercased()] { hit[\"id\"] = full }\n", "",
      "found under its full id"),
     ("reveal does not resolve a short id", "                sessionId: fullId,\n                records: Self.claudeDesktopRecords(for: fullId, sessionsRoot: desktopRoot),", "                sessionId: sessionId,\n                records: Self.claudeDesktopRecords(for: fullId, sessionsRoot: desktopRoot),",
