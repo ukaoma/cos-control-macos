@@ -1,23 +1,29 @@
 #!/usr/bin/env python3
 """Tests/kit-compile.py against a stand-in compiler and guard: never runs Swift."""
+import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 SCRIPT = Path(__file__).with_name('kit-compile.py')
 
 FAKE_SWIFTC = r'''#!/usr/bin/env python3
-import json, os, pathlib, sys
+import json, os, pathlib, sys, time
 args = sys.argv[1:]
 if args == ['--version']:
     print(os.environ.get('FAKE_SWIFT_VERSION', 'fake-swift-1')); sys.exit(0)
 log = pathlib.Path(os.environ['FAKE_LOG'])
 with log.open('a') as s:
     s.write(json.dumps({'args': args, 'cwd': os.getcwd()}) + '\n')
+sleep = os.environ.get('FAKE_SLEEP' if '-emit-module' in args else 'FAKE_SLEEP_HARNESS')
+if sleep:
+    time.sleep(float(sleep))
 if os.environ.get('FAKE_FAIL') and any(a.endswith(os.environ['FAKE_FAIL']) for a in args):
     print('error: fake failure', file=sys.stderr); sys.exit(1)
 touch = os.environ.get('FAKE_TOUCH')
@@ -33,24 +39,26 @@ pathlib.Path(args[args.index('-o') + 1]).write_text(json.dumps(args))
 '''
 
 
-class KitTests(unittest.TestCase):
+class KitBase(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         for d in ('Sources', 'Tests', 'bin', 'out', 'kits'):
             (self.root / d).mkdir()
         for name in ('Models.swift', 'Views.swift', 'ControlSetup.swift', 'ControlInstance.swift', 'COSControlApp.swift',
-                     'LiveTranscript.swift', 'MeetingAskCore.swift'):
+                     'LiveTranscript.swift', 'MeetingAskCore.swift', 'MacDictationCore.swift'):
             (self.root / 'Sources' / name).write_text('// ' + name)
         (self.root / 'Tests/A.swift').write_text('// harness a')
         (self.root / 'Tests/B.swift').write_text('// harness b')
         self.exe('Tests/compile-guard.sh', '#!/bin/sh\nexec "$@"\n')
         self.exe('bin/swiftc', FAKE_SWIFTC)
-        self.exe('bin/xcrun', '#!/bin/sh\necho sdk\n')
+        self.exe('bin/xcrun', '#!/bin/sh\ncase "$1" in --show-sdk-build-version) echo "${FAKE_SDK_BUILD:-1A1}";; *) echo sdk;; esac\n')
         self.log = self.root / 'calls.jsonl'
         self.env = dict(os.environ, PATH=str(self.root / 'bin') + os.pathsep + os.environ['PATH'],
                         FAKE_LOG=str(self.log), COS_TEST_KIT_DIR=str(self.root / 'kits'))
-        for key in ('COS_TEST_KIT', 'COS_TEST_KIT_LOG', 'FAKE_FAIL', 'FAKE_TOUCH', 'FAKE_TOUCH_ANY'):
+        for key in ('COS_TEST_KIT', 'COS_TEST_KIT_LOG', 'FAKE_FAIL', 'FAKE_TOUCH', 'FAKE_TOUCH_ANY', 'COS_TEST_KIT_PERSIST',
+                    'COS_TEST_KIT_STORE', 'COS_TEST_KIT_EVICT_MIN_AGE', 'COS_TEST_KIT_OUT_MAX_ENTRIES',
+                    'COS_TEST_KIT_OUT_MAX_BYTES', 'FAKE_SLEEP', 'FAKE_SLEEP_HARNESS', 'FAKE_SDK_BUILD'):
             self.env.pop(key, None)
 
     def tearDown(self):
@@ -64,12 +72,18 @@ class KitTests(unittest.TestCase):
         skip = {'COSControlApp.swift'} | ({'ControlSetup.swift', 'ControlInstance.swift'} if core else set())
         return [str(p) for p in sorted((self.root / 'Sources').glob('*.swift')) if p.name not in skip]
 
-    def compile(self, sources, harness=('Tests/A.swift',), flags=('-parse-as-library',), out='lane', extra=()):
-        command = [sys.executable, str(SCRIPT), str(self.root / 'Tests/compile-guard.sh'), 'swiftc',
-                   '-target', 'arm64-apple-macosx14.0', '-swift-version', '6', '-strict-concurrency=complete', *flags,
-                   *sources, *[str(self.root / h) for h in harness], '-framework', 'AppKit', *extra,
-                   '-o', str(self.root / 'out' / out)]
-        return subprocess.run(command, env=self.env, cwd=self.root, capture_output=True, text=True)
+    def command(self, sources, harness=('Tests/A.swift',), flags=('-parse-as-library',), out='lane', extra=(), script=SCRIPT):
+        return [sys.executable, str(script), str(self.root / 'Tests/compile-guard.sh'), 'swiftc',
+                '-target', 'arm64-apple-macosx14.0', '-swift-version', '6', '-strict-concurrency=complete', *flags,
+                *sources, *[str(self.root / h) for h in harness], '-framework', 'AppKit', *extra,
+                '-o', str(self.root / 'out' / out)]
+
+    def compile(self, sources, **kw):
+        return subprocess.run(self.command(sources, **kw), env=self.env, cwd=self.root, capture_output=True, text=True)
+
+    def start(self, sources, env=None, **kw):
+        return subprocess.Popen(self.command(sources, **kw), env=env or self.env, cwd=self.root,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
     def calls(self):
         if not self.log.exists():
@@ -79,6 +93,8 @@ class KitTests(unittest.TestCase):
     def kit_builds(self):
         return [c for c in self.calls() if '-emit-module' in c]
 
+
+class KitTests(KitBase):
     def test_one_kit_build_serves_every_lane_and_harness_compiles_alone(self):
         r1 = self.compile(self.app(), out='one')
         r2 = self.compile(self.app(), harness=('Tests/B.swift',), out='two')
@@ -241,12 +257,322 @@ class KitTests(unittest.TestCase):
         self.compile(helper, flags=(), out='p2')
         self.assertEqual(len(self.calls()), 6)
 
+    def test_mac_dictation_core_alone_is_one_kit_for_every_lane(self):
+        core = [str(self.root / 'Sources/MacDictationCore.swift')]
+        for i, harness in enumerate(('Tests/A.swift', 'Tests/B.swift', 'Tests/A.swift')):
+            self.assertEqual(self.compile(core, harness=(harness,), out=f'dict{i}').returncode, 0)
+        self.assertEqual(len(self.kit_builds()), 1)
+        self.assertEqual([Path(a).name for a in self.kit_builds()[0] if a.endswith('.swift')], ['MacDictationCore.swift'])
+        lane = json.loads((self.root / 'out/dict1').read_text())
+        self.assertEqual([Path(a).name for a in lane if a.endswith('.swift')], ['B.swift'])
+        self.assertIn('MacDictationCore.o', [Path(a).name for a in lane])
+        path = self.root / 'Sources/MacDictationCore.swift'
+        path.write_text(path.read_text() + '!')
+        self.compile(core)
+        self.assertEqual(len(self.kit_builds()), 2)
+        self.assertEqual(len(list((self.root / 'kits').glob('mac-dictation-core-*'))), 2)
+
+    def test_the_per_run_scratch_directory_is_not_part_of_an_output_key(self):
+        scratch = [Path(tempfile.mkdtemp(prefix='cos-control-tests.', dir='/tmp')) for _ in range(2)]
+        try:
+            for d in scratch:
+                (d / 'gen.swift').write_text('// generated')
+            helper = [str(self.root / 'Sources/Views.swift'), str(scratch[0] / 'gen.swift')]
+            self.compile(helper, flags=(), out='g1')
+            again = [str(self.root / 'Sources/Views.swift'), str(scratch[1] / 'gen.swift')]
+            self.assertIn('reused', self.compile(again, flags=(), out='g2').stderr)
+            (scratch[1] / 'gen.swift').write_text('// generated differently')
+            self.assertNotIn('reused', self.compile(again, flags=(), out='g3').stderr)
+            self.assertEqual(len(self.calls()), 2)
+        finally:
+            for d in scratch:
+                shutil.rmtree(d, ignore_errors=True)
+
     def test_old_kits_are_evicted(self):
         models = self.root / 'Sources/Models.swift'
         for i in range(7):
             models.write_text(f'// version {i}')
             self.compile(self.app())
         self.assertEqual(len(list((self.root / 'kits').glob('app-*'))), 4)
+
+
+class PersistentKitTests(KitBase):
+    """COS_TEST_KIT_PERSIST=1 + COS_TEST_KIT_STORE: kits and out/ live across runs. Everything else is the per-run layout."""
+
+    def setUp(self):
+        super().setUp()
+        self.store = self.root / 'store'
+        self.env.update(COS_TEST_KIT_PERSIST='1', COS_TEST_KIT_STORE=str(self.store), COS_TEST_KIT_EVICT_MIN_AGE='0')
+
+    def dirs(self, name, where=None):
+        return sorted((where or self.store).glob(name + '-' + '[0-9a-f]' * 16))
+
+    def version(self, i):
+        (self.root / 'Sources/Models.swift').write_text(f'// version {i}')
+
+    def next_run(self):
+        """A new suite run: a fresh per-run kit dir and a fresh output dir, the same persistent store."""
+        self.env['COS_TEST_KIT_DIR'] = str(self.root / f'run{len(list(self.root.glob("run*")))}')
+
+    def test_off_switch_is_the_per_run_layout_exactly(self):
+        for persist in (None, '0', '', 'true', 'yes'):
+            with self.subTest(persist=persist):
+                self.env.pop('COS_TEST_KIT_PERSIST', None)
+                if persist is not None:
+                    self.env['COS_TEST_KIT_PERSIST'] = persist
+                self.env['COS_TEST_KIT_DIR'] = str(self.root / f'kits-{persist}')
+                self.assertEqual(self.compile(self.app()).returncode, 0)
+                self.assertFalse(self.store.exists())
+                self.assertEqual(len(self.dirs('app', self.root / f'kits-{persist}')), 1)
+        self.env.pop('COS_TEST_KIT_STORE'); self.env['COS_TEST_KIT_PERSIST'] = '1'  # a flag with no store
+        self.env['COS_TEST_KIT_DIR'] = str(self.root / 'kits-nostore')
+        self.assertEqual(self.compile(self.app()).returncode, 0)
+        self.assertEqual(len(self.dirs('app', self.root / 'kits-nostore')), 1)
+        self.assertFalse(self.store.exists())
+
+    def test_off_switch_keeps_the_four_kit_eviction_and_no_out_cap(self):
+        self.env.pop('COS_TEST_KIT_PERSIST')
+        self.env['COS_TEST_KIT_OUT_MAX_ENTRIES'] = '1'
+        for i in range(6):
+            self.version(i)
+            self.compile(self.app())
+        self.assertEqual(len(self.dirs('app', self.root / 'kits')), 4)
+        helper = [str(self.root / 'Sources/Views.swift')]
+        for i in range(4):
+            self.compile(helper, flags=('-D', f'X{i}'), out=f'h{i}')
+        self.assertEqual(len(list((self.root / 'kits/out').glob('*.sha256'))), 4)
+
+    def test_kits_and_exact_outputs_survive_into_the_next_run(self):
+        helper = [str(self.root / 'Sources/Views.swift')]
+        self.assertEqual(self.compile(self.app(), out='one').returncode, 0)
+        self.compile(helper, flags=(), out='h1')
+        self.assertEqual(len(self.dirs('app')), 1)
+        self.assertEqual(self.dirs('app', self.root / 'kits'), [])
+        before = len(self.calls())
+        self.next_run()
+        self.assertEqual(self.compile(self.app(), harness=('Tests/B.swift',), out='two').returncode, 0)
+        r = self.compile(helper, flags=(), out='h2')
+        self.assertIn('reused', r.stderr)
+        self.assertEqual(len(self.kit_builds()), 1)
+        self.assertEqual(len(self.calls()), before + 1)  # only the second harness compiled
+        self.assertEqual((self.root / 'out/h1').read_text(), (self.root / 'out/h2').read_text())
+
+    def test_one_byte_change_rebuilds_the_kit_and_links_the_new_objects(self):
+        self.compile(self.app())
+        path = self.root / 'Sources/Views.swift'
+        data = bytearray(path.read_bytes())
+        data[-1] ^= 1
+        path.write_bytes(bytes(data))
+        self.next_run()
+        self.assertEqual(self.compile(self.app()).returncode, 0)
+        self.assertEqual(len(self.kit_builds()), 2)
+        views = next(o for o in json.loads((self.root / 'out/lane').read_text()) if o.endswith('Views.o'))
+        self.assertEqual(Path(views).read_text(), 'object of ' + path.read_text())
+
+    def test_the_key_carries_this_script_the_guard_scripts_and_the_sdk_build(self):
+        script = self.root / 'kc.py'
+        script.write_text(SCRIPT.read_text())
+        builds = lambda: len(self.kit_builds())
+        self.compile(self.app(), script=script)
+        self.compile(self.app(), script=script)
+        self.assertEqual(builds(), 1)
+        script.write_text(script.read_text() + '# an edit to kit-compile.py\n')
+        self.compile(self.app(), script=script)
+        self.assertEqual(builds(), 2)
+        guard = self.root / 'Tests/compile-guard.sh'
+        guard.write_text(guard.read_text() + '# an edit to the guard\n')
+        self.compile(self.app(), script=script)
+        self.assertEqual(builds(), 3)
+        bounded = self.root / 'Tests/compile-bounded.py'
+        bounded.write_text('# bounded 1\n')
+        self.compile(self.app(), script=script)
+        self.assertEqual(builds(), 4)
+        bounded.write_text('# bounded 2\n')
+        self.compile(self.app(), script=script)
+        self.assertEqual(builds(), 5)
+        self.env['FAKE_SDK_BUILD'] = '2B2'
+        self.compile(self.app(), script=script)
+        self.assertEqual(builds(), 6)
+        self.compile(self.app(), script=script)
+        self.assertEqual(builds(), 6)
+
+    def test_eviction_keeps_the_newest_two_keys_per_kit_name(self):
+        models = [str(self.root / 'Sources/Models.swift')]
+        for i in range(4):
+            self.version(i)
+            self.compile(self.app())
+            self.compile(models)
+        self.compile([str(self.root / f'Sources/{n}') for n in ('LiveTranscript.swift', 'MeetingAskCore.swift', 'Models.swift')])
+        self.assertEqual([len(self.dirs(n)) for n in ('app', 'models', 'meeting-core')], [2, 2, 1])
+        for name in ('app', 'models'):
+            kept = {(d / 'obj/Models.o').read_text() for d in self.dirs(name)}
+            self.assertEqual(kept, {'object of // version 2', 'object of // version 3'}, name)
+
+    def test_a_kit_used_within_the_eviction_age_is_never_evicted(self):
+        del self.env['COS_TEST_KIT_EVICT_MIN_AGE']  # the default: two hours, longer than any suite
+        for i in range(5):
+            self.version(i)
+            self.compile(self.app())
+        kits = sorted(self.dirs('app'), key=lambda d: d.stat().st_mtime)
+        self.assertEqual(len(kits), 5)
+        for old in kits[:3]:
+            os.utime(old, (time.time() - 36000, time.time() - 36000))
+        self.version(5)
+        self.compile(self.app())
+        survivors = {(d / 'obj/Models.o').read_text() for d in self.dirs('app')}
+        self.assertEqual(survivors, {f'object of // version {i}' for i in (3, 4, 5)})
+
+    def test_a_kit_a_lane_is_still_linking_against_is_not_evicted_from_under_it(self):
+        self.version(0)
+        slow = self.start(self.app(), env=dict(self.env, FAKE_SLEEP_HARNESS='4'), out='slow')
+        deadline = time.time() + 20
+        while time.time() < deadline and not [c for c in self.calls() if '-emit-module' not in c]:
+            time.sleep(0.05)
+        (v0,) = self.dirs('app')
+        for i in (1, 2, 3):
+            self.version(i)
+            self.assertEqual(self.compile(self.app()).returncode, 0)
+        self.assertTrue(v0.is_dir(), 'the kit a lane is linking against was evicted')
+        self.assertIsNone(slow.poll(), 'the slow lane should still be linking')
+        out, err = slow.communicate(timeout=30)
+        self.assertEqual(slow.returncode, 0, err)
+        self.version(4)
+        self.compile(self.app())
+        self.assertFalse(v0.exists(), 'once nobody uses it, the oldest kit must be evictable')
+        self.assertEqual(len(self.dirs('app')), 2)
+
+    def test_out_store_keeps_the_newest_entries_within_the_count_cap(self):
+        self.env['COS_TEST_KIT_OUT_MAX_ENTRIES'] = '3'
+        helper = [str(self.root / 'Sources/Views.swift')]
+        for i in range(6):
+            self.compile(helper, flags=('-D', f'X{i}'), out=f'h{i}')
+        store = self.store / 'out'
+        self.assertEqual(len(list(store.glob('*.sha256'))), 3)
+        self.assertEqual(len([p for p in store.iterdir() if not p.name.endswith('.sha256')]), 3)
+        self.assertIn('reused', self.compile(helper, flags=('-D', 'X5'), out='again5').stderr)
+        self.assertNotIn('reused', self.compile(helper, flags=('-D', 'X0'), out='again0').stderr)
+
+    def test_out_store_byte_cap_always_keeps_the_newest(self):
+        self.env['COS_TEST_KIT_OUT_MAX_BYTES'] = '1'
+        helper = [str(self.root / 'Sources/Views.swift')]
+        for i in range(3):
+            self.compile(helper, flags=('-D', f'X{i}'), out=f'h{i}')
+        self.assertEqual(len(list((self.store / 'out').glob('*.sha256'))), 1)
+        self.assertIn('reused', self.compile(helper, flags=('-D', 'X2'), out='again').stderr)
+
+    def test_out_store_sweeps_a_half_written_pair(self):
+        helper = [str(self.root / 'Sources/Views.swift')]
+        self.compile(helper, flags=('-D', 'X0'), out='h0')
+        (self.store / 'out' / ('a' * 64)).write_text('interrupted copy')
+        (self.store / 'out' / ('b' * 64 + '.sha256')).write_text('orphan receipt')
+        self.compile(helper, flags=('-D', 'X1'), out='h1')
+        self.assertEqual(sorted(p.name for p in (self.store / 'out').iterdir() if p.name[0] in 'ab'), [])
+
+    def test_racing_processes_cannot_corrupt_the_store(self):
+        env = dict(self.env, FAKE_SLEEP='0.4', FAKE_SLEEP_HARNESS='0.3')
+        for round_ in range(3):
+            procs = [self.start(self.app(), env=env, flags=('-parse-as-library', '-D', f'V{i % 3}'), out=f'race{round_}-{i}')
+                     for i in range(6)]
+            results = [p.communicate(timeout=120) + (p.returncode,) for p in procs]
+            for out, err, code in results:
+                self.assertEqual(code, 0, err)
+                self.assertNotIn('changed underneath', err)
+            self.assertEqual([p.name for p in self.store.glob('.*-building.*')], [])
+            for kit in self.dirs('app'):
+                receipt = json.loads((kit / 'receipt.json').read_text())
+                self.assertEqual(sorted(receipt['files']), sorted(str(p.relative_to(kit)) for p in kit.rglob('*')
+                                                                   if p.is_file() and p.name != 'receipt.json'))
+                for rel, sha in receipt['files'].items():
+                    self.assertEqual(hashlib.sha256((kit / rel).read_bytes()).hexdigest(), sha)
+        same = [self.start(self.app(), env=dict(env, FAKE_SLEEP='0.5'), out=f'same{i}') for i in range(5)]
+        self.assertEqual([p.communicate(timeout=120) and p.returncode for p in same], [0] * 5)
+        built_default = [c for c in self.kit_builds() if '-D' not in c]
+        self.assertEqual(len(built_default), 1, 'five processes with one key must build the kit exactly once')
+
+    def test_a_store_in_a_synced_or_relative_place_is_refused(self):
+        home = self.root / 'home'
+        self.env['HOME'] = str(home)
+        places = [home / 'Documents/cos-kits', home / 'Desktop/cos-kits', home / 'Library/Mobile Documents/com~apple~CloudDocs/kits',
+                  home / 'Documents/inner/../cos-kits']
+        for i, place in enumerate(places):
+            with self.subTest(place=str(place)):
+                self.env['COS_TEST_KIT_STORE'] = str(place)
+                self.env['COS_TEST_KIT_DIR'] = str(self.root / f'fallback{i}')
+                r = self.compile(self.app())
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn('iCloud', r.stderr)
+                self.assertFalse(place.exists())
+                self.assertEqual(len(self.dirs('app', self.root / f'fallback{i}')), 1)
+        link = self.root / 'looks-fine'
+        (home / 'Documents').mkdir(parents=True, exist_ok=True)
+        link.symlink_to(home / 'Documents')
+        self.env['COS_TEST_KIT_STORE'] = str(link / 'kits')
+        self.env['COS_TEST_KIT_DIR'] = str(self.root / 'fallback-link')
+        self.assertIn('iCloud', self.compile(self.app()).stderr)
+        self.env['COS_TEST_KIT_STORE'] = 'relative-store'
+        self.assertIn('absolute', self.compile(self.app()).stderr)
+        good = home / 'Library/Caches/COS/kits/abc123'
+        self.env['COS_TEST_KIT_STORE'] = str(good)
+        self.assertEqual(self.compile(self.app()).returncode, 0)
+        self.assertEqual(len(self.dirs('app', good)), 1)
+        self.assertEqual(oct(good.stat().st_mode & 0o777), '0o700')
+
+    def test_a_run_without_a_per_run_kit_dir_still_keeps_the_store(self):
+        del self.env['COS_TEST_KIT_DIR']
+        self.assertEqual(self.compile(self.app()).returncode, 0)
+        self.assertEqual(len(self.dirs('app')), 1)
+        self.assertEqual(self.compile(self.app()).returncode, 0)
+        self.assertEqual(len(self.kit_builds()), 1)
+
+    def test_reusing_a_kit_refreshes_its_recency_for_eviction(self):
+        for i in (0, 1):
+            self.version(i)
+            self.compile(self.app())
+        self.version(0)
+        self.compile(self.app())  # reuse of the OLDER kit
+        self.assertEqual(len(self.kit_builds()), 2)
+        self.version(2)
+        self.compile(self.app())
+        kept = {(d / 'obj/Models.o').read_text() for d in self.dirs('app')}
+        self.assertEqual(kept, {'object of // version 0', 'object of // version 2'})
+
+    def test_rebuilding_a_tampered_kit_waits_for_lanes_linking_against_it(self):
+        slow = self.start(self.app(), env=dict(self.env, FAKE_SLEEP_HARNESS='3'), out='slow')
+        deadline = time.time() + 20
+        while time.time() < deadline and not [c for c in self.calls() if '-emit-module' not in c]:
+            time.sleep(0.05)
+        (kit,) = self.dirs('app')
+        (kit / 'obj/Models.o').write_text('tampered')
+        second = self.start(self.app(), out='second')
+        time.sleep(1.0)
+        self.assertIsNone(second.poll(), 'the rebuild must wait for the lane still linking against the old copy')
+        self.assertTrue(kit.is_dir())
+        self.assertEqual(slow.communicate(timeout=30)[0:0] or slow.returncode, 0)
+        out, err = second.communicate(timeout=30)
+        self.assertEqual(second.returncode, 0, err)
+        self.assertEqual((kit / 'obj/Models.o').read_text(), 'object of // Models.swift')
+
+    def test_lanes_on_one_kit_link_at_the_same_time(self):
+        env = dict(self.env, FAKE_SLEEP='0.2', FAKE_SLEEP_HARNESS='1.5')
+        started = time.monotonic()
+        procs = [self.start(self.app(), env=env, out=f'par{i}') for i in range(4)]
+        self.assertEqual([p.communicate(timeout=60) and p.returncode for p in procs], [0] * 4)
+        self.assertLess(time.monotonic() - started, 4.5, 'four lanes linking one kit were serialized')
+        self.assertEqual(len(self.kit_builds()), 1)
+
+    def test_a_dead_build_directory_is_swept_by_the_next_build(self):
+        self.store.mkdir()
+        dead = self.store / '.app-building.zzzz'
+        (dead / 'obj').mkdir(parents=True)
+        self.assertEqual(self.compile(self.app()).returncode, 0)
+        self.assertFalse(dead.exists())
+
+    def test_a_stale_use_lock_for_an_evicted_kit_is_removed(self):
+        (self.store / '.use').mkdir(parents=True)
+        stale = self.store / '.use' / ('app-' + '0' * 16 + '.lock')
+        stale.write_text('')
+        self.assertEqual(self.compile(self.app()).returncode, 0)
+        self.assertFalse(stale.exists())
 
 
 if __name__ == '__main__':
