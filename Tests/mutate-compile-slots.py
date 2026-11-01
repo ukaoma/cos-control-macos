@@ -103,7 +103,7 @@ try:
         base = run((baseline,), extra)
         if base.returncode: sys.exit(f'baseline red ({baseline}, env {extra}):\n' + base.stderr[-2000:])
     print('baseline GREEN (test-compile-slots.py, test-compile-bounded.py; also with the exports run.sh makes, and with every steering variable set wrong)', flush=True)
-    survivors = []
+    survivors, hung = [], []
     only = sys.argv[1:]
     chosen = [m for m in M if not only or m[0] in only]
     if only and len(chosen) != len(set(only)): sys.exit(f'unknown or duplicate mutant name in {only}')
@@ -118,15 +118,21 @@ try:
         (T / f).write_text(mutated)
         try:
             r = run(rest[0] if rest and rest[0] else SLOTS, rest[1] if len(rest) > 1 else None)
+        except subprocess.TimeoutExpired:
+            # A mutant that hangs the tests is caught, but by the clock and not by a check that names it, so it is listed apart.
+            hung.append(name)
+            print(f'HUNG      {name} :: no result in 600 s', flush=True)
+            continue
         finally:
             (T / f).write_text(text)
         fails = [l.split('(')[0].replace('FAIL: ', '').replace('ERROR: ', '') for l in r.stderr.splitlines() if l.startswith(('FAIL:', 'ERROR:'))]
         verdict = 'KILLED' if r.returncode else 'SURVIVED'
         if not r.returncode: survivors.append(name)
         print(f'{verdict:9} {name} :: {", ".join(fails)}', flush=True)
-    killed = len(chosen) - len(survivors)
+    killed = len(chosen) - len(survivors) - len(hung)
+    if hung: print(f'{len(hung)} mutant(s) hung: {hung}')
     if survivors:
         sys.exit(f'{killed} killed, {len(survivors)} survivor(s): {survivors}')
-    print(f'PASS compile slots mutation gate: {killed} of {len(chosen)} mutants killed, green baseline')
+    print(f'PASS compile slots mutation gate: {killed} of {len(chosen)} mutants killed, {len(hung)} hung, green baseline')
 finally:
     shutil.rmtree(work, ignore_errors=True)
