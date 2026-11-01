@@ -465,11 +465,12 @@ import Foundation
         let classicRow = C.Row(id: "action:openDictationSettings", kind: .action(.openDictationSettings), group: .answer, title: "x", leavesSession: true)
         let hubRow = C.Row(id: "action:openDictationSettings", kind: .action(.openDictationSettings), group: .answer, title: "x")
         check(C.confirmation(classicRow, drafting.snapshot) != nil && C.confirmation(hubRow, drafting.snapshot) == nil, "[the classic Dictation settings row asks first with an unsent reply]", "")
-        let classicListing = C.listing(center { $0.snapshot.classicSettings = true }, words: "dictation does not paste")
+        let classicListing = C.listing(center { $0.snapshot.classicSettings = true }, words: "how do i use dictation")
         let dictationOffer = classicListing.rows.first { $0.id == "action:openDictationSettings" }
-        check(dictationOffer == nil || dictationOffer?.leavesSession == true, "[the classic Dictation settings row says it leaves the session]", "\(rowIDs(classicListing))")
-        let hubListing = C.listing(center(), words: "dictation does not paste")
-        check(hubListing.rows.first { $0.id == "action:openDictationSettings" }?.leavesSession != true, "[the hub's Dictation settings row leaves nothing]", "")
+        check(dictationOffer?.leavesSession == true, "[the classic Dictation settings row says it leaves the session]", "\(rowIDs(classicListing))")
+        let hubListing = C.listing(center(), words: "how do i use dictation")
+        let hubOffer = hubListing.rows.first { $0.id == "action:openDictationSettings" }
+        check(hubOffer != nil && hubOffer?.leavesSession == false, "[the hub's Dictation settings row leaves nothing]", "\(rowIDs(hubListing))")
         // A hit whose open is under way keeps the words while the panel stays open; nothing else does, and a hit that closes the panel leaves none.
         let hitRow = C.Row(id: "hit:x", kind: .hit("x"), group: .found, title: "x")
         check(C.keepsWordsWhileStaying(hitRow) && !C.sendsWords(hitRow) && C.draftAfterRun(hitRow, "pricing").isEmpty, "[a hit keeps its words only while the panel stays]", "")
@@ -1137,7 +1138,7 @@ import Foundation
             ("https://x.example/v1?token=abcdef123456", "abcdef123456"), ("Note: password=hunter22", "hunter22"), ("url=https://x.example/a?secret=abcdef123456", "abcdef123456"),
             ("Run: DB_PASSWORD=hunter22", "hunter22"), ("login pass=hunter22x today", "hunter22x"),
             // The Stripe forms, a padded Basic value, and a key with no name at all.
-            ("sk_live_abcdef1234567890ab", "abcdef1234567890ab"), ("sent Basic dXNlcjpwYXNzd29yZGhlbGxv== to the proxy", "dXNlcjpwYXNzd29yZGhlbGxv"),
+            ("Authorization: Basic dXNlcjpwYXNz", "dXNlcjpwYXNz"), ("sk_live_abcdef1234567890ab", "abcdef1234567890ab"), ("sent Basic dXNlcjpwYXNzd29yZGhlbGxv== to the proxy", "dXNlcjpwYXNzd29yZGhlbGxv"),
             ("the id Xj3kLmN9_pQrStUv-WxYzAbCd_EfGh1234IjKl9 was leaked", "Xj3kLmN9_pQrStUv-WxYzAbCd_EfGh1234IjKl9"),
         ]
         for (text, secret) in shaped {

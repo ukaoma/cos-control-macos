@@ -520,7 +520,7 @@ pin("inputs.sessionsSettingOff = !model.claudeSessionsEnabled" in window and "in
 # A hit's open: the panel stays until the app has answered, so a failed open's words land where the person is looking (QA 0.5.361, U10).
 open_hit = block(window, "    func commandOpenHit(_ id: String) -> CommandEffect {", "    func commandSearchAll(_ words: String) -> CommandEffect {")
 pin("guard model.platformOpening else { return .stay }" in open_hit and "guard !model.platformOpenFailed, commandKeys.generation == generation else { return }" in open_hit
-    and 'commandKeys.draft = ""' in open_hit and "let generation = commandKeys.generation" in open_hit and "petNotice" not in open_hit and "heldByServer" not in open_hit,
+    and 'commandKeys.draft = ""\n                closeCommandCenter()' in open_hit and "let generation = commandKeys.generation" in open_hit and "petNotice" not in open_hit and "heldByServer" not in open_hit,
     "a hit's failed open keeps the panel open until its notice lands, a clean one clears the words, a panel opened since is left alone")
 cm = code(read("Sources/ControllerModel.swift"))
 pin("platformOpenFailed = petNotice != nil && !petRevealSucceeded" in cm and cm.count("petRevealSucceeded = true") == 1 and "platformOpenFailed = true; return }" in cm,
