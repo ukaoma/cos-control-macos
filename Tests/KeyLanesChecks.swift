@@ -225,6 +225,13 @@ import Foundation
             // Keyed sessions refuse Continue and Fork, and keep refusing after lanes are off.
             check(store.refusal(sessionID: "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0") == KeyLanes.keyedSessionRefusal, "a keyed session is refused on Continue and Fork")
             check(store.refusal(sessionID: "11111111-2222-3333-4444-555555555555") == nil, "another session is not refused")
+            // 0.5.361: the session list and a ⌘K hit name a Claude session by its first 8 characters, and opening one resolves it to the
+            // full id, so a short id of a keyed session must be refused too (the guard exists to stop an import of a keyed transcript).
+            check(store.refusal(sessionID: "0f1e2d3c") == KeyLanes.keyedSessionRefusal, "a keyed session is refused by its short id")
+            check(store.refusal(sessionID: "0F1E2D3C-4B5A") == KeyLanes.keyedSessionRefusal, "a keyed session is refused by a longer prefix, in any case")
+            check(store.refusal(sessionID: "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0-extra") == KeyLanes.keyedSessionRefusal, "an id that a keyed id starts is refused")
+            check(store.refusal(sessionID: "0f1e2d3") == nil, "seven characters name nothing: only an exact id is refused")
+            check(store.refusal(sessionID: "0f1e2d3d") == nil && store.refusal(sessionID: "11111111") == nil, "another short id is not refused")
 
             helper.calls = []
             helper.answers["remove-key"] = answered(200, #""removed":true,"disabledProfiles":["k-0123456789ab"],"active":false"#)
@@ -245,6 +252,7 @@ import Foundation
                   "a keyed session stays refused after Remove all keys")
             check(KeyLanesStore(defaults: d).refusal(sessionID: "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0") == KeyLanes.keyedSessionRefusal,
                   "a keyed session stays refused after a relaunch")
+            check(KeyLanesStore(defaults: d).refusal(sessionID: "0f1e2d3c") == KeyLanes.keyedSessionRefusal, "a keyed session stays refused by its short id after a relaunch")
         }
 
         // ── A refused save keeps nothing and says why.

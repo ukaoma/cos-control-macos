@@ -311,7 +311,9 @@ final class KeyLanesStore: ObservableObject {
     @Published private(set) var justSaved: String?
     /// Sessions that ran on a key, from every status this Mac has read. Kept after Remove all keys and after lanes turn
     /// off, so Continue and Fork stay refused (plan 12). Empty, and never written, on a Mac that never used a key.
-    private(set) var keyedSessionIds: Set<String>
+    private(set) var keyedSessionIds: Set<String> { didSet { keyedPrefixes = Set(keyedSessionIds.map(Self.prefixKey)) } }
+    /// The first 8 characters of each keyed id, so the session list's short ids are checked without a scan of up to 20,000 ids per row.
+    private var keyedPrefixes: Set<String> = []
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -319,7 +321,23 @@ final class KeyLanesStore: ObservableObject {
         install = defaults.string(forKey: KeyLanes.installKey).flatMap(KeyLanes.Install.init(rawValue:))
         setupSkipped = defaults.bool(forKey: Self.skippedKey)
         keyedSessionIds = Set(defaults.stringArray(forKey: Self.keyedSessionsKey) ?? [])
+        keyedPrefixes = Set(keyedSessionIds.map(Self.prefixKey))
         savedKeys = defaults.integer(forKey: Self.savedKeysKey)
+    }
+
+    nonisolated private static func prefixKey(_ id: String) -> String { String(id.lowercased().prefix(8)) }
+
+    /// Whether this id names a session that ran on a key. The saved ids are full. The session list and a ⌘K search hit name a Claude
+    /// session by its first 8 characters (and opening one resolves it to its full id), so an id of 8 or more characters that starts a
+    /// keyed id, or that a keyed id starts, is the same session. The index holds 8 characters, so a shorter id reaches only an exact match.
+    private func isKeyed(_ id: String) -> Bool {
+        if keyedSessionIds.contains(id) { return true }
+        guard keyedPrefixes.contains(Self.prefixKey(id)) else { return false }
+        let lower = id.lowercased()
+        return keyedSessionIds.contains { keyed in
+            let key = keyed.lowercased()
+            return key.hasPrefix(lower) || (key.count >= 8 && lower.hasPrefix(key))
+        }
     }
 
     var enabled: Bool { state?.enabled == true }
@@ -337,7 +355,7 @@ final class KeyLanesStore: ObservableObject {
 
     /// The Continue and Fork guard: the refusal line for a session that ran on a key, else nil.
     func refusal(sessionID: String?) -> String? {
-        guard let sessionID, !sessionID.isEmpty, keyedSessionIds.contains(sessionID) else { return nil }
+        guard let sessionID, !sessionID.isEmpty, isKeyed(sessionID) else { return nil }
         return KeyLanes.keyedSessionRefusal
     }
 

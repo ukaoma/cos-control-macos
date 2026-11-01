@@ -34,6 +34,13 @@ MUTANTS = [
     ("M4 key echoed in UI", "models", CORE,
      '"Ready to save: " + keyLine(kind: kind, last4: last4(secret))', '"Ready to save: " + keyLine(kind: kind, last4: secret)'),
     ("M5 key passed in argv", "models", CORE, 'await call(["save-key"], input, run: run)', 'await call(["save-key", secret], input, run: run)'),
+    # 0.5.361 QA item 1: a session list or search hit names a Claude session by its first 8 characters, and opening one resolves it to
+    # the full id, so the guard that stops an import of a keyed transcript must match a short id.
+    ("Q1 a short id of a keyed session is not refused", "models", CORE, "        guard keyedPrefixes.contains(Self.prefixKey(id)) else { return false }\n", "        guard false, !id.isEmpty else { return false }\n"),
+    ("Q3 a longer id that a keyed id starts is not refused", "models", CORE, " || (key.count >= 8 && lower.hasPrefix(key))", ""),
+    ("Q4 a short id is matched in the case it came in", "models", CORE, "        let lower = id.lowercased()\n        return keyedSessionIds.contains", "        let lower = id\n        return keyedSessionIds.contains"),
+    ("Q5 the prefix index forgets a status read", "models", CORE, "{ didSet { keyedPrefixes = Set(keyedSessionIds.map(Self.prefixKey)) } }", ""),
+    ("Q6 the prefix index forgets a relaunch", "models", CORE, "        keyedPrefixes = Set(keyedSessionIds.map(Self.prefixKey))\n        savedKeys", "        savedKeys"),
     ("M6 refusal not displayed", "models", CORE, "        return KeyLanes.keyedSessionRefusal\n    }\n", "        return nil\n    }\n"),
     ("M7 keyed sessions forgotten after lanes turn off", "models", CORE,
      "        defaults.set(Array(Array(keyedSessionIds).sorted().suffix(20_000)), forKey: Self.keyedSessionsKey)\n", ""),
