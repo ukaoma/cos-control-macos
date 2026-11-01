@@ -218,6 +218,13 @@ need("quiet: TodayHome.isQuiet(now: now, enabled: TodayHome.quietHoursOn(.standa
 need("c.needs - c.folded" in logic and "things can wait until tomorrow" in logic and "things can wait until tomorrow" in core_text and "Nothing urgent right now." in core_text,
      "[wording] the headline and ⌘K say the folded count in the same words")
 need("var folded = 0" in body(logic, "    struct Counts: Equatable {", "    static let agentPlatforms"), "[wording] the fold count is part of the counts the brief reads")
+# The rail and the Needs you header read the same fold (QA 0.5.361, U4: the rail said "6 need you" over a headline that said they can wait).
+rail_fn = body(today, "    func todayRail(", "\n    func todayRailItem(")
+panel_fn = body(today, "    func todayNeedsPanel(", "\n    func todayRetryLine(")
+need("let railCounts = todayBriefCounts(frame, now: now)" in rail_fn and "TodayHome.story(item.key, railCounts, now: now)" in rail_fn
+     and "TodayHome.story(item.key, frame.counts" not in today, "[rail] the rail reads the quiet-hours fold the headline reads")
+need('if line == .rows, !folded.now.isEmpty { Text("\\(folded.now.count)")' in panel_fn and 'Text("\\(frame.needs.count)")' not in panel_fn,
+     "[header] the Needs you header counts the rows it lists, not the ones the fold moved to tomorrow")
 # The list refreshes when ⌘K opens (not forced), and the tick is unchanged: one refresh in each place.
 need(body(today, "    func openCommandCenter() {", "\n    func closeCommandCenter() {").count("loadClaudeSessions()") == 1
      and "force: true" not in body(today, "    func openCommandCenter() {", "\n    func closeCommandCenter() {"), "[command center] the session list refreshes when ⌘K opens, not forced")

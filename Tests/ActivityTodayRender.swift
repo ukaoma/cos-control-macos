@@ -14,6 +14,8 @@ import SwiftUI
         guard NSHomeDirectory().contains("cos-today-render") else { fputs("run through Tests/run-activity-today-render.sh (a scratch home)\n", stderr); exit(2) }
         let out = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? FileManager.default.currentDirectoryPath, isDirectory: true)
         try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        // COS_TODAY_RENDER_ONLY=a,b names the scenes to draw (the others are skipped): a re-render of what changed.
+        let only = ProcessInfo.processInfo.environment["COS_TODAY_RENDER_ONLY"].map { Set($0.split(separator: ",").map(String.init)) }
         UserDefaults.standard.set(true, forKey: TodayHome.enabledKey)
         UserDefaults.standard.set(false, forKey: TodayHome.quietHoursKey)
 
@@ -37,14 +39,21 @@ import SwiftUI
         try render(.olderServer, width: 1440, height: 1240, name: "today-state-older-server-1440")
         try render(.busy, width: 1228, height: 900, name: "today-main-1228")
         UserDefaults.standard.set(true, forKey: TodayHome.quietHoursKey)
+        // The fold reads the real clock (the window's own tick), so these two fold only after 6 PM, before 6 AM or on a weekend. 0.5.361: the busy
+        // day has real tier 2 to 5 needs (voices, a meeting to review, Work's move, older suggestions), so the rail, the headline and the Needs you
+        // header can all be read side by side: the same count, or "can wait until tomorrow".
+        if !TodayHome.isQuiet(now: Date(), enabled: true) { fputs("note: the clock is not in quiet hours, so the quiet-hours scenes do not fold\n", stderr) }
         try render(.busy, width: 1440, height: 1240, name: "today-quiet-hours-1440")
+        try render(.busy, width: 920, height: 680, name: "today-quiet-hours-920")
+        try render(.foldedOnly, width: 1440, height: 1240, name: "today-quiet-hours-folded-1440")
         print("wrote PNGs to \(out.path)")
         func render(_ scene: Scene, width: CGFloat, height: CGFloat, name: String, tab: ActivitySection? = nil) throws {
+            if let only, !only.contains(name) { return }
             try ActivityTodayRender.render(scene, width: width, height: height, name: name, tab: tab, out: out)
         }
     }
 
-    enum Scene { case busy, caughtUp, many, loading, oneFailed, unreachable, firstRun, olderServer }
+    enum Scene { case busy, caughtUp, many, loading, oneFailed, unreachable, firstRun, olderServer, foldedOnly }
 
     static func iso(_ minutesAgo: Double) -> String { ISO8601DateFormatter().string(from: now.addingTimeInterval(-minutesAgo * 60)) }
 
@@ -106,6 +115,8 @@ import SwiftUI
             session("c1", "Bottle POS footer tweak", "waiting", minutes: 3, provider: "cursor"),
             session("f1", "Testimonial HubDB refresh", "recent", minutes: 40, updated: 4),
         ]
+        // Quiet hours with no session question: every need is tier 2 to 5, so all of them fold and the rail, the headline and the header say "can wait".
+        if scene == .foldedOnly { sessions.removeAll { $0.state == "waiting" } }
         if scene == .many {
             sessions += (0..<6).map { session("m\($0)", ["Bottle POS SEO pass", "IT Retail hardware loops", "gotcos docs sweep", "Footer tweak", "Footer tweak", "Pet pack review"][$0],
                                               "running", minutes: Double(3 + $0 * 4), provider: ["claude", "codex", "cursor"][$0 % 3], workspace: ["Bottle POS", "IT Retail"][$0 % 2]) }

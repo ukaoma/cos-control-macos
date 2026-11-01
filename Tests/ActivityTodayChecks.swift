@@ -518,6 +518,22 @@ import Foundation
               "an unsettled count says so far", TodayHome.brief(foldedOpen))
         var noFold = TodayHome.Counts(); noFold.needs = 6; noFold.settled = true
         check(TodayHome.brief(noFold) == "Six things need you.", "no fold, no change", TodayHome.brief(noFold))
+        // The rail reads the fold too (0.5.361): it counts what is left, says "can wait until tomorrow" when that is all there is,
+        // and only what is left turns it hot. A recording keeps its place and names only what is left.
+        func railLine(_ c: TodayHome.Counts) -> TodayHome.Story { TodayHome.story("today", c, now: now, calendar: calendar) }
+        check(railLine(allFolded) == TodayHome.Story(text: "6 can wait until tomorrow", hot: false), "the rail agrees with the fold: all folded", railLine(allFolded).text)
+        check(railLine(oneFolded) == TodayHome.Story(text: "1 can wait until tomorrow", hot: false), "the rail agrees with the fold: one folded", railLine(oneFolded).text)
+        check(railLine(someFolded) == TodayHome.Story(text: "2 need you", hot: true), "the rail counts only what the fold leaves", railLine(someFolded).text)
+        var oneLeft = TodayHome.Counts(); oneLeft.needs = 4; oneLeft.folded = 3; oneLeft.settled = true
+        check(railLine(oneLeft) == TodayHome.Story(text: "1 needs you", hot: true), "the rail says 1 needs you for one left", railLine(oneLeft).text)
+        var foldedRunning = allFolded; foldedRunning.running = 2
+        check(railLine(foldedRunning).text == "6 can wait until tomorrow, 2 running", "the rail keeps running after the fold line", railLine(foldedRunning).text)
+        var foldedRecording = allFolded; foldedRecording.recordings = 1
+        check(railLine(foldedRecording) == TodayHome.Story(text: "1 recording", hot: true), "a recording names no folded things", railLine(foldedRecording).text)
+        var recordingLeft = someFolded; recordingLeft.recordings = 1
+        check(railLine(recordingLeft).text == "1 recording, 2 need you", "a recording names only what the fold leaves", railLine(recordingLeft).text)
+        check(railLine(foldedOpen).text == "2 can wait until tomorrow" && railLine(foldedOpen).hot == false, "an unsettled count of folded things is still can wait", railLine(foldedOpen).text)
+        check(railLine(noFold) == TodayHome.Story(text: "6 need you", hot: true), "no fold, no change on the rail", railLine(noFold).text)
         let a = TodayHome.brief(c, calendar: calendar), b = TodayHome.brief(c, calendar: calendar)
         check(a == b, "the brief is deterministic")
         for word in ["\u{2014}", "\u{2192}", "you said", "You said"] { check(!a.contains(word), "no em dash, arrow or attribution in the brief", word) }
@@ -537,6 +553,24 @@ import Foundation
         check(folded.now.allSatisfy { $0.tier == 1 } && folded.now.count == 2 && folded.tomorrow.count == 4, "tiers 2 to 5 fold; session questions never fold")
         check(TodayHome.tomorrowLine(folded.tomorrow) == "For tomorrow: 4 more things", "the fold line")
         check(TodayHome.fold(rows, quiet: false).tomorrow.isEmpty, "outside quiet hours nothing folds")
+        // 0.5.361, real tier 2 to 5 needs: the rail, the headline and the Needs you header all count the rows the fold leaves.
+        var quietCounts = TodayHome.counts(needs: rows, running: [], finished: [])
+        quietCounts.folded = folded.tomorrow.count
+        quietCounts.settled = true
+        let quietRail = TodayHome.story("today", quietCounts, now: now, calendar: calendar)
+        check(quietCounts.needs == rows.count && quietCounts.needs - quietCounts.folded == folded.now.count,
+              "the header counts the rows it lists: needs minus folded", "\(quietCounts.needs) - \(quietCounts.folded) vs \(folded.now.count)")
+        check(quietRail == TodayHome.Story(text: "\(folded.now.count) need you", hot: true),
+              "the rail counts the same rows as the header under quiet hours", quietRail.text)
+        check(TodayHome.brief(quietCounts, calendar: calendar).hasPrefix("Two sessions are waiting on you.") && !TodayHome.brief(quietCounts, calendar: calendar).contains("Six"),
+              "the headline agrees with the rail under quiet hours: the two session questions, not six things", TodayHome.brief(quietCounts, calendar: calendar))
+        var onlyTomorrow = TodayHome.counts(needs: rows.filter { $0.tier != 1 }, running: [], finished: [])
+        onlyTomorrow.folded = onlyTomorrow.needs
+        onlyTomorrow.settled = true
+        check(TodayHome.story("today", onlyTomorrow, now: now, calendar: calendar) == TodayHome.Story(text: "4 can wait until tomorrow", hot: false),
+              "only tier 2 to 5 needs: the rail says they can wait, and is not hot", TodayHome.story("today", onlyTomorrow, now: now, calendar: calendar).text)
+        check(TodayHome.brief(onlyTomorrow, calendar: calendar).hasPrefix("Four things can wait until tomorrow."),
+              "only tier 2 to 5 needs: the headline says the same", TodayHome.brief(onlyTomorrow, calendar: calendar))
     }
 
     // MARK: Cost guards

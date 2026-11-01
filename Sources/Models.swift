@@ -14694,16 +14694,20 @@ enum TodayHome {
     static func story(_ tab: String, _ c: Counts, now: Date, calendar: Calendar = .current) -> Story {
         switch tab {
         case "today":
+            // The quiet-hours fold applies here too (0.5.361): what the fold moved to tomorrow does not need you now, so the rail,
+            // the headline (brief) and ⌘K all count `needs - folded`, and say "can wait until tomorrow" when that is all there is.
+            let waiting = c.needs - c.folded
             let needs: String?
-            if c.needs > 0 { needs = c.needs == 1 ? "1 needs you" : "\(c.needs) need you" }
+            if waiting > 0 { needs = waiting == 1 ? "1 needs you" : "\(waiting) need you" }
+            else if c.folded > 0 { needs = "\(c.folded) can wait until tomorrow" }
             else if c.settled { needs = "Nothing needs you" }
             else { needs = c.failedSources.isEmpty ? "Reading" : "Couldn't read " + list(c.failedSources.map(\.name)) }
             let running = c.running > 0 ? "\(c.running) running" : nil
             // A recording comes first, and what is left of the line has to fit without wrapping: what needs you, if anything does.
             if c.recordings > 0 {
-                return Story(text: ["\(c.recordings) recording", c.needs > 0 ? needs : nil].compactMap { $0 }.joined(separator: ", "), hot: true)
+                return Story(text: ["\(c.recordings) recording", waiting > 0 ? needs : nil].compactMap { $0 }.joined(separator: ", "), hot: true)
             }
-            return Story(text: [needs, running].compactMap { $0 }.joined(separator: ", "), hot: c.needs > 0)
+            return Story(text: [needs, running].compactMap { $0 }.joined(separator: ", "), hot: waiting > 0)
         case "messages":
             if let brief = c.morningBrief, calendar.isDate(brief, inSameDayAs: now) {
                 return Story(text: "Morning brief reached the glasses at " + clock(brief, calendar: calendar), hot: false)

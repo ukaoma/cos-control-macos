@@ -8519,6 +8519,8 @@ extension ActivityWindow {
     func todayRail(mode: TodayHome.RailMode, frame: TodayHome.Frame, now: Date) -> some View {
         let items: [(key: String, section: ActivitySection?, name: String)] = [("today", nil, "Today")]
             + ActivitySection.allCases.map { ($0.rawValue, $0, $0.title) }
+        // The rail reads the same folded counts as the headline and the Needs you header, so the three never disagree under quiet hours.
+        let railCounts = todayBriefCounts(frame, now: now)
         return VStack(alignment: mode == .full ? .leading : .center, spacing: mode == .full ? 4 : 6) {
             HStack(spacing: 10) {
                 if mode == .full {
@@ -8532,7 +8534,7 @@ extension ActivityWindow {
             .padding(mode == .full ? EdgeInsets(top: 4, leading: 12, bottom: 18, trailing: 12) : EdgeInsets(top: 0, leading: 0, bottom: 14, trailing: 0))
             .accessibilityElement(children: .combine).accessibilityLabel("COS Control")
             ForEach(Array(items.enumerated()), id: \.element.key) { index, item in
-                let story = TodayHome.story(item.key, frame.counts, now: now)
+                let story = TodayHome.story(item.key, railCounts, now: now)
                 let active = !showingSettings && section == item.section
                 todayRailItem(mode: mode, key: item.key, section: item.section, name: item.name, story: story, active: active, index: index)
                 if index == 0 {
@@ -8763,7 +8765,8 @@ extension ActivityWindow {
             HStack(alignment: .center) {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Text("Needs you").font(COSType.body(17, weight: .semibold)).foregroundStyle(TodayInk.ink)
-                    if line == .rows { Text("\(frame.needs.count)").font(COSType.body(17, weight: .semibold)).foregroundStyle(TodayInk.hot) }
+                    // The rows it lists, not the ones the quiet-hours fold moved to tomorrow (the rail and the headline count the same way).
+                    if line == .rows, !folded.now.isEmpty { Text("\(folded.now.count)").font(COSType.body(17, weight: .semibold)).foregroundStyle(TodayInk.hot) }
                 }
                 .accessibilityElement(children: .combine).accessibilityAddTraits(.isHeader)
                 Spacer()
