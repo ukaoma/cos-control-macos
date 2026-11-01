@@ -20,7 +20,7 @@ if args == ['--version']:
     print(os.environ.get('FAKE_SWIFT_VERSION', 'fake-swift-1')); sys.exit(0)
 log = pathlib.Path(os.environ['FAKE_LOG'])
 with log.open('a') as s:
-    s.write(json.dumps({'args': args, 'cwd': os.getcwd()}) + '\n')
+    s.write(json.dumps({'args': args, 'cwd': os.getcwd(), 'at': time.time()}) + '\n')
 sleep = os.environ.get('FAKE_SLEEP' if '-emit-module' in args else 'FAKE_SLEEP_HARNESS')
 if sleep:
     time.sleep(float(sleep))
@@ -424,9 +424,11 @@ class PersistentKitTests(KitBase):
 
     def test_a_kit_a_lane_is_still_linking_against_is_not_evicted_from_under_it(self):
         self.version(0)
+        self.assertEqual(self.compile(self.app()).returncode, 0)  # built by an earlier lane: the slow one only REUSES it
+        before = len(self.calls())
         slow = self.start(self.app(), env=dict(self.env, FAKE_SLEEP_HARNESS='4'), out='slow')
         deadline = time.time() + 20
-        while time.time() < deadline and not [c for c in self.calls() if '-emit-module' not in c]:
+        while time.time() < deadline and len(self.calls()) == before:
             time.sleep(0.05)
         (v0,) = self.dirs('app')
         for i in (1, 2, 3):
@@ -524,6 +526,9 @@ class PersistentKitTests(KitBase):
         self.assertEqual(len(self.dirs('app')), 1)
         self.assertEqual(self.compile(self.app()).returncode, 0)
         self.assertEqual(len(self.kit_builds()), 1)
+        helper = [str(self.root / 'Sources/Views.swift')]
+        self.compile(helper, flags=(), out='p1')
+        self.assertIn('reused', self.compile(helper, flags=(), out='p2').stderr)
 
     def test_reusing_a_kit_refreshes_its_recency_for_eviction(self):
         for i in (0, 1):
@@ -554,11 +559,12 @@ class PersistentKitTests(KitBase):
         self.assertEqual((kit / 'obj/Models.o').read_text(), 'object of // Models.swift')
 
     def test_lanes_on_one_kit_link_at_the_same_time(self):
-        env = dict(self.env, FAKE_SLEEP='0.2', FAKE_SLEEP_HARNESS='1.5')
-        started = time.monotonic()
+        env = dict(self.env, FAKE_SLEEP='0.2', FAKE_SLEEP_HARNESS='2')
         procs = [self.start(self.app(), env=env, out=f'par{i}') for i in range(4)]
         self.assertEqual([p.communicate(timeout=60) and p.returncode for p in procs], [0] * 4)
-        self.assertLess(time.monotonic() - started, 4.5, 'four lanes linking one kit were serialized')
+        starts = sorted(json.loads(line)['at'] for line in self.log.read_text().splitlines() if '-emit-module' not in line)
+        self.assertEqual(len(starts), 4)
+        self.assertLess(starts[-1] - starts[0], 1.2, 'lanes linking one kit waited for each other: ' + str(starts))
         self.assertEqual(len(self.kit_builds()), 1)
 
     def test_a_dead_build_directory_is_swept_by_the_next_build(self):

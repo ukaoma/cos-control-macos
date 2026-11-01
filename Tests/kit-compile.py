@@ -369,13 +369,11 @@ def build_kit(root, prefix, name, src_dir, files, digests, compile_opts, key):
                        objects=[f'obj/{o}' for o in objects], flags=compile_opts)
         (work / 'receipt.json').write_text(json.dumps(receipt, indent=1, sort_keys=True))
         os.replace(work, kit_dir)
-        if use is not None:
-            fcntl.flock(use, fcntl.LOCK_SH)  # building is done; from here on this lane only reads the kit
         root.evict(kit_dir)
         return kit_dir, receipt, 0, 'build'
     finally:
         if use is not None:
-            fcntl.flock(use, fcntl.LOCK_SH)  # idempotent; also covers the failure returns above
+            fcntl.flock(use, fcntl.LOCK_SH)  # building is over (or failed): from here this lane only reads the kit
         shutil.rmtree(work, ignore_errors=True)
 
 

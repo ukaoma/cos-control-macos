@@ -151,8 +151,9 @@ class ReuseTests(Base):
         gen.write_text('two')
         self.run_compile(named=[str(gen)])
         self.assertEqual(self.count(), '2')
-        self.run_compile(named=[str(self.root/'app')])  # naming the output as an argument never makes it an input
-        self.run_compile(named=[str(self.root/'app')])
+        (self.root/'app').unlink()
+        self.assertEqual(self.run_compile(named=[str(self.root/'app')]).returncode, 0)  # the output, named, is never its own input
+        self.assertIn('verified', self.run_compile(named=[str(self.root/'app')]).stdout)
         self.assertEqual(self.count(), '3')
 
     def test_the_per_run_scratch_directory_is_not_part_of_the_key(self):
@@ -210,7 +211,9 @@ class PersistentReuseTests(Base):
         out = self.root/'run2/app'
         self.assertEqual(out.read_text(), 'binary')
         self.assertTrue(out.stat().st_mode & stat.S_IXUSR, 'the restored binary lost its executable bit')
-        self.assertIn('verified', self.run_compile(run=2).stdout)  # the same run's second call uses the run's own receipt
+        again = self.run_compile(run=2).stdout  # the same run's second call uses the run's own receipt, not the store
+        self.assertIn('verified exact inputs and output', again)
+        self.assertNotIn('restored', again)
         self.assertEqual(self.count(), '1')
         self.assertEqual(oct((self.store/'reuse').stat().st_mode & 0o777), '0o700')
 
@@ -251,15 +254,16 @@ class PersistentReuseTests(Base):
         try:
             shutil.copytree(self.root, other, ignore=shutil.ignore_patterns('store', 'count', 'app', 'receipt.json', 'run*'))
 
-            def build(where):  # the output sits in the checkout itself, so only the command's own paths tell checkouts apart
+            def build(where):  # run.sh's shape: cwd is the checkout, which also holds the output
                 command = [sys.executable, str(SCRIPT), '--root', str(where), '--receipt', str(where/'receipt.json'),
                            '--output', str(where/'app'), '--', str(where/'Tests/compile-guard.sh'), 'compiler', '-o', str(where/'app')]
-                return subprocess.run(command, cwd=self.root, env=self.env, capture_output=True, text=True)
+                return subprocess.run(command, cwd=where, env=self.env, capture_output=True, text=True)
             self.assertEqual(build(self.root).returncode, 0)
             r = build(other)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertNotIn('restored', r.stdout)
-            self.assertEqual(self.count(), '2')
+            self.assertEqual((self.root/'count').read_text(), 'x')
+            self.assertEqual((other/'count').read_text(), 'x', 'the second checkout restored the first one\'s binary')
         finally:
             shutil.rmtree(other, ignore_errors=True)
 
