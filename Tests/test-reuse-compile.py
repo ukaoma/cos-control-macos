@@ -297,10 +297,16 @@ class PersistentReuseTests(Base):
 
     def test_a_half_written_pair_is_swept(self):
         self.run_compile(run=1)
-        (self.store/'reuse'/('a'*64 + '.bin')).write_text('interrupted')
+        planted = self.store/'reuse'/('a'*64 + '.bin')  # a binary with no receipt: an interrupted save
+        planted.write_text('interrupted')
+        self.assertTrue(planted.exists())
         (self.root/'Sources/a.swift').write_text('two')
         self.run_compile(run=2)
-        self.assertEqual([p.name for p in (self.store/'reuse').iterdir() if p.name.startswith('a')], [])
+        # Exact names: a real fingerprint is random hex and starts with 'a' one time in sixteen.
+        self.assertFalse(planted.exists())
+        self.assertFalse(planted.with_suffix('.json').exists())
+        self.assertEqual(len(self.bins()), 2)  # run 1's and run 2's whole entries are untouched
+        self.assertEqual(len(list((self.store/'reuse').glob('*.json'))), 2)
 
     def test_an_icloud_or_relative_store_is_refused(self):
         home = self.root/'home'
