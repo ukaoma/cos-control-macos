@@ -4656,8 +4656,9 @@ final class ControllerModel: ObservableObject {
     @Published var subQKeyBusy = false
     @Published var subQKeyMessage: String?
 
-    func loadDecisionSettings() async {
-        decisionMessage = nil
+    /// `quiet`: a read the ⌘K panel makes when it opens (0.5.362). It says nothing in Settings and leaves what Settings shows alone when it fails.
+    func loadDecisionSettings(quiet: Bool = false) async {
+        if !quiet { decisionMessage = nil }
         let generation = UUID(); decisionReadGeneration = generation
         do {
             let response = try await helper.run(["decision-provider-status"], timeout: 25)
@@ -4671,7 +4672,7 @@ final class ControllerModel: ObservableObject {
             }
             decisionSettings = settings; decisionSettingsAvailable = true
         } catch {
-            guard decisionReadGeneration == generation else { return }
+            guard decisionReadGeneration == generation, !quiet else { return }
             decisionSettings = nil; decisionSettingsAvailable = nil
             decisionMessage = error.localizedDescription
         }

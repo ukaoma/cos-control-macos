@@ -60,7 +60,51 @@ import SwiftUI
         hit("cursor:7b8c9d0e", "Notes", match: nil, days: 31),
     ])
 
+    // 0.5.362: meaning search. The server can find, a key is saved for the model that decides, and the person has chosen (or not).
+    static func meaningSet(_ provider: C.MeaningProvider, _ choice: C.MeaningChoice?, settled: C.MeaningReason? = nil) -> C.Meaning {
+        C.Meaning(provider: provider, keyed: true, capable: true, choices: choice.map { [provider.rawValue: $0] } ?? [:], settled: settled)
+    }
+    static func mHit(_ id: String, _ title: String, _ strength: C.Strength, match: String?, days: Int, state: String = "Recent") -> C.Item {
+        var item = hit(id, title, match: match, days: days, state: state)
+        item.strength = strength
+        return item
+    }
+    static let topic = "persona pricing for the jewelry tier"
+    static let meaningHits = [
+        mHit("claude:1a2b3c4d", "Jewelry persona review", .strong, match: "we should price the jewelry persona tier above the base plan, then test it", days: 12),
+        mHit("codex:3c4d5e6f-7081-4a92-b3c4-d5e6f7081a92", "Quarterly planning", .likely, match: "the add-on tier needs its own price, and the table one more column", days: 19),
+        mHit("cursor:7b8c9d0e", "Notes", .possible, match: nil, days: 31),
+    ]
+    static func meaningDone(_ hits: [C.Item], phase: C.MeaningPhase = .done, asked: Int = 254, skipped: Int = 0) -> C.MeaningFound {
+        C.MeaningFound(words: C.plain(topic), phase: phase, hits: hits, asked: asked, skipped: skipped, reachedBack: now.addingTimeInterval(-44 * 86_400), resetsAt: nil)
+    }
+    static func meaningScene(_ name: String, _ meaning: C.Meaning, found: C.MeaningFound? = nil, chosen: String? = nil, width: CGFloat? = nil, word: C.Found? = nil) -> Scene {
+        Scene(name: name, fixture: CommandCenterFixture(words: topic, chosen: chosen, recording: recording(), found: word, meaning: meaning, meaningFound: found, panelWidth: width), manyRecents: true)
+    }
+
     static let scenes: [Scene] = [
+        meaningScene("meaning-consent-jev", meaningSet(.jev, nil)),
+        meaningScene("meaning-consent-subq", meaningSet(.subq, nil)),
+        meaningScene("meaning-consent-jev-floor", meaningSet(.jev, nil), width: 320),
+        meaningScene("meaning-consent-subq-floor", meaningSet(.subq, nil), width: 320),
+        meaningScene("meaning-consent-chosen", meaningSet(.subq, nil), chosen: "consent:subq:on"),
+        meaningScene("meaning-rows", meaningSet(.jev, .on), found: meaningDone(meaningHits)),
+        meaningScene("meaning-rows-chosen", meaningSet(.jev, .on), found: meaningDone(meaningHits), chosen: "hit:codex:3c4d5e6f-7081-4a92-b3c4-d5e6f7081a92"),
+        meaningScene("meaning-rows-floor", meaningSet(.jev, .on), found: meaningDone(meaningHits), chosen: "hit:claude:1a2b3c4d", width: 320),
+        meaningScene("meaning-rows-and-word-hits", meaningSet(.jev, .on), found: meaningDone(meaningHits), word: foundHits),
+        meaningScene("meaning-searching", meaningSet(.jev, .on), found: meaningDone([], phase: .searching)),
+        meaningScene("meaning-partial-further", meaningSet(.jev, .on), found: meaningDone([], phase: .partial)),
+        meaningScene("meaning-none", meaningSet(.jev, .on), found: meaningDone([])),
+        meaningScene("meaning-none-skipped", meaningSet(.jev, .on), found: meaningDone([], asked: 508, skipped: 3)),
+        meaningScene("meaning-none-floor", meaningSet(.jev, .on), found: meaningDone([], skipped: 3), width: 320),
+        meaningScene("meaning-capped", meaningSet(.subq, .on), found: C.MeaningFound(words: C.plain(topic), phase: .unavailable(.capReached), resetsAt: nil)),
+        meaningScene("meaning-capped-resets", meaningSet(.subq, .on), found: C.MeaningFound(words: C.plain(topic), phase: .unavailable(.capReached), resetsAt: Calendar.current.date(bySettingHour: 23, minute: 0, second: 0, of: now).map { max($0, now.addingTimeInterval(3600)) })),
+        meaningScene("meaning-failed", meaningSet(.jev, .on), found: C.MeaningFound(words: C.plain(topic), phase: .unavailable(.failed))),
+        meaningScene("meaning-timed-out", meaningSet(.jev, .on), found: C.MeaningFound(words: C.plain(topic), phase: .unavailable(.timedOut))),
+        meaningScene("meaning-old-server", meaningSet(.jev, .on, settled: .serverTooOld)),
+        meaningScene("meaning-old-server-floor", meaningSet(.jev, .on, settled: .serverTooOld), width: 320),
+        meaningScene("meaning-never", meaningSet(.jev, .never)),
+
         Scene(name: "rec-mac-today", fixture: CommandCenterFixture(recordings: [macLive], recording: onMac), open: false),
         Scene(name: "rec-mac-today-confirm", fixture: CommandCenterFixture(recordings: [macLive], todayStopConfirm: "recording:mac_fixture", recording: onMac), open: false),
         Scene(name: "rec-glasses-today", fixture: CommandCenterFixture(recordings: [glassesLive], recording: onGlasses), open: false),

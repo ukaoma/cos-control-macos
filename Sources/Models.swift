@@ -2381,6 +2381,8 @@ struct DecisionProviderSettings: Equatable, Sendable {
     let sources: [String: String]
     let configured: [String: Bool]
     let models: [String: String]
+    /// What the server says it can do, by name (0.5.362: `sessionFind`). Absent is no, and a version is never read for it.
+    let capabilities: [String: Bool]
     init?(details: [String: JSONValue]) {
         guard details["schema"]?.double == 1,
               let revision = details["revision"]?.string, revision.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil,
@@ -2406,7 +2408,10 @@ struct DecisionProviderSettings: Equatable, Sendable {
         sources = details["sources"]?.object?.compactMapValues(\.string) ?? [:]
         configured = details["configured"]?.object?.compactMapValues(\.bool) ?? [:]
         models = details["models"]?.object?.compactMapValues(\.string) ?? [:]
+        capabilities = details["capabilities"]?.object?.compactMapValues(\.bool) ?? [:]
     }
+    /// The server can find sessions by meaning (`POST /api/agent-sessions/find`). The panel asks nothing without it.
+    var canFindSessions: Bool { capabilities["sessionFind"] == true }
     func patch(workflow: String?, selection: String) -> [String: JSONValue]? {
         guard selection == "inherit" || DecisionProvider(rawValue: selection) != nil,
               workflow == nil || Self.workflows.contains(workflow!) else { return nil }
@@ -13570,6 +13575,21 @@ enum TodayHome {
     static func enabled(_ defaults: UserDefaults) -> Bool { defaults.object(forKey: enabledKey) as? Bool ?? false }
     static func quietHoursOn(_ defaults: UserDefaults) -> Bool { defaults.object(forKey: quietHoursKey) as? Bool ?? true }
     static func workRunsOn(_ defaults: UserDefaults) -> Bool { defaults.object(forKey: workRunsKey) as? Bool ?? true }
+
+    /// 0.5.362: what the person chose for search by meaning in ⌘K, one key per decision model ("jev", "subq"): "on" or "never". No key is
+    /// ask, which sends nothing. Per model, so a yes for Jev is never a yes for SubQ.
+    static func meaningChoiceKey(_ provider: String) -> String { "activityTodayMeaning." + provider }
+    static func meaningChoices(_ defaults: UserDefaults) -> [String: String] {
+        var out: [String: String] = [:]
+        for provider in ["jev", "subq"] {
+            if let raw = defaults.string(forKey: meaningChoiceKey(provider)), raw == "on" || raw == "never" { out[provider] = raw }
+        }
+        return out
+    }
+    static func setMeaningChoice(_ choice: String, provider: String, _ defaults: UserDefaults) {
+        guard ["jev", "subq"].contains(provider) else { return }
+        if choice == "on" || choice == "never" { defaults.set(choice, forKey: meaningChoiceKey(provider)) } else { defaults.removeObject(forKey: meaningChoiceKey(provider)) }
+    }
 
     // MARK: Layout (B2)
 

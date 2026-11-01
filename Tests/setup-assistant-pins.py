@@ -225,7 +225,8 @@ pin('model.perform(command)' in ext and ext.count("model.perform(") == 1 and "gu
 helpers = re.findall(r"model\.runHelper\(\[([^\]]*)\]", ext)
 reports = [h for h in helpers if h.startswith('"report", "--current-version", ControllerModel.currentVersion')]
 searches = [h for h in helpers if h.startswith('"claude-sessions-search"')]
-pin(len(helpers) == 2 and len(reports) == 1 and len(searches) == 1, f"two helper calls, both with fixed arguments: {helpers}")
+finds = [h for h in helpers if h.startswith('"agent-sessions-find"')]
+pin(len(helpers) == 3 and len(reports) == 1 and len(searches) == 1 and finds == ['"agent-sessions-find"'], f"three helper calls, all with fixed arguments: {helpers}")
 pin(searches == ['"claude-sessions-search", "--local", "--limit", "8"'], f"the word search is one fixed verb, local, with a fixed limit: {searches}")
 pin(all("words" not in h and "listing" not in h and "query" not in h for h in helpers), "typed words are never a helper argument")
 search_fn = block(ext, "    func commandSearchSessions(_ words: String) async throws -> [CommandHit] {", "\n    }\n")
@@ -277,10 +278,14 @@ pin("Text(verbatim: row.title)" in panel and "Text(row.title)" not in panel and 
 pin("AttributedString" not in panel and "markdown" not in panel.lower(), "a title is never parsed as anything")
 
 # Breadcrumbs carry no typed words and no titles.
+MEANING_LOGS = {
+    'todayLog.info("command center: meaning choice \\(choice.rawValue, privacy: .public)")',
+    'todayLog.info("command meaning \\(stage.rawValue, privacy: .public) \\(result.reason?.rawValue ?? "answered", privacy: .public) ms=\\(Int(Date().timeIntervalSince(started) * 1000))")',
+}
 logs = [line for line in (ext + panel).split("\n") if "todayLog." in line]
 pin(len(logs) >= 3, f"the command center leaves breadcrumbs: {logs}")
 for line in logs:
-    pin("\\(" not in line or "row.logName" in line or ("outcome.kind" in line and "Int(Date().timeIntervalSince(started) * 1000)" in line and "words" not in line),
+    pin("\\(" not in line or "row.logName" in line or line.strip() in MEANING_LOGS or ("outcome.kind" in line and "Int(Date().timeIntervalSince(started) * 1000)" in line and "words" not in line),
         f"a breadcrumb names a kind, never words: {line.strip()}")
 
 # VoiceOver and no motion.
@@ -464,12 +469,13 @@ pin("commandKeys.searchAllWords = model.sessionQuery" in window and "if let said
     "opening Sessions on its own takes out the words Search all left in its box")
 pin("incoming.merging(keys.hitSessions.filter { old in refreshed.hits.contains { $0.id == old.key } }" in panel, "a hit kept for the person who chose it keeps its session")
 pin("static let sessionSearchBodyFileLimit = 80\n" in helper, "the scan reads at most 80 transcripts")
-panel_search = block(panel, "    private func runSearch(_ words: String?) async {", "    private func move(_ delta: Int) -> Bool {")
+panel_search = block(panel, "    private func runSearch(_ words: String?) async {", "    private func runMeaning(")
 pin(".task(id: listing.searchWords) { await runSearch(listing.searchWords) }" in panel, "one search at a time: the task is keyed by the words, so a key cancels the last one")
 pin("guard fixture == nil else { return }" in panel_search and "Task.sleep(nanoseconds: 500_000_000)" in panel_search, "500 ms of quiet first, and nothing runs under a fixture")
 pin(before(panel_search, "guard let words else", "Task.sleep(nanoseconds: 500_000_000)", "guard !Task.isCancelled else { return }", "try await search(words)", "guard !Task.isCancelled else { return }", "C.refreshed("),
     "a cancelled search stores nothing")
-pin("@State private var found = C.Found()" in panel and "if fixture == nil { inputs.found = found }" in panel, "the hits are the panel's own state")
+pin("@State private var found = C.Found()" in panel and "inputs.found = found" in panel and "@State private var meaning = C.MeaningFound()" in panel and "inputs.meaningFound = meaning" in panel,
+    "the hits, word and meaning, are the panel's own state")
 announce = [line.strip() for line in panel_search.split("\n") if "Announcement(" in line]
 pin(announce == ["if shown > 0 { AccessibilityNotification.Announcement(C.foundAnnouncement(shown)).post() }"], f"on arrival VoiceOver hears only the fixed count: {announce}")
 for forbidden in ("sessionSearchHits", "sessionSearching", "sessionSearchError", "sessionSemantic"):
@@ -550,7 +556,7 @@ pin(function_body(core, mirror) == function_body(code(read("Sources/WorkCardFile
     "the credential key rule equals WorkCardFiles.credentialKey")
 
 # A failed word search: a timeout is its own phase, and the log names the kind and the elapsed time, never the words (QA 0.5.361, G8).
-search_fn = block(panel, "    private func runSearch(_ words: String?) async {", "    private func move(_ delta: Int) -> Bool {")
+search_fn = block(panel, "    private func runSearch(_ words: String?) async {", "    private func runMeaning(")
 failure_fn = block(window, "    static func searchFailure(_ error: Error) -> (kind: String, phase: SetupAssistant.Center.SearchPhase) {", "    func commandSearchAll(")
 pin("case .timedOut: return (\"timed out\", .timedOut)" in failure_fn and "let outcome = ActivityWindow.searchFailure(error)" in search_fn
     and "found = C.Found(words: words, phase: outcome.phase)" in search_fn, "a timed out search is its own phase")
@@ -626,6 +632,64 @@ for callee in scan_callees:
         pin(banned.lower() not in body.lower(), f"the scan's callee {callee} never uses {banned}")
 pin("Process()" in helper_function("loadCursorPinnedIds") and "readCursorPins ? loadCursorPinnedIds(" in helper_function("localSessionKeywordHits"),
     "the one process the scan can reach is the Cursor pin read, and only behind readCursorPins")
+
+
+# ---- 0.5.362: meaning search --------------------------------------------------------------------------------------------------------
+
+# The engine decides and the window only carries out: no defaults, no helper, no URL in it (the first pins above hold that), and the model a person
+# agreed to is a closed set.
+pin("case jev, subq" in core and "enum MeaningChoice: String, CaseIterable, Sendable { case ask, on, never }" in core, "the model and the choice are closed sets")
+gate = block(core, "        static func consentedProvider(_ m: Meaning) -> MeaningProvider? {", "\n        }\n")
+pin("guard m.offered, m.settled == nil, let provider = m.provider, m.choice == .on else { return nil }" in gate, "one gate: the server can, a key is saved, the person said yes for this model")
+pin("var choice: MeaningChoice { provider.flatMap { choices[$0.rawValue] } ?? .ask }" in core, "the choice is read for the model that decides, never any model")
+pin("next.provider = nil" in block(core, "        static func forgettingProvider(_ m: Meaning) -> Meaning {", "\n        }\n"), "a model that changed is forgotten")
+pin("meaningAsk = meaningResult.ask" in core and "result.meaningAsk" in core, "the listing hands over the one request")
+
+# The window: one find, fixed argument, words on stdin, the listed guard, the consent keys, one settings read.
+find_fn = block(ext, "    func commandFindSessions(", "    func commandSearchAll(")
+pin('model.runHelper(["agent-sessions-find"], timeout: 8, stdinData: data)' in find_fn and '"consentedProvider": .string(ask.provider.rawValue)' in find_fn and '"query": .string(ask.words)' in find_fn,
+    "meaning search is one fixed verb, the words on stdin, with the model the person agreed to")
+pin("ClaudeSession.listed(hit: hit, loaded: loaded, workSessionIDs: workIDs, runningWorkSessionIDs: runningIDs)" in find_fn and "model.workSessionIDs" in find_fn and "model.runningWorkSessionIDs" in find_fn,
+    "a meaning row passes the server-hold guard the list rows have")
+pin("compressed ? false : commandLeaves(session)" in find_fn and 'fields["compressed"]?.bool == true' in find_fn, "a compressed row is marked and leaves nothing")
+open_fn = block(ext, "    func commandOpenHit(_ id: String) -> CommandEffect {", "    static func searchFailure(")
+pin(before(open_fn, "commandKeys.hitSessions[id]", "commandKeys.meaningSessions[id]") and "meaningCompressed" in open_fn and "guard case .platform = way else" in open_fn,
+    "a hit opens its own object, word hits first then meaning rows, and a compressed Codex row opens in the Codex app only")
+pin("only the Codex app can open it" in open_fn and open_fn.count("only the Codex app can open it") == 2, "a compressed row says so when the Codex app does not open it")
+open_center = block(ext, "    func openCommandCenter() {", "    func closeCommandCenter() {")
+pin(open_center.count("loadDecisionSettings(quiet: true)") == 1 and "commandKeys.meaningSessions = [:]" in open_center, "one quiet settings read when the panel opens, and no meaning rows carried over")
+pin(ext.count("loadDecisionSettings") == 2 and "reread: { await model.loadDecisionSettings(quiet: true) }" in ext, "the settings are read on open and again after a refusal that says the model changed, nowhere else")
+pin("loadDecisionSettings" not in ticker_fn, "the tick reads no settings")
+pin("decisionMessage" not in ext and "decisionSettings = nil" not in ext, "the panel never touches Settings' decision line")
+choose = block(ext, "    func commandChooseMeaning(", "\n    }\n")
+pin("TodayHome.setMeaningChoice(choice.rawValue, provider: provider.rawValue, .standard)" in choose and "return .stay" in choose and "words" not in choose, "the answer is stored for the model the row named, and the panel stays")
+pin("case .consent(let provider, let choice): return commandChooseMeaning(provider, choice)" in row_run, "the question's rows are dispatched")
+meaning_inputs = block(ext, "    func commandMeaning() -> SetupAssistant.Center.Meaning {", "\n    }\n")
+pin('settings.effective["search"]' in meaning_inputs and "settings.canFindSessions" in meaning_inputs and "settings.configured[decides.rawValue] == true" in meaning_inputs and "TodayHome.meaningChoices(.standard)" in meaning_inputs,
+    "meaning search reads the model that decides search, the capability by name, the saved key and the person's choices")
+pin("version" not in meaning_inputs.lower(), "the capability is never read from a version")
+# The panel: the request exists only when the engine hands it over, one at a time, nothing under a fixture.
+mean_task = block(panel, "    private func runMeaning(", "    private func askMeaning(")
+pin(".task(id: listing.meaningAsk) { await runMeaning(listing.meaningAsk) }" in panel and "guard fixture == nil else { return }" in mean_task and "guard let ask else {" in mean_task, "meaning search runs only on the engine's request, one at a time, and not under a fixture")
+pin(before(mean_task, "Task.sleep(nanoseconds: 800_000_000)", "askMeaning(ask, stage: .first)", "Task.sleep(nanoseconds: UInt64(rest * 1_000_000_000))", "askMeaning(ask, stage: .full)") and "2.0 - Date().timeIntervalSince(began)" in mean_task,
+    "the first stage after 800 ms, the full stage at 2 seconds of quiet in all")
+pin(panel.count("try await find(") == 1 and "find: { ask, stage in try await commandFindSessions(ask, stage: stage) }" in ext, "the panel reaches meaning search only through the window's one function")
+ask_fn = block(panel, "    private func askMeaning(", "    private func move(_ delta: Int) -> Bool {")
+pin(before(ask_fn, "reason.againstConsent", "forgetting = true", "await reread()", "forgetting = false"), "a refusal that says the model changed forgets it, reads the settings again, and asks nothing meanwhile")
+pin("if let reason = result.reason, reason.settles { settled = reason }" in ask_fn and "keys.meaningSessions = sessions.merging(" in ask_fn and "keys.hitSessions" not in ask_fn,
+    "a refusal that stays true is remembered, and the meaning rows keep their own map")
+pin("C.adoptingShownIDs(" in ask_fn and "C.adoptingShownIDs(hits.map(\\.item), shown: meaning.hits)" in panel_search, "a session on screen keeps its id whichever list found it second")
+ann = [line.strip() for line in ask_fn.split("\n") if "Announcement(" in line]
+pin(ann == ["if shown > 0, shown != before { AccessibilityNotification.Announcement(C.foundAnnouncement(shown)).post() }"], f"meaning rows announce a fixed count only: {ann}")
+pin(".onChange(of: listing.rows.map(\\.id)) { _, _ in if let highlight { proxy.scrollTo(highlight) } }" in panel, "the highlight is followed when rows arrive")
+pin("lineLimit(isConsent(row) ? nil : 2)" in panel, "the question draws every line of what leaves")
+pin("inputs.meaning.settled = settled" in panel and "if forgetting { inputs.meaning = C.forgettingProvider(inputs.meaning) }" in panel, "the panel hands the engine what it remembers")
+# Consent storage: in Models.swift beside the Today keys; never in the engine.
+pin('static func meaningChoiceKey(_ provider: String) -> String { "activityTodayMeaning." + provider }' in models and "UserDefaults" not in core, "the choice is stored per model beside the Today keys, never by the engine")
+pin('raw == "on" || raw == "never"' in models, "only on and never are stored; nothing is ask")
+pin(read("Sources/ControllerModel.swift").count("func loadDecisionSettings(quiet: Bool = false) async {") == 1 and "guard decisionReadGeneration == generation, !quiet else { return }" in read("Sources/ControllerModel.swift"),
+    "a quiet settings read leaves Settings' line and settings alone when it fails")
+pin('"capabilities"' in helper and "sessionFind" in helper and "session-find-helper-checks.py" in read("Tests/run.sh"), "the helper carries the capability and its checks run in the suite")
 
 pin("s.classicSettings = classicSettings" in window and "var classicSettings = false" in core, "the window passes the classic Settings flag")
 

@@ -525,6 +525,9 @@ struct ControlPanel: View {
     @AppStorage(TodayHome.enabledKey) private var todayHomeEnabled = false
     @AppStorage(TodayHome.quietHoursKey) private var todayQuietHours = true
     @AppStorage(TodayHome.workRunsKey) private var todayWorkRuns = true
+    /// 0.5.362: what was chosen for ⌘K's search by meaning, per decision model. Empty is ask, which sends nothing.
+    @AppStorage(TodayHome.meaningChoiceKey("jev")) private var meaningJev = ""
+    @AppStorage(TodayHome.meaningChoiceKey("subq")) private var meaningSubQ = ""
     /// 0.5.312: Work chat's Plan and send as the primary button. Off by default (review stays normal).
     @AppStorage(WorkChatPolicy.autoSendKey) private var workChatSendWithoutReview = WorkChatPolicy.autoSendDefault
     /// 0.5.317: Settings › Work › When earlier work is still open. Queue it by default.
@@ -1149,15 +1152,32 @@ struct ControlPanel: View {
         decisionDefaultControls
         decisionWorkflowControls
         decisionMessageLine
+        meaningSearchControls
         decisionRefreshButton
         subQRetentionNote
         subQKeyControls
     }
 
+    /// JV-13 (0.5.362): the answer to ⌘K's question, shown and reversible here, for the model that decides search. Hidden with Today home
+    /// off (the panel is not there) and for a server that cannot find sessions by meaning. Ask first sends nothing; On sends each ⌘K search's
+    /// words and session titles to that model; Never stops asking.
+    @ViewBuilder var meaningSearchControls: some View {
+        if todayHomeEnabled, let settings = model.decisionSettings, settings.canFindSessions, let decides = settings.effective["search"],
+           let provider = SetupAssistant.Center.MeaningProvider(rawValue: decides.rawValue) {
+            let stored = provider == .jev ? meaningJev : meaningSubQ
+            VStack(alignment: .leading, spacing: 2) {
+                COSDropdown(hubLabel("JV-13"), selection: Binding(get: { stored == "on" || stored == "never" ? stored : "ask" }, set: { value in
+                    TodayHome.setMeaningChoice(value, provider: provider.rawValue, .standard)
+                }), options: [COSDropdownOption("ask", "Ask first"), COSDropdownOption("on", "On with \(provider.title)"), COSDropdownOption("never", "Never")])
+                Text(SetupAssistant.Center.consentText(provider)).font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     /// JV-02, or why it is not offered.
     @ViewBuilder private var decisionDefaultControls: some View {
         if let settings = model.decisionSettings {
-            Text("Session suggestions, completion checks and Work search. Errors never switch the provider.")
+            Text("Session suggestions, completion checks, Work search and ⌘K. Errors never switch the provider.")
                 .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             decisionProviderPicker("Default provider", workflow: nil, selection: settings.savedProvider?.rawValue ?? "inherit")
         } else if model.decisionSettingsAvailable == false {
@@ -1172,7 +1192,7 @@ struct ControlPanel: View {
         if let settings = model.decisionSettings {
             ForEach(DecisionProviderSettings.workflows, id: \.self) { workflow in
                 VStack(alignment: .leading, spacing: 2) {
-                    decisionProviderPicker(workflow == "session" ? "Session suggestions" : workflow == "completion" ? "Completion checks" : "Work search",
+                    decisionProviderPicker(workflow == "session" ? "Session suggestions" : workflow == "completion" ? "Completion checks" : "Work and ⌘K search",
                                            workflow: workflow, selection: settings.overrides[workflow]?.rawValue ?? "inherit")
                     Text(settings.effectiveText(workflow)).font(.caption2).foregroundStyle(.secondary)
                     if let provider = settings.effective[workflow], settings.configured[provider.rawValue] != true {
@@ -3968,6 +3988,7 @@ private extension ControlPanel {
                 SettingsHubBlock { decisionDefaultControls }
                 SettingsHubBlock { jevKeyControls }
                 SettingsHubBlock { subQKeyControls; decisionMessageLine }
+                SettingsHubBlock { meaningSearchControls }
             }
             .disabled(model.busy)
         } advanced: {

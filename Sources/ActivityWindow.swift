@@ -9357,6 +9357,11 @@ extension ActivityWindow {
     /// The sessions the word search found, by hit id, so a row opens the hit's own object and a session older than the list opens too.
     /// Written by the panel when the hits arrive; not observed, so it never redraws anything.
     var hitSessions: [String: ClaudeSession] = [:]
+    /// The sessions meaning search found, by the row's hit id (0.5.362). Apart from `hitSessions`, so a word search that finishes again never
+    /// prunes them, and read second. Written by the panel when rows arrive; not observed.
+    var meaningSessions: [String: ClaudeSession] = [:]
+    /// The hit ids whose Codex file is compressed. Only the Codex app can open one: the reader reads plain files.
+    var meaningCompressed: Set<String> = []
     /// Counts the times the panel opened, so a close that waited on an open can tell the panel it waited on from one opened since.
     var generation = 0
     /// The words the last Search all put in Sessions' box, so opening Sessions later can take them out again.
@@ -9395,6 +9400,9 @@ struct CommandCenterFixture {
     var result: SetupAssistant.Center.ResultInputs? = nil
     /// What the word search found. Under a fixture no search runs, so this is all there is.
     var found: SetupAssistant.Center.Found? = nil
+    /// Meaning search as the settings and the person's choice leave it, and what it found. Under a fixture nothing is asked.
+    var meaning: SetupAssistant.Center.Meaning? = nil
+    var meaningFound: SetupAssistant.Center.MeaningFound? = nil
     /// The session list answered (nil: as the model has it).
     var sessionsLoaded: Bool? = nil
     var foldedCount: Int? = nil
@@ -9407,6 +9415,23 @@ struct CommandCenterFixture {
 struct CommandHit {
     let item: SetupAssistant.Center.Item
     let session: ClaudeSession
+}
+
+/// One meaning row: the plain values the engine draws, and the session itself so the row opens that object.
+struct CommandMeaningHit {
+    let item: SetupAssistant.Center.Item
+    let session: ClaudeSession
+    let compressed: Bool
+}
+
+/// What one meaning search brought back, or why it brought nothing.
+struct CommandMeaning {
+    var hits: [CommandMeaningHit] = []
+    var asked = 0
+    var skipped = 0
+    var reachedBack: Date?
+    var reason: SetupAssistant.Center.MeaningReason?
+    var resetsAt: Date?
 }
 
 /// What a row does to the panel once it has run.
@@ -9534,6 +9559,8 @@ extension ActivityWindow {
         inputs.sessionsLimit = Self.commandSessionLimit
         inputs.now = now
         inputs.found = commandFixture?.found ?? SetupAssistant.Center.Found()
+        inputs.meaning = commandMeaning()
+        inputs.meaningFound = commandFixture?.meaningFound ?? SetupAssistant.Center.MeaningFound()
         inputs.sessionsSettingOff = !model.claudeSessionsEnabled
         inputs.recording = commandRecording()
         inputs.startedRunID = today.lastStartedRunID.map { "work:" + $0 }
@@ -9566,10 +9593,15 @@ extension ActivityWindow {
         commandKeys.keepOpen = false
         commandKeys.recordFailed = false
         commandKeys.hitSessions = [:]
+        commandKeys.meaningSessions = [:]
+        commandKeys.meaningCompressed = []
         commandKeys.generation += 1
         commandOpen = true
         // The list refreshes when the panel opens (0.5.361), not forced: it walks only when the saved list is stale. The tick is unchanged.
         if commandFixture == nil { Task { await model.loadClaudeSessions() } }
+        // One read of the decision settings when the panel opens (0.5.362): which model decides, whether a key is saved, and what the server can
+        // do. Quiet, so Settings' own line is untouched. Nothing is sent to the server's search without a yes.
+        if commandFixture == nil { Task { await model.loadDecisionSettings(quiet: true) } }
         todayLog.info("command center opened")
     }
 
@@ -9605,6 +9637,8 @@ extension ActivityWindow {
                                recording: { commandRecording() }, snapshot: { commandSnapshot() }, resultInputs: { commandResultInputs() },
                                run: { row, listing in commandRun(row, listing) }, submit: { words in todaySubmitAsk(words) },
                                search: { words in try await commandSearchSessions(words) },
+                               find: { ask, stage in try await commandFindSessions(ask, stage: stage) },
+                               reread: { await model.loadDecisionSettings(quiet: true) },
                                recordAfterNotice: { commandAcknowledgeAndRecord() }, close: { closeCommandCenter() },
                                maxListHeight: max(160, windowSize.height - top - 44 - 40 - 28))
                 .frame(width: commandFixture?.panelWidth ?? min(CommandCenterPanel.width, max(320, windowSize.width - rail - 2 * gutter)))
@@ -9629,7 +9663,7 @@ extension ActivityWindow {
         case .hit(let id): return commandOpenHit(id)
         case .place(let place): return commandGo(place)
         case .searchAll: return commandSearchAll(listing.words)
-        case .consent: return .stay
+        case .consent(let provider, let choice): return commandChooseMeaning(provider, choice)
         case .command(let command): return commandRun(command)
         case .action(let action): return commandRun(action, words: listing.words)
         case .ask:
@@ -9703,12 +9737,24 @@ extension ActivityWindow {
     /// A word-search hit opens by its own object: the helper found it by reading this Mac's session files, so it may be older than
     /// the list and the list has no row for it. Opened the way a list row is (the platform, or Sessions' reader), never from a lookup.
     func commandOpenHit(_ id: String) -> CommandEffect {
-        guard let session = commandKeys.hitSessions[id] else {
+        // The session a word hit or a meaning row holds, the word hits first. A row's id is the id on screen, which the other list may have adopted.
+        let held = commandKeys.hitSessions[id] ?? commandKeys.meaningSessions[id]
+            ?? commandKeys.meaningSessions.first(where: { SetupAssistant.Center.sameListed($0.key, id) })?.value
+        guard let session = held else {
             today.flash("That session is not open any more.")
             return .stay
         }
         model.platformOpenNotice = nil
-        switch TodayHome.openFor(session, host: today.hosts[session.id], cursorTrusted: model.petJumpTrusted).action {
+        // A compressed Codex session has no file the reader can read, so the Codex app is the one way in. If that fails, the panel says so.
+        let compressed = commandKeys.meaningCompressed.contains { SetupAssistant.Center.sameListed($0, id) }
+        let way = TodayHome.openFor(session, host: today.hosts[session.id], cursorTrusted: model.petJumpTrusted).action
+        if compressed {
+            guard case .platform = way else {
+                today.flash("That session is compressed, so only the Codex app can open it.")
+                return .stay
+            }
+        }
+        switch way {
         case .platform:
             model.openSessionInPlatform(session)
             Task { try? await Task.sleep(nanoseconds: 10_000_000_000); if !model.platformOpening { model.platformOpenNotice = nil } }
@@ -9722,6 +9768,7 @@ extension ActivityWindow {
             Task {
                 var waited = 0
                 while model.platformOpening, waited < 300 { try? await Task.sleep(nanoseconds: 100_000_000); waited += 1 }
+                if model.platformOpenFailed, compressed, commandKeys.generation == generation { today.flash("That session is compressed, so only the Codex app can open it.") }
                 guard !model.platformOpenFailed, commandKeys.generation == generation else { return }
                 commandKeys.draft = ""
                 closeCommandCenter()
@@ -9746,6 +9793,76 @@ extension ActivityWindow {
         case .helperMissing: return ("failed helper missing", .failed)
         case .outputLimitExceeded, .progressLimitExceeded, .streamDidNotClose: return ("failed output", .failed)
         }
+    }
+
+    /// The person's answer to the question before meaning search sends anything: on for this model, or never. Stored per model. The panel stays
+    /// open with its words, and the search starts on its own when the answer is yes.
+    func commandChooseMeaning(_ provider: SetupAssistant.Center.MeaningProvider, _ choice: SetupAssistant.Center.MeaningChoice) -> CommandEffect {
+        TodayHome.setMeaningChoice(choice.rawValue, provider: provider.rawValue, .standard)
+        todayLog.info("command center: meaning choice \(choice.rawValue, privacy: .public)")
+        return .stay
+    }
+
+    /// Meaning search as Settings > Decision models and the person's choice leave it. Plain values; the engine decides what they allow.
+    func commandMeaning() -> SetupAssistant.Center.Meaning {
+        if let forced = commandFixture?.meaning { return forced }
+        var m = SetupAssistant.Center.Meaning()
+        guard let settings = model.decisionSettings else { return m }
+        m.capable = settings.canFindSessions
+        if let decides = settings.effective["search"] {
+            m.provider = SetupAssistant.Center.MeaningProvider(rawValue: decides.rawValue)
+            m.keyed = settings.configured[decides.rawValue] == true
+        }
+        m.choices = TodayHome.meaningChoices(.standard).compactMapValues(SetupAssistant.Center.MeaningChoice.init(rawValue:))
+        return m
+    }
+
+    /// Meaning search: the COS server reads this Mac's sessions and asks the model the person said yes to. The words go to the helper's stdin
+    /// with the model they agreed to and a stage (the second named exception to hard rule 2). A session the helper brings back is passed through
+    /// `ClaudeSession.listed`, as a word hit is, so a Work run or a scheduled job the COS server still holds is marked and never opened by a second
+    /// writer. Failures are answers with a reason; only a cancelled search throws.
+    func commandFindSessions(_ ask: SetupAssistant.Center.MeaningAsk, stage: SetupAssistant.Center.MeaningStage) async throws -> CommandMeaning {
+        typealias C = SetupAssistant.Center
+        let body: [String: JSONValue] = ["query": .string(ask.words), "consentedProvider": .string(ask.provider.rawValue), "stage": .string(stage.rawValue)]
+        guard let data = try? JSONEncoder().encode(JSONValue.object(body)) else { return CommandMeaning(reason: .failed) }
+        let response: HelperResponse
+        do {
+            response = try await model.runHelper(["agent-sessions-find"], timeout: 8, stdinData: data)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch HelperClientError.timedOut {
+            return CommandMeaning(reason: .timedOut)
+        } catch {
+            return CommandMeaning(reason: .failed)
+        }
+        let details = response.details
+        var out = CommandMeaning()
+        out.resetsAt = details["resetsAt"]?.string.flatMap(ClaudeSession.parseStamp)
+        guard details["available"]?.bool == true else {
+            out.reason = C.MeaningReason(wire: details["reason"]?.string)
+            return out
+        }
+        out.asked = Int(details["asked"]?.double ?? 0)
+        out.skipped = Int(details["skipped"]?.double ?? 0)
+        out.reachedBack = details["reachedBack"]?.string.flatMap(ClaudeSession.parseStamp)
+        var seen: [String] = []
+        let workIDs = model.workSessionIDs, runningIDs = model.runningWorkSessionIDs, loaded = model.claudeSessions
+        for row in details["rows"]?.array ?? [] {
+            guard let hit = ClaudeSession(row), let fields = row.object else { continue }
+            let session = ClaudeSession.listed(hit: hit, loaded: loaded, workSessionIDs: workIDs, runningWorkSessionIDs: runningIDs)
+            guard !seen.contains(where: { C.sameListed($0, session.id) }) else { continue }
+            seen.append(session.id)
+            let compressed = fields["compressed"]?.bool == true
+            let host = today.hosts[session.id]
+            let open = TodayHome.openFor(session, host: host, cursorTrusted: model.petJumpTrusted)
+            let item = C.Item(id: session.id, title: session.title,
+                              detail: TodayHome.platform(session, host: host).badge + (session.workspace.isEmpty ? "" : ", " + session.workspace),
+                              openLabel: open.label, sessionID: session.id, state: Self.commandStateWord(session.state), date: session.updatedDate,
+                              keepWarm: session.isKeepWarm, match: fields["judgedText"]?.string,
+                              strength: C.Strength(wire: fields["strength"]?.string), leavesSession: compressed ? false : commandLeaves(session))
+            out.hits.append(CommandMeaningHit(item: item, session: session, compressed: compressed))
+        }
+        return out
     }
 
     /// Sessions with the words in its own search box, for anything older than the local search reaches. The Sessions tab runs its own
@@ -10181,6 +10298,10 @@ struct CommandCenterPanel: View {
     let submit: (String) -> Void
     /// The local word search (ActivityWindow.commandSearchSessions).
     let search: (String) async throws -> [CommandHit]
+    /// Meaning search (ActivityWindow.commandFindSessions), asked only when the engine says the person agreed.
+    let find: (C.MeaningAsk, C.MeaningStage) async throws -> CommandMeaning
+    /// One more quiet read of the decision settings, after the server says the model that decides is not the one the person agreed to.
+    let reread: () async -> Void
     let recordAfterNotice: () -> Void
     let close: () -> Void
     let maxListHeight: CGFloat
@@ -10195,12 +10316,24 @@ struct CommandCenterPanel: View {
     @State private var loaded = false
     /// What the word search found for the words in the box. The panel's own state: the Sessions tab's search is never touched.
     @State private var found = C.Found()
+    /// What meaning search found for the words in the box (0.5.362), apart from the word hits.
+    @State private var meaning = C.MeaningFound()
+    /// A refusal that stays true while the panel is open (an older server, a cap): nothing asks again, and the panel says it.
+    @State private var settled: C.MeaningReason?
+    /// The server said the model that decides is not the one the person agreed to: what the panel believed about the model is forgotten until
+    /// the settings are read again.
+    @State private var forgetting = false
     @FocusState private var focused: Bool
 
     private var live: C.Inputs {
         var inputs = base
         inputs.recording = recording()
-        if fixture == nil { inputs.found = found }
+        if fixture == nil {
+            inputs.found = found
+            inputs.meaningFound = meaning
+            inputs.meaning.settled = settled
+            if forgetting { inputs.meaning = C.forgettingProvider(inputs.meaning) }
+        }
         return inputs
     }
 
@@ -10252,6 +10385,8 @@ struct CommandCenterPanel: View {
         }
         // One search at a time: a new key cancels this task, and cancelling stops the helper process. Nothing runs under a fixture.
         .task(id: listing.searchWords) { await runSearch(listing.searchWords) }
+        // Meaning search: asked only when the engine says the person agreed. The same rule of one at a time, and a new key cancels it.
+        .task(id: listing.meaningAsk) { await runMeaning(listing.meaningAsk) }
         .onChange(of: words) { _, value in
             guard loaded else { return }
             keys.draft = value
@@ -10321,9 +10456,11 @@ struct CommandCenterPanel: View {
         do {
             let hits = try await search(words)
             guard !Task.isCancelled else { return }
-            let refreshed = C.refreshed(found, words: words, hits: hits.map(\.item), keeping: chosen)
+            // A session already on screen as a meaning row keeps that row's id, so a highlight chosen on it never goes stale.
+            let items = C.adoptingShownIDs(hits.map(\.item), shown: meaning.hits)
+            let refreshed = C.refreshed(found, words: words, hits: items, keeping: chosen)
             // A hit kept for the person who chose it (`refreshed`) keeps its session too, or its row would say it is not open any more.
-            let incoming = Dictionary(hits.map { ($0.item.id, $0.session) }, uniquingKeysWith: { first, _ in first })
+            let incoming = Dictionary(zip(items, hits).map { ($0.id, $1.session) }, uniquingKeysWith: { first, _ in first })
             keys.hitSessions = incoming.merging(keys.hitSessions.filter { old in refreshed.hits.contains { $0.id == old.key } }, uniquingKeysWith: { new, _ in new })
             found = refreshed
             let shown = C.listing(live, words: self.words).rows.filter { if case .hit = $0.kind { return true } else { return false } }.count
@@ -10337,6 +10474,77 @@ struct CommandCenterPanel: View {
             todayLog.error("command search \(outcome.kind, privacy: .public) ms=\(Int(Date().timeIntervalSince(started) * 1000))")
             found = C.Found(words: words, phase: outcome.phase)
         }
+    }
+
+    // MARK: Meaning search
+
+    /// 800 ms of quiet and the first stage asks the newest sessions. At 2 seconds of quiet in all, the full stage looks further, unless the
+    /// first already found a strong match. One request at a time: a new key cancels this task, and cancelling stops the helper process. Nothing
+    /// runs under a fixture, and nothing runs at all unless the engine handed over a request, which it does only after the person said yes.
+    private func runMeaning(_ ask: C.MeaningAsk?) async {
+        guard fixture == nil else { return }
+        guard let ask else {
+            if meaning != C.MeaningFound() { meaning = C.MeaningFound() }
+            return
+        }
+        let began = Date()
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        guard !Task.isCancelled else { return }
+        if meaning.words != ask.words { meaning = C.MeaningFound(words: ask.words, phase: .searching) }
+        guard await askMeaning(ask, stage: .first) else { return }
+        if meaning.hits.first?.strength == .strong {
+            meaning.phase = .done
+            return
+        }
+        let rest = 2.0 - Date().timeIntervalSince(began)
+        if rest > 0 { try? await Task.sleep(nanoseconds: UInt64(rest * 1_000_000_000)) }
+        guard !Task.isCancelled else { return }
+        _ = await askMeaning(ask, stage: .full)
+    }
+
+    /// One request and what it does to the panel. True when the search can go on to its next stage.
+    private func askMeaning(_ ask: C.MeaningAsk, stage: C.MeaningStage) async -> Bool {
+        let started = Date()
+        let result: CommandMeaning
+        do {
+            result = try await find(ask, stage)
+        } catch {
+            return false
+        }
+        guard !Task.isCancelled else { return false }
+        let outcome: C.MeaningOutcome
+        let items = C.adoptingShownIDs(result.hits.map(\.item), shown: found.hits + meaning.hits)
+        if let reason = result.reason {
+            outcome = .refused(reason, resetsAt: result.resetsAt)
+        } else {
+            outcome = .rows(items, asked: result.asked, skipped: result.skipped, reachedBack: result.reachedBack)
+        }
+        // What went wrong, in fixed words and how long it took: never the words typed, a title or a path.
+        todayLog.info("command meaning \(stage.rawValue, privacy: .public) \(result.reason?.rawValue ?? "answered", privacy: .public) ms=\(Int(Date().timeIntervalSince(started) * 1000))")
+        if let reason = result.reason, reason.againstConsent {
+            // The server and the panel disagree about who decides. Forget the model, read the settings again, and ask nothing meanwhile.
+            forgetting = true
+            await reread()
+            forgetting = false
+            return false
+        }
+        if let reason = result.reason, reason.settles { settled = reason }
+        let next = C.meaningArrived(meaning, words: ask.words, stage: stage, outcome, keeping: chosen)
+        // A row kept for the person who chose it keeps its session too, or it would say it is not open any more.
+        var sessions: [String: ClaudeSession] = [:]
+        var compressed: Set<String> = []
+        for (item, hit) in zip(items, result.hits) {
+            sessions[item.id] = hit.session
+            if hit.compressed { compressed.insert(item.id) }
+        }
+        keys.meaningSessions = sessions.merging(keys.meaningSessions.filter { old in next.hits.contains { $0.id == old.key } }, uniquingKeysWith: { new, _ in new })
+        keys.meaningCompressed = compressed.union(keys.meaningCompressed.filter { old in next.hits.contains { $0.id == old } })
+        let before = meaning.hits.count
+        meaning = next
+        let shown = C.listing(live, words: words).rows.filter { $0.group == .meaning && $0.id.hasPrefix("hit:") }.count
+        if shown > 0, shown != before { AccessibilityNotification.Announcement(C.foundAnnouncement(shown)).post() }
+        if case .unavailable = next.phase { return false }
+        return result.reason == nil
     }
 
     // MARK: Keys
@@ -10454,6 +10662,9 @@ struct CommandCenterPanel: View {
             .frame(maxHeight: maxListHeight)
             .fixedSize(horizontal: false, vertical: true)
             .onChange(of: highlight) { _, id in if let id { proxy.scrollTo(id) } }
+            // Rows arrive above a highlight that was chosen already (Return moved to Ask, then the rows came): the highlight is followed, so the
+            // row the next Return runs is never out of sight.
+            .onChange(of: listing.rows.map(\.id)) { _, _ in if let highlight { proxy.scrollTo(highlight) } }
         }
     }
 
@@ -10478,6 +10689,11 @@ struct CommandCenterPanel: View {
         }
     }
 
+    private func isConsent(_ row: C.Row) -> Bool {
+        if case .consent = row.kind { return true }
+        return false
+    }
+
     private func voiceLabel(_ row: C.Row) -> String {
         [row.title, row.state, row.detail, row.match, row.held, row.trailing].compactMap { $0 }.joined(separator: ", ")
     }
@@ -10488,7 +10704,8 @@ struct CommandCenterPanel: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(verbatim: row.title).font(COSType.body(13.5, weight: .semibold)).foregroundStyle(row.held == nil ? TodayInk.ink : TodayInk.sub).lineLimit(2)
                 if let detail = row.detail {
-                    Text(verbatim: detail).font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    // The question before anything is sent draws every line of what leaves; no other row's detail is more than two.
+                    Text(verbatim: detail).font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).lineLimit(isConsent(row) ? nil : 2).fixedSize(horizontal: false, vertical: true)
                 }
                 // What the search matched: one line, drawn verbatim like a title.
                 if let match = row.match {
@@ -10500,7 +10717,7 @@ struct CommandCenterPanel: View {
             }
             Spacer(minLength: 8)
             // The word on the row, or what running it does once it is the one Return will run.
-            if let side = (highlighted ? row.trailing ?? row.state : row.state ?? (row.group == .asking || row.group == .fixing || row.group == .recording ? row.trailing : nil)) {
+            if let side = (highlighted ? row.trailing ?? row.state : row.state ?? (row.group == .asking || row.group == .fixing || row.group == .recording || isConsent(row) ? row.trailing : nil)) {
                 Text(verbatim: side)
                     .font(COSType.body(12, weight: .medium))
                     .foregroundStyle(side == row.state ? stateTint(row) : TodayInk.accent)

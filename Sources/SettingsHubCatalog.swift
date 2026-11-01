@@ -110,7 +110,7 @@ enum SettingsHubCatalog {
         .init(id: "general.guide", category: .general, title: "Setup guide", blurb: "Step-by-step setup and the Finish setup card."),
         .init(id: "ai.apps", category: .ai, title: "Your AI apps", blurb: "Claude Code, Codex and Cursor on this Mac."),
         .init(id: "ai.local", category: .ai, title: "Local model", blurb: "An Ollama model that runs on this Mac."),
-        .init(id: "ai.decision", category: .ai, title: "Decision models", blurb: "Jev or SubQ, for Work suggestions, done checks and Work search."),
+        .init(id: "ai.decision", category: .ai, title: "Decision models", blurb: "Jev or SubQ, for Work suggestions, done checks, Work search and ⌘K."),
         .init(id: "ai.keys", category: .ai, title: "Your own key", blurb: "Answer on your own API key, under a daily cap."),
         .init(id: "ai.search", category: .ai, title: "Search", blurb: "Find messages by meaning."),
         .init(id: "glasses.devices", category: .glasses, title: "Devices", blurb: "Tailscale, pairing and the glasses app."),
@@ -147,6 +147,8 @@ enum SettingsHubCatalog {
 
     /// Rows the hub adds that the inventory does not list (it is the hub's own rollback).
     static let extras: [SettingsHubItem] = [
+        .init("JV-13", "Find sessions by meaning", "Each ⌘K search sends your words and session titles to the model that decides search. Shown with Today home on.", old: "", group: "ai.decision", advanced: false, mount: .group,
+              keywords: ["meaning", "command k", "sessions", "consent", "jev", "subq"]),
         .init("HUB-CL", "Use classic Settings", "Show the earlier one-page Settings in Activity.", old: "", group: "general.app", advanced: true, mount: .group,
               keywords: ["classic", "old settings", "rollback", "one page"]),
     ]
@@ -185,7 +187,7 @@ enum SettingsHubCatalog {
         .init("JV-12", "Remove Jev key", "Delete the saved Jev key from the server.", old: "Remove saved key", group: "ai.decision", advanced: false, mount: .group),
         .init("JV-03", "Session suggestions", "The provider that suggests Continue, Fork or New.", old: "Session suggestions (Use default / Jev / SubQ) + effective line + needs-key line", group: "ai.decision", advanced: true, mount: .group),
         .init("JV-04", "Completion checks", "The provider that checks whether a reply finished the task.", old: "Completion checks", group: "ai.decision", advanced: true, mount: .group),
-        .init("JV-05", "Work search", "The provider that searches Work by meaning.", old: "Work search", group: "ai.decision", advanced: true, mount: .group),
+        .init("JV-05", "Work and ⌘K search", "The provider that searches Work by meaning, and finds sessions by meaning in ⌘K.", old: "Work search", group: "ai.decision", advanced: true, mount: .group),
         .init("JV-06", "Refresh providers", "Read the provider settings from the server again.", old: "Refresh decision settings", group: "ai.decision", advanced: true, mount: .group),
         .init("JV-07", "SubQ data retention", "SubQ is a public preview. Steps on SubQ send it their context, kept forever by default.", old: "SubQ preview and retention text + SubQ data retention link", group: "ai.decision", advanced: true, mount: .group),
         .init("KL-01", "Answer with your own key", "Answer with your own API key under a daily cap. Off uses your AI plan.", old: "Answer with your own key, plus on/off line", group: "ai.keys", advanced: false, mount: .group, keywords: ["byok", "api key", "openrouter", "anthropic", "openai", "spend cap"]),
