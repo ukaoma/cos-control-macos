@@ -9384,6 +9384,8 @@ struct CommandCenterFixture {
     var sessionsLoaded: Bool? = nil
     var foldedCount: Int? = nil
     var unsentSessionDraft = false
+    /// The panel's width, to draw the 320 pt floor in a window that is wider than the app lets it be narrow.
+    var panelWidth: CGFloat? = nil
 }
 
 /// One word-search hit: the row's plain values, and the session itself so the row opens that object.
@@ -9585,7 +9587,7 @@ extension ActivityWindow {
                                search: { words in try await commandSearchSessions(words) },
                                recordAfterNotice: { commandAcknowledgeAndRecord() }, close: { closeCommandCenter() },
                                maxListHeight: max(160, windowSize.height - top - 44 - 40 - 28))
-                .frame(width: min(CommandCenterPanel.width, max(320, windowSize.width - rail - 2 * gutter)))
+                .frame(width: commandFixture?.panelWidth ?? min(CommandCenterPanel.width, max(320, windowSize.width - rail - 2 * gutter)))
                 .padding(.top, top)
                 .padding(.trailing, gutter)
         }

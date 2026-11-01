@@ -55,9 +55,61 @@ An empty box: what is recording, then up to 3 things waiting on you (tier 1 firs
 then Start recording and Run Doctor, then up to 2 of the board's repairs when something is broken. With the server down the repairs
 come straight after what is recording. A list that has not loaded says "not loaded", never "nothing waiting".
 
-Typing: commands from the closed list, sessions whose titles match, the saved answer with its offers, then always last Ask
-COS, Ask COS to troubleshoot (when its gate is ready) and File to Work. A saved answer is labelled as saved with its entry
-title, and a miss says "No saved answer for this."
+Typing: commands from the closed list, places (panes and tabs, below), sessions whose titles match or the session list a noun asks
+for, hits from the local word search in their own group, the saved answer with its offers, then always last Ask COS, Ask COS to
+troubleshoot (when its gate is ready) and File to Work. A saved answer is labelled as saved with its entry title, and a miss says
+"No saved answer for this."
+
+### Return, one rule (0.5.361)
+
+Free text never starts a run on the first Return. The first Return moves to Ask COS and the second runs it, so the same keystroke
+does the same thing before and after anything arrives. Option-Return still files. An exact opener phrase and Start recording's
+exact phrase run on one Return, as before. Stop and Doctor still confirm. A command, a place or a loaded session that the words
+point at takes the move; a word-search hit never does (it sits in its own group, reached by an arrow or a click), and a chosen row
+that is gone returns nothing. The `startRun` outcome is gone from `Center.ReturnOutcome`.
+
+### Places (0.5.361)
+
+`Center.Place` is a closed list of panes and tabs, separate from `Command`: Today, Messages (Recent, Archive), Threads, Speakers
+(Meetings to review, Samples to review, Voices), Sessions (Usage, COS cost), Work (All work, Needs attention, In progress,
+Completed) and Dictation (History, Dictionary, Dictation settings). A pane with an Open command keeps that command as its row, so
+only its tabs are places. Tasks is a synonym for Work. `commandGo(place)` is a switch with no default in the Command center extension.
+It selects the pane first, then writes the tab (`select` never resets one), so Sessions never lands on Usage and Archive loads its
+days. Exact names highlight; the tie-break is commands, then panes, then tabs, and `Center.sharedNames` declares the three names two
+kinds of row answer to (`voices`, `sessions`, `recent`). A name that only begins a sentence ("usage limit reached") is listed, and
+Return passes over it. Two letters reach no place. A place, a hit or Search all sessions asks first when a message typed into an
+open session would be lost. Not in this build: the Settings hub groups (the hub has its own search), the Dictation settings sections,
+Work's layout (it needs a new setter) and the Memories tabs (a web view that reads its view once, when it is made).
+`Tests/setup-assistant-pins.py` parses `ActivitySection`, `SessionsPane`, `MessagesSubview`, `SpeakerSubview`, `ActivityWorkSubview`,
+`WorkWorkspaceScope` and `MemoriesSubview` from source and fails when a case has no row and no written reason.
+
+### The session list (0.5.361)
+
+"session", "sessions", "recent" and "running" (alone, or with today, yesterday or this week) list the loaded sessions merged with the
+live rows through `Center.merged` and a `sameSession` that equals `ClaudeSession.sameSession`: one row per session, warm-ups gone,
+newest first, eight shown and then "N more in Sessions". With the pet on, `todaySessions()` is the live rows alone, so the loaded list
+is merged in (bounded to the newest 80). The list refreshes when ⌘K opens (`loadClaudeSessions()`, not forced); the tick is unchanged.
+Not loaded, Sessions off and none yet each say so in a text line.
+
+### Word search (0.5.361)
+
+Typing three characters or more, and pausing 500 ms, runs one local search: `claude-sessions-search --local --limit 8`. The words go to the
+helper's stdin (200 characters at most), never an argument; this is the one stated exception to "typed words are never a helper
+argument". The helper reads this Mac's own session files and calls no server and no OpenAI. The search is the panel's own state
+(`@State found` and `.task(id:)`), is skipped on an exact command or place, a noun list, Sessions off and under a fixture, and the next
+key cancels it, which ends the helper process. Hits sit in their own group with their tool, project, when, and the line that matched
+(`Row.match`), masked when it looks like a key; a session already listed does not show twice. A hit opens by its own `ClaudeSession`,
+through the platform or Sessions' reader. Search all sessions opens Sessions with the words in its own box. Measured on this Mac
+(733 Desktop records, 870 transcripts, the shipped unoptimized helper): 9.1 s unbounded, 1.7 s bounded to the newest 30 Desktop
+records and 20 transcripts with no sqlite3 process per Cursor workspace.
+
+### Wording (0.5.361)
+
+When the quiet-hours fold moves everything to tomorrow, Today's headline and ⌘K both say "N things can wait until tomorrow". With
+nothing at all, ⌘K says "Nothing urgent right now." (Today's headline keeps "Nothing is waiting on you".) With something waiting and
+something folded, ⌘K adds "N more can wait until tomorrow." The foot of the panel is three Texts (lead, title, tail), so a long title
+is cut and "Return again opens it" never is. A session whose title reads like a command or a pane is called "the session" in the foot, so it is
+not mistaken for the command; any other title keeps the room, which matters at the 320 pt floor.
 
 The closed command list: Start recording, Stop and save, Open Sessions, Meetings, Work, Speakers, Dictation, Memories,
 Settings, Run Doctor. Copy report and Open Tailscale were cut as commands, and so was a classifier for words that read as a
@@ -163,9 +215,9 @@ to ask before it changes anything. The person's words go in quoted. The packet i
 
 ## Sessions
 
-Titles are untrusted. `Center.clean` makes them one line with control and direction characters gone and bounded, the panel draws
-them with `Text(verbatim:)`, they open only their own row, they are never matched for dispatch (a match only filters the list and
-never highlights) and they never go into a prompt. A question's own words (`NeedRow.quote`) never reach the panel. A row is looked
+Titles are untrusted. `Center.clean` makes them one line with control and direction characters gone and bounded (and masked, for a
+hit), the panel draws them with `Text(verbatim:)`, they open only their own row, they are never matched for dispatch (a match only
+filters the list and never highlights) and they never go into a prompt. The same holds for match text, which is also masked by shape. A question's own words (`NeedRow.quote`) never reach the panel. A row is looked
 up again at open, so a session that went away flashes a line instead of opening stale, and `todayOpenNeed` keeps the Cursor
 fallback.
 
@@ -216,7 +268,9 @@ ran, because it stays set long after.
 ## Render states
 
 `Tests/run-command-center-render.sh <folder>` draws each of these on a fixture: Start Work off, server down, Sessions off, no
-sessions, overview not loaded, helper busy, notice not acknowledged, recording, saving, G2 recording, macOS under 14.2, plus the
+sessions, overview not loaded, helper busy, notice not acknowledged, recording, saving, G2 recording, macOS under 14.2, and for
+0.5.361 the places, the noun lists (pet off and pet on), the word-search hits (found, searching, none, failed, a masked key), the
+long-title footer (also at 400 wide, the 320 pt panel floor), the unsent-message confirm and the fold lines, plus the
 typed answers, a confirm, a failure, hostile titles, the panel over Work and over Settings, the smallest window, and the recording
 states (`rec-mac`, `rec-glasses`, `rec-both`, `rec-saving`, `rec-none`), each on Today and in ⌘K. Focus, the
 arrow keys and a real recording start cannot be proved there; they are for the candidate install.

@@ -174,7 +174,7 @@ pin("return .startRun" not in on_return and "return .move(target.id)" in on_retu
 pin(before(on_return, "if option {", "if noticeShowing { return .nothing }", "if confirming { return .confirm }", "return .nothing }\n            if let id = effective(chosen, listing) { return .activate(id) }"),
     "a chosen row that is gone returns nothing before any other rule")
 order_row = block(core, "        private static func isOrder(_ row: Row) -> Bool {", "        static func listing(_ inputs: Inputs, words raw: String) -> Listing {")
-pin("case .command, .place: return true" in order_row and ".hit" not in order_row and ".searchAll" not in order_row, "Return moves from the top only onto a command or a place, never a hit")
+pin("case .command, .place: return row.group != .sessions" in order_row and ".hit" not in order_row and ".searchAll" not in order_row, "Return moves from the top only onto a command or a place, never a hit or a session list line")
 pin("listing.rows.first(where: { $0.group == .sessions && $0.selectable })" in on_return and ".found" not in on_return, "a title match keeps the move, and the hit group is never read by Return")
 pin("submit: { words in todaySubmitAsk(words) }" in ext and "file: file" not in window, "Return reaches today's own submit, which only files")
 pin(".onTapGesture { closeCommandCenter() }" in ext, "a click outside closes it")
@@ -425,6 +425,8 @@ pin("guard fixture == nil else { return }" in panel_search and "Task.sleep(nanos
 pin(before(panel_search, "guard let words else", "Task.sleep(nanoseconds: 500_000_000)", "guard !Task.isCancelled else { return }", "try await search(words)", "guard !Task.isCancelled else { return }", "C.refreshed("),
     "a cancelled search stores nothing")
 pin("@State private var found = C.Found()" in panel and "if fixture == nil { inputs.found = found }" in panel, "the hits are the panel's own state")
+announce = [line.strip() for line in panel_search.split("\n") if "Announcement(" in line]
+pin(announce == ["if shown > 0 { AccessibilityNotification.Announcement(C.foundAnnouncement(shown)).post() }"], f"on arrival VoiceOver hears only the fixed count: {announce}")
 for forbidden in ("sessionSearchHits", "sessionSearching", "sessionSearchError", "sessionSemantic"):
     pin(forbidden not in ext and forbidden not in panel, f"the command center never reads the Sessions tab's {forbidden}")
 pin(ext.count("model.sessionQuery") == 1 and ext.count("scheduleSessionSearch()") == 1 and "model.sessionQuery = String(words.prefix(200))" in block(ext, "    func commandSearchAll(_ words: String) -> CommandEffect {", "\n    }\n"),

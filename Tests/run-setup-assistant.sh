@@ -4,6 +4,8 @@
 # the ownership conflict, the server-down and all-clear states, every knowledge-base entry against its phrases, the
 # anchor case, the confirm copy and the troubleshoot prompt. Compiled with Sources/SetupAssistant.swift alone, through the
 # shared compile guard. Nothing is drawn, run, opened or sent. Hand-run: Tests/mutate-setup-assistant.py (the mutation lane).
+# 0.5.361: the executed checks also cover the places, the session list, the word search's listing rules, match text and the footer, and the pins
+# read the window and the helper for the local search, the hit-by-object open and the pane and tab coverage.
 set -euo pipefail
 ROOT="${0:A:h:h}"
 BIN="$(mktemp /tmp/cos-setup-assistant.XXXXXX)"

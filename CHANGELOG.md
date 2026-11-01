@@ -1,6 +1,43 @@
+## 0.5.361 (build 415), ⌘K finds panes, tabs and sessions
+
+Public, with server 6.94.2, which is what public users run. No server change is needed. Built on 0.5.360 (build 414, 151cd84), which was signed and installed on Miles's Mac and never published, so everything under 0.5.360 and 0.5.359 below reaches public users for the first time here, and their default-on lists apply as written, plus this one. Miles's ask, 2026-10-31: searching "sessions" should "pull up all of my existing sessions as well as give me the ability to jump to the sessions tab", and searching usage or messages should surface the tabs of those panes so he can navigate to them.
+
+What this build adds by default, for public users, on top of the 0.5.359 and 0.5.360 lists:
+
+- With Today home on only (Settings, `activityTodayHomeEnabled`, default off): Return on free text takes two presses, the first to Ask COS and the second to run it. ⌘K shows a line from inside a session, with its title, tool, project and age, when a local search finds one. The session list refreshes when ⌘K opens, which walks the session files only when the saved list is stale. Today's headline changes when everything left is folded to tomorrow ("Six things can wait until tomorrow", where it said "Six things need you"), and that reads for anyone with Today on.
+- With Today home on only: while words are typed in ⌘K (three characters or more, after a 500 ms pause, one at a time), the helper reads this Mac's own session files. Nothing is sent to the COS server, to OpenAI or anywhere else. On Miles's Mac that is about 1.7 s of helper work per search.
+- For everyone, not only with Today on: opening a Claude session whose id is the first 8 characters (the saved list and a search hit name it that way) now looks up the session's transcript and uses its full id for Claude Desktop's links. Before, `session-reveal` refused such a session as "an incomplete ID". A full id resolves to itself, so nothing else changes.
+
+What ⌘K does now:
+
+- Return, one rule. Free text never starts a run on the first Return: it moves to Ask COS, and a second Return runs it. This replaces "three or more words start a run", and it removes the race where the same key did different things before and after results arrived. Option-Return still files. An exact opener phrase and the exact Start recording phrase run on one Return as before. Stop and Doctor still ask first. A title that matches a loaded session may take the move. A search hit never does: hits sit in their own group and open only by an arrow or a click. A highlight that is gone returns nothing.
+- Every pane and tab is a place. `Center.Place` is a closed list kept apart from the commands: Today, Messages (Recent, Archive), Threads, Speakers (Meetings to review, Samples to review, Voices), Sessions (Usage, COS cost), Work (All work, Needs attention, In progress, Completed) and Dictation (History, Dictionary, Dictation settings). A pane with an Open command keeps it. Tasks is a synonym for Work. An exact name highlights its row, so "usage" then Return opens Usage; "go to usage" and "cos cost" work too. The tie-break is commands, panes, tabs, and the three names two kinds of row answer to (`voices`, `sessions`, `recent`) are declared. A name that only begins a sentence ("usage limit reached") is listed and Return passes over it. Two letters reach no place. Open Sessions now resets the Sessions tab, so it never lands on Usage, and Messages > Archive loads its days. A place asks first when a message typed into an open session would be lost.
+- The session list. "session", "sessions", "recent" and "running" list the loaded sessions merged with the live rows, one row per session, warm-ups dropped, newest first, eight and then "N more in Sessions". With the pet on, the list used to be the live rows alone, so "recent" had nothing in it. "sessions today", "sessions yesterday" and "sessions this week" narrow it. Not loaded, Sessions off and none yet each say so in a line of text.
+- Word search. A hit shows its title, tool, project, when, and the line that matched when that line is not the title again. Search all sessions opens Sessions with the words in its own search box, for anything older. A hit opens its own session through the platform or Sessions' reader, so a session older than the list opens. Key-shaped text (sk-, ghp_, xox, AKIA, JWT, Bearer, key=value, 32-plus character mixed tokens) is masked in the line and in the title. VoiceOver is told only "N sessions found".
+- The foot of the panel is three Texts, so a long title is cut and "Return again opens it" never is, down to the 320 pt panel. A session whose title reads like a command or a pane ("Start recording", "Usage") is called "the session" in the foot, so it is not taken for the command; any other title keeps the room. Esc promises nothing about returning to the pane you came from.
+- Wording. ⌘K says "6 things can wait until tomorrow" where it said "Nothing is waiting on you. For tomorrow: 6 more things", and "Nothing urgent right now" when nothing is left. Today's headline for nothing at all is unchanged.
+
+Not in this build, on purpose:
+
+- The Settings hub groups (the hub has its own search), the Dictation settings sections, Work's layout (it needs a new setter) and the Memories tabs. The Memories page is a web view that reads its view once, when it is made, so a tab change from ⌘K would need a new setter.
+- Meaning search (Jev or SubQ, the person's decision model) and Continue in. Those are the next release and need a server release.
+
+Measured on Miles's Mac, 733 Claude Desktop records, 870 transcripts, 19 Codex rollouts, the shipped (unoptimized) helper, counts and times only:
+
+- The local scan took 9.1 s unbounded, nearly all of it reading 733 Desktop records. Bounded to the newest 30 Desktop records and 20 transcripts, with no sqlite3 process per Cursor workspace, it takes 1.7 s. That is over the 1.5 s line. Proposed further bounds: a time budget that returns what was read, or building the helper with optimization (the release builds it without), neither done here.
+
+Reopening a hit older than the list, by reading each provider's open path (not by opening one):
+
+- Claude Desktop and Claude Code. `session-reveal` looks for a Desktop record that names the id (continue link, any age), then a transcript (import link) when nothing runs it and no Desktop record names it elsewhere. Needs the full id, which the short id now resolves to through its transcript. Terminal sessions that are not running open in Claude Desktop, not the terminal. Archived and running sessions say so.
+- Codex. `codex://threads/<id>` from the rollout's id, found by file, whatever its age.
+- Cursor. The platform route presses the Agents tab by name and needs Accessibility. Without it the row opens Sessions' reader. The reader reads the transcript by id from disk for any age.
+- Could not prove: that Claude Desktop honors `claude://resume` and `claude://code/continue` for an old session on this Mac's version, that Codex opens an old thread by link, and that Cursor's Agents window still lists an old agent to press.
+
+Not verified: all of this is proven on fixtures, the compiled engine checks, source pins and mutants, not by use on a live Mac. Focus, the arrow keys and Esc cannot be proved offscreen. Full suite, signing and install receipts are separate from these notes.
+
 ## 0.5.360 (build 414), ⌘K and COS cost fixes on top of 0.5.359
 
-Public, with server 6.94.2, which is what public users run. No server change is needed. A newer server adds measured COS cost rows and the stopped meeting row, and an older server gets estimates and the rows it had. Built on 0.5.359 (build 413, 53db3de), which was installed on Miles's Mac and never published, so everything under 0.5.359 below reaches public users for the first time here, and its default-on list applies as written.
+Not published on its own: it reaches public users in 0.5.361. Runs on public server 6.94.2, which is what public users run. No server change is needed. A newer server adds measured COS cost rows and the stopped meeting row, and an older server gets estimates and the rows it had. Built on 0.5.359 (build 413, 53db3de), which was installed on Miles's Mac and never published, so everything under 0.5.359 below reaches public users for the first time in 0.5.361, and its default-on list applies as written.
 
 What this build changes by default, for public users:
 
@@ -69,7 +106,7 @@ Not verified:
 
 ## 0.5.359 (build 413), ⌘K command center, COS cost, compressed Codex logs, Update Server only moves forward
 
-Private install on Miles's Mac, not published. Merges claude/command-center (39da43d), claude/cos-cost (e773a1e) and claude/usage-qa-fixes (4f29af9) onto 0.5.358 (9931f89), the public build, whose ZIP is the rollback. Runs on public server 6.94.2. Server 6.97.0 adds measured COS cost rows and the stopped meeting row; an older server gets estimates and the rows it had.
+Never published on its own: it reaches public users in 0.5.361. Merges claude/command-center (39da43d), claude/cos-cost (e773a1e) and claude/usage-qa-fixes (4f29af9) onto 0.5.358 (9931f89), the public build, whose ZIP is the rollback. Runs on public server 6.94.2. A newer server adds measured COS cost rows and the stopped meeting row; an older server gets estimates and the rows it had.
 
 Default-on changes for public users, if this goes public:
 
@@ -77,12 +114,12 @@ Default-on changes for public users, if this goes public:
 - COS cost, for everyone: a third view in the Sessions switch, read only while it is open. It reads the server's named ledgers, Work receipts and the session logs of Work and G2 runs, and stores counts in three new tables in the usage database (`cos_slice_*`). `events` is untouched. A paused Usage reads no session logs here either. Dollars are API value and say so. The monthly price field is stored in this Mac's preferences and never sent.
 - Codex numbers rise. Usage now reads `.jsonl.zst` rollouts through Node (the app's own first), bounded per pass, resumable and idempotent against a plain read of the same rollout. Most rollouts are compressed, so a first read takes several passes and the totals climb while it runs: on Miles's Mac, 20 passes and 1,127 logs raised the 30-day Codex figure by about 65 percent. With no suitable Node they count as unreadable and the page says so.
 - Update Server refuses to downgrade. Any install asking for latest stops, before anything is staged, when the release is older than what this Mac runs. Adopt asks before stopping a legacy server. A named version and Roll back are unchanged.
-- Restart and Update lockout. A server 6.97.0 row with phase stopped sorts last and blocks nothing, and audio on disk with no server running blocks nothing. Both say so and nothing deletes the audio. A server that does not answer stays blocked and says why, and a disabled Update Server explains itself.
+- Restart and Update lockout. A server row whose phase is stopped sorts last and blocks nothing, and audio on disk with no server running blocks nothing. Both say so and nothing deletes the audio. A server that does not answer stays blocked and says why, and a disabled Update Server explains itself.
 - A stopped meeting's speaker changes, voice check and one-click naming say its final transcript stopped, not "in a minute". A meeting really saving keeps its words.
 - Usage while paused: a bar with Resume tracking, which reads at once, "Paused" in place of the update time, no month estimate, and no promise that totals will grow. Turning Cursor on while paused saves the choice and reads nothing.
 - Cursor: a Keychain that gives no answer retries at 15 minutes, doubling to 6 hours, where it used to stop for 30 days. A real denial stops asking for 30 days, and so do four timeouts in a row, since a timeout can be a prompt nobody is there to answer. The copy button gives the install command when the command line is missing. New file `cursor-feed.log` beside the usage database holds times and causes only.
 - Calendar: past a year, the most recent weeks that fit, with a line saying so. "Per 1M new" counts only fully priced rows. The confirm for Update Server adds "If this Mac already runs something newer, nothing changes."
-- What's New: the bundled text no longer names server 6.96.3 or a private build, and a new pin holds that.
+- What's New: the bundled text names no unpublished server and no private build, and a new pin holds that.
 
 Merge decisions:
 

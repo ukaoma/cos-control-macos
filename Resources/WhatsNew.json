@@ -1,8 +1,20 @@
 {
-  "version": "0.5.360",
+  "version": "0.5.361",
   "whatsNew": {
-    "summary": "With Today home on, ⌘K is the COS command center (start or stop a recording, open what's waiting, get saved answers, Ask COS, troubleshoot), and what's recording now sits at the top of Today and first in ⌘K. Sessions has a third view, COS cost: what COS itself used over 30 days, by job, measured where it can be. Usage now reads compressed Codex logs, so Codex numbers go up. Update Server won't move backward, and the Miles Windu pet no longer leaves a droid fragment behind after a strike. Plus everything in 0.5.358: Usage opens with the answers, a calendar for longer periods, and hover details.",
+    "summary": "With Today home on, ⌘K is the COS command center: start or stop a recording, open what's waiting, get saved answers, Ask COS, troubleshoot. It also goes to any pane or tab (type usage, messages or work), lists your sessions, and finds what was said inside them on this Mac. Sessions has a third view, COS cost. Usage reads compressed Codex logs. Update Server won't move backward. Plus everything in 0.5.358: Usage opens with the answers, a calendar for longer periods, and hover details.",
     "sections": [
+      {
+        "title": "0.5.361",
+        "items": [
+          "With Today home on in Settings, ⌘K goes to any pane or tab. Type usage, cos cost, messages, archive, voices or work, and press Return.",
+          "Type sessions, recent or running to list your sessions, newest first. Add today, yesterday or this week to narrow the list.",
+          "⌘K searches what was said inside your sessions on this Mac and shows the line that matched. For anything older, Search all sessions opens Sessions with your words filled in. The search reads files on this Mac only and sends nothing off it.",
+          "Return on words that are not a command now takes two presses. The first moves to Ask COS and the second runs it, so nothing starts on the first press.",
+          "The session list refreshes when you open ⌘K.",
+          "After hours, Today and ⌘K agree: when everything left can wait, both say how many things can wait until tomorrow.",
+          "A long session title is cut in the panel's footer, and \"Return again opens it\" stays whole."
+        ]
+      },
       {
         "title": "0.5.360",
         "items": [

@@ -1621,10 +1621,11 @@ enum SetupAssistant {
             var searchWords: String? = nil
         }
 
-        /// A row Return may move onto from the top of the list: a command or a place. Never a hit.
+        /// A row Return may move onto from the top of the list: a command or a place. Never a hit, and never the "Session tracking is off"
+        /// or "N more in Sessions" line of a session list, which is for choosing from.
         private static func isOrder(_ row: Row) -> Bool {
             switch row.kind {
-            case .command, .place: return true
+            case .command, .place: return row.group != .sessions
             default: return false
             }
         }
@@ -1845,6 +1846,14 @@ enum SetupAssistant {
 
         static let idleHint = "Up and Down choose. Esc closes."
 
+        /// A title can be anything, even "Start recording" or "Usage". When one reads like something the panel does itself, the foot calls
+        /// the row "the session", so it is not mistaken for the command. Otherwise the title gets the room: at the panel's 320 pt floor
+        /// the words around it leave little.
+        private static let orderWords: Set<String> = Set(
+            (Command.allCases.flatMap { [$0.title] + $0.phrases } + Place.allCases.flatMap { place in [place.title] + place.names.flatMap { [$0, "open " + $0, "go to " + $0, "show " + $0] } }).map(plain))
+
+        static func sessionWord(_ title: String) -> String { orderWords.contains(plain(title)) ? "the session " : "" }
+
         /// What Return will do, in parts. The foot of the panel and VoiceOver both read it.
         static func footer(_ outcome: ReturnOutcome, _ listing: Listing, _ s: Snapshot) -> Footer {
             switch outcome {
@@ -1858,8 +1867,7 @@ enum SetupAssistant {
                 guard let row = listing.rows.first(where: { $0.id == id }) else { return Footer(lead: idleHint) }
                 switch row.kind {
                 case .session, .hit:
-                    // A list session is called what its title says, and a title can be anything, even "Start recording".
-                    return Footer(lead: "Return moves to the session ", title: row.title, tail: ". Return again opens it.")
+                    return Footer(lead: "Return moves to " + sessionWord(row.title), title: row.title, tail: ". Return again opens it.")
                 case .recording, .waiting, .running, .place, .searchAll:
                     return Footer(lead: "Return moves to ", title: row.title, tail: ". Return again opens it.")
                 default:
@@ -1869,7 +1877,7 @@ enum SetupAssistant {
                 guard let row = listing.rows.first(where: { $0.id == id }) else { return Footer(lead: idleHint) }
                 switch row.kind {
                 case .session, .hit:
-                    return Footer(lead: confirmation(row, s) != nil ? "Return asks first: the session " : "Return opens the session ", title: row.title)
+                    return Footer(lead: (confirmation(row, s) != nil ? "Return asks first: " : "Return opens: ") + sessionWord(row.title), title: row.title)
                 case .recording, .waiting, .running, .place, .searchAll:
                     return Footer(lead: confirmation(row, s) != nil ? "Return asks first: " : "Return opens: ", title: row.title)
                 default:

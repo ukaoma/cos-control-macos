@@ -366,6 +366,10 @@ import Foundation
         check(returned("draft the note to Dana", inputs: off) == .file, "[Start Work off files]", "")
         check(returned("call Gina", inputs: off) == .file, "[Start Work off files]", "")
         check(returned("how do i set up parakeet", inputs: off) == .move("file"), "[Start Work off: an answer moves to File]", "")
+        // Near a command, Start Work off: Return moves to File, never files at once.
+        for phrase in ["restart server", "update the deck"] {
+            check(returned(phrase, inputs: off) == .move("file"), "[Start Work off: a near-command moves to File]", "\(phrase): \(returned(phrase, inputs: off))")
+        }
         // Server down: never a run. Return moves to File.
         var downSnapshot = healthy(); downSnapshot.serverReachable = false; downSnapshot.runtimeState = "stopped"
         check(returned("draft the note to Dana", inputs: center { $0.snapshot = downSnapshot }) == .move("file"), "[server down never starts a run]", "")
@@ -590,7 +594,7 @@ import Foundation
         let title = C.listing(center { $0.sessions = [C.Item(id: "s1", title: "Holiday promo landing page", sessionID: "s1")] }, words: "holiday promo")
         check(title.autoHighlight == nil && row(title, "session:s1")?.kind == .session("s1") && !title.nearCommand, "[a session match never highlights]", "\(rowIDs(title))")
         check(returnedFor(title) == .move("session:s1"), "[a session match moves to the session]", "\(returnedFor(title))")
-        check(C.hint(.move("session:s1"), title, healthy()) == "Return moves to the session Holiday promo landing page. Return again opens it.", "[the hint says what Return does]", "\(C.hint(.move("session:s1"), title, healthy()))")
+        check(C.hint(.move("session:s1"), title, healthy()) == "Return moves to Holiday promo landing page. Return again opens it.", "[the hint says what Return does]", "\(C.hint(.move("session:s1"), title, healthy()))")
         // Three words or more, Start Work on or off: a title that matches is a session to open, never a Work run or a filed task.
         let threeWords = center { $0.sessions = [C.Item(id: "s1", title: "Holiday promo landing page", sessionID: "s1")] }
         let threeList = C.listing(threeWords, words: "holiday promo landing")
@@ -735,6 +739,10 @@ import Foundation
         check(C.listing(center(), words: "cos cost").autoHighlight == "place:sessionsCost" && C.listing(center(), words: "go to usage").autoHighlight == "place:sessionsUsage", "[a tab by name]", "")
         check(C.listing(center(), words: "go to usage").nearCommand && C.listing(center(), words: "usa").nearCommand, "[a place counts as a near-command]", "")
         check(returned("go to usage") == returnRuns("place:sessionsUsage"), "[go to usage opens, never a run]", "\(returned("go to usage"))")
+        // Start Work off: a place is where Return goes, never a filing. A name that only starts one moves to it.
+        var workOffSnapshot = healthy(); workOffSnapshot.workRunsOn = false
+        let workOff = center { $0.snapshot = workOffSnapshot }
+        check(returned("go to usage", inputs: workOff) == returnRuns("place:sessionsUsage") && returned("usa", inputs: workOff) == .move("place:sessionsUsage"), "[Start Work off: a place is where Return goes]", "")
 
         let messages = C.listing(center(), words: "messages")
         check(messages.autoHighlight == "place:messages" && row(messages, "place:messagesRecent") != nil && row(messages, "place:messagesArchive") != nil, "[messages lists its tabs]", "\(rowIDs(messages))")
@@ -781,7 +789,14 @@ import Foundation
         let commandList = C.listing(titledCommand, words: "start recording")
         check(commandList.autoHighlight == "command:startRecording" && returned("start recording", inputs: titledCommand) == returnRuns("command:startRecording"), "[a command wins over a session titled the same]", "")
         check(C.hint(.move("session:claude:rec00001"), commandList, healthy()) == "Return moves to the session Start recording. Return again opens it.", "[a session titled like a command is called a session]", "\(C.hint(.move("session:claude:rec00001"), commandList, healthy()))")
-        check(C.hint(returnRuns("session:claude:rec00001"), commandList, healthy()) == "Return opens the session Start recording", "[a session titled like a command is called a session]", "")
+        check(C.hint(returnRuns("session:claude:rec00001"), commandList, healthy()) == "Return opens: the session Start recording", "[a session titled like a command is called a session]", "")
+        // "go", "show", "open" and "to" match every opener phrase of a command, and no place: a place needs three letters of a real name.
+        for filler in ["go", "to", "show", "open", "go to", "open the", "show me"] {
+            check(!C.listing(center(), words: filler).rows.contains { $0.group == .places }, "[opener words reach no place]", filler)
+        }
+        // Words that do not name a pane or tab never open an unrelated session, with sessions listed.
+        let unrelated = withSessions([listed("claude:rain0001", "Rain audit", days: 1), listed("claude:usage002", "Usage notes", days: 2)])
+        check(returned("draft the note to Dana", inputs: unrelated) == .move("ask") && returned("email Gina about pricing", inputs: unrelated) == .move("ask"), "[words never open an unrelated session]", "\(returned("draft the note to Dana", inputs: unrelated))")
         // Places are free text too: nothing typed becomes anything but a name match.
         check(returned("draft the note to Dana") == .move("ask") && !C.listing(center(), words: "draft the note to Dana").rows.contains { $0.group == .places }, "[free text matches no place]", "")
 
@@ -851,6 +866,10 @@ import Foundation
         check(row(C.listing(center { $0.sessionsOff = true; $0.sessionsLoaded = true }, words: "sessions"), "sessions:off") != nil, "[sessions off shows the off row]", "")
         check(C.listing(center { $0.sessionsOff = true }, words: "holiday promo").searchWords == nil, "[sessions off runs no search]", "")
         check(row(C.listing(withSessions([]), words: "sessions"), "info:sessions-none")?.title == "No sessions yet.", "[no sessions yet]", "")
+        // A session list is for choosing from: its "off" line and its "N more" line are never what Return moves onto.
+        let offList = center { $0.sessionsOff = true; $0.sessionsLoaded = true }
+        check(returned("running", inputs: offList) == .nothing && returned("recent sessions today", inputs: offList) == .nothing, "[a session list line is not what Return moves to]", "\(returned("running", inputs: offList))")
+        check(row(C.listing(offList, words: "running"), "sessions:off")?.selectable == true && returned("running", chosen: "sessions:off", inputs: offList) == returnRuns("sessions:off"), "[a session list line still opens when chosen]", "")
 
         // One list from two sources. The loaded list alone holds the recent ones when the pet is on, and the live rows alone hold the running ones.
         let live = [C.Item(id: "claude:abcd1234", title: "Running now", sessionID: "claude:abcd1234", state: "Running", date: nil)]
@@ -923,7 +942,7 @@ import Foundation
         for _ in 0..<selectable.count { cursor = C.move(1, from: cursor, listing); if let cursor { reached.append(cursor) } }
         check(reached.contains("hit:claude:old00001") && reached.contains("search-all"), "[an arrow reaches a hit]", "\(reached)")
         check(returned("persona pricing", chosen: "hit:claude:old00001", inputs: found) == returnRuns("hit:claude:old00001"), "[a chosen hit opens]", "")
-        check(C.hint(returnRuns("hit:claude:old00001"), listing, healthy()) == "Return opens the session Persona pricing review", "[the footer names the session]", "\(C.hint(returnRuns("hit:claude:old00001"), listing, healthy()))")
+        check(C.hint(returnRuns("hit:claude:old00001"), listing, healthy()) == "Return opens: Persona pricing review", "[the footer names the hit]", "\(C.hint(returnRuns("hit:claude:old00001"), listing, healthy()))")
         // A chosen hit that is gone returns nothing: a new search took it, so Return picks no other row.
         let gone = withFound(sessions, words: "persona pricing", hits: [hits[1]])
         check(returned("persona pricing", chosen: "hit:claude:old00001", inputs: gone) == .nothing, "[a chosen row that is gone returns nothing]", "")
@@ -987,8 +1006,8 @@ import Foundation
         let sessions = withSessions([listed("claude:long0001", long, days: 1), listed("claude:short001", "Short", days: 1)])
         let listing = C.listing(sessions, words: "sessions")
         let cases: [(C.ReturnOutcome, String)] = [
-            (.move("session:claude:long0001"), "Return moves to the session "), (.move("session:claude:short001"), "Return moves to the session "),
-            (.move("command:openSessions"), "Return moves to "), (returnRuns("session:claude:long0001"), "Return opens the session "),
+            (.move("session:claude:long0001"), "Return moves to "), (.move("session:claude:short001"), "Return moves to "),
+            (.move("command:openSessions"), "Return moves to "), (returnRuns("session:claude:long0001"), "Return opens: "),
             (returnRuns("command:openSessions"), "Return runs: "), (.nothing, C.idleHint), (.confirm, "Return confirms. Esc cancels."), (.file, "Return files it to the Work inbox."),
         ]
         for (outcome, lead) in cases {
@@ -1001,6 +1020,13 @@ import Foundation
         let b = C.footer(.move("session:claude:short001"), listing, healthy())
         check(a.lead == b.lead && a.tail == b.tail && a.tail == ". Return again opens it." && a.title != b.title, "[Return again opens it stays whole]", "\(a.tail)")
         check(a.title?.count ?? 0 > 100 && b.title == "Short", "[only the title varies]", "")
+        // A session titled like a command or a pane is called "the session" in the foot, and any other title is not: it keeps the room.
+        for name in ["Start recording", "Usage", "open work", "Run Doctor", "Open Sessions", "go to usage", "Voices"] {
+            check(C.sessionWord(name) == "the session ", "[a session titled like a command is called a session]", name)
+        }
+        for name in ["Holiday promo landing page", "Usage limit reached", "Persona pricing review", "Recording the standup", "Work on the deck"] {
+            check(C.sessionWord(name).isEmpty, "[a title that is not a command keeps the room]", name)
+        }
         // Every kind of move has a tail that names what the second Return does.
         var busy = healthy(); busy.helperBusy = false
         let typed = C.listing(center(), words: "go to se")
