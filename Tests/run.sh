@@ -280,6 +280,9 @@ python3 "$ROOT/Tests/work-loop-helper-checks.py" "$TMP/cos-control-helper"
 # K1 P10 key lanes: the key-lanes verb through the compiled helper against a loopback fixture (the key on stdin only,
 # never echoed, every status an answer, only the contract's keys).
 python3 "$ROOT/Tests/key-lanes-helper-checks.py" "$TMP/cos-control-helper"
+# 0.5.361: the ⌘K local session search and the open path it reaches, against a fixture home (a Desktop record whose cliSessionId
+# differs from its id is found once and resolves; session-reveal resolves a short id; the words only ever reach stdin).
+python3 "$ROOT/Tests/local-session-search-checks.py" "$TMP/cos-control-helper"
 # Transcription switcher (server 6.72.0): stt-settings, set-stt-settings, install-parakeet against the contract fixture.
 python3 "$ROOT/Tests/transcription-settings-helper-checks.py" "$TMP/cos-control-helper" "$ROOT/Tests/fixtures/stt-settings-6.72.0.json"
 python3 "$ROOT/Tests/HeldNamingGuardMutations.py"

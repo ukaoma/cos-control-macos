@@ -1739,6 +1739,8 @@ enum SetupAssistant {
                                             detail: detail.isEmpty ? nil : detail,
                                             state: item.state, trailing: item.openLabel, match: matchLine(item.match, title: item.title)))
                             shown += 1
+                            // A second hit for the same session (a Desktop record's id and its transcript's) is not shown either.
+                            if let id = item.sessionID { seen.append(id) }
                         }
                         if shown == 0 { rows.append(info("search-none", .found, sessions.isEmpty ? "No session mentions these words." : "No other session mentions these words.")) }
                     }

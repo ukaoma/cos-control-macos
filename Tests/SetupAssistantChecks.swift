@@ -957,6 +957,9 @@ import Foundation
         check(!C.listing(withFound(sessions, words: "something else", hits: hits), words: "persona pricing").rows.contains { $0.group == .found && $0.id.hasPrefix("hit:") }, "[hits for other words never show]", "")
         let dup = withFound(withSessions([listed("claude:abcd1234ef56", "Persona work", days: 1)]), words: "persona", hits: [hit("claude:abcd1234", "Persona work"), hit("claude:other001", "Persona notes")])
         check(C.listing(dup, words: "persona").rows.filter { $0.id.hasPrefix("hit:") }.map(\.id) == ["hit:claude:other001"], "[a session lists once, by sameSession]", "\(rowIDs(C.listing(dup, words: "persona")))")
+        // Two hits for one session (a Desktop record's full id and its transcript's short one) show once.
+        let twice = withFound(sessions, words: "persona", hits: [hit("claude:7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d", "Persona work"), hit("claude:7a8b9c0d", "Persona work")])
+        check(C.listing(twice, words: "persona").rows.filter { $0.id.hasPrefix("hit:") }.count == 1, "[two hits for one session show once]", "\(rowIDs(C.listing(twice, words: "persona")))")
         let many = withFound(sessions, words: "persona", hits: (0..<12).map { hit("claude:" + String(format: "m%011d", $0), "Persona \($0)") })
         check(C.listing(many, words: "persona").rows.filter { $0.id.hasPrefix("hit:") }.count == C.hitCap && C.hitCap == 5, "[hits are capped at five]", "")
         // The phases are text lines.

@@ -11796,7 +11796,8 @@ final class COSControlHelper {
         starredIds: Set<String> = [],
         desktopSessionsRoot: URL? = nil,
         desktopIndex: [String: ClaudeDesktopSession]? = nil,
-        newest: Int? = nil
+        newest: Int? = nil,
+        desktopOnlyRows: Bool = true
     ) -> [[String: Any]] {
         let index = desktopIndex ?? desktopSessionsRoot.map { loadClaudeDesktopIndex(from: $0) } ?? [:]
         let dirs = (try? FileManager.default.contentsOfDirectory(
@@ -11880,7 +11881,8 @@ final class COSControlHelper {
                 else { recentRows.append((mtime, row)) }
             }
         }
-        for (id, head) in index where id == head.id {
+        // `desktopOnlyRows` false: the caller lists the Desktop records itself (the ⌘K search names each by its cliSessionId).
+        for (id, head) in index where desktopOnlyRows && id == head.id {
             if seen.contains(id)
                 || seen.contains(head.cliSessionId)
                 || liveIds.contains(id)
@@ -14240,7 +14242,8 @@ final class COSControlHelper {
         let sessionId = option("--session", in: args)!.trimmingCharacters(in: .whitespacesAndNewlines)
         let provider = (option("--provider", in: args) ?? "claude")
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let home = FileManager.default.homeDirectoryForCurrentUser
+        // The helper's own home: the person's, except under COS_CONTROL_TEST_HOME (a /tmp fixture), so the open path can be tested.
+        let home = self.home
         let app = Self.desktopApp(for: provider)
         var path: String?
         var pid: Int?
@@ -18166,6 +18169,13 @@ final class COSControlHelper {
         return Array(rows.prefix(max(1, min(limit, sessionSearchBodyFileLimit))))
     }
 
+    /// One session, one key. A Claude session is named by its first 8 characters in some rows (the list, a transcript's short id) and by its
+    /// full id in others (a Desktop record, a transcript), so they share the first 8: the same session never lists twice (0.5.361).
+    static func sessionRowKey(provider: String, id: String) -> String {
+        let lower = id.lowercased()
+        return provider == "claude" ? "claude:" + String(lower.prefix(8)) : "\(provider):\(lower)"
+    }
+
     /// `desktopNewest`: see `loadClaudeDesktopIndex(from:newest:)`. Nil searches every Desktop title, as the Sessions fallback does.
     static func localSessionKeywordHits(query: String, limit: Int, home: URL, desktopNewest: Int? = nil, transcriptNewest: Int? = nil, readCursorPins: Bool = true) -> [[String: Any]] {
         let tokens = tokenizeSessionQuery(query)
@@ -18191,15 +18201,19 @@ final class COSControlHelper {
             let id = (row["id"] as? String ?? "").lowercased()
             let provider = row["provider"] as? String ?? "claude"
             guard !id.isEmpty else { return }
-            let key = "\(provider):\(id)"
+            let key = sessionRowKey(provider: provider, id: id)
             if seen.contains(key) { return }
             seen.insert(key)
             rows.append(row)
         }
         for (id, head) in desktopIndex where id == head.id {
             let title = head.title.isEmpty ? "Claude session" : head.title
+            // The session's transcript is named by the record's cliSessionId, which is not always the record's own id (20 of the newest 30
+            // records on one Mac). Open and the transcript row both need that id, so the record's row carries it: one id, one row, and
+            // session-reveal resolves it to the record by either id. A record with no readable cliSessionId keeps its own id.
+            let sessionId = UUID(uuidString: head.cliSessionId) != nil ? head.cliSessionId : id
             add([
-                "id": String(id.prefix(8)),
+                "id": sessionId,
                 "provider": "claude",
                 "name": title,
                 "workspace": workspaceLabel(head.cwd),
@@ -18219,7 +18233,8 @@ final class COSControlHelper {
             starredIds: claudeStarred,
             desktopSessionsRoot: claudeDesktop,
             desktopIndex: desktopIndex,
-            newest: transcriptNewest
+            newest: transcriptNewest,
+            desktopOnlyRows: false
         ) { add(row) }
         let codexRoot = home.appendingPathComponent(".codex/sessions", isDirectory: true)
         for (id, name) in loadCodexThreadNames(sessionsRoot: codexRoot) {
@@ -18261,13 +18276,21 @@ final class COSControlHelper {
             composerNames: composerNames,
             pinnedIds: cursorPinned
         ) { add(row) }
+        let transcripts = listSessionSearchTranscripts(
+            claudeProjects: claudeProjects,
+            codexRoot: codexRoot,
+            cursorProjects: cursorProjects
+        )
+        // A Claude row is named by 8 characters; Open needs the transcript's full id. Every transcript the scan knows gives it.
+        var fullClaudeId: [String: String] = [:]
+        for item in transcripts where item.provider == "claude" { fullClaudeId[String(item.id.lowercased().prefix(8))] = item.id.lowercased() }
         var hitsByKey: [String: [String: Any]] = [:]
         var rowByKey: [String: [String: Any]] = [:]
         func keep(_ hit: [String: Any]) {
             let id = (hit["id"] as? String ?? "").lowercased()
             let provider = hit["provider"] as? String ?? "claude"
             guard !id.isEmpty else { return }
-            let key = "\(provider):\(id)"
+            let key = sessionRowKey(provider: provider, id: id)
             if let existing = hitsByKey[key], meetingScore(existing["score"]) >= meetingScore(hit["score"]) { return }
             hitsByKey[key] = hit
         }
@@ -18276,6 +18299,7 @@ final class COSControlHelper {
             let scored = scoreSessionKeyword(tokens: tokens, title: name, haystack: haystack)
             if scored.score <= 0 { return }
             var hit = row
+            if (hit["provider"] as? String ?? "claude") == "claude", let id = hit["id"] as? String, id.count == 8, let full = fullClaudeId[id.lowercased()] { hit["id"] = full }
             hit["snippet"] = scored.snippet.isEmpty ? name : scored.snippet
             hit["match"] = "keyword"
             hit["keywordScore"] = scored.score
@@ -18286,17 +18310,12 @@ final class COSControlHelper {
         for row in rows {
             let id = (row["id"] as? String ?? "").lowercased()
             let provider = row["provider"] as? String ?? "claude"
-            rowByKey["\(provider):\(id)"] = row
+            rowByKey[sessionRowKey(provider: provider, id: id)] = row
             consider(row: row, haystack: "\(row["name"] as? String ?? "")\n\(row["workspace"] as? String ?? "")")
         }
-        for item in listSessionSearchTranscripts(
-            claudeProjects: claudeProjects,
-            codexRoot: codexRoot,
-            cursorProjects: cursorProjects
-        ) {
+        for item in transcripts {
             let short = String(item.id.prefix(8)).lowercased()
-            var row = rowByKey["\(item.provider):\(item.id.lowercased())"]
-                ?? rowByKey["\(item.provider):\(short)"]
+            var row = rowByKey[sessionRowKey(provider: item.provider, id: item.id)]
             if row == nil {
                 let desktop = item.provider == "claude"
                     ? (desktopIndex[item.id.lowercased()] ?? desktopIndex[short])
@@ -18306,7 +18325,7 @@ final class COSControlHelper {
                     : "Claude session"
                 let title = (desktop?.title.isEmpty == false) ? (desktop?.title ?? fallback) : fallback
                 row = [
-                    "id": item.provider == "claude" ? String(item.id.prefix(8)) : item.id,
+                    "id": item.id,
                     "provider": item.provider,
                     "name": title,
                     "workspace": workspaceLabel(desktop?.cwd ?? ""),
@@ -18328,17 +18347,6 @@ final class COSControlHelper {
             let body = peekSessionSearchBody(in: item.file)
             if body.isEmpty { continue }
             consider(row: row, haystack: "\(name)\n\(workspace)\n\(body)")
-            if item.provider == "claude",
-               let desktop = desktopIndex[item.id.lowercased()] ?? desktopIndex[short] {
-                let alias = String(desktop.id.prefix(8)).lowercased()
-                if alias != (row["id"] as? String ?? "").lowercased(),
-                   let aliasRow = rowByKey["claude:\(alias)"] {
-                    consider(
-                        row: aliasRow,
-                        haystack: "\(aliasRow["name"] as? String ?? "")\n\(aliasRow["workspace"] as? String ?? "")\n\(body)"
-                    )
-                }
-            }
         }
         return Array(
             hitsByKey.values.sorted { meetingScore($0["score"]) > meetingScore($1["score"]) }
@@ -18366,7 +18374,7 @@ final class COSControlHelper {
         let query = String(String(decoding: input.prefix(4_096), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).prefix(200))
         guard query.count >= 3 else { throw HelperError.message("The words must be at least 3 characters.") }
         let limit = min(max(Int(option("--limit", in: args) ?? "8") ?? 8, 1), 20)
-        let rows = Self.localSessionKeywordHits(query: query, limit: limit, home: FileManager.default.homeDirectoryForCurrentUser,
+        let rows = Self.localSessionKeywordHits(query: query, limit: limit, home: home,
                                                 desktopNewest: Self.localSearchDesktopNewest, transcriptNewest: Self.localSearchTranscriptNewest, readCursorPins: false)
         emit(ok: true, message: rows.isEmpty ? "No matching sessions" : "Session lookup ready", details: [
             "state": rows.isEmpty ? "empty" : "ready",

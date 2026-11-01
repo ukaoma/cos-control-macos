@@ -67,6 +67,8 @@ core_raw = read("Sources/SetupAssistant.swift")
 core = code(core_raw)
 helper = code(read("HelperSources/main.swift"))
 models = code(read("Sources/Models.swift"))
+# The helper has "/*" inside a string far above these functions, so `code()` would cut them out: line comments only for these two.
+helper_lines = "\n".join(re.sub(r"(^|\s)//.*$", r"\1", line) for line in read("HelperSources/main.swift").splitlines())
 
 # 1. Local first: Foundation only, one namespace, nothing that runs, opens or sends.
 imports = re.findall(r"^import\s+(\w+)", core, re.M)
@@ -399,18 +401,24 @@ engine_same = engine_same.split("{", 1)[1].rsplit("}", 1)[0].strip()
 app_same = app_same.split("{", 1)[1].rsplit("}", 1)[0].strip()
 pin(engine_same == app_same, f"Center.sameSession equals ClaudeSession.sameSession: {engine_same!r} vs {app_same!r}")
 
+# One session, one row, one id (QA item 3): a Desktop record is named by its cliSessionId, rows and hits share one key, and open never reads the Desktop root.
+pin("let sessionId = UUID(uuidString: head.cliSessionId) != nil ? head.cliSessionId : id" in helper_lines and '"id": sessionId,' in helper_lines, "a Desktop record's row carries the cliSessionId its transcript carries")
+pin(helper_lines.count("sessionRowKey(provider:") >= 5, "rows, hits and the transcript lookup share one key per session")
+pin("let alias = String(desktop.id.prefix(8))" not in helper_lines and "desktopOnlyRows: false" in helper_lines, "the Desktop record rows are listed once, by the local scan itself")
+reveal_call = helper_lines.split("let transcript = Self.findClaudeSessionFile(", 1)[1][:260]
+pin("desktopSessionsRoot" not in reveal_call, "open never passes the Desktop root to the transcript lookup (it reads every record head, about 9 s)")
+pin("local-session-search-checks.py" in read("Tests/run.sh") and "COS_CONTROL_TEST_HOME" in read("Tests/local-session-search-checks.py"), "the open path is tested through the compiled helper against a fixture home")
+
 # The local word search: a helper path that reads files and nothing else; the panel owns the search.
 local = block(helper, "    private func emitLocalSessionsSearch(args: [String]) throws {", "    private func emitClaudeSessionsSearch(args: [String]) throws {")
 for banned in ("request(", "speakerReviewToken", "readToken", "speakerReviewBody", "URLSession", "Process()", "embedding", "openai", "queryEscape"):
     pin(banned.lower() not in local.lower(), f"the local search never uses {banned}")
 pin("FileHandle.standardInput.read(upToCount: 4_097 - input.count)" in local and ".prefix(200)" in local and "query.count >= 3" in local, "the local search reads its words from a bounded stdin, 200 characters, at least 3")
-pin("Self.localSessionKeywordHits(query: query, limit: limit, home: FileManager.default.homeDirectoryForCurrentUser," in local, "the local search is the fallback's own scan, over this Mac's home")
+pin("Self.localSessionKeywordHits(query: query, limit: limit, home: home," in local, "the local search is the fallback's own scan, over the helper's home (the person's, or a /tmp fixture under test)")
 pin("desktopNewest: Self.localSearchDesktopNewest, transcriptNewest: Self.localSearchTranscriptNewest, readCursorPins: false)" in local,
     "the local search bounds its title reads: the newest Desktop records and transcripts, and no sqlite3 process per Cursor workspace")
 pin(re.search(r"static let localSearchDesktopNewest = (\d+)", helper) and int(re.search(r"static let localSearchDesktopNewest = (\d+)", helper).group(1)) <= 40
     and int(re.search(r"static let localSearchTranscriptNewest = (\d+)", helper).group(1)) <= 40, "the title reads are bounded to 40 each (9.1 s unbounded, 1.7 s at 30 and 20, on 733 Desktop records and 870 transcripts)")
-# The helper has "/*" inside a string far above these functions, so `code()` would cut them out: line comments only for these two.
-helper_lines = "\n".join(re.sub(r"(^|\s)//.*$", r"\1", line) for line in read("HelperSources/main.swift").splitlines())
 pin("allowed = Set(dated.sorted { $0.mtime > $1.mtime }.prefix(newest).map(\\.file))" in helper_lines and "if let allowed, !pinned, !allowed.contains(file) { continue }" in helper_lines, "recentClaudeConversations titles only the newest transcripts when it is told to")
 pin("files = dated.sorted { $0.1 > $1.1 }.prefix(newest).map(\\.0)" in helper_lines, "loadClaudeDesktopIndex reads only the newest heads when it is told to")
 reveal = block(helper, "    private func emitSessionReveal(args: [String]) throws {", "    private func emitSessionHooksStatus() throws {")
