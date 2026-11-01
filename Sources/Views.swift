@@ -4900,6 +4900,7 @@ private struct VoiceRow: View {
                                 Menu("It is \(voice.label)…") {
                                     Button("Yes, I checked: this is \(voice.label)") { model.confirmVoice(voice.label) }
                                 }
+                                .cosMenu()
                                 .font(.system(size: 11))
                                 .controlSize(.small)
                                 // A long name gives way first: it never takes the room of "Actually someone else" and "Not in this meeting"
