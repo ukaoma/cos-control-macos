@@ -79,8 +79,7 @@ It selects the pane first, then writes the tab (`select` never resets one), so S
 days. Exact names highlight; the tie-break is commands, then panes, then tabs, and `Center.sharedNames` declares the three names two
 kinds of row answer to (`voices`, `sessions`, `recent`). A name that only begins a sentence ("usage limit reached") is listed, and
 Return passes over it. Two letters reach no place. A place, a hit or Search all sessions asks first when a message typed into an
-open session would be lost. Not in this build: the Settings hub groups (the hub has its own search), the Dictation settings sections,
-Work's layout (it needs a new setter) and the Memories tabs (a web view that reads its view once, when it is made).
+open session would be lost. The Settings hub groups, Work's layouts and the Memories views came in 0.5.362 (below).
 `Tests/setup-assistant-pins.py` parses `ActivitySection`, `SessionsPane`, `MessagesSubview`, `SpeakerSubview`, `ActivityWorkSubview`,
 `WorkWorkspaceScope` and `MemoriesSubview` from source and fails when a case has no row and no written reason.
 
@@ -103,6 +102,53 @@ key cancels it, which ends the helper process. Hits sit in their own group with 
 through the platform or Sessions' reader. Search all sessions opens Sessions with the words in its own box. Measured on this Mac
 (733 Desktop records, 870 transcripts, the shipped unoptimized helper): 9.1 s unbounded, 1.7 s bounded to the newest 30 Desktop
 records and 20 transcripts with no sqlite3 process per Cursor workspace.
+
+### Search by meaning (0.5.362)
+
+Miles, 2026-10-31: "if I can't remember exactly what I was working on, I should be able to search the topic or adjacently, and then it
+should reference where and what that session was so I can open it and start continuing work", judged by "subq ... (or jev) depending
+on what the user has for their judgment model", "a weighted match so we get a view of several sessions that could match in order of
+likelihood". The COS server reads the sessions and asks the model that decides search (Settings, Decision models); Control sends words.
+
+- **Contract.** `GET /api/decision-provider` carries `capabilities.sessionFind` (absent is no; never read from a version).
+  `POST /api/agent-sessions/find` takes `{ query, consentedProvider, stage }` and answers `{ available, reason, message, provider,
+  storesData, rows, asked, reachedBack, skipped, cached }`. A row is the list's session fields plus `last_activity_at`, `judged_text`,
+  `probability`, `strength` (`strong`, `likely`, `possible`) and `compressed`. The helper verb `agent-sessions-find` takes that body on
+  stdin, has a 7 s deadline inside the 8 s the app allows a helper, and turns every failure into an answer with a fixed reason. It reads
+  the optional `resetsAt` (an ISO time) on a cap or a pause.
+- **Consent.** Per model: ask, on, never (`TodayHome.meaningChoiceKey`, one key each, nothing stored is ask). `Center.consentedProvider`
+  is the one gate: the server can, a key is saved for the model that decides search now, and the person said yes to that model. A yes
+  for Jev is no yes for SubQ. `consentedProvider` goes in the request, and the server compares it with its own and answers
+  `consent_required` or `provider_changed`; the panel then forgets the model (`forgettingProvider`) and reads the settings again.
+  The panel reads the decision settings once when it opens, quietly, so Settings' own line is untouched. Nothing is asked before a yes.
+  Settings, Decision models shows and reverses the choice for the model that decides search, with the same words as the panel.
+- **What leaves.** After a yes: the words typed in the box, and the title and first 150 characters of the first prompt of up to 508
+  recent sessions, to the model, through the COS server; emails, links and key-shaped text removed first; names and other details not.
+  SubQ keeps what it is sent. This reverses 0.5.361's "typing sends nothing off this Mac", for a person who said yes.
+- **Timing.** The first stage 800 ms after the last key, at three words or more, one at a time (a new key cancels the task and the helper
+  process). The full stage at 2 s of quiet in all, unless the first stage's top row is Strong. Never on an exact command, place,
+  Settings group or noun list, with Sessions off, or under a fixture.
+- **Rows.** A `.meaning` group before Search all. One `hit:` id namespace with the word hits, the strength on the item, one row per session:
+  a session found both ways shows once, as a meaning row, under the id already on screen. The panel keeps its own `meaningSessions` map. Strength
+  is in the detail line ("Strong match, Claude Code, Quilt, 12 days ago") and there is no group heading. Return never moves onto a meaning row,
+  before or after rows arrive; the second Return still runs Ask. The scroll follows the highlight when row ids change.
+- **Opening.** Through `ClaudeSession.listed`, so a Work run or a scheduled job the COS server holds is marked. A compressed Codex row opens in
+  the Codex app only, and says so when that fails.
+- **Words.** Nothing close names how many sessions were asked and how far back, and the files it could not read. A failed, capped or paused search
+  never says nothing is close. A refusal that stays true (an older server, a cap) is remembered for as long as the panel is open.
+- **Continue in.** Jev only, a Strong top row at 0.6 or more and 0.25 over the second, a session whose composer would take a message.
+  It opens the session in the reader, then places the words in the composer; Return in the composer ignores them until they are edited.
+  Nothing is sent by it.
+- **COS cost.** `session-find-jev-usage.json` (priced) and `session-find-subq-usage.json` (not priced: the rate is not verified), in the
+  Finding sessions row, "Counted by the day".
+
+### Places, the rest (0.5.362)
+
+The Memories page's five views (the page is told again through a request count when it is already open), Work's three layouts (one key,
+`cos.workLayout`, one setter, `WorkLayout.choose`), and every group of the Settings hub as a row (`Center.settingsGroups`, equal to the
+hub catalog; a pin holds them equal). A Settings row never highlights itself, hides under the classic Settings and while the hub does not
+draw that group, shows at most three, and a word that only starts its name does not take Return. A name another row answers to is left
+out of a group's names, so no exact name is shared.
 
 ### Wording (0.5.361)
 
@@ -270,7 +316,7 @@ ran, because it stays set long after.
 
 `Tests/run-command-center-render.sh <folder>` draws each of these on a fixture: Start Work off, server down, Sessions off, no
 sessions, overview not loaded, helper busy, notice not acknowledged, recording, saving, G2 recording, macOS under 14.2, and for
-0.5.361 the places, the noun lists (pet off and pet on), the word-search hits (found, searching, none, failed, a masked key), the
+0.5.362 the question before meaning search (Jev, SubQ, at the 320 pt floor), meaning rows with each strength, nothing close, capped, failed, timed out and an older server; 0.5.361 the places, the noun lists (pet off and pet on), the word-search hits (found, searching, none, failed, a masked key), the
 long-title footer (also at 400 wide, the 320 pt panel floor), the unsent-message confirm and the fold lines, plus the
 typed answers, a confirm, a failure, hostile titles, the panel over Work and over Settings, the smallest window, and the recording
 states (`rec-mac`, `rec-glasses`, `rec-both`, `rec-saving`, `rec-none`), each on Today and in ⌘K. Focus, the

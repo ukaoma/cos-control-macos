@@ -8,12 +8,16 @@ import Foundation
 //
 // HARD RULES
 //   1. Local first. Every suggestion comes from a Snapshot of state COS Control already holds. No model call, no network,
-//      no shell, so it answers when the server is down, which is when people need it most.
+//      no shell, so it answers when the server is down, which is when people need it most. One stated exception (0.5.362): search by
+//      meaning asks the COS server, which asks the person's decision model (Jev or SubQ). It is off until the person says yes for that
+//      model, it is a request the window makes and this file only permits (`consentedProvider`), and it never decides anything here.
 //   2. Actions, Center.Command and Center.Place are closed enums. Each maps to an existing helper command (HelperSources/main.swift,
 //      the command switch) or an existing opener in the app. Text a person types picks a knowledge-base entry, a command or a
-//      place by keyword and never becomes a command or an argument. One stated exception (0.5.361): the words of the local
-//      session search go to the helper's stdin, never its arguments, for the one fixed verb `claude-sessions-search --local`,
-//      which reads this Mac's own session files, calls no server and sends nothing off the Mac.
+//      place by keyword and never becomes a command or an argument. Two stated exceptions, both through the helper's stdin and never its
+//      arguments. 0.5.361: the words of the local session search, for the one fixed verb `claude-sessions-search --local`, which reads
+//      this Mac's own session files, calls no server and sends nothing off the Mac. 0.5.362: the words of search by meaning, for the one
+//      fixed verb `agent-sessions-find`, which sends them with the model the person agreed to; the COS server then sends the words, the
+//      title and the first 150 characters of the first prompt of up to 508 recent sessions to that model. Not before a yes.
 //   3. A change is confirmed inline first, with one consequence line read from the code that runs it. The restart gates
 //      COS Control already has hold here too (a job, a recording, a meeting still saving, an ownership conflict, an
 //      interrupted update). There is no force path. Doctor changes nothing but spends a real question, so the panel
@@ -22,11 +26,13 @@ import Foundation
 //      starts one Work run through the Today cap with a redacted Doctor packet, and the prompt says to ask before
 //      changing anything. "Ask COS" is the same run without Doctor.
 //   5. Session titles are untrusted. They are cleaned to one line, drawn verbatim, only open their own session, are never
-//      matched for dispatch and never go into a prompt.
+//      matched for dispatch and never go into a prompt. The one place a title or a first prompt leaves this Mac is search by meaning,
+//      after a yes: the COS server reads them itself, removes emails, links and key-shaped text, and asks the model. Control sends none.
 //   6. Match text (0.5.361) is a line from inside a session that the local search found. It is held to rule 5, masked when it
-//      looks like a key, shown on its row only and never decides anything. A hit sits in its own group: Return never moves
-//      onto one and never runs one. It is reached by an arrow or a click. This is the one stated exception to "a question's
-//      words never reach the panel": the panel shows what a session said, and nothing else from a question.
+//      looks like a key, shown on its row only and never decides anything. A hit sits in its own group (a word hit, or a meaning
+//      row with its strength): Return never moves onto one and never runs one. It is reached by an arrow or a click. The
+//      question before meaning search sends anything, and "Continue in", are reached the same way. This is the one stated
+//      exception to "a question's words never reach the panel": the panel shows what a session said, and nothing else from a question.
 //
 // Imports Foundation only and needs no other source file: Tests/run-setup-assistant.sh compiles it alone with
 // Tests/SetupAssistantChecks.swift. Everything lives inside `enum SetupAssistant`, so it cannot collide with app types.

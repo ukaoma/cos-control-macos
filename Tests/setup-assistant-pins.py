@@ -427,12 +427,24 @@ pin("data.split(separator: 0x0A, omittingEmptySubsequences: true)" in _peek and 
     and "handle.read(upToCount: maxBytes)" in _peek and "isRegularTranscript(file)" in _peek,
     "the body read splits the bytes at newlines, throws instead of raising and reads regular files only, so a window cut inside a character drops one line, not the file")
 
-# Privacy words (QA item 4): the bundled notes say typing stays on this Mac, say what Search all sessions uses, and say the first before the second.
+# Privacy words (QA item 4, rewritten for 0.5.362): the bundled notes say what leaves after a yes, in the engine's own words, that typing sends
+# nothing without it, and that Search all sessions asks the COS server.
 import json as _json
-_notes = " ".join(_json.loads(read("Resources/WhatsNew.json"))["whatsNew"]["sections"][0]["items"])
-pin("sends nothing off it" in _notes and "asks the COS server" in _notes and "OpenAI" in _notes and _notes.index("sends nothing off it") < _notes.index("Search all sessions"),
-    "the notes say typing stays on this Mac and Search all sessions asks the COS server, in that order")
-pin("COS server" in read("CHANGELOG.md").split("## 0.5.360")[0] and "OpenAI key" in read("CHANGELOG.md").split("## 0.5.360")[0], "the changelog says what Search all sessions uses")
+_all = _json.loads(read("Resources/WhatsNew.json"))["whatsNew"]["sections"]
+_notes = " ".join(_all[0]["items"])
+_older = " ".join(i for section in _all[1:2] for i in section["items"])
+_sent = "plus the title and first 150 characters of the first prompt from up to 508 recent sessions"
+pin(_all[0]["title"] == "0.5.362" and "each search sends the words you type in ⌘K, " + _sent in _notes and "Emails, links and key-shaped text are removed first. Names and other details are not." in _notes
+    and "SubQ keeps what it is sent" in _notes and "off until you say yes" in _notes and "sends nothing off it" in _notes and _notes.index("off until you say yes") < _notes.index("sends nothing off it"),
+    "the notes say plainly what leaves after a yes, and that nothing does before")
+_consent = block(core_raw, '            let sent = "Each search sends the words you type here, ', '"\n')
+pin(_sent in _consent and "Emails, links and key-shaped text are removed first. Names and other details are not." in _consent and "SubQ keeps what it is sent." in core_raw,
+    "the question in the panel says what the notes say")
+pin("asks the COS server" in _older and "OpenAI" in _older, "the 0.5.361 notes still say what Search all sessions uses")
+_log = read("CHANGELOG.md").split("## 0.5.361")[0]
+pin("COS server" in _log and "OpenAI key" in read("CHANGELOG.md").split("## 0.5.360")[0], "the changelog says what Search all sessions uses")
+pin("sends the words you type" in _log and "title and first 150 characters of the first prompt from up to 508 recent sessions" in _log and "SubQ keeps what it is sent" in _log, "the changelog says what leaves after a yes")
+pin(re.search(r"6\.9[5-9]", _notes) is None and "private" not in _notes.lower(), "the notes name no unpublished server")
 
 # The local word search: a helper path that reads files and nothing else; the panel owns the search.
 local = block(helper, "    private func emitLocalSessionsSearch(args: [String]) throws {", "    private func emitClaudeSessionsSearch(args: [String]) throws {")
