@@ -28,14 +28,81 @@ free_gb() {
   echo $(( (f + s + i) * page / 1073741824 ))
 }
 
-# Every descendant of pid $1 (children, grandchildren, ...), one per line, from a single ps snapshot. $1 itself is not listed.
-owned_pids() {
-  ps -Ao pid=,ppid= | awk -v root="$1" '
-    { parent[$1] = $2 }
-    END { do { grew = 0
-                for (p in parent) if (!(p in own) && (parent[p] == root || (parent[p] in own))) { own[p] = 1; grew = 1 } }
-          while (grew)
-          for (p in own) print p }'
+# 2026-10-31 (build-speed A5 + review 1): what the large-profile watchdog may count and stop is THIS run's own processes, never a
+# name match across the machine (`pkill -9 -f swift-frontend` also killed every other session's compile). scan() takes ONE ps
+# snapshot and refreshes $OWNED, the run's processes as "pid|start;pid|start..." (start = ps lstart, so a reused pid is never
+# mistaken for ours). $OWNED is a running union across samples, like ProcessTree in compile-bounded.py: a process seen as our
+# descendant stays ours after its parent exits and launchd adopts it, and anything it forks later joins through its parent.
+# Also sets OWN_FE_KB (our swift-frontends' RSS), OWN_BIG (ours over the per-frontend cap), ALL_FE_KB (every swift-frontend on
+# the machine) and FOREIGN_BIG (swift-frontends over the cap that are NOT ours, "pid:kb"). A failed snapshot changes nothing.
+OWNED=""; OWN_FE_KB=0; OWN_BIG=""; ALL_FE_KB=0; FOREIGN_BIG=""
+scan() {
+  local out line
+  out=$(ps -Ao pid=,ppid=,rss=,lstart=,comm= 2>/dev/null | awk -v root=$CMD -v prev="$OWNED" -v max=$(( MAX_FRONTEND_GB * 1048576 )) '
+    { p = $1; ppid[p] = $2; rss[p] = $3; st[p] = $4 " " $5 " " $6 " " $7 " " $8; alive[p] = 1
+      c = ""; for (i = 9; i <= NF; i++) c = c (i > 9 ? " " : "") $i
+      fe[p] = (c ~ /swift-frontend$/) }
+    END {
+      n = split(prev, held, ";")
+      for (i = 1; i <= n; i++) { split(held[i], kv, "|"); if ((kv[1] in alive) && st[kv[1]] == kv[2]) own[kv[1]] = 1 }
+      if (root in alive) own[root] = 1
+      do { grew = 0
+           for (p in alive) if (!(p in own) && (ppid[p] in own)) { own[p] = 1; grew = 1 } }
+      while (grew)
+      state = ""; ownfe = 0; allfe = 0; ownbig = ""; forbig = ""
+      for (p in alive) {
+        if (fe[p]) {
+          allfe += rss[p]
+          if (p in own) { ownfe += rss[p]; if (rss[p] > max) ownbig = ownbig " " p }
+          else if (rss[p] > max) forbig = forbig " " p ":" rss[p]
+        }
+        if (p in own) state = state (state == "" ? "" : ";") p "|" st[p]
+      }
+      print "STATE|" state; print "OWNFE|" ownfe; print "OWNBIG|" ownbig; print "ALLFE|" allfe; print "FORBIG|" forbig
+    }')
+  [[ "$out" == *STATE\|* ]] || return 1
+  for line in ${(f)out}; do
+    case $line in
+      STATE\|*)  OWNED=${line#STATE\|} ;;
+      OWNFE\|*)  OWN_FE_KB=${line#OWNFE\|} ;;
+      OWNBIG\|*) OWN_BIG=${line#OWNBIG\|} ;;
+      ALLFE\|*)  ALL_FE_KB=${line#ALLFE\|} ;;
+      FORBIG\|*) FOREIGN_BIG=${line#FORBIG\|} ;;
+    esac
+  done
+}
+
+# A swift-frontend over the cap that is not in this run's tree is named, once, and left alone: it is not ours to stop, and
+# stopping our own innocent compile would not help. (The old pkill stopped it, and every other session's frontends with it.)
+typeset -A WARNED
+note_foreign() {
+  local item pid
+  for item in ${=FOREIGN_BIG}; do
+    pid=${item%%:*}
+    [[ -n "${WARNED[$pid]:-}" ]] && continue
+    WARNED[$pid]=1
+    echo "compile-guard: NOTE: swift-frontend pid $pid holds $(( ${item#*:} / 1048576 )) GB, over the ${MAX_FRONTEND_GB} GB cap, but it is not part of this run (not a descendant of the guarded command). It was NOT stopped and this run continues." >&2
+  done
+  if (( ALL_FE_KB > MAX_TOTAL_GB * 1048576 && OWN_FE_KB <= MAX_TOTAL_GB * 1048576 )) && [[ -z "${WARNED[total]:-}" ]]; then
+    WARNED[total]=1
+    echo "compile-guard: NOTE: swift-frontends on this Mac total $(( ALL_FE_KB / 1048576 )) GB, over the ${MAX_TOTAL_GB} GB cap, but this run's own are $(( OWN_FE_KB / 1048576 )) GB. Nothing was stopped." >&2
+  fi
+}
+
+# Stop this run: freeze the whole owned tree first (SIGSTOP), re-scan until no new process appears, then SIGKILL the set. A frozen
+# parent cannot fork another child or exit and orphan one, so the set cannot move between the last scan and the kill.
+stop_owned() {
+  local -a pids; local key last="" i
+  pids=( ${(s:;:)OWNED} ); pids=( ${pids%%|*} )
+  for i in {1..20}; do
+    scan || break
+    pids=( ${(s:;:)OWNED} ); pids=( ${pids%%|*} )
+    kill -STOP "${pids[@]}" 2>/dev/null
+    key="${(j: :)${(on)pids}}"
+    [[ "$key" == "$last" ]] && break
+    last=$key
+  done
+  kill -9 "${pids[@]}" $CMD 2>/dev/null
 }
 
 # Choose direct Swift jobs from available memory. The bounded profile passed
@@ -83,18 +150,13 @@ done
 CMD=$!
 REASON=""
 while kill -0 $CMD 2>/dev/null; do
-  stats=$(ps -Ao pid=,rss=,comm= | awk -v max=$(( MAX_FRONTEND_GB * 1048576 )) '
-    $3 ~ /swift-frontend$/ { total += $2; if ($2 > max) big = big " " $1 }
-    END { printf "%d|%s", total, big }')
-  total_kb=${stats%%|*}; big=${stats#*|}
-  if [[ -n "${big// /}" ]]; then REASON="a swift-frontend passed ${MAX_FRONTEND_GB} GB"; fi
-  if (( total_kb > MAX_TOTAL_GB * 1048576 )); then REASON="all swift-frontends passed ${MAX_TOTAL_GB} GB together"; fi
+  if scan; then
+    if [[ -n "${OWN_BIG// /}" ]]; then REASON="a swift-frontend passed ${MAX_FRONTEND_GB} GB"; fi
+    if (( OWN_FE_KB > MAX_TOTAL_GB * 1048576 )); then REASON="all of this run's swift-frontends passed ${MAX_TOTAL_GB} GB together"; fi
+    note_foreign
+  fi
   if [[ -n "$REASON" ]]; then
-    # 2026-10-31 (build-speed A5): stop only THIS command's own tree. The whole tree is snapshotted first, by walking ppids from
-    # $CMD, then killed in one call, so killing a parent cannot reparent a child out of reach. Never a name match:
-    # `pkill -9 -f swift-frontend` also killed every other session's compile on the machine.
-    typeset -a own; own=( ${(f)"$(owned_pids $CMD)"} )
-    kill -9 "${own[@]}" $CMD 2>/dev/null
+    stop_owned
     echo "compile-guard: STOPPED: $REASON" >&2
     wait $CMD 2>/dev/null
     exit 137
