@@ -1615,7 +1615,13 @@ extension Checks {
         check(CosSliceProgress(busy: true).reading && CosSliceProgress(stillReading: 1).reading && !CosSliceProgress().reading, "reading is progress or a busy pass")
         check(P.headline(report: busyM, ran: 18_612, usage: .ready).hasPrefix("Measured so far: COS used $284"), "a busy pass says so far")
         check(P.stillReadingNote(busyM).hasPrefix("Still reading. The usage history was busy") && !P.stillReadingNote(busyM).contains("0 sessions"), "a busy pass says still reading, with no count it does not have")
-        check(P.sessionNotes(busyM).contains("The usage history was busy, so this pass read nothing new. COS tries again in 15 seconds.") && P.readingSeconds == 15, "the footer promises only what the page does")
+        check(P.sessionNotes(busyM).contains("The usage history was busy, so this pass read nothing new. COS tries again soon."), "the footer promises no number the loop may not keep")
+        var failedM = report([m]); failedM.sessions.failed = true
+        check(!failedM.sessions.reading && !failedM.sessions.busy, "a failed read is not reading and not busy")
+        check(P.sessionNotes(failedM).contains("COS could not read the usage history, so this pass read nothing new. It tries again in \(P.slowSeconds / 60) minutes."), "a failed read says so, with the pace the loop keeps")
+        check(P.headline(report: failedM, ran: 18_612, usage: .ready).hasPrefix("Measured so far: COS used $284"), "a failed read says so far")
+        var failedE = report([e]); failedE.sessions.failed = true
+        check(P.headline(report: failedE, ran: 18_612, usage: .ready).hasSuffix("COS could not read the usage history, so the session logs that could hold their cost are missing from this pass."), "a failed read says why nothing is measured")
         // An audit that is there and cannot be opened is said, in the headline.
         var unreadableNone = report([]); unreadableNone.auditUnreadable = true
         check(P.headline(report: unreadableNone, ran: 0, usage: .ready) == "COS could not read its record of calls, so there is no count to show.", "an unreadable audit does not read as no calls")
@@ -1912,6 +1918,95 @@ extension Checks {
             let words = P.headline(report: blocked, ran: 0, usage: .ready)
             check(words.contains("could not read its record of calls") && !words.contains("no calls") && !words.contains(blockedAudit.path), "the headline says so, and never prints a path")
         }
+        // A read that throws part way is not the end of the file. A directory opens, and its first read fails.
+        let brokenScripts = home.appendingPathComponent("cos-broken-scripts")
+        try fm.createDirectory(at: brokenScripts.appendingPathComponent(".cos_token_audit.jsonl"), withIntermediateDirectories: true)
+        let brokenRead = try SessionUsageCollector(home: root, database: home.appendingPathComponent("cos-broken-read.sqlite"), timeZone: chicago).cosUsage(plistScripts: brokenScripts.path, dataDirectory: nil, importSessions: false, now: now)
+        check(brokenRead.auditFound && brokenRead.auditUnreadable, "a read that fails part way is flagged, not taken for the end of the file")
+        // Busy means busy: SQLITE_BUSY and SQLITE_LOCKED, with or without an extended code, and nothing else.
+        typealias F = SessionUsageCollector
+        check([SQLITE_BUSY, SQLITE_LOCKED, SQLITE_BUSY | (1 << 8), SQLITE_LOCKED | (1 << 8)].allSatisfy { F.failure($0, busy: "b", other: "o").busy && F.failure($0, busy: "b", other: "o").message == "b" }, "busy and locked, extended or not, are a busy history")
+        check(![SQLITE_ERROR, SQLITE_IOERR, SQLITE_FULL, SQLITE_CORRUPT, SQLITE_READONLY, SQLITE_CANTOPEN, SQLITE_NOMEM, SQLITE_NOTADB, SQLITE_IOERR | (5 << 8)].contains { F.failure($0, busy: "b", other: "o").busy || F.failure($0, busy: "b", other: "o").message != "o" }, "no other answer is called busy")
+        // A history that fails for any other reason gets its own words, the slow pace and one fixed line in the log.
+        let schemaDB = home.appendingPathComponent("cos-schema.sqlite")
+        let schema = try SessionUsageCollector(home: root, database: schemaDB, timeZone: chicago)
+        _ = try schema.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: true, now: now)
+        var schemaHandle: OpaquePointer?
+        check(sqlite3_open(schemaDB.path, &schemaHandle) == SQLITE_OK && sqlite3_exec(schemaHandle, "ALTER TABLE cos_slice_files RENAME COLUMN state TO state_old", nil, nil, nil) == SQLITE_OK, "the test breaks the slice table's shape")
+        sqlite3_close(schemaHandle)
+        let notBusy = try? schema.cosUsage(plistScripts: scripts, dataDirectory: nil, importSessions: true, now: now)
+        check(notBusy?.sessions.failed == true && notBusy?.sessions.busy == false && notBusy?.sessions.reading == false && notBusy?.auditFound == true, "a failure that is not a busy history is not called busy, and the page stands")
+        let failureLog = (try? String(contentsOf: home.appendingPathComponent("cursor-feed.log"), encoding: .utf8)) ?? ""
+        check(failureLog.contains("COS cost could not read the usage history") && !failureLog.contains(home.path) && !failureLog.contains("state_old"), "the log line is fixed words, no path or detail")
+        // How soon each page reads again, and when it stops hurrying.
+        typealias U = SessionUsagePresentation
+        var wait = U.wait(pending: true, busy: false, busyPasses: 7)
+        check(wait.seconds == U.pendingSeconds && wait.busyPasses == 0, "a pass that read something starts the count over")
+        wait = U.wait(pending: true, busy: true, busyPasses: U.busyRetryLimit - 2)
+        check(wait.seconds == U.pendingSeconds && wait.busyPasses == U.busyRetryLimit - 1, "a busy pass comes back soon")
+        wait = U.wait(pending: true, busy: true, busyPasses: U.busyRetryLimit - 1)
+        check(wait.seconds == U.slowSeconds, "a history busy for the whole limit is left alone for a while")
+        check(U.wait(pending: false, busy: true, busyPasses: 0).seconds == U.slowSeconds, "nothing pending waits at the slow pace, busy or not")
+        var costReport = CosUsageReport(windowStart: "2026-10-02", windowEnd: "2026-10-31", timeZone: "America/Chicago", updatedAt: "2026-10-31T12:00:00Z")
+        costReport.sessions.stillReading = 3
+        var cost = P.wait(tracking: true, report: costReport, failedToRefresh: false, quickTries: 9)
+        check(cost.seconds == P.readingSeconds && cost.quickTries == 0, "reading is progress, and never counts against the limit")
+        costReport.sessions = CosSliceProgress(busy: true)
+        cost = P.wait(tracking: true, report: costReport, failedToRefresh: false, quickTries: P.quickTryLimit - 2)
+        check(cost.seconds == P.readingSeconds && cost.quickTries == P.quickTryLimit - 1, "a busy history comes back at the reading pace")
+        cost = P.wait(tracking: true, report: costReport, failedToRefresh: false, quickTries: P.quickTryLimit - 1)
+        check(cost.seconds == P.slowSeconds, "a busy history stops being retried every 15 seconds")
+        cost = P.wait(tracking: true, report: costReport, failedToRefresh: true, quickTries: 0)
+        check(cost.seconds == P.failedSeconds && cost.quickTries == 1, "a failed pass tries again in a minute")
+        cost = P.wait(tracking: true, report: costReport, failedToRefresh: true, quickTries: P.quickTryLimit - 1)
+        check(cost.seconds == P.slowSeconds, "a failed pass that keeps failing slows down")
+        costReport.sessions = CosSliceProgress(failed: true)
+        cost = P.wait(tracking: true, report: costReport, failedToRefresh: false, quickTries: 0)
+        check(cost.seconds == P.slowSeconds && cost.quickTries == 0, "a history that cannot be read waits at the slow pace")
+        costReport.sessions = CosSliceProgress(busy: true)
+        check(P.wait(tracking: false, report: costReport, failedToRefresh: false, quickTries: 0).seconds == P.slowSeconds, "a paused page does not hurry")
+        // Usage's own pass while another command holds the write lock, as COS cost does through each decoder start: no error,
+        // nothing new, the file still pending, and the pass after it catches up.
+        let usageBusyHome = home.appendingPathComponent("usage-busy-home")
+        let usageBusyLog = usageBusyHome.appendingPathComponent(".claude/projects/p/a.jsonl")
+        try fm.createDirectory(at: usageBusyLog.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try claudeRow("b1", "2026-10-30T12:00:00Z", session: "s-busy").write(to: usageBusyLog, atomically: true, encoding: .utf8)
+        let usageBusyDB = usageBusyHome.appendingPathComponent("usage-busy.sqlite")
+        let usageBusy = try SessionUsageCollector(home: usageBusyHome, database: usageBusyDB, timeZone: chicago)
+        let usageFirst = try usageBusy.refresh()
+        func total(_ r: SessionUsageReport) -> Int64 { r.buckets.reduce(0) { $0 + $1.counts.total } }
+        check(total(usageFirst) == 1020 && usageFirst.historyBusy == nil, "Usage reads the first row")
+        var usageHolder: OpaquePointer?
+        check(sqlite3_open(usageBusyDB.path, &usageHolder) == SQLITE_OK && sqlite3_exec(usageHolder, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK, "the test holds the write lock against Usage")
+        let usageAppend = try FileHandle(forWritingTo: usageBusyLog); try usageAppend.seekToEnd(); try usageAppend.write(contentsOf: Data(try claudeRow("b2", "2026-10-30T12:01:00Z", session: "s-busy").utf8)); try usageAppend.close()
+        let usageHeld = try? usageBusy.refresh()
+        check(usageHeld?.historyBusy == true && usageHeld?.pendingFiles == 1 && usageHeld.map(total) == 1020, "a busy history is a pass with no progress, not a failed refresh")
+        sqlite3_exec(usageHolder, "COMMIT", nil, nil, nil); sqlite3_close(usageHolder)
+        let usageFree = try usageBusy.refresh()
+        check(usageFree.historyBusy == nil && usageFree.pendingFiles == 0 && total(usageFree) == 2040, "the pass after a busy one catches up")
+        // A busy history must not leave the decoder it started. This stand-in records its pid and waits.
+        let standInHome = home.appendingPathComponent("usage-busy-decoder")
+        let standInLog = standInHome.appendingPathComponent(".codex/sessions/2026/10/30/rollout-2026-10-30T12-00-00-33333333-3333-3333-3333-333333333333.jsonl.zst")
+        try fm.createDirectory(at: standInLog.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("not really zstd".utf8).write(to: standInLog)
+        let standInPid = standInHome.appendingPathComponent("decoder.pid")
+        let standIn = standInHome.appendingPathComponent("node")
+        try "#!/bin/sh\ncase \"$2\" in process.exit*) exit 0;; esac\necho $$ > '\(standInPid.path)'\nexec sleep 30\n".write(to: standIn, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: standIn.path)
+        let standInDB = standInHome.appendingPathComponent("stand-in.sqlite")
+        let standInLedger = try SessionUsageCollector(home: standInHome, database: standInDB, timeZone: chicago)
+        standInLedger.compressedLogNodes = [standIn.path]
+        var standInHolder: OpaquePointer?
+        check(sqlite3_open(standInDB.path, &standInHolder) == SQLITE_OK && sqlite3_exec(standInHolder, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK, "the test holds the write lock before the decoder starts")
+        let standInHeld = try? standInLedger.refresh()
+        sqlite3_exec(standInHolder, "COMMIT", nil, nil, nil); sqlite3_close(standInHolder)
+        check(standInHeld?.historyBusy == true && standInHeld?.pendingFiles == 1, "a compressed log under a busy history is pending, not an error")
+        let decoderPid = Int32((try? String(contentsOf: standInPid, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") ?? 0
+        check(decoderPid > 0, "the stand-in decoder started")
+        var decoderAlive = true
+        for _ in 0..<50 { if kill(decoderPid, 0) != 0 { decoderAlive = false; break }; Thread.sleep(forTimeInterval: 0.02) }
+        if decoderAlive { kill(decoderPid, SIGKILL) }
+        check(!decoderAlive, "a busy history ends the decoder it started")
         print("PASS: COS cost rules (dates, classification, session-log flags, rates, dedupe, Work, Cursor rule, denominator, headline, rows) and the bounded reader on a scratch home")
     }
 }

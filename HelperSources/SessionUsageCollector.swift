@@ -71,7 +71,16 @@ final class SessionUsageCollector {
     static let cursorPageLimit = 400
     struct Failure: Error, LocalizedError {
         let message: String
+        /// SQLITE_BUSY or SQLITE_LOCKED: another command holds the history, which is the only answer that means "try again soon".
+        var busy = false
         var errorDescription: String? { message }
+    }
+    /// Busy only when SQLite says busy or locked, with or without an extended code. A full disk, a damaged file or a refused
+    /// statement gets its own words, so it is never retried every few seconds as though it would clear.
+    static func failure(_ code: Int32, busy busyWords: String, other words: String) -> Failure {
+        let primary = code & 0xFF
+        let busy = primary == SQLITE_BUSY || primary == SQLITE_LOCKED
+        return Failure(message: busy ? busyWords : words, busy: busy)
     }
     private var db: OpaquePointer?
     private let home: URL
@@ -107,17 +116,20 @@ final class SessionUsageCollector {
     }
     deinit { sqlite3_close(db) }
     private static func execute(_ db: OpaquePointer?, _ sql: String) throws {
-        guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else { throw Failure(message: "Usage history is busy or could not be written.") }
+        let code = sqlite3_exec(db, sql, nil, nil, nil)
+        guard code == SQLITE_OK else { throw failure(code, busy: "Usage history is busy.", other: "Usage history could not be written.") }
     }
     private func statement(_ sql: String, _ values: [String] = []) throws -> OpaquePointer {
         var s: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &s, nil) == SQLITE_OK, let s else { throw Failure(message: "Could not query usage history.") }
+        let code = sqlite3_prepare_v2(db, sql, -1, &s, nil)
+        guard code == SQLITE_OK, let s else { throw Self.failure(code, busy: "Usage history is busy.", other: "Could not query usage history.") }
         for (i, value) in values.enumerated() { sqlite3_bind_text(s, Int32(i+1), value, -1, transient) }
         return s
     }
     private func run(_ sql: String, _ values: [String] = []) throws {
         let s = try statement(sql, values); defer { sqlite3_finalize(s) }
-        guard sqlite3_step(s) == SQLITE_DONE else { throw Failure(message: "Could not save usage history.") }
+        let code = sqlite3_step(s)
+        guard code == SQLITE_DONE else { throw Self.failure(code, busy: "Usage history is busy.", other: "Could not save usage history.") }
     }
     private func query(_ sql: String, _ values: [String] = []) throws -> [[String]] {
         let s = try statement(sql, values); defer { sqlite3_finalize(s) }
@@ -125,7 +137,7 @@ final class SessionUsageCollector {
         while true {
             let status = sqlite3_step(s)
             if status == SQLITE_DONE { break }
-            guard status == SQLITE_ROW else { throw Failure(message: "Could not read usage history.") }
+            guard status == SQLITE_ROW else { throw Self.failure(status, busy: "Usage history is busy.", other: "Could not read usage history.") }
             rows.append((0..<sqlite3_column_count(s)).map { i in
                 // SQLite's text conversion rounds REAL values to fifteen digits.
                 // Preserve the stored Double so unchanged file mtimes compare exactly;
@@ -606,8 +618,9 @@ final class SessionUsageCollector {
         let reader = pipe.fileHandleForReading
         // Closed by hand: left to the pool, one handle per file ran a real pass out of its 256 and failed the rest.
         defer { try? reader.close() }
-        try Self.execute(db, "BEGIN IMMEDIATE")
         do {
+            // Inside the do: a busy history throws here, and the catch below ends the decoder that is already running.
+            try Self.execute(db, "BEGIN IMMEDIATE")
             while let chunk = try reader.read(upToCount: 1 << 20), !chunk.isEmpty {
                 buffer.append(chunk)
                 var start = buffer.startIndex
@@ -713,79 +726,86 @@ final class SessionUsageCollector {
                 pending.removeAll { Self.isCompressedLog($0.1) }
             }
         }
-        for (source,file,size,modified) in pending {
-            if remaining <= 0 || Date() >= deadline { break }
-            if Self.isCompressedLog(file), let decoder {
-                let known = state[file.path].flatMap { old -> Cursor? in
-                    guard Int(old[1]) == size, Double(old[2]) == modified, let data = old[3].data(using: .utf8) else { return nil }
-                    return try? JSONDecoder().decode(Cursor.self, from: data)
+        // A busy history ends the pass where it stands: what was committed stays, nothing new is read, and the files left
+        // are still pending, so the next pass comes soon. Any other failure is a real one and is thrown.
+        var historyBusy = false
+        do {
+            for (source,file,size,modified) in pending {
+                if remaining <= 0 || Date() >= deadline { break }
+                if Self.isCompressedLog(file), let decoder {
+                    let known = state[file.path].flatMap { old -> Cursor? in
+                        guard Int(old[1]) == size, Double(old[2]) == modified, let data = old[3].data(using: .utf8) else { return nil }
+                        return try? JSONDecoder().decode(Cursor.self, from: data)
+                    }
+                    // Its own pool, as a pass can start hundreds of processes before anything else would drain one.
+                    let pass = try autoreleasepool {
+                        try readCompressedLog(file, source: source, size: size, modified: modified, node: decoder, known: known,
+                                              decodeLimit: remaining * Self.compressedDecodeFactor, deadline: deadline, seconds: seconds)
+                    }
+                    remaining -= max(1, Int(pass.decoded / UInt64(Self.compressedDecodeFactor)))
+                    if pass.finished { completed += 1 }
+                    continue
                 }
-                // Its own pool, as a pass can start hundreds of processes before anything else would drain one.
-                let pass = try autoreleasepool {
-                    try readCompressedLog(file, source: source, size: size, modified: modified, node: decoder, known: known,
-                                          decodeLimit: remaining * Self.compressedDecodeFactor, deadline: deadline, seconds: seconds)
+                let handle: FileHandle
+                do { handle = try FileHandle(forReadingFrom:file) } catch { unreadable += 1; completed += 1; continue }
+                defer { try? handle.close() }
+                var cursor = state[file.path].flatMap { $0[3].data(using:.utf8) }.flatMap { try? JSONDecoder().decode(Cursor.self,from:$0) } ?? Cursor()
+                let prefix = try handle.read(upToCount: min(size,256)) ?? Data()
+                let signature = Self.digest(prefix.base64EncodedString())
+                let rewritten = state[file.path].map { size <= (Int($0[1]) ?? 0) && modified != Double($0[2]) } ?? false
+                if cursor.offset > UInt64(size) || rewritten || (!cursor.prefix.isEmpty && cursor.prefix != signature) { cursor = Cursor() }
+                cursor.prefix = signature
+                cursor.waitingForAppend = false
+                try handle.seek(toOffset: cursor.offset)
+                // Bound memory even for image-heavy JSONL rows. A budget boundary is not EOF.
+                let rowLimit = 8*1024*1024
+                var bytes = try handle.read(upToCount:min(rowLimit,remaining)) ?? Data()
+                remaining -= bytes.count
+                if cursor.skippingLongLine == true {
+                    if let newline = bytes.firstIndex(of:10) {
+                        let skipped = newline + 1
+                        cursor.offset += UInt64(skipped)
+                        bytes = Data(bytes.dropFirst(skipped))
+                        cursor.skippingLongLine = false
+                    } else {
+                        cursor.offset += UInt64(bytes.count)
+                        bytes = Data()
+                    }
                 }
-                remaining -= max(1, Int(pass.decoded / UInt64(Self.compressedDecodeFactor)))
-                if pass.finished { completed += 1 }
-                continue
+                guard let end = bytes.lastIndex(of:10) else {
+                    let atEOF = cursor.offset + UInt64(bytes.count) >= UInt64(size)
+                    if bytes.count >= rowLimit {
+                        cursor.oversizedRows += 1
+                        cursor.skippingLongLine = true
+                        cursor.offset += UInt64(bytes.count)
+                    }
+                    // Leave a short budget-cut row at its start for the next full slice. Only a
+                    // genuine incomplete EOF waits for an append. Oversized rows are skipped
+                    // through their newline across passes so later usage remains reachable.
+                    cursor.waitingForAppend = atEOF
+                    cursor.scannedAt = Date().timeIntervalSince1970
+                    let encoded = String(decoding:try JSONEncoder().encode(cursor),as:UTF8.self)
+                    try run("INSERT OR REPLACE INTO files VALUES(?,?,?,?)",[file.path,String(size),String(modified),encoded])
+                    if atEOF { completed += 1 }
+                    continue
+                }
+                let full = bytes.prefix(through:end)
+                try Self.execute(db,"BEGIN IMMEDIATE")
+                do {
+                    for line in full.split(separator:10) {
+                        guard let row = (try? JSONSerialization.jsonObject(with:Data(line))) as? [String:Any] else { cursor.malformed += 1; continue }
+                        if let e = Self.event(row,source:source,cursor:&cursor) { try record(e) }
+                    }
+                    cursor.offset += UInt64(full.count)
+                    cursor.scannedAt = Date().timeIntervalSince1970
+                    let encoded = String(decoding:try JSONEncoder().encode(cursor),as:UTF8.self)
+                    try run("INSERT OR REPLACE INTO files VALUES(?,?,?,?)",[file.path,String(size),String(modified),encoded])
+                    try Self.execute(db,"COMMIT")
+                    if cursor.offset >= UInt64(size) { completed += 1 }
+                } catch { try? Self.execute(db,"ROLLBACK"); throw error }
             }
-            let handle: FileHandle
-            do { handle = try FileHandle(forReadingFrom:file) } catch { unreadable += 1; completed += 1; continue }
-            defer { try? handle.close() }
-            var cursor = state[file.path].flatMap { $0[3].data(using:.utf8) }.flatMap { try? JSONDecoder().decode(Cursor.self,from:$0) } ?? Cursor()
-            let prefix = try handle.read(upToCount: min(size,256)) ?? Data()
-            let signature = Self.digest(prefix.base64EncodedString())
-            let rewritten = state[file.path].map { size <= (Int($0[1]) ?? 0) && modified != Double($0[2]) } ?? false
-            if cursor.offset > UInt64(size) || rewritten || (!cursor.prefix.isEmpty && cursor.prefix != signature) { cursor = Cursor() }
-            cursor.prefix = signature
-            cursor.waitingForAppend = false
-            try handle.seek(toOffset: cursor.offset)
-            // Bound memory even for image-heavy JSONL rows. A budget boundary is not EOF.
-            let rowLimit = 8*1024*1024
-            var bytes = try handle.read(upToCount:min(rowLimit,remaining)) ?? Data()
-            remaining -= bytes.count
-            if cursor.skippingLongLine == true {
-                if let newline = bytes.firstIndex(of:10) {
-                    let skipped = newline + 1
-                    cursor.offset += UInt64(skipped)
-                    bytes = Data(bytes.dropFirst(skipped))
-                    cursor.skippingLongLine = false
-                } else {
-                    cursor.offset += UInt64(bytes.count)
-                    bytes = Data()
-                }
-            }
-            guard let end = bytes.lastIndex(of:10) else {
-                let atEOF = cursor.offset + UInt64(bytes.count) >= UInt64(size)
-                if bytes.count >= rowLimit {
-                    cursor.oversizedRows += 1
-                    cursor.skippingLongLine = true
-                    cursor.offset += UInt64(bytes.count)
-                }
-                // Leave a short budget-cut row at its start for the next full slice. Only a
-                // genuine incomplete EOF waits for an append. Oversized rows are skipped
-                // through their newline across passes so later usage remains reachable.
-                cursor.waitingForAppend = atEOF
-                cursor.scannedAt = Date().timeIntervalSince1970
-                let encoded = String(decoding:try JSONEncoder().encode(cursor),as:UTF8.self)
-                try run("INSERT OR REPLACE INTO files VALUES(?,?,?,?)",[file.path,String(size),String(modified),encoded])
-                if atEOF { completed += 1 }
-                continue
-            }
-            let full = bytes.prefix(through:end)
-            try Self.execute(db,"BEGIN IMMEDIATE")
-            do {
-                for line in full.split(separator:10) {
-                    guard let row = (try? JSONSerialization.jsonObject(with:Data(line))) as? [String:Any] else { cursor.malformed += 1; continue }
-                    if let e = Self.event(row,source:source,cursor:&cursor) { try record(e) }
-                }
-                cursor.offset += UInt64(full.count)
-                cursor.scannedAt = Date().timeIntervalSince1970
-                let encoded = String(decoding:try JSONEncoder().encode(cursor),as:UTF8.self)
-                try run("INSERT OR REPLACE INTO files VALUES(?,?,?,?)",[file.path,String(size),String(modified),encoded])
-                try Self.execute(db,"COMMIT")
-                if cursor.offset >= UInt64(size) { completed += 1 }
-            } catch { try? Self.execute(db,"ROLLBACK"); throw error }
+        } catch let failure as Failure where failure.busy {
+            historyBusy = true
         }
         let rows = try query("SELECT day,provider,model,SUM(input),SUM(output),SUM(cache_read),SUM(cache_write),COUNT(*),COUNT(usd),COALESCE(SUM(usd),0) FROM events GROUP BY day,provider,model ORDER BY day,provider,model")
         let buckets = rows.map { r in SessionUsageBucket(day:r[0],provider:r[1],model:r[2],counts:SessionUsageCounts(input:Int64(r[3]) ?? 0,output:Int64(r[4]) ?? 0,cacheRead:Int64(r[5]) ?? 0,cacheWrite:Int64(r[6]) ?? 0),events:Int(r[7]) ?? 0,pricedEvents:Int(r[8]) ?? 0,estimatedUSD:Double(r[9]) ?? 0) }
@@ -793,7 +813,7 @@ final class SessionUsageCollector {
         // Only a file still on disk: a failed log that has since been deleted is no longer a gap to report.
         let present = Set(files.map { $0.1.path })
         unreadable += try query("SELECT path,state FROM files").filter { present.contains($0[0]) && Self.isCompressedLog(URL(fileURLWithPath: $0[0])) && $0[1].data(using: .utf8).flatMap { try? JSONDecoder().decode(Cursor.self, from: $0) }?.compressedEnd == "failed" }.count
-        return SessionUsageReport(buckets:buckets,updatedAt:iso.string(from:Date()),timeZone:zone.identifier,filesIndexed:cursors.count,pendingFiles:max(0,pending.count-completed),unreadableFiles:unreadable+cursors.reduce(0){$0+$1.oversizedRows},malformedRows:cursors.reduce(0){$0+$1.malformed},missingBaselineEvents:cursors.reduce(0){$0+$1.gaps},coverage:["Claude Code and Codex local session logs, including archived and compressed sessions and subagents."] + (decoderMissing ? ["Compressed Codex logs could not be read, because this Mac has no Node that can open them. They are counted as unreadable."] : []) + [cursorEnabled ? "Cursor usage comes from your Cursor account, using the sign-in its command line keeps in this Mac's Keychain. Only counts, dates, model names and each request's reported cost are stored." : "Cursor is counted only after you turn it on. Its token counts are kept on Cursor's servers.","Browser-only chats, other Macs and providers without token records are not included.","History starts at the earliest usage still present on this Mac. Deleted logs cannot be backfilled. Incomplete final lines wait for the next write; rows larger than 8 MiB are skipped and reported as coverage gaps.","Input, cache read, cache write and output are disjoint. Reasoning is included in output."],pricingVersion:SessionUsagePricing.version,cursorFeed:try cursorFeedStatus(enabled:cursorEnabled,syncFailed:cursorSyncFailed,readOnly:readOnly))
+        return SessionUsageReport(buckets:buckets,updatedAt:iso.string(from:Date()),timeZone:zone.identifier,filesIndexed:cursors.count,pendingFiles:max(0,pending.count-completed),unreadableFiles:unreadable+cursors.reduce(0){$0+$1.oversizedRows},malformedRows:cursors.reduce(0){$0+$1.malformed},missingBaselineEvents:cursors.reduce(0){$0+$1.gaps},coverage:["Claude Code and Codex local session logs, including archived and compressed sessions and subagents."] + (decoderMissing ? ["Compressed Codex logs could not be read, because this Mac has no Node that can open them. They are counted as unreadable."] : []) + [cursorEnabled ? "Cursor usage comes from your Cursor account, using the sign-in its command line keeps in this Mac's Keychain. Only counts, dates, model names and each request's reported cost are stored." : "Cursor is counted only after you turn it on. Its token counts are kept on Cursor's servers.","Browser-only chats, other Macs and providers without token records are not included.","History starts at the earliest usage still present on this Mac. Deleted logs cannot be backfilled. Incomplete final lines wait for the next write; rows larger than 8 MiB are skipped and reported as coverage gaps.","Input, cache read, cache write and output are disjoint. Reasoning is included in output."],pricingVersion:SessionUsagePricing.version,cursorFeed:try cursorFeedStatus(enabled:cursorEnabled,syncFailed:cursorSyncFailed,readOnly:readOnly),historyBusy:historyBusy ? true : nil)
     }
 }
 
@@ -824,14 +844,20 @@ extension SessionUsageCollector {
         try Self.execute(db, "CREATE TABLE IF NOT EXISTS cos_slice_marks(session TEXT NOT NULL, at REAL NOT NULL, kind TEXT NOT NULL, PRIMARY KEY(session, at, kind)); CREATE INDEX IF NOT EXISTS cos_slice_mark_at ON cos_slice_marks(at); CREATE TABLE IF NOT EXISTS cos_slice_files(path TEXT PRIMARY KEY, session TEXT NOT NULL, size INTEGER NOT NULL, modified REAL NOT NULL, state TEXT NOT NULL); CREATE TABLE IF NOT EXISTS cos_slice_events(id TEXT PRIMARY KEY, event TEXT NOT NULL, session TEXT NOT NULL, at REAL NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL, output INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL, one_hour INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS cos_slice_at ON cos_slice_events(at);")
     }
 
-    /// Lines of an append-only file, without holding it. Returns the count of lines that were not valid JSON objects. A
-    /// final line with no newline may still be being written, so it is left for the next read rather than counted.
+    /// Lines of an append-only file, without holding it. Returns the count of lines that were not valid JSON objects, or nil
+    /// when the file will not open or a read fails before its end. A final line with no newline may still be being written,
+    /// so it is left for the next read rather than counted.
     private static func cosForEachJSONLine(_ file: URL, _ body: ([String: Any]) -> Void) -> Int? {
         guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
         defer { try? handle.close() }
         var unreadable = 0
         var carry = Data()
-        while let chunk = try? handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+        while true {
+            // A read that throws part way (an offline iCloud file, a failing disk) is not the end of the file. The rows read so
+            // far stand, and the caller is told the file could not be read to its end.
+            let next: Data?
+            do { next = try handle.read(upToCount: 1 << 20) } catch { return nil }
+            guard let chunk = next, !chunk.isEmpty else { break }
             carry.append(chunk)
             guard let last = carry.lastIndex(of: 10) else { continue }
             autoreleasepool {
@@ -1230,7 +1256,13 @@ extension SessionUsageCollector {
         report.sessions.tracked = targets.count
         if importSessions {
             do { report.sessions = try cosReadSessionSlices(targets, seconds: seconds, now: now) }
-            catch { report.sessions.busy = true }
+            catch let failure as Failure where failure.busy { report.sessions.busy = true }
+            catch {
+                // Not a busy history: a full disk, a damaged file or a refused statement will not clear in a few seconds. It gets
+                // its own words on the page, the slow pace, and one line of fixed words in the local log.
+                report.sessions.failed = true
+                noteFeedLog("COS cost could not read the usage history", now: now)
+            }
         }
 
         // Stored slices for the tracked sessions, under the same digests the reader wrote.
@@ -1278,7 +1310,7 @@ extension SessionUsageCollector {
         for path in CosCostRules.auditPaths(plistScripts: plistScripts, envScripts: envScripts, home: home.path) where fm.fileExists(atPath: path) {
             report.auditFound = true
             opened((path as NSString).lastPathComponent)
-            // A file that is there and will not open is not an empty one: the page says its calls are missing.
+            // A file that is there and will not open, or cannot be read to its end, is not an empty one: the page says its calls are missing.
             if let unreadable = Self.cosForEachJSONLine(URL(fileURLWithPath: path), { line in accumulator.add(CosAuditRow(json: line)) }) { report.unreadableRows += unreadable }
             else { report.auditUnreadable = true }
             break

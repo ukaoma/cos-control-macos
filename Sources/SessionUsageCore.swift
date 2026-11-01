@@ -42,6 +42,9 @@ struct SessionUsageReport: Codable, Sendable {
     var pricingVersion: String
     /// Optional so a report from an older helper still decodes.
     var cursorFeed: SessionUsageCursorFeedStatus? = nil
+    /// Another command held the history, so this pass read nothing new. Set only on a busy answer from SQLite, never on
+    /// a failure. The page keeps what it has, and the store counts these so it can back off.
+    var historyBusy: Bool? = nil
 }
 
 /// The Cursor account feed, as the helper last left it. Never carries the sign-in.
@@ -605,6 +608,17 @@ enum SessionUsagePresentation {
     // MARK: Paused and Cursor words. A paused pass reads nothing and stamps the report now, so these cannot imply a read.
 
     /// The helper call for a refresh. Paused never imports, whoever asks, and the helper ignores --cursor-now on a read-only pass.
+    /// The loop's two paces, in seconds: soon, while log files are still pending, and slow otherwise.
+    static let pendingSeconds = 15
+    static let slowSeconds = 300
+    /// Busy passes in a row that still come back at the pending pace: five minutes of them. Past that, something is holding
+    /// the history and the slow pace spares it, instead of starting a decoder every 15 seconds for as long as that lasts.
+    static let busyRetryLimit = 20
+    /// How long to wait after a pass, and the busy passes in a row so far. A busy pass keeps no progress and is not an error.
+    static func wait(pending: Bool, busy: Bool, busyPasses: Int) -> (seconds: Int, busyPasses: Int) {
+        let passes = busy ? busyPasses + 1 : 0
+        return (pending && passes < busyRetryLimit ? pendingSeconds : slowSeconds, passes)
+    }
     static func helperArguments(importNew: Bool, tracking: Bool, cursorEnabled: Bool, cursorNow: Bool) -> [String] {
         let importing = importNew && tracking
         var arguments = importing ? ["session-usage"] : ["session-usage", "--read-only"]
@@ -1228,6 +1242,9 @@ struct CosSliceProgress: Codable, Equatable, Sendable {
     var compressed = 0
     /// The usage history was busy, so this pass read nothing new.
     var busy = false
+    /// The usage history could not be read, and not because it was busy: a full disk, a damaged file. Not reading either,
+    /// since trying again in seconds would not help; the next try is at the slow pace.
+    var failed = false
     /// What is still to read is not known after a busy pass, which keeps no progress, so busy counts as reading: the page says
     /// "so far" and the next pass comes soon.
     var reading: Bool { stillReading > 0 || busy }
@@ -1988,6 +2005,7 @@ enum CosCostPresentation {
     static func notMeasuredWhy(report: CosUsageReport, usage: UsageState) -> String {
         if usage == .paused { return " Tracking is paused, so the session logs that could hold their cost are not being read." }
         if report.sessions.reading { return " Still reading the session logs that could hold their cost." }
+        if report.sessions.failed { return " COS could not read the usage history, so the session logs that could hold their cost are missing from this pass." }
         return " This server doesn't measure their cost yet."
     }
     /// The answer, then what it leaves out. The two read as one sentence pair, in two tones.
@@ -2006,7 +2024,7 @@ enum CosCostPresentation {
         }
         let callWord = total == 1 ? "call" : "calls"
         guard measured > 0 else { return ("COS made \(total.formatted()) \(callWord) in the last 30 days.", notMeasuredWhy(report: report, usage: usage)) }
-        let lead = report.sessions.reading ? "Measured so far: COS used " : "Measured: COS used "
+        let lead = report.sessions.reading || report.sessions.failed ? "Measured so far: COS used " : "Measured: COS used "
         let usdText = money(usd) + (measuredPartial(report) ? "+" : "")
         let ranText = money(ran) + (ranPartial ? "+" : "")
         var sentence: String
@@ -2168,6 +2186,21 @@ enum CosCostPresentation {
     static let workMethod = "From each run's session log, from its start until you next typed in that session or its last turn finished. Not part of the figure above."
     /// How soon the open page reads again while sessions are still being read, or after a pass found the history busy.
     static let readingSeconds = 15
+    /// A failed pass tries again at this pace for a few tries, and every pass that reads nothing new at this one afterwards.
+    static let failedSeconds = 60
+    static let slowSeconds = 300
+    /// Passes in a row that read nothing new (busy, or failed) and still come back quickly. Past this, the slow pace.
+    static let quickTryLimit = 20
+    /// How long the open page waits after a pass, and the passes in a row that read nothing new. Reading is real progress
+    /// and is never counted against the limit; a busy history or a failed pass is.
+    static func wait(tracking: Bool, report: CosUsageReport?, failedToRefresh: Bool, quickTries: Int) -> (seconds: Int, quickTries: Int) {
+        let stalled = failedToRefresh || report?.sessions.busy == true
+        let tries = stalled ? quickTries + 1 : 0
+        let quick = tries < quickTryLimit
+        if failedToRefresh { return (quick ? failedSeconds : slowSeconds, tries) }
+        let reading = tracking && (report?.sessions.reading ?? false)
+        return (reading && quick ? readingSeconds : slowSeconds, tries)
+    }
     static func stillReadingNote(_ report: CosUsageReport) -> String {
         let n = report.sessions.stillReading
         // A busy pass keeps no progress, so there is no count to give.
@@ -2206,7 +2239,8 @@ enum CosCostPresentation {
         let s = report.sessions
         if s.compressed > 0 { notes.append("\(s.compressed.formatted()) \(s.compressed == 1 ? "session is" : "sessions are") compressed and could not be read, so their cost is not in these figures.") }
         if s.noLogs > 0 { notes.append("\(s.noLogs.formatted()) \(s.noLogs == 1 ? "session has" : "sessions have") no log left on this Mac, so their cost is not in these figures.") }
-        if s.busy { notes.append("The usage history was busy, so this pass read nothing new. COS tries again in \(readingSeconds) seconds.") }
+        if s.busy { notes.append("The usage history was busy, so this pass read nothing new. COS tries again soon.") }
+        if s.failed { notes.append("COS could not read the usage history, so this pass read nothing new. It tries again in \(slowSeconds / 60) minutes.") }
         if !report.runLedgersFound && calls(report) > 0 { notes.append("This server has no run records, so answers stay estimated.") }
         if report.undatedCalls > 0 { notes.append("\(report.undatedCalls.formatted()) \(report.undatedCalls == 1 ? "call has" : "calls have") no readable date, so \(report.undatedCalls == 1 ? "it isn't" : "they aren't") in these 30 days.") }
         if report.unreadableRows > 0 { notes.append("\(report.unreadableRows.formatted()) \(report.unreadableRows == 1 ? "line" : "lines") could not be read at all.") }

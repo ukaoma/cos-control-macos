@@ -7,7 +7,32 @@ import pathlib, sys
 root = pathlib.Path(sys.argv[1])
 VIEW, CORE, ACTIVITY, HELPER = "Sources/SessionUsageView.swift", "Sources/SessionUsageCore.swift", "Sources/ActivityWindow.swift", "HelperSources/main.swift"
 CONNECT, CONTROLLER, HUB = "Sources/ProviderConnectModel.swift", "Sources/ControllerModel.swift", "Sources/SettingsHubViews.swift"
-texts = {name: (root / name).read_text(encoding="utf-8") for name in (VIEW, CORE, ACTIVITY, HELPER, CONNECT, CONTROLLER, HUB)}
+
+
+def code(text):
+    """The source without its // comments, so a pin cannot be satisfied (or broken) by a sentence about the code. A // inside
+    a string, such as a URL, stays. Whole-line comments go; a trailing comment is cut and the line trimmed."""
+    out = []
+    for line in text.split("\n"):
+        quoted, escaped, cut = False, False, None
+        for i, ch in enumerate(line):
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                quoted = not quoted
+            elif not quoted and line.startswith("//", i):
+                cut = i
+                break
+        if cut is None:
+            out.append(line)
+        elif line[:cut].strip():
+            out.append(line[:cut].rstrip())
+    return "\n".join(out)
+
+
+texts = {name: code((root / name).read_text(encoding="utf-8")) for name in (VIEW, CORE, ACTIVITY, HELPER, CONNECT, CONTROLLER, HUB)}
 
 
 def once(text, needle):
@@ -99,9 +124,18 @@ PINS = [
     ("a paused page does not say it is still reading",
      lambda t: once(t[VIEW], "if usage.enabled && report.sessions.reading {"), VIEW, "if usage.enabled && report.sessions.reading {", "if report.sessions.reading {"),
     ("a busy pass reads again at the reading pace, not in five minutes",
-     lambda t: once(t[VIEW], "let reading = usage.enabled && (report?.sessions.reading ?? false) && error == nil")
-               and once(t[VIEW], "reading ? CosCostPresentation.readingSeconds : error != nil ? 60 : 300"),
-     VIEW, "(report?.sessions.reading ?? false)", "((report?.sessions.stillReading ?? 0) > 0)"),
+     lambda t: once(t[VIEW], "CosCostPresentation.wait(tracking: usage.enabled, report: report, failedToRefresh: error != nil, quickTries: quickTries)")
+               and once(t[CORE], "let reading = tracking && (report?.sessions.reading ?? false)")
+               and once(t[CORE], "return (reading && quick ? readingSeconds : slowSeconds, tries)"),
+     CORE, "let reading = tracking && (report?.sessions.reading ?? false)", "let reading = tracking && ((report?.sessions.stillReading ?? 0) > 0)"),
+    ("Usage's loop paces itself through Core, so a busy history is not a five minute sleep",
+     lambda t: once(t[VIEW], "SessionUsagePresentation.wait(pending: pending, busy: self?.report?.historyBusy == true, busyPasses: self?.busyPasses ?? 0)")
+               and once(t[VIEW], "self?.busyPasses = next.busyPasses") and once(t[CORE], "return (pending && passes < busyRetryLimit ? pendingSeconds : slowSeconds, passes)"),
+     VIEW, "busy: self?.report?.historyBusy == true,", "busy: false,"),
+    ("a read cancelled by closing the page is not an error in red",
+     lambda t: between(t[VIEW], "func refresh(importNew: Bool", "Usage could not refresh").count("catch is CancellationError {") == 1
+               and between(t[VIEW], "func refresh(importSessions: Bool", "COS cost could not refresh").count("catch is CancellationError {") == 1,
+     VIEW, "        } catch is CancellationError {\n            return\n        } catch { self.error = \"Usage could not refresh", "        } catch { self.error = \"Usage could not refresh"),
     ("the share is said as a ceiling when some of the person's own usage has no price",
      lambda t: once(t[VIEW], "P.compareLine(share: share, price: price, ceiling: ranPartial(report))") and once(t[VIEW], "usage: usageState, ranPartial: ranPartial(report))")
                and once(t[VIEW], "P.sessionNotes(report, ranPartial: ranPartial(report))"),

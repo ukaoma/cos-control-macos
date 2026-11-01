@@ -21,6 +21,8 @@ final class SessionUsageStore: ObservableObject {
     var cursorCommandLine: String? { SessionUsagePresentation.cursorCommandLine(home: FileManager.default.homeDirectoryForCurrentUser.path) }
     private let helper = HelperClient()
     private var loop: Task<Void, Never>?
+    /// Passes in a row that found the history busy. A busy pass is not an error: it keeps what the page has and comes back soon.
+    private var busyPasses = 0
     func start() {
         guard loop == nil else { return }
         loop = Task { [weak self] in
@@ -29,7 +31,9 @@ final class SessionUsageStore: ObservableObject {
                 if self?.enabled == true { await self?.refresh() }
                 else if self?.report == nil { await self?.refresh(importNew: false) }
                 let pending = self?.enabled == true && ((self?.report?.pendingFiles ?? 0) > 0 || self?.report?.cursorFeed?.pending == true) && self?.error == nil
-                try? await Task.sleep(for: .seconds(pending ? 15 : 300))
+                let next = SessionUsagePresentation.wait(pending: pending, busy: self?.report?.historyBusy == true, busyPasses: self?.busyPasses ?? 0)
+                self?.busyPasses = next.busyPasses
+                try? await Task.sleep(for: .seconds(next.seconds))
             }
         }
     }
@@ -43,6 +47,9 @@ final class SessionUsageStore: ObservableObject {
             guard result.ok else { throw HelperClientError.commandFailed(result.message) }
             report = try JSONDecoder().decode(SessionUsageReport.self, from: JSONEncoder().encode(result.details))
             error = nil
+        } catch is CancellationError {
+            // The page was closed during a read. That is not a failure, and says nothing in red.
+            return
         } catch { self.error = "Usage could not refresh: \(error.localizedDescription)" }
     }
     /// The one place the feed turns on. Paused reads nothing, so the choice is saved and the first sync waits for Resume.
@@ -1727,6 +1734,8 @@ final class CosCostStore: ObservableObject {
     /// Offscreen renders set a report and must not start the helper.
     var frozen = false
     private let helper = HelperClient()
+    /// Passes in a row that read nothing new (busy or failed). See CosCostPresentation.wait.
+    private var quickTries = 0
     func refresh(importSessions: Bool) async {
         guard !loading, !frozen else { return }
         loading = true
@@ -1736,6 +1745,9 @@ final class CosCostStore: ObservableObject {
             guard result.ok else { throw HelperClientError.commandFailed(result.message) }
             report = try JSONDecoder().decode(CosUsageReport.self, from: JSONEncoder().encode(result.details))
             error = nil
+        } catch is CancellationError {
+            // Closing the page or switching tracking cancels a read in flight. That is not a failure, and says nothing in red.
+            return
         } catch { self.error = "COS cost could not refresh: \(error.localizedDescription)" }
     }
     /// While the view is open: quickly while sessions are still being read, then at Usage's pace. A hidden view reads nothing.
@@ -1743,10 +1755,11 @@ final class CosCostStore: ObservableObject {
         guard !frozen else { return }
         while !Task.isCancelled {
             await refresh(importSessions: usage.enabled)
-            // A busy pass keeps no progress and counts as reading, so it comes back at the reading pace, not in five minutes.
-            let reading = usage.enabled && (report?.sessions.reading ?? false) && error == nil
-            // A failed pass is usually a busy history, so it tries again soon rather than at the slow pace.
-            try? await Task.sleep(for: .seconds(reading ? CosCostPresentation.readingSeconds : error != nil ? 60 : 300))
+            // Reading and a busy history come back at the reading pace, a failure a little later, and any of them that
+            // reads nothing new many times in a row at the slow pace. All of it is in CosCostPresentation.wait.
+            let next = CosCostPresentation.wait(tracking: usage.enabled, report: report, failedToRefresh: error != nil, quickTries: quickTries)
+            quickTries = next.quickTries
+            try? await Task.sleep(for: .seconds(next.seconds))
         }
     }
 }
