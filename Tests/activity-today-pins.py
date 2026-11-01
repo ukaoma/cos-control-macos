@@ -224,7 +224,7 @@ need(body(today, "    func openCommandCenter() {", "\n    func closeCommandCente
 need(win.count("if !model.petEnabled { await model.loadClaudeSessions() }") == 1, "[pet off] the tick is unchanged: the one refresh the pet-off home had")
 # One list from the loaded sessions and the live rows (the pet-on home had only the live ones): bounded, merged by the engine's sameSession.
 need("SetupAssistant.Center.merged(live: newest(todaySessions()).map(item), listed: model.petEnabled ? newest(model.claudeSessions).map(item) : [])" in today
-     and "static let commandSessionLimit = 80" in today, "[command center] the panel's sessions are the live rows and the loaded list, merged and bounded")
+     and "static let commandSessionLimit = 80\n" in today, "[command center] the panel's sessions are the live rows and the loaded list, merged and bounded")
 
 # Copy rules: no em dash, arrows or attribution in Today's words; no eyebrow, no vanity totals.
 literals = re.findall(r'"((?:[^"\\]|\\.)*)"', today + "\n" + logic)

@@ -418,7 +418,7 @@ pin("let fullId = transcript.map { $0.deletingPathExtension().lastPathComponent.
     and "sessionId: fullId,\n                records: Self.claudeDesktopRecords(for: fullId, sessionsRoot: desktopRoot)," in reveal and "Self.claudeDesktopMentions(fullId, sessionsRoot: desktopRoot)" in reveal,
     "a short Claude id (how a search hit names a session) reveals through its transcript's full id, which Desktop's links need")
 pin('if args.contains("--local") { try emitLocalSessionsSearch(args: args); return }' in helper, "the verb's --local flag is the first thing it checks")
-pin("static let sessionSearchBodyFileLimit = 80" in helper, "the scan reads at most 80 transcripts")
+pin("static let sessionSearchBodyFileLimit = 80\n" in helper, "the scan reads at most 80 transcripts")
 panel_search = block(panel, "    private func runSearch(_ words: String?) async {", "    private func move(_ delta: Int) -> Bool {")
 pin(".task(id: listing.searchWords) { await runSearch(listing.searchWords) }" in panel, "one search at a time: the task is keyed by the words, so a key cancels the last one")
 pin("guard fixture == nil else { return }" in panel_search and "Task.sleep(nanoseconds: 500_000_000)" in panel_search, "500 ms of quiet first, and nothing runs under a fixture")

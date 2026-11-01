@@ -975,9 +975,13 @@ import Foundation
         check(C.matchLine("Persona pricing review", title: "persona pricing review") == nil, "[a title echo shows no match line]", "case folds")
         check(C.matchLine("Persona pricing review MU-Chief-Staff we should price the tier", title: "Persona pricing review") == "MU-Chief-Staff we should price the tier", "[a window that starts with the title keeps the rest]", "\(String(describing: C.matchLine("Persona pricing review MU-Chief-Staff we should price the tier", title: "Persona pricing review")))")
         check(C.matchLine("Persona pricing review.", title: "Persona pricing review") == nil, "[a title echo shows no match line]", "punctuation")
+        // An echo that does not start with the title: a piece of it, or the same words with other punctuation.
+        check(C.matchLine("pricing review", title: "Persona pricing review") == nil, "[a title echo shows no match line]", "a piece of the title")
+        check(C.matchLine("Persona, pricing review!", title: "Persona pricing review") == nil, "[a title echo shows no match line]", "other punctuation")
+        check(C.matchLine("the pricing review is due", title: "Persona pricing review") == "the pricing review is due", "[a line that only shares words with the title shows]", "")
         check(C.matchLine("line one\nline two\t\u{202E}three", title: "x") == "line one line two three", "[match text is one clean line]", "\(String(describing: C.matchLine("line one\nline two\t\u{202E}three", title: "x")))")
         check((C.matchLine(String(repeating: "price ", count: 200), title: "x")?.count ?? 0) <= C.matchCap && C.matchCap == 120, "[match text is bounded]", "")
-        let keys = ["sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx", "sk-proj_1234567890abcdefGHIJ", "ghp_abcdefghijklmnopqrstuvwxyz0123456789", "xoxb-1234567890-abcdefghij", "AKIAIOSFODNN7EXAMPLE",
+        let keys = ["ghp_abcdefghijklmnop1234", "github_pat_11ABCDEFG0abcdefgh", "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx", "sk-proj_1234567890abcdefGHIJ", "ghp_abcdefghijklmnopqrstuvwxyz0123456789", "xoxb-1234567890-abcdefghij", "AKIAIOSFODNN7EXAMPLE",
                     "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N", "Bearer abcdefghijklmnop12345678", "api_key=abcdef123456", "password: hunter2hunter2",
                     "3f7a9c1e5b2d4a6c8e0f1a3b5c7d9e1f2a4b6c8d", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8", "-----BEGIN RSA PRIVATE KEY----- MIIEowIBAAKCAQEA -----END RSA PRIVATE KEY-----"]
         for key in keys {
