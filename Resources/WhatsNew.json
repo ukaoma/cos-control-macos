@@ -1,51 +1,35 @@
 {
   "version": "0.5.360",
   "whatsNew": {
-    "summary": "⌘K is the COS command center for people with Today on: start or stop a recording, open what's waiting, get saved answers, Ask COS, troubleshoot. What's recording now sits at the top of Today and first in ⌘K. Sessions has a third view, COS cost: what COS itself used over 30 days, by job, measured where it can be. Usage now reads compressed Codex logs, so Codex numbers go up. Update Server won't move backward, and the Miles Windu pet no longer leaves a droid fragment behind after a strike. Plus everything in 0.5.358: Usage opens with the answers, a calendar of every day, and hover details.",
+    "summary": "With Today home on, ⌘K is the COS command center (start or stop a recording, open what's waiting, get saved answers, Ask COS, troubleshoot), and what's recording now sits at the top of Today and first in ⌘K. Sessions has a third view, COS cost: what COS itself used over 30 days, by job, measured where it can be. Usage now reads compressed Codex logs, so Codex numbers go up. Update Server won't move backward, and the Miles Windu pet no longer leaves a droid fragment behind after a strike. Plus everything in 0.5.358: Usage opens with the answers, a calendar for longer periods, and hover details.",
     "sections": [
       {
         "title": "0.5.360",
         "items": [
-          "⌘K is the COS command center for people with Today on: start or stop a recording, open what's waiting, get saved answers, Ask COS, troubleshoot.",
-          "What's recording now sits at the top of Today and first in ⌘K.",
+          "With Today home on in Settings, ⌘K is the COS command center: start or stop a recording, open what's waiting, get saved answers, Ask COS, troubleshoot.",
+          "With Today home on, what's recording now sits at the top of Today and first in ⌘K.",
           "Sessions has a third view, COS cost: what COS itself used over 30 days, by job, measured where it can be. A row with only character counts says Estimated and stays out of the measured total.",
           "Work shows the runs themselves, with the wider figure in words.",
-          "Add what you pay a month to see COS's share. It stays on this Mac.",
+          "Once COS has measured calls, add what you pay a month to see COS's share. It stays on this Mac.",
           "Usage now reads compressed Codex logs, so Codex numbers go up. You didn't use more: older logs are finally counted.",
           "Update Server won't move backward.",
           "The Miles Windu pet no longer leaves a droid fragment behind after a strike.",
           "A paused Usage page now says it is paused, offers Resume tracking and drops the month estimate. Count Cursor tokens tells a Keychain that didn't answer from one that said no, and offers the install command when Cursor's command line is missing.",
-          "In ⌘K, Return goes to the command or session your words point at before it starts anything, and a row you ran is cleared so the next ⌘K doesn't offer it again.",
+          "With Today home on, Return in ⌘K goes to the command or session your words point at before it starts anything, and a row you ran is cleared so the next ⌘K doesn't offer it again. A question that mentions recording no longer starts one when you press Return.",
           "COS cost puts a + on any figure that leaves out calls with no verified price, says when it couldn't read its record of calls, and keeps trying while the usage history is busy."
         ]
       },
       {
         "title": "0.5.358",
         "items": [
-          "Usage opens with five figures: API value, new tokens, all tokens, API value a day, and this month so far with an estimate for the month. Each period figure shows its change from the period before when your history reaches that far.",
-          "A calendar shows every day in the period, and each weekday row ends in that weekday's average. Click a day to look at it. An empty square means no logs, or no records when a tool or model is selected, and that is not the same as zero.",
-          "Hover a bar to see what is in it, by tool, model or token type. Weeks and months that are only partly over are lighter and stay out of the new average line, so the last bar no longer looks like a drop.",
+          "Usage opens with up to five figures: API value, new tokens, all tokens, API value a day, and this month so far with an estimate for the month. API value and new tokens show their change from the period before when your history reaches that far.",
+          "For a period of about three weeks or more, a calendar shows every day, and each weekday row ends in that weekday's average. Click a day to look at it. An empty square means no logs, or no records when a tool or model is selected, and that is not the same as zero.",
+          "Hover a bar to see what is in it, by tool, model or token type. Weeks and months that are only partly over are lighter and stay out of the new average line, so a last partial week or month no longer looks like a drop.",
           "The panel beside the chart compares where the tokens went with where the value went. It lists models and a headline only for a bar you pick, because the figures and the table cover the whole period.",
           "The table has share bars and a Columns menu. Records and Last used show by default, and Cache reads and Per 1M new are one click away. Your choice is remembered.",
-          "Refreshing while tracking is paused no longer reads new logs, and the tracking and Cursor switches moved to the gear menu at the top. A + on a figure means some records have no verified price, and the footer names those models. A day with no price is left out of averages and never counts as $0.",
-          "Cache reads have their own grey instead of sharing Claude Code's gold, and the chart's words now show a small arrow to say they are menus."
-        ]
-      },
-      {
-        "title": "0.5.357",
-        "items": [
-          "On a saved Mac recording, the Speakers list now starts with machine groupings, largest first, then single voices, then Ext and named rows, then one Short voices row for anything under 15 seconds. Every original voice is one click away with its words. This changes the layout only: nothing is written, and rows are not a count of people.",
-          "Name a grouped row in one step. COS checks each voice in it, you confirm once, and each is saved through the same rename a single row uses. If one is refused, COS stops and says which were named and which were not.",
-          "Suggest names compares a call's voices with your saved voice profiles, with progress while it runs. A row shows each suggested name and its score, and on a grouped row how many of its voices that name covers. Use this name names only those voices, and nothing is named until you click it. Suggestions go away when the recording changes.",
-          "One button names every high-confidence suggestion at once. It says how many, and you can untick any row first. Lower scores keep their own Use this name. Undo these names stays available when you reopen the review, and reports what it put back, how many profile samples it removed, and any older samples it could not restore.",
-          "When a name is refused, Speakers now shows the server's own reason instead of saying the words changed.",
-          "A qualified saved Mac recording can show anonymous groups only for words covered by its accepted acoustic evidence. Other speech stays in an explicit unresolved remainder; row counts are not attendee counts.",
-          "The speaker list, examples and timeline use the same timed-word inventory. Existing names, corrections, text and clocks are preserved.",
-          "Select the exact words in an estimated group, or one continuous range of unresolved speech, inspect the preview, then confirm the name. Rename and Undo stay available while automatic grouping is off. Prior corrections stay protected; names already asserted elsewhere in the original recording are refused.",
-          "After undoing its new naming actions, you can return a recording to its original review with prior corrections intact. Interrupted changes offer a separate recovery action.",
-          "On qualified saved Mac recordings, Short voice fragments collects accepted anonymous groups with under 15 seconds of reported speech. Expand it to review and name each original group. This only simplifies the review layout; it does not combine groups or count people.",
-          "This update does not enable automatic voice-profile naming, voice training, live speaker ID, transcription cleanup or cues.",
-          "A recording or server without these features keeps its existing review, and an older server hides the new buttons. Per-recording evidence is still qualified separately."
+          "Refreshing while tracking is paused no longer reads new logs, and the tracking switch moved to the gear menu at the top, next to Count Cursor tokens when Cursor is on this Mac. A + on a figure means some records have no verified price, and the footer names those models. A day with no price is left out of averages and never counts as $0.",
+          "Cache reads have their own grey instead of sharing Claude Code's gold, and the chart's words now show a small arrow to say they are menus.",
+          "The chart no longer counts records; Records is now a table column. Busiest day replaces the peak day figure, New tokens replaces Exclude cache reads, clicking a bar replaces Inspect period, and Within provider is gone."
         ]
       },
       {
@@ -53,17 +37,8 @@
         "items": [
           "Usage has a new layout: filters, then a stacked chart beside a panel that shows the whole period or the bar you pick, then one table grouped by tool.",
           "Pick what the chart shows from one line: All tokens, New tokens or API value, by tool, model or token type, per day, week or month.",
-          "Count Cursor tokens is a new choice, off until you turn it on. It reads the Cursor command line sign-in from this Mac's Keychain and asks Cursor for your usage. Only counts, dates, model names and each request's reported cost are stored.",
+          "Count Cursor tokens is a new choice, off until you turn it on. It reads the Cursor command line sign-in from this Mac's Keychain and asks Cursor for your usage. Only counts, dates, model names, each request's reported cost and a hash of each event id are stored.",
           "Comparisons with an earlier period appear only when your history covers that whole period."
-        ]
-      },
-      {
-        "title": "0.5.355",
-        "items": [
-          "Review estimated anonymous speaker groups in saved Mac recordings. The group view keeps existing names and protected corrections; a group is an estimate, not a verified identity.",
-          "Select the exact parts to name, check the preview, and confirm. A changed recording or selection needs a fresh preview. Group naming changes text labels and does not add voice-training samples.",
-          "Live transcript speaker-label revisions can refresh previously settled rows without changing their words or clocks.",
-          "Requires compatible server endpoints and server-side admission. Installing Control does not enable live cues or automatic speaker grouping. Older servers retain their supported recording view."
         ]
       },
       {

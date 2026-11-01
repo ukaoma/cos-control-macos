@@ -1,44 +1,70 @@
 ## 0.5.360 (build 414), ⌘K and COS cost fixes on top of 0.5.359
 
-Public, with server 6.94.2, which is what public users run. No server change is needed. Server 6.97.0 adds measured COS cost rows and the stopped meeting row, and an older server gets estimates and the rows it had. Built on 0.5.359 (build 413, 53db3de), which was installed on Miles's Mac and never published, so everything under 0.5.359 below reaches public users for the first time here, and its default-on list applies as written.
+Public, with server 6.94.2, which is what public users run. No server change is needed. A newer server adds measured COS cost rows and the stopped meeting row, and an older server gets estimates and the rows it had. Built on 0.5.359 (build 413, 53db3de), which was installed on Miles's Mac and never published, so everything under 0.5.359 below reaches public users for the first time here, and its default-on list applies as written.
 
-This build adds one default-on change of its own, the Windu art under Pet, for everyone. It also changes how three default-on pieces behave:
+What this build changes by default, for public users:
 
-- ⌘K, for people with Today on (`activityTodayHomeEnabled`, default off): Return and the saved draft work as described below.
-- COS cost, for everyone: its words and figures change as described below. Nothing new is read, stored or sent.
-- The Today rail, for people with Today on: a recording that has stopped and is saving is no longer counted as "1 recording".
-
-⌘K:
-
-- Return goes to what your words point at before it starts anything. When the first row is a command (Stop and save, Run Doctor, "go to se", or a command's phrase inside a longer sentence), Return moves to that command's row and a second Return runs it. Stop and Doctor still ask first, and neither can highlight itself. When a title matches a session, Return moves to the first matching session row. Before, a recording running and "stop recording" then Return, Return started a Work run on those words while the recording kept going. Words that matched a session title started a Work run on those words, or filed them as a task, when there were three or more. With fewer, Return moved to Ask and the second Return spent a run instead of opening the session.
-- A row that ran no longer comes back. The box, its highlight and the saved draft are cleared for every row except Ask COS, File to Work and troubleshoot, which keep their words until the run or the filing is accepted. A run that started, a filing that saved and a recording under way clear the draft even when a click outside already closed the panel. Before, ⌘K again brought back "open work" highlighted, "record" armed after the recording had saved, or the words of a run already started, and one Return fired it a second time.
-- A longer sentence with no command in it starts its Work run through Ask COS, so it carries a short snapshot of what COS Control sees and the same rules as the Ask row, where before it sent the raw words alone. Option-Return, and the Today box with Start Work off, are unchanged.
-- A Mac capture that has finished saving, or failed to, while the server still counts it is no longer shown as a recording on the glasses. It counts out with the Mac's own capture, in Today, in ⌘K and in the rail, and ⌘K no longer says a glasses meeting is recording because of it. A live recording that no row names says "Recording, device not shown" and "Stop it where it started", where it used to claim the glasses.
-- The rail no longer says "1 recording" while the section says Saving.
-
-COS cost:
-
-- A figure that leaves out calls with no verified price ends in +, as Usage's do: a row, the headline's measured figure, and the Work line and its wider figure. A row says how many measured calls have no price. A mix of estimated calls says how many of the others have a floor, instead of "the rest". The method text says what the + means.
-- When some of your own sessions have no verified price, the total you ran is low, and the share of it reads high. The total ends in +, one line in the footer says so, and the comparison reads "Up to about 1.5% of your usage, so up to $3.00 of your $200". It is not hidden, because how much is unpriced cannot be sized.
-- An audit file that is there and cannot be opened is said in the headline ("COS could not read its record of calls"), and never read as no calls or as a smaller count.
-- "COS made no calls" no longer shows above Work or day-ledger usage. "This server doesn't measure their cost yet" shows only when nothing else could be the reason: a paused Usage says tracking is paused, and sessions still being read say that.
-- A pass that finds the usage history busy keeps no progress. It now counts as still reading: the headline says "Measured so far", the page says it is still reading, and it reads again in 15 seconds instead of five minutes. The footer says "COS tries again in 15 seconds", which the page now does.
-- Opening the usage database writes its time zone only the first time. Every helper command used to write it on open, which needs the write lock that a compressed-log read holds through each decoder start, so `cos-usage` could fail at open and show "COS cost could not refresh" instead of a busy page. A failed Usage pass has the same cause.
-- A G2 audit row with a session and no run id now finds its run by session. The lookup used the bare id against keys of the form `claude:<id>`, so it never matched, and only a time and model match could, labelled approximate.
-- A lens gist run through the Cursor engine follows the same rule as other Cursor spend: it is added to the total you ran only while the Cursor feed is off.
+- Pet, for everyone: the Miles Windu pet loses its stray droid fragment (below). Installs from 0.5.350 to 0.5.358 receive the new art on first launch, and the app grows by about 28 MB.
+- Background reading, while Usage tracking is on (it is by default): the first read of compressed Codex logs starts when Control launches, with no window open, and needs no click. It runs one Node per log, up to 12 seconds a pass, about every 15 seconds until it is done. On Miles's Mac that was 20 passes. It runs at utility priority, so it yields to anything the person is doing, and it does not pause during a recording. Pausing tracking stops it.
+- COS cost, for everyone: its words, figures and retry behavior change as described below. It reads only while its page is open. What it reads is listed under COS cost.
+- ⌘K and the Today rail, only with Today home on (Settings, `activityTodayHomeEnabled`, default off).
 
 Pet:
 
-- The Miles Windu one-session pet no longer leaves a stray droid fragment behind after the strike, in all four casts, at 1x and 2x, full and body strips. 24 new files replace only the affected frames with the clean run frame they already match, with nothing redrawn or retimed. Every Motion V1 and illustrated file stays byte-identical, so older installs are still recognized as stock. An install on the shipped Motion V1 map moves to the new one on launch, a custom cast stays as it is, and the app grows by about 28 MB.
+- The Miles Windu one-session pet no longer leaves a stray droid fragment behind after the strike. In all four casts, frames 160 to 167 now show a clean frame in the 1x and 2x full strips and in the body strips, and the 2x strips also lose debris slivers in frames 150, 151 and 157 to 159. Nothing is redrawn or retimed. At 1x, one very faint column (about 2 percent opacity or less on average, as measured in review) remains in frame 150 of the second cast. It is not part of this fix. 24 new files carry the changed frames, and every Motion V1 and illustrated file stays byte-identical, so older installs are still recognized as stock.
+- The upgrade runs because the art generation is now 28. The first version of this build left it at 27, and installs already at 27 skip the upgrade block, so nobody on Motion V1 would have received the fix. A new pin (`Tests/pet-art-generation-pins.py`) keeps a ledger of each bundled pack's state map per generation and fails when a map changes and the number does not, or when a released tag disagrees with the ledger.
+- Raising the number re-runs the whole upgrade block once for everyone who was at 27. What it can change: an exact stock Windu Motion V1 install moves to Motion V2 (reads the pack's PNGs, writes the new files first and the state map last, then stamps 28), and any other exact retained stock map of a bundled character is promoted to that character's current pack, as at earlier generations. What it leaves alone, and the checks hold this: packs that are already current, a custom cast, interval or scale, a chosen still image, and the drawn robot. If the upgrade fails partway it retries on the next pet load until it succeeds, and the old pack stays readable.
+
+⌘K:
+
+- Return goes to what your words point at before it starts anything. When the first row is a command (Stop and save, Run Doctor, "go to se", or a command's phrase inside a longer sentence), Return moves to that row and a second Return runs it. Stop and Doctor still ask first, and neither can highlight itself. When a title matches a session, Return moves to the first matching session row.
+- A Start recording phrase inside a longer sentence, such as a question about recording, stays in the list but Return skips it and goes to Ask, because Start recording asks nothing before it records. Arrow keys still choose it. The one-time notice's Record button now clears the highlight, so a Return after it arms nothing.
+- A live recording that is not known to be on the glasses (an iPhone, or one no row names) reads "Another recording is running. Stop it where it started." Only a recording every row names as glasses says glasses meeting. The Stop and save confirm says a recording on your glasses or iPhone keeps running.
+- A row that ran no longer comes back. The box, its highlight and the saved draft are cleared for every row except Ask COS, File to Work and troubleshoot, which keep their words until the send is accepted. A send that finishes later (a run, a filing, a Doctor report that takes up to 90 seconds) clears the box only if the run was accepted and the box still holds what was sent. Words typed in the meantime, and the words of a refused run, stay. A recording under way clears the draft at once.
+- A longer sentence with no command in it starts its Work run through Ask COS, so it carries a short snapshot of what COS Control sees. The Today box's own raw-words run, which no key reached, is removed. Option-Return files the words as a task.
+- A Mac capture that has finished saving, or failed to, while the server still counts it is no longer shown as a recording on the glasses, in Today, ⌘K or the rail. The rail no longer says "1 recording" while the section says Saving.
+- A server that does not answer holds Restart and Update, and the held lines now say Repair server in Settings brings it back.
+
+COS cost:
+
+- A history another command holds is a pass with no progress, not an error. For Usage and for COS cost, only SQLite's busy and locked answers count as busy. The page keeps what it read, the log files stay pending, and the pass comes back in 15 seconds. After 20 busy passes in a row it waits five minutes. Before, Usage showed a red "could not refresh" and slept five minutes whenever COS cost held the lock, and the decoder it had started was left running.
+- Any other failure of the history (a full disk, a damaged file) is no longer called busy. COS cost says it could not read the usage history, tries again in five minutes, and writes one line of fixed words to `cursor-feed.log` (no path, no contents). A pass that fails outright retries in a minute, and after 20 in a row every five minutes.
+- Closing the page during a read no longer stores a Swift error in red.
+- "Up to about" is true only when the total you ran is partial and COS's measured dollars are not. When both are partial, the share can be off either way and the line says so. A run with priced and unpriced events, and a day ledger with no price at all, now count as partial and end in +. No share is shown when the record of calls would not open, or was cut short by a read that failed. The price field and the footer no longer promise anything of a server, the run-record line appears only with an Answers row, and a share under 0.1 percent no longer reads "about under".
+- `gpt-5.6-sol` is priced at its promotional rate for usage through 2026-11-21 and has no price after that day.
+- A Work run opened in the app has no delivery limit for the prompt the person sent, so one sent minutes after opening still counts as the run's own.
+- A figure that leaves out calls with no verified price ends in +, as Usage's do. An audit file that is there and cannot be opened is said in the headline. "COS made no calls" no longer shows above Work or day-ledger usage. A G2 audit row with a session and no run id finds its run by session. A lens gist run through the Cursor engine follows the same rule as other Cursor spend.
+- Opening the usage database writes its time zone only the first time, so a command no longer waits for the write lock a compressed-log read holds.
+- What `cos-usage` reads: the server's LaunchAgent property list and Control's manifest, for the scripts and data folders; when neither names a scripts folder, `~/.cos-glasses/.env`, read whole into memory with only `COS_SCRIPTS_DIR` kept; the audit, `.cos_token_audit.jsonl` in the scripts folder or `~/.cos-glasses/token-audit.jsonl`; the server's named ledgers, one at a time and never by listing its data folder; Control's own Work receipts; and the session logs of Work and G2 runs, found by session id. Counts, dates and model names come out of them, and nothing else. `docs/session-usage.md` says the same.
+
+Cursor:
+
+- Only four timeouts in a row stop asking Keychain for 30 days. A launch failure, an odd exit or a good read between them starts the count over. Before, three odd exits and one timeout counted as four.
+
+Update Server:
+
+- The refusal to move a Mac backward names Roll back server only when the manifest retains a generation to go to. Before, it could point at a rollback that would itself refuse.
 
 Words and files:
 
-- The 0.5.359 entry said "Only a real denial stops asking" for Cursor's Keychain. Four timeouts in a row also stop it for 30 days, and the entry now says so. The comment above the COS cost reader says three tables, not two. `docs/session-usage.md` describes compressed logs and COS cost. `ServerUpdateGuard` no longer sits under the Key lanes comment (no behaviour change).
+- What's New no longer carries the 0.5.357 and 0.5.355 sections, which need servers that are not published. The 0.5.358 and 0.5.356 items are the corrected text the public appcast carries. The ⌘K lines say Today home on, and the price field says "Once COS has measured calls". A pin now refuses any server from 6.95 to 6.99 in the bundled notes.
+- Copy changes that the 0.5.359 entry did not list. For everyone: the Status row for damaged meeting records says "Meeting save: Repair required" instead of "Save retries", since those records wait for Repair and are not retried, and the Update Server button has a tooltip that says what blocks it, or "Install the newest published server and restart it." With Today home on: the Today brief no longer says "the glasses are recording", because recordings have their own section, and the Today box is a button that reads "Ask COS, start a recording, open a session", where with Start Work off it used to say "Capture a task".
+- `docs/session-usage.md`: Codex coverage lists the compressed rollouts, the Keychain line matches the retry rule, and `cursor-feed.log` is described.
+- The 0.5.359 entry said "Only a real denial stops asking" for Cursor's Keychain. Four timeouts in a row also stop it for 30 days. The comment above the COS cost reader says three tables, not two. `ServerUpdateGuard` no longer sits under the Key lanes comment.
+- Tests: the Usage wiring pins strip comments before they read code, a mixed-answer Keychain test, tests that hold the history lock against Usage and against a compressed log, mutants for each rule above, and WinduMotionChecks also checks the body strips.
+
+Known, not fixed here:
+
+- A compressed Codex log resumes by decoding from its first byte again and discarding what it already counted, and that time does not count as progress. Three passes with no progress mark a log unreadable until it changes. On a Mac that decodes slower than about 380 MB a second (Usage) or 460 MB a second (COS cost), the largest log on Miles's Mac, 4.6 GB decoded, cannot get past that point in one 12 or 20 second pass, so it is given up and counted as unreadable. Saving frame offsets would fix it.
+- The Windu 2x strips are not compared pixel by pixel in the suite, only by file hash.
+- When the Mac's server is newer than the latest published one and its integrity check fails, the assistant still offers Update Server. The guard then refuses it in plain words, so nothing changes.
+- A retraction of npm latest does not heal a Mac that is already ahead, because Update Server will not move backward. A forward publish is the only way to move such a Mac.
 
 Not verified:
 
-- The ⌘K and Today changes are proven on fixtures, the compiled engine checks and source pins, not by use on a live Mac. The view's `perform` and the draft rules are held by pins and by the engine's `draftAfterRun`, because the panel's own state cannot be reached from a test.
-- These fixes were type-checked and run through their lanes before the merge. `ActivityWindow.swift`, `SessionUsageView.swift`, `Models.swift` and `SetupAssistant.swift` each type-check as the primary file against the other sources, and the engine, Today and Usage lanes compile and pass. The full suite, signing and install receipts are separate from these notes.
+- The ⌘K and Today changes are proven on fixtures, the compiled engine checks and source pins, not by use on a live Mac. The panel's own state cannot be reached from a test, so `perform` and the draft rules are held by pins and by the engine's checks.
+- No full-app compile, full suite, signing or install ran for these fixes. What ran: the Usage, setup assistant, Today, provider-status, pet-rotation, illustrated-pet and What's New lanes, their mutation lanes for the rules above, and a type-check of `ActivityWindow.swift`, `ControllerModel.swift`, `SessionUsageView.swift`, `HelperClient.swift` and the helper's `main.swift` as primary files against the other sources. The render lanes, the meeting-restart lane and the pet drag lanes did not run.
+- Runtime CPU cost of the first compressed read, how often the history lock collides, and ⌘K focus behavior were not measured.
 
 ## 0.5.359 (build 413), ⌘K command center, COS cost, compressed Codex logs, Update Server only moves forward
 
@@ -48,7 +74,7 @@ Default-on changes for public users, if this goes public:
 
 - ⌘K panel and the recording section, for people with Today on only (`activityTodayHomeEnabled`, default off). Today's box becomes a button that opens the panel, over any tab. The Today rail line says recordings first and drops the running count, and a recording moves out of Running.
 - COS cost, for everyone: a third view in the Sessions switch, read only while it is open. It reads the server's named ledgers, Work receipts and the session logs of Work and G2 runs, and stores counts in three new tables in the usage database (`cos_slice_*`). `events` is untouched. A paused Usage reads no session logs here either. Dollars are API value and say so. The monthly price field is stored in this Mac's preferences and never sent.
-- Codex numbers rise. Usage now reads `.jsonl.zst` rollouts through Node (the app's own first), bounded per pass, resumable and idempotent against a plain read of the same rollout. Most rollouts are compressed, so a first read takes several passes and the totals climb while it runs: on Miles's Mac, 20 passes and 1,127 logs took the 30-day Codex figure from $2,143 to $3,542. With no suitable Node they count as unreadable and the page says so.
+- Codex numbers rise. Usage now reads `.jsonl.zst` rollouts through Node (the app's own first), bounded per pass, resumable and idempotent against a plain read of the same rollout. Most rollouts are compressed, so a first read takes several passes and the totals climb while it runs: on Miles's Mac, 20 passes and 1,127 logs raised the 30-day Codex figure by about 65 percent. With no suitable Node they count as unreadable and the page says so.
 - Update Server refuses to downgrade. Any install asking for latest stops, before anything is staged, when the release is older than what this Mac runs. Adopt asks before stopping a legacy server. A named version and Roll back are unchanged.
 - Restart and Update lockout. A server 6.97.0 row with phase stopped sorts last and blocks nothing, and audio on disk with no server running blocks nothing. Both say so and nothing deletes the audio. A server that does not answer stays blocked and says why, and a disabled Update Server explains itself.
 - A stopped meeting's speaker changes, voice check and one-click naming say its final transcript stopped, not "in a minute". A meeting really saving keeps its words.

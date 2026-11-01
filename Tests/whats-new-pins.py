@@ -141,8 +141,8 @@ pin(isinstance(notes_summary, str) and 0 < len(notes_summary) <= 722 and notes_s
 
 # 0.5.359: every section of the bundled notes can reach a public user, so they name no private build or unpublished server.
 notes_text = (root / "Resources/WhatsNew.json").read_text(encoding="utf-8")
-pin("6.96.3" not in notes_text and re.search(r"\bprivate\b", notes_text, re.I) is None, "public notes",
-    "Resources/WhatsNew.json must not mention server 6.96.3 or the word private anywhere")
+pin(re.search(r"6\.9[5-9]", notes_text) is None and re.search(r"\bprivate\b", notes_text, re.I) is None, "public notes",
+    "Resources/WhatsNew.json must not mention any server from 6.95 to 6.99 or the word private anywhere")
 
 # The helper never says a stage staged when it did not, and apply proves the stage before Control quits.
 stage_verb = code(between(helper, "private func emitStageAppUpdate(args: [String]) throws {", "private func bundleHasRunningProcess"))

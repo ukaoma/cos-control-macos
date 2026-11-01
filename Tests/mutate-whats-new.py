@@ -99,6 +99,7 @@ MUTANTS = [
     # 0.5.334: the bundled notes must name the build they ship in (0.5.333's first build said 0.5.332).
     ("a private word in the bundled notes", W, "An empty square means no logs", "A private square means no logs", "[public notes]", "pins"),
     ("the private server named in the notes", W, "An empty square means no logs", "Server 6.96.3: an empty square means no logs", "[public notes]", "pins"),
+    ("the newest unpublished server named in the notes", W, "An empty square means no logs", "Server 6.97.0: an empty square means no logs", "[public notes]", "pins"),
     ("stale What's New version", W, f'  "version": "{NOTES_VERSION}",', '  "version": "0.0.0",', "[notes version]", "pins"),
     ("Info.plist bumped, notes not", I, f"<key>CFBundleShortVersionString</key>\n\t<string>{BUNDLE_VERSION}</string>",
      "<key>CFBundleShortVersionString</key>\n\t<string>9.9.9</string>", "[notes version]", "pins"),
