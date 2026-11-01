@@ -128,6 +128,32 @@ import CryptoKit
   for f in filesV1 {precondition((try! Data(contentsOf:stockV1.appendingPathComponent(f))) == (try! Data(contentsOf:candidate.appendingPathComponent(f))),"motion-v1 rollback asset changed")}
   let stampV1=try fm.attributesOfItem(atPath:mapV1.path)[.modificationDate] as! Date
   precondition(refreshV1() == .notApplicable && (try! fm.attributesOfItem(atPath:mapV1.path)[.modificationDate] as! Date)==stampV1,"motion-v1 upgrade must be idempotent")
-  print("PASS: V15, 348, 349 and motion-v1 upgrades, custom timing/scale/art protection, missing-asset atomic failure, ambient native slicing/cadence, 13 unchanged casts and both rollback generations")
+  // Generation 28 re-runs this refresh for everyone already at 27. What it must leave alone: a Motion V1 install with
+  // its own timing, every bundled character whose pack is already current, and a chosen still image.
+  let customV1=stockV1.appendingPathComponent("customMotionV1")
+  try fm.createDirectory(at:customV1,withIntermediateDirectories:true)
+  for f in filesV1 {try fm.copyItem(at:candidate.appendingPathComponent(f),to:customV1.appendingPathComponent(f))}
+  var tunedV1=motionV1 as! [String:Any];var tunedRowsV1=tunedV1["poses"] as! [String:[String:Any]]
+  tunedRowsV1["working"]!["interval"]=0.0215;tunedV1["poses"]=tunedRowsV1
+  let tunedBytesV1=try JSONSerialization.data(withJSONObject:tunedV1);let customMapV1=customV1.appendingPathComponent(PetSpriteStore.stateFileName)
+  try tunedBytesV1.write(to:customMapV1)
+  precondition(autoreleasepool{PetSpriteStore.refreshRecognizedBundledCharacter(into:customV1,sourceRootOverride:sources,retainedMilesOverride:old)} == .notApplicable
+    && (try! Data(contentsOf:customMapV1))==tunedBytesV1,"a motion-v1 install with its own cadence must survive")
+  for id in ["jedi-nia-solari","jedi-elara-vale","jedi-rowan-vale"] {
+   let pack=sources.appendingPathComponent(id),installed=temp.appendingPathComponent("current-\(id)")
+   try fm.createDirectory(at:installed,withIntermediateDirectories:true)
+   let packMap=try Data(contentsOf:pack.appendingPathComponent(PetSpriteStore.stateFileName))
+   for f in refs(try JSONSerialization.jsonObject(with:packMap)) {try fm.copyItem(at:pack.appendingPathComponent(f),to:installed.appendingPathComponent(f))}
+   try packMap.write(to:installed.appendingPathComponent(PetSpriteStore.stateFileName))
+   precondition(autoreleasepool{PetSpriteStore.refreshRecognizedBundledCharacter(into:installed,sourceRootOverride:sources,retainedMilesOverride:old)} == .notApplicable
+     && (try! Data(contentsOf:installed.appendingPathComponent(PetSpriteStore.stateFileName)))==packMap,"\(id) already current must not be rewritten")
+  }
+  let chosenStill=temp.appendingPathComponent("chosenStill")
+  try fm.createDirectory(at:chosenStill,withIntermediateDirectories:true)
+  try Data(contentsOf:candidate.appendingPathComponent("session-pet-idle-cutouts-v2.png")).write(to:chosenStill.appendingPathComponent("\(PetSpriteStore.fileStem).png"))
+  try Data(contentsOf:old.appendingPathComponent(PetSpriteStore.stateFileName)).write(to:chosenStill.appendingPathComponent(PetSpriteStore.stateFileName))
+  precondition(autoreleasepool{PetSpriteStore.refreshRecognizedBundledCharacter(into:chosenStill,sourceRootOverride:sources,retainedMilesOverride:old)} == .notApplicable,
+    "a chosen still image must survive even beside a stock map")
+  print("PASS: V15, 348, 349 and motion-v1 upgrades, custom timing/scale/art protection, a rerun on current packs and a chosen still, missing-asset atomic failure, ambient native slicing/cadence, 13 unchanged casts and both rollback generations")
  }
 }

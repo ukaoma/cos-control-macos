@@ -423,7 +423,7 @@ final class ControllerModel: ObservableObject {
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
-    private static let petDefaultArtGeneration = 27
+    private static let petDefaultArtGeneration = 28
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(
@@ -5331,6 +5331,11 @@ final class ControllerModel: ObservableObject {
             // matching illustrated idle, meditation and relaxed patrol art.
             // Generation 27 retimes the two Windu run bursts as one consistent cadence;
             // the impact, recovery, cast entrances, and ambient art remain unchanged.
+            // Generation 28 (0.5.360) moves exact stock Windu Motion V1 (0.5.350 to 0.5.359, generation 27) to Motion V2,
+            // which drops the stray wreck fragment after the strike. Installs already on 27 skip this block, so the
+            // number must rise whenever a bundled state map changes. Tests/pet-art-generation-pins.py fails when it does not.
+            // Re-running the block is a no-op for every current pack, a chosen still, a custom cast or interval,
+            // and the drawn robot; only an exact retained stock map of a bundled character is promoted.
             let bundledRefresh = PetSpriteStore.refreshRecognizedBundledCharacter(
                 into: directory
             )
