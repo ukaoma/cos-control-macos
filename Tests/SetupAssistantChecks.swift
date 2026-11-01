@@ -80,6 +80,7 @@ import Foundation
         centerPlaces()
         centerNouns()
         centerSearch()
+        centerMeaning()
         centerFooter()
         centerConfirms()
         centerAsk()
@@ -1180,6 +1181,269 @@ import Foundation
         }
     }
 
+    // MARK: Meaning search (0.5.362)
+
+    static func meaningHit(_ id: String, _ title: String, _ strength: C.Strength? = .likely, match: String? = nil, days: Int? = 12) -> C.Item {
+        C.Item(id: id, title: title, detail: "Claude Code, Quilt", openLabel: "Open in Claude", sessionID: id, state: "Recent", date: days.map { daysAgo($0) }, match: match, strength: strength)
+    }
+
+    /// A healthy Mac with a loaded list, a server that can find by meaning, a key for the model that decides, and this much of a choice.
+    static func meaningCenter(_ provider: C.MeaningProvider? = .jev, keyed: Bool = true, capable: Bool = true, choices: [String: C.MeaningChoice] = ["jev": .on],
+                              settled: C.MeaningReason? = nil, sessions: [C.Item] = [], _ build: (inout C.Inputs) -> Void = { _ in }) -> C.Inputs {
+        withSessions(sessions) {
+            $0.meaning = C.Meaning(provider: provider, keyed: keyed, capable: capable, choices: choices, settled: settled)
+            build(&$0)
+        }
+    }
+
+    static func found(_ inputs: C.Inputs, words: String, _ phase: C.MeaningPhase, hits: [C.Item] = [], asked: Int = 254, skipped: Int = 0, back: Date? = nil, resets: Date? = nil) -> C.Inputs {
+        var next = inputs
+        next.meaningFound = C.MeaningFound(words: C.plain(words), phase: phase, hits: hits, asked: asked, skipped: skipped, reachedBack: back, resetsAt: resets)
+        return next
+    }
+
+    static let topic = "persona pricing for the jewelry tier"
+
+    static func centerMeaning() {
+        // The three strength words, and no others.
+        check(C.Strength.allCases.map(\.word) == ["Strong match", "Likely match", "Possible match"], "[strength is three words]", "\(C.Strength.allCases.map(\.word))")
+        for wire in ["strong", "likely", "possible"] { check(C.Strength(wire: wire).rawValue == wire, "[strength is three words]", wire) }
+        for odd in ["very_strong", "STRONG", "", "certain", "strong match", "0.9"] { check(C.Strength(wire: odd) == .possible, "[an unknown strength reads as the weakest]", odd) }
+        check(C.Strength(wire: nil) == .possible, "[an unknown strength reads as the weakest]", "nil")
+        check(C.MeaningProvider.allCases.map(\.title) == ["Jev", "SubQ"] && C.MeaningProvider.jev.keeps == nil && C.MeaningProvider.subq.keeps == "SubQ keeps what it is sent.", "[the provider words]", "")
+        check(C.meaningWordCount("pet drag fragment") == 3 && C.meaningWordCount("pet drags") == 2 && C.meaningWordCount("") == 0 && C.meaningWordCount("a-b c.d") == 4, "[a word is a run of letters and numbers]", "")
+
+        // Nothing is asked before the person says yes for the model that decides: the whole table, every combination.
+        var asked = 0, yes = 0
+        let settledOptions: [C.MeaningReason?] = [nil, .serverTooOld]
+        for capable in [true, false] {
+            for keyed in [true, false] {
+                for provider in [nil, C.MeaningProvider.jev, .subq] as [C.MeaningProvider?] {
+                    for jev in C.MeaningChoice.allCases {
+                        for subq in C.MeaningChoice.allCases {
+                            for settled in settledOptions {
+                                let choices = ["jev": jev, "subq": subq]
+                                let inputs = meaningCenter(provider, keyed: keyed, capable: capable, choices: choices, settled: settled)
+                                let listing = C.listing(inputs, words: topic)
+                                let mine = provider.map { choices[$0.rawValue] ?? .ask }
+                                let should = capable && keyed && provider != nil && mine == .on && settled == nil
+                                let gate = C.consentedProvider(inputs.meaning)
+                                asked += 1
+                                if should { yes += 1 }
+                                check((gate != nil) == should && gate == (should ? provider : nil), "[nothing is asked before the person says yes for the model that decides]",
+                                      "capable \(capable) keyed \(keyed) provider \(String(describing: provider)) \(choices) settled \(String(describing: settled))")
+                                check((listing.meaningAsk != nil) == should && listing.meaningAsk?.provider == (should ? provider : nil), "[nothing is asked before the person says yes for the model that decides]",
+                                      "the listing: capable \(capable) keyed \(keyed) provider \(String(describing: provider)) \(choices)")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        check(asked == 2 * 2 * 3 * 3 * 3 * 2 && yes == 6, "[the table has a yes in it]", "\(yes) of \(asked)")
+        let jevYes = meaningCenter(.jev, choices: ["jev": .on, "subq": .ask])
+        let switched = meaningCenter(.subq, choices: ["jev": .on, "subq": .ask])
+        check(C.consentedProvider(jevYes.meaning) == .jev && C.consentedProvider(switched.meaning) == nil, "[a yes for Jev is no yes for SubQ]", "")
+        check(C.listing(switched, words: topic).meaningAsk == nil && C.listing(switched, words: topic).rows.contains { $0.id == "consent:subq:on" }, "[a yes for Jev is no yes for SubQ]", "SubQ is asked about")
+        // The server and the person's choice disagree about who decides: Control forgets the model and asks nothing until the settings are read.
+        let forgotten = C.forgettingProvider(jevYes.meaning)
+        var after = jevYes; after.meaning = forgotten
+        check(C.consentedProvider(forgotten) == nil && !forgotten.offered && C.listing(after, words: topic).meaningAsk == nil, "[a model that changed is forgotten until the settings are read]", "")
+        check(C.listing(after, words: topic).rows.allSatisfy { !$0.id.hasPrefix("consent:") && !$0.id.hasPrefix("hit:") }, "[a model that changed is forgotten until the settings are read]", "no consent row for a model not known")
+        check(forgotten.choices == jevYes.meaning.choices && forgotten.capable, "[a forgotten model keeps what the person chose]", "")
+
+        // When the panel may ask at all: a topic of three words or more, with no exact command, place or noun list in it, and Sessions on.
+        let on = meaningCenter()
+        check(C.listing(on, words: topic).meaningAsk == C.MeaningAsk(words: C.plain(topic), provider: .jev), "[a topic is asked]", "\(String(describing: C.listing(on, words: topic).meaningAsk))")
+        for (words, why) in [("persona pricing", "two words"), ("pet", "one word"), ("start recording", "an exact command"), ("usage", "an exact place"), ("go to usage", "an exact place"),
+                             ("sessions today", "a noun list"), ("the of to", "common words only"), ("", "nothing typed"), ("ab", "under three characters")] {
+            check(C.listing(on, words: words).meaningAsk == nil, "[words that are not a topic ask nothing]", why)
+        }
+        check(C.listing(meaningCenter { $0.sessionsSettingOff = true; $0.sessionsLoaded = true }, words: topic).meaningAsk == nil, "[Sessions off asks nothing]", "")
+        let keyWords = "find the sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx session about pricing"
+        let keyed = C.listing(on, words: keyWords).meaningAsk?.words ?? ""
+        check(!keyed.isEmpty && !keyed.contains("abcdefghijklmnop") && !keyed.contains("sk-ant") && !keyed.contains("api03") && keyed.contains("hidden"), "[key-shaped words are hidden before they are sent]", keyed)
+        let keyedAnswer = C.listing(found(on, words: keyed, .done, hits: [meaningHit("claude:abc12345", "Pricing")]), words: keyWords)
+        check(row(keyedAnswer, "hit:claude:abc12345") != nil, "[the answer is kept under the words that were sent]", "")
+        check((C.listing(on, words: String(repeating: "pricing ", count: 60)).meaningAsk?.words.count ?? 0) <= 200, "[the words are capped at 200 characters]", "")
+        // The request does not depend on what came back, so an answer never restarts the search.
+        let asks = [found(on, words: topic, .idle), found(on, words: topic, .searching), found(on, words: topic, .done, hits: [meaningHit("claude:abc12345", "Jewelry persona review")]),
+                    found(on, words: topic, .unavailable(.failed))].map { C.listing($0, words: topic).meaningAsk }
+        check(Set(asks.map { $0?.words ?? "" }).count == 1 && asks.allSatisfy { $0 != nil }, "[an answer does not restart the search]", "\(asks)")
+
+        // The question before anything is sent.
+        let ask = meaningCenter(.jev, choices: [:])
+        let askListing = C.listing(ask, words: topic)
+        let consentIDs = askListing.rows.filter { $0.id.hasPrefix("consent:") }.map(\.id)
+        check(consentIDs == ["consent:jev:on", "consent:jev:never"] && askListing.meaningAsk == nil, "[the question is asked once and nothing is sent]", "\(consentIDs)")
+        check(askListing.rows.filter { $0.id.hasPrefix("consent:") }.allSatisfy { $0.group == .meaning && $0.selectable }, "[the question is a group of its own, reached by arrow or click]", "")
+        check(rowIDs(askListing).firstIndex(of: "consent:jev:never")! < rowIDs(askListing).firstIndex(of: "search-all")! && rowIDs(askListing).firstIndex(of: "search-all")! < rowIDs(askListing).firstIndex(of: "ask")!,
+              "[the question comes before Search all and Ask]", "\(rowIDs(askListing))")
+        let jevText = "Each search sends the words you type here, plus the title and first 150 characters of the first prompt from up to 508 recent sessions, to Jev. Emails, links and key-shaped text are removed first. Names and other details are not."
+        check(row(askListing, "consent:jev:on")?.detail == jevText && C.consentText(.jev) == jevText, "[the question says what leaves, in full]", row(askListing, "consent:jev:on")?.detail ?? "")
+        check(C.consentText(.subq) == jevText.replacingOccurrences(of: "to Jev.", with: "to SubQ.") + " SubQ keeps what it is sent.", "[the question for SubQ says it keeps what it is sent]", C.consentText(.subq))
+        check(!C.consentText(.jev).contains("keeps"), "[nothing is claimed about what Jev keeps]", "")
+        let subqAsk = C.listing(meaningCenter(.subq, choices: [:]), words: topic)
+        check(row(subqAsk, "consent:subq:on")?.detail == C.consentText(.subq) && row(subqAsk, "consent:subq:on")?.title == "Find sessions by meaning with SubQ", "[SubQ is asked about in its own words]", "")
+        for gone in [meaningCenter(.jev, keyed: false, choices: [:]), meaningCenter(.jev, capable: false, choices: [:]), meaningCenter(nil, choices: [:]), meaningCenter(.jev, choices: ["jev": .never])] {
+            check(C.listing(gone, words: topic).rows.allSatisfy { !$0.id.hasPrefix("consent:") }, "[the question is shown only for a server that can and a key that is saved]", "")
+        }
+        check(C.listing(meaningCenter(.jev, choices: ["jev": .never]), words: topic).rows.allSatisfy { !$0.id.hasPrefix("consent:") && !$0.id.hasPrefix("info:meaning-") } && C.listing(meaningCenter(.jev, choices: ["jev": .never]), words: topic).meaningAsk == nil,
+              "[never means never]", "")
+        check(C.listing(ask, words: "persona pricing").rows.allSatisfy { !$0.id.hasPrefix("consent:") }, "[the question waits for a topic]", "")
+        // Return never chooses it. An arrow or a click does.
+        check(returned(topic, inputs: ask) == .move("ask"), "[Return never moves onto the question]", "\(returned(topic, inputs: ask))")
+        check(returned(topic, chosen: "ask", inputs: ask) == returnRuns("ask"), "[the second Return still runs Ask]", "")
+        var walked: [String] = []
+        var current: String? = nil
+        for _ in 0..<40 { current = C.move(1, from: current, askListing); if let current { walked.append(current) } }
+        check(walked.contains("consent:jev:on") && walked.contains("consent:jev:never"), "[an arrow reaches the question]", "\(walked)")
+        check(C.onReturn(option: false, chosen: "consent:jev:on", confirming: false, noticeShowing: false, askListing, ask.snapshot) == returnRuns("consent:jev:on"), "[a chosen answer to the question is run]", "")
+        check(C.keepsWordsWhileStaying(row(askListing, "consent:jev:on")!) && !C.sendsWords(row(askListing, "consent:jev:on")!) && !C.leavesSession(row(askListing, "consent:jev:on")!), "[the question keeps the words and leaves nothing]", "")
+        check(C.confirmation(row(askListing, "consent:jev:on")!, ask.snapshot) == nil, "[the question has no second question]", "")
+        for choice in ["on", "never"] {
+            check(C.hint(returnRuns("consent:jev:" + choice), askListing, ask.snapshot).hasPrefix("Return "), "[the hint says what Return does]", choice)
+        }
+
+        // Hits never touch Return, with meaning rows listed, before and after they arrive.
+        let hits = [meaningHit("claude:abc12345", "Jewelry persona review", .strong, match: "price the jewelry persona tier above the base plan"), meaningHit("codex:def67890", "Quarterly planning", .likely, days: 19),
+                    meaningHit("cursor:0a1b2c3d", "Notes", .possible, days: 31)]
+        let waiting = found(on, words: topic, .searching)
+        let strong = found(on, words: topic, .done, hits: hits, back: daysAgo(44))
+        for words in [topic, "persona pricing for jewelry", "jewelry persona review notes", "how did the jewelry pricing go?"] {
+            let before = C.listing(found(on, words: words, .searching), words: words)
+            let arrived = C.listing(found(on, words: words, .done, hits: hits), words: words)
+            check(returned(words, inputs: found(on, words: words, .searching)) == returned(words, inputs: found(on, words: words, .done, hits: hits)), "[Return does the same before and after meaning rows arrive]", words)
+            check(before.autoHighlight == arrived.autoHighlight && before.nearCommand == arrived.nearCommand && before.hasAnswer == arrived.hasAnswer && before.listOnly == arrived.listOnly, "[meaning rows change no flag Return reads]", words)
+            check(returned(words, inputs: found(on, words: words, .done, hits: hits)) == .move("ask"), "[meaning rows never take Return]", "\(returned(words, inputs: found(on, words: words, .done, hits: hits)))")
+        }
+        // The second Return, after the first moved to Ask and rows arrived above it, still runs Ask, and the first Return from nothing still moves to Ask.
+        check(returned(topic, inputs: waiting) == .move("ask") && returned(topic, chosen: "ask", inputs: strong) == returnRuns("ask") && returned(topic, inputs: strong) == .move("ask"),
+              "[rows that arrive after Return moved to Ask leave Ask the one Return runs]", "")
+        for strongHit in [hits[0], meaningHit("claude:abc12345", "Jewelry persona review", .strong, days: 0)] {
+            let only = found(on, words: topic, .done, hits: [strongHit])
+            check(returned(topic, inputs: only) == .move("ask"), "[a strong match does not take Return]", "\(returned(topic, inputs: only))")
+        }
+        // Not when Work runs are off either: the first Return files, as it always did, and a meaning row changes nothing.
+        var off = healthy(); off.workRunsOn = false
+        check(returned(topic, inputs: found(meaningCenter { $0.snapshot = off }, words: topic, .done, hits: hits)) == returned(topic, inputs: meaningCenter { $0.snapshot = off }), "[Work runs off: a meaning row changes nothing Return does]", "")
+        // A hit chosen with a key that goes with a refresh returns nothing.
+        let gone = found(on, words: topic, .done, hits: [hits[1]])
+        check(returned(topic, chosen: "hit:claude:abc12345", inputs: gone) == .nothing, "[a chosen hit that is gone returns nothing]", "")
+
+        // The rows: their own group after the word hits and before Search all, the strength on the detail line, the server's order.
+        let listing = C.listing(strong, words: topic)
+        let meaningRows = listing.rows.filter { $0.group == .meaning }
+        check(meaningRows.map(\.id) == hits.map { "hit:" + $0.id } && meaningRows.allSatisfy { $0.selectable } && meaningRows.allSatisfy { if case .hit = $0.kind { return true } else { return false } },
+              "[meaning rows are hits in a group of their own]", "\(rowIDs(listing))")
+        check(rowIDs(listing).firstIndex(of: "hit:cursor:0a1b2c3d")! < rowIDs(listing).firstIndex(of: "search-all")!, "[meaning rows come before Search all]", "\(rowIDs(listing))")
+        check(meaningRows.map(\.detail) == ["Strong match, Claude Code, Quilt, 12 days ago", "Likely match, Claude Code, Quilt, 2 weeks ago", "Possible match, Claude Code, Quilt, 4 weeks ago"],
+              "[the strength is on the detail line with tool, project and age, in the server's order]", "\(meaningRows.map(\.detail))")
+        check(meaningRows[0].match == "price the jewelry persona tier above the base plan" && meaningRows[1].match == nil, "[the text it was judged on shows when it is not the title]", "\(meaningRows.map(\.match))")
+        check(!listing.rows.contains { $0.title.lowercased().contains("by meaning") && $0.group == .meaning && $0.selectable }, "[no group heading]", "")
+        check(returnedFor(listing) == .move("ask") && listing.searchWords == C.plain(topic), "[meaning rows leave the word search alone]", "")
+        // Capped, warm-up dropped, one session once.
+        let many = (0..<9).map { meaningHit("claude:m\(String(format: "%07d", $0))", "Persona \($0)", .likely) }
+        check(C.listing(found(on, words: topic, .done, hits: many), words: topic).rows.filter { $0.group == .meaning && $0.id.hasPrefix("hit:") }.count == C.meaningCap && C.meaningCap == 5, "[meaning rows are capped at five]", "")
+        var warm = meaningHit("claude:warm0001", "Ready", .strong); warm.keepWarm = true
+        check(row(C.listing(found(on, words: topic, .done, hits: [warm]), words: topic), "hit:claude:warm0001") == nil, "[a warm-up session is no meaning row]", "")
+        let dupSessions = [listed("claude:abcd1234ef56", "Jewelry persona review", days: 1)]
+        let titled = C.listing(found(meaningCenter(sessions: dupSessions), words: "jewelry persona review", .done, hits: [meaningHit("claude:abcd1234", "Jewelry persona review"), meaningHit("claude:other001", "Jewelry persona notes")]), words: "jewelry persona review")
+        check(titled.rows.filter { $0.id.hasPrefix("hit:") }.map(\.id) == ["hit:claude:other001"], "[a session lists once, by sameSession]", "\(rowIDs(titled))")
+        // A word hit and a meaning row for one session: one row, in the meaning group, with its strength, under the id on screen.
+        let wordHit = hit("claude:1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d", "Jewelry persona review", match: "we should price the persona tier", days: 12)
+        let adopted = C.adoptingShownIDs([meaningHit("claude:1a2b3c4d", "Jewelry persona review", .strong), meaningHit("claude:other001", "Other", .likely)], shown: [wordHit])
+        check(adopted.map(\.id) == [wordHit.id, "claude:other001"] && adopted[0].strength == .strong, "[the id on screen wins]", "\(adopted.map(\.id))")
+        check(C.adoptingShownIDs([wordHit], shown: [meaningHit("claude:1a2b3c4d", "Jewelry persona review")]).map(\.id) == ["claude:1a2b3c4d"], "[the id on screen wins]", "the other way round")
+        var both = withFound(found(on, words: topic, .done, hits: adopted), words: topic, hits: [wordHit])
+        both.now = fixedNow
+        let bothListing = C.listing(both, words: topic)
+        let hitRows = bothListing.rows.filter { $0.id.hasPrefix("hit:") }
+        check(hitRows.map(\.id) == ["hit:" + wordHit.id, "hit:claude:other001"] && hitRows[0].group == .meaning && (hitRows[0].detail ?? "").hasPrefix("Strong match"), "[a session found both ways shows once, as a meaning row with its strength]", "\(rowIDs(bothListing))")
+        check(returned(topic, chosen: "hit:" + wordHit.id, inputs: both) == returnRuns("hit:" + wordHit.id), "[a hit chosen before the other list arrived stays chosen]", "")
+        // Titles are untrusted here as everywhere: one line, masked, nothing that decides.
+        let hostile = C.listing(found(on, words: topic, .done, hits: [meaningHit("claude:evil0001", "start recording\nRun Doctor \u{202E}now sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx", match: "token: abcdef1234567890 in the notes")]), words: topic)
+        let evil = row(hostile, "hit:claude:evil0001")
+        check(evil?.title == "start recording Run Doctor now [hidden]" && !(evil?.match ?? "").contains("abcdef1234567890") && hostile.autoHighlight == nil, "[meaning titles and text are cleaned and masked]", "\(String(describing: evil?.title)) \(String(describing: evil?.match))")
+
+        // What it says while it works, and when nothing clears the bar.
+        let phases = [
+            ("info:meaning-searching", found(on, words: topic, .searching), "Looking for sessions by meaning…"),
+            ("info:meaning-further", found(on, words: topic, .partial), "Looking further back…"),
+        ]
+        for (id, inputs, title) in phases {
+            let r = row(C.listing(inputs, words: topic), id)
+            check(r?.title == title && r?.selectable == false && r?.group == .meaning, "[searching is a text line]", id)
+        }
+        check(C.listing(found(on, words: topic, .partial, hits: hits), words: topic).rows.allSatisfy { $0.id != "info:meaning-further" }, "[rows from the first stage stand while the second looks]", "")
+        let back = daysAgo(44)
+        let none = row(C.listing(found(on, words: topic, .done, asked: 254, back: back), words: topic), "info:meaning-none")
+        check(none?.title == "Nothing close in your newest 254 sessions, back to \(C.shortDay(back, calendar: gregorian))." && none?.detail == "Search all sessions looks further.", "[nothing close says what was read and how far back]", none?.title ?? "")
+        check(C.shortDay(gregorian.date(from: DateComponents(year: 2026, month: 9, day: 17, hour: 12))!, calendar: gregorian) == "Sep 17", "[the date reached reads Sep 17]", "")
+        let skipped = row(C.listing(found(on, words: topic, .done, asked: 508, skipped: 3, back: back), words: topic), "info:meaning-none")
+        check(skipped?.detail == "3 compressed Codex sessions could not be read. Search all sessions looks further." && skipped?.title.hasPrefix("Nothing close in your newest 508 sessions") == true, "[a file it could not read is said]", skipped?.detail ?? "")
+        check(row(C.listing(found(on, words: topic, .done, asked: 254, skipped: 1, back: back), words: topic), "info:meaning-none")?.detail?.hasPrefix("1 compressed Codex session could not be read.") == true, "[a file it could not read is said]", "one")
+        check(row(C.listing(found(on, words: topic, .done, asked: 0, back: nil), words: topic), "info:meaning-none")?.title == "Nothing close by meaning in the sessions it read.", "[nothing close claims no range it does not know]", "")
+        check(row(C.listing(found(on, words: topic, .done, asked: 254, back: nil), words: topic), "info:meaning-none")?.title == "Nothing close in your newest 254 sessions.", "[nothing close claims no date it does not know]", "")
+        check(row(C.listing(found(on, words: topic, .done, hits: hits), words: topic), "info:meaning-none") == nil, "[rows and nothing close never show together]", "")
+        // Every refusal has its own words. A failed or capped search never says nothing is close.
+        let reasons: [C.MeaningReason] = [.consentRequired, .providerChanged, .notConfigured, .sessionsOff, .findOff, .capReached, .breakerOpen, .queryTooShort, .failed, .serverTooOld, .unreachable, .timedOut, .tryLater, .noToken, .unauthorized]
+        var titles = Set<String>()
+        for reason in reasons {
+            let said = C.line(for: reason, resetsAt: nil, now: fixedNow, calendar: gregorian)
+            let r = row(C.listing(found(on, words: topic, .unavailable(reason)), words: topic), "info:meaning-" + reason.rawValue)
+            check(!said.title.isEmpty && r?.title == said.title && r?.detail == said.detail && r?.selectable == false, "[every refusal has its own words]", reason.rawValue)
+            check(!said.title.lowercased().contains("nothing close"), "[a failed or capped search never says nothing is close]", reason.rawValue)
+            titles.insert(said.title)
+        }
+        check(titles.count >= 12, "[refusals are told apart]", "\(titles.count)")
+        let reset = gregorian.date(from: DateComponents(year: 2026, month: 10, day: 31, hour: 18))!
+        check(C.line(for: .capReached, resetsAt: reset, now: fixedNow, calendar: gregorian).detail == "It starts again at 6 PM." && C.line(for: .capReached, resetsAt: nil, now: fixedNow, calendar: gregorian).detail == "It starts again within a day.", "[a cap says when it comes back]", "")
+        let next = gregorian.date(from: DateComponents(year: 2026, month: 11, day: 1, hour: 18, minute: 40))!
+        check(C.line(for: .breakerOpen, resetsAt: next, now: fixedNow, calendar: gregorian).detail == "It tries again tomorrow at 6:40 PM." && C.line(for: .breakerOpen, resetsAt: reset.addingTimeInterval(-86_400), now: fixedNow, calendar: gregorian).detail == "It tries again on its own in a while.", "[a pause says when it tries again, and never a time in the past]", "")
+        // A refusal that stays true is remembered: the panel asks no more, and says so for any topic.
+        let settled = C.listing(meaningCenter(settled: .serverTooOld), words: topic)
+        check(settled.meaningAsk == nil && row(settled, "info:meaning-server_too_old")?.title == "This COS server cannot search by meaning yet." && row(C.listing(meaningCenter(settled: .serverTooOld), words: "another topic entirely"), "info:meaning-server_too_old") != nil,
+              "[an older server is not asked again]", "")
+        for reason in reasons { check(reason.settles == [.serverTooOld, .sessionsOff, .findOff, .notConfigured, .capReached, .breakerOpen, .noToken, .unauthorized].contains(reason), "[which refusals stay true]", reason.rawValue) }
+
+        // Answers arriving.
+        let one = C.meaningArrived(C.MeaningFound(), words: C.plain(topic), stage: .first, .rows(hits, asked: 254, skipped: 0, reachedBack: back), keeping: nil)
+        check(one.phase == .partial && one.hits.map(\.id) == hits.map(\.id) && one.asked == 254 && one.reachedBack == back, "[the first stage is partial]", "")
+        let two = C.meaningArrived(one, words: C.plain(topic), stage: .full, .rows([hits[1], hits[0]], asked: 508, skipped: 2, reachedBack: back), keeping: nil)
+        check(two.phase == .done && two.hits.map(\.id) == [hits[1].id, hits[0].id] && two.asked == 508 && two.skipped == 2, "[the full stage is done and replaces the first]", "")
+        let kept = C.meaningArrived(one, words: C.plain(topic), stage: .full, .rows([hits[1]], asked: 508, skipped: 0, reachedBack: back), keeping: "hit:" + hits[0].id)
+        check(kept.hits.map(\.id) == [hits[0].id, hits[1].id], "[a refresh keeps a chosen hit where it was]", "\(kept.hits.map(\.id))")
+        let unkept = C.meaningArrived(one, words: C.plain(topic), stage: .full, .rows([hits[1]], asked: 508, skipped: 0, reachedBack: back), keeping: nil)
+        check(unkept.hits.map(\.id) == [hits[1].id], "[an unchosen hit goes with the refresh]", "")
+        let fresh = C.meaningArrived(one, words: "something else entirely", stage: .first, .rows([hits[1]], asked: 254, skipped: 0, reachedBack: back), keeping: "hit:" + hits[0].id)
+        check(fresh.hits.map(\.id) == [hits[1].id] && fresh.words == "something else entirely", "[new words start clean]", "")
+        let refusedAfterRows = C.meaningArrived(one, words: C.plain(topic), stage: .full, .refused(.timedOut, resetsAt: nil), keeping: nil)
+        check(refusedAfterRows.phase == .done && refusedAfterRows.hits.map(\.id) == hits.map(\.id) && refusedAfterRows.asked == 254, "[a refusal after good rows keeps the rows]", "")
+        let refusedFirst = C.meaningArrived(C.MeaningFound(), words: C.plain(topic), stage: .first, .refused(.capReached, resetsAt: reset), keeping: nil)
+        check(refusedFirst.phase == .unavailable(.capReached) && refusedFirst.hits.isEmpty && refusedFirst.resetsAt == reset, "[a refusal with no rows is its own phase]", "")
+        let refusedNoRows = C.meaningArrived(C.MeaningFound(words: C.plain(topic), phase: .partial), words: C.plain(topic), stage: .full, .refused(.timedOut, resetsAt: nil), keeping: nil)
+        check(refusedNoRows.phase == .unavailable(.timedOut), "[a second stage that fails with no rows is a failure, not nothing close]", "")
+        check(C.meaningArrived(C.MeaningFound(), words: "x y z", stage: .first, .rows((0..<9).map { meaningHit("claude:c\(String(format: "%07d", $0))", "C\($0)") }, asked: 1, skipped: 0, reachedBack: nil), keeping: nil).hits.count == C.meaningCap, "[an answer is capped at five]", "")
+        // The wire words.
+        check(C.MeaningReason(wire: "cap_reached") == .capReached && C.MeaningReason(wire: "decision_cap_reached") == .capReached && C.MeaningReason(wire: "jev_breaker_open") == .breakerOpen
+              && C.MeaningReason(wire: "decision_not_configured") == .notConfigured && C.MeaningReason(wire: "jev_not_configured") == .notConfigured && C.MeaningReason(wire: "consent_required") == .consentRequired
+              && C.MeaningReason(wire: "provider_changed") == .providerChanged && C.MeaningReason(wire: "jev_request_rejected") == .failed && C.MeaningReason(wire: nil) == .failed && C.MeaningReason(wire: "") == .failed
+              && C.MeaningReason(wire: "something strange") == .failed, "[the wire words map to reasons]", "")
+        check(C.MeaningReason.consentRequired.againstConsent && C.MeaningReason.providerChanged.againstConsent && !C.MeaningReason.failed.againstConsent && !C.MeaningReason.capReached.againstConsent, "[two refusals say the model changed]", "")
+
+        // The copy rules cover everything this part says.
+        var said: [String] = C.Strength.allCases.map(\.word) + [C.consentText(.jev), C.consentText(.subq)]
+        for reason in reasons { let l = C.line(for: reason, resetsAt: reset, now: fixedNow, calendar: gregorian); said += [l.title, l.detail ?? ""] }
+        for skippedCount in [0, 1, 4] { let l = C.nothingClose(asked: 254, reachedBack: back, skipped: skippedCount, calendar: gregorian); said += [l.title, l.detail ?? ""] }
+        let banned = ["\u{2014}", "\u{2013}", "\u{2192}", "->", "=>", "\u{21D2}"]
+        let hedges = [" maybe ", " perhaps ", " might ", " possibly ", " probably ", " kinda ", " sort of ", "-ish", " somewhat ", " usually "]
+        for text in said where !text.isEmpty {
+            check(!banned.contains { text.contains($0) } && !hedges.contains { (" " + text.lowercased() + " ").contains($0) }, "[meaning copy rules]", text)
+        }
+        check(said.count >= 40, "[meaning copy rules]", "read \(said.count) strings")
+    }
+
     static func centerFooter() {
         let long = String(repeating: "A very long session title ", count: 7)
         let sessions = withSessions([listed("claude:long0001", long, days: 1), listed("claude:short001", "Short", days: 1)])
@@ -1338,10 +1602,16 @@ import Foundation
             withFound(withSessions([]), words: "persona pricing", phase: .searching, hits: []), withFound(withSessions([]), words: "persona pricing", phase: .failed, hits: []),
             withFound(withSessions([]), words: "persona pricing", phase: .timedOut, hits: []),
             withFound(withSessions([]), words: "persona pricing", hits: []), center { $0.sessionsLoaded = false },
+            // 0.5.362: the question for each model, rows with each strength, nothing close, a pause, a cap and a refusal that stays.
+            meaningCenter(.jev, choices: [:]), meaningCenter(.subq, choices: [:]),
+            found(meaningCenter(), words: topic, .done, hits: [meaningHit("claude:abc12345", "Jewelry persona review", .strong, match: "price the jewelry persona tier"), meaningHit("codex:def67890", "Quarterly planning", .likely), meaningHit("cursor:0a1b2c3d", "Notes", .possible)], back: daysAgo(44)),
+            found(meaningCenter(), words: topic, .searching), found(meaningCenter(), words: topic, .partial), found(meaningCenter(), words: topic, .done, skipped: 3, back: daysAgo(44)),
+            found(meaningCenter(), words: topic, .unavailable(.capReached)), found(meaningCenter(), words: topic, .unavailable(.timedOut)), found(meaningCenter(), words: topic, .unavailable(.failed)),
+            meaningCenter(settled: .serverTooOld),
         ]
         for inputs in fixtures {
             for words in ["", "hello", "set up parakeet", "start recording", "stop recording", "my transcript never finished", "how do i use dictation", "rename a voice", "doctor",
-                          "sessions", "recent", "sessions today", "usage", "go to usage", "messages", "work", "tasks", "voices", "dictation", "usage limit reached", "persona pricing", "holiday promo"] {
+                          "sessions", "recent", "sessions today", "usage", "go to usage", "messages", "work", "tasks", "voices", "dictation", "usage limit reached", "persona pricing", "holiday promo", "persona pricing for the jewelry tier"] {
                 let listing = C.listing(inputs, words: words)
                 check(Set(listing.rows.map(\.id)).count == listing.rows.count, "[row ids are unique]", "\(rowIDs(listing))")
                 for row in listing.rows { texts += [row.title, row.detail ?? "", row.state ?? "", row.trailing ?? "", row.held ?? "", row.match ?? ""] }

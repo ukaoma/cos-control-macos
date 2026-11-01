@@ -1317,6 +1317,346 @@ enum SetupAssistant {
             return String(text.prefix(matchCap))
         }
 
+        // MARK: Meaning search (0.5.362)
+
+        // Miles, 2026-10-31: "if I can't remember exactly what I was working on, I should be able to search the topic or adjacently, and then
+        // it should reference where and what that session was so I can open it", judged by "subq ... (or jev) depending on what the user has
+        // for their judgment model", "with a weighted match so we get a view of several sessions that could match in order of likelihood".
+        // The COS server reads the sessions and asks the person's decision model; this file decides only when the panel may ask, what it
+        // draws and what each refusal says. Nothing typed becomes a command here, a hit never takes Return, and nothing is asked before the
+        // person says yes for the model that decides.
+
+        /// The two decision models. A closed set: nothing else is ever sent as the provider a person agreed to.
+        enum MeaningProvider: String, CaseIterable, Sendable {
+            case jev, subq
+            var title: String { self == .jev ? "Jev" : "SubQ" }
+            /// What this model does with what it is sent, when it is known (docs/decision-providers.md). Nothing is claimed for Jev.
+            var keeps: String? { self == .subq ? "SubQ keeps what it is sent." : nil }
+        }
+
+        /// What the person chose for one model. Ask is the default, and it sends nothing.
+        enum MeaningChoice: String, CaseIterable, Sendable { case ask, on, never }
+
+        /// How strongly the decision model matched a session: the server's `strength`, three words and no others. A word it does not know
+        /// reads as the weakest, so a new server word never claims more than was said.
+        enum Strength: String, CaseIterable, Sendable {
+            case strong, likely, possible
+            init(wire: String?) { self = wire.flatMap(Strength.init(rawValue:)) ?? .possible }
+            /// The words on the row's detail line. There is no group heading: a rule between groups is the only section marking.
+            var word: String {
+                switch self {
+                case .strong: return "Strong match"
+                case .likely: return "Likely match"
+                case .possible: return "Possible match"
+                }
+            }
+        }
+
+        /// What the panel knows about meaning search before it asks anything. Plain values from Settings > Decision models and from what the
+        /// person chose.
+        struct Meaning: Equatable, Sendable {
+            /// The model that decides search now (`effective.search`). Nil: the settings are not read, or the panel forgot them.
+            var provider: MeaningProvider? = nil
+            /// A key is saved for that model (`configured`).
+            var keyed = false
+            /// The server says it can find sessions by meaning (`capabilities.sessionFind`). Never read from a version.
+            var capable = false
+            /// What the person chose for each model, by `MeaningProvider.rawValue`. A model with no entry is ask.
+            var choices: [String: MeaningChoice] = [:]
+            /// A refusal that stays true for as long as the panel is open (an older server, a cap): the panel asks no more and says it.
+            var settled: MeaningReason? = nil
+
+            /// The choice for the model that decides now.
+            var choice: MeaningChoice { provider.flatMap { choices[$0.rawValue] } ?? .ask }
+            /// Meaning search is worth offering at all: a server that can, a model that decides, and a key for it.
+            var offered: Bool { capable && keyed && provider != nil }
+        }
+
+        /// The model a search may be sent to, or nil. This is the one gate: the server must say it can, a key must be saved for the model that
+        /// decides now, and the person must have said yes to that model. A yes for Jev is no yes for SubQ. The name returned is the one the
+        /// person agreed to, and the server compares it with its own before it reads a session.
+        static func consentedProvider(_ m: Meaning) -> MeaningProvider? {
+            guard m.offered, m.settled == nil, let provider = m.provider, m.choice == .on else { return nil }
+            return provider
+        }
+
+        /// The server and Control disagree about who decides (`consent_required`, `provider_changed`), so what Control believed about the
+        /// model is forgotten until the settings are read again. Nothing is asked in between.
+        static func forgettingProvider(_ m: Meaning) -> Meaning {
+            var next = m
+            next.provider = nil
+            next.keyed = false
+            return next
+        }
+
+        /// Which request the panel makes, and for which model.
+        struct MeaningAsk: Equatable, Sendable {
+            var words: String
+            var provider: MeaningProvider
+        }
+
+        enum MeaningStage: String, Sendable { case first, full }
+
+        /// Why the server gave no rows. The server's words, as a closed set; anything else is `failed`. Control adds `server_too_old`,
+        /// `unreachable`, `timed_out`, `try_later`, `no_token` and `unauthorized` itself, for an answer it could not get.
+        enum MeaningReason: String, Equatable, Sendable {
+            case consentRequired = "consent_required", providerChanged = "provider_changed", notConfigured = "decision_not_configured"
+            case sessionsOff = "sessions_off", findOff = "find_off", capReached = "cap_reached", breakerOpen = "breaker_open", queryTooShort = "query_too_short"
+            case failed, serverTooOld = "server_too_old", unreachable, timedOut = "timed_out", tryLater = "try_later", noToken = "no_token", unauthorized
+
+            /// The wire word to a reason. The provider's own codes (`jev_*`, `decision_*`) fold into the nearest word.
+            init(wire: String?) {
+                guard let wire, !wire.isEmpty else { self = .failed; return }
+                if let known = MeaningReason(rawValue: wire) { self = known }
+                else if wire.hasSuffix("cap_reached") { self = .capReached }
+                else if wire.hasSuffix("breaker_open") { self = .breakerOpen }
+                else if wire.hasPrefix("jev_") || wire.hasPrefix("decision_"), wire.contains("not_configured") || wire.contains("no_key") { self = .notConfigured }
+                else { self = .failed }
+            }
+
+            /// True for a refusal that stays true while the panel is open, so nothing asks again until it is opened again. The rest are for
+            /// these words only.
+            var settles: Bool {
+                switch self {
+                case .serverTooOld, .sessionsOff, .findOff, .notConfigured, .capReached, .breakerOpen, .noToken, .unauthorized: return true
+                default: return false
+                }
+            }
+
+            /// The two refusals that say the person's yes was for a different model than the one deciding.
+            var againstConsent: Bool { self == .consentRequired || self == .providerChanged }
+        }
+
+        /// How far one search got.
+        enum MeaningPhase: Equatable, Sendable {
+            case idle
+            /// The first request is out.
+            case searching
+            /// The first request answered; the full one is waiting or out.
+            case partial
+            case done
+            case unavailable(MeaningReason)
+        }
+
+        /// What meaning search found for one set of words. The panel owns the search (its words, its timing, its one request at a time); the
+        /// core only draws the result, and only for the words that are in the box now.
+        struct MeaningFound: Equatable, Sendable {
+            /// `plain(words)` these rows are for.
+            var words = ""
+            var phase = MeaningPhase.idle
+            /// In the server's order, most likely first. Each carries its strength.
+            var hits: [Item] = []
+            /// How many sessions were asked about, and how many compressed files the server could not read.
+            var asked = 0
+            var skipped = 0
+            /// The oldest date the search reached.
+            var reachedBack: Date? = nil
+            /// When a capped or paused search comes back, if the server said.
+            var resetsAt: Date? = nil
+        }
+
+        /// One answer, as plain values.
+        enum MeaningOutcome: Equatable, Sendable {
+            case rows([Item], asked: Int, skipped: Int, reachedBack: Date?)
+            case refused(MeaningReason, resetsAt: Date?)
+        }
+
+        /// Meaning rows shown at once. The server sends at most this many.
+        static let meaningCap = 5
+        /// Words before the panel asks: a topic, not a word. A shorter phrase finds nothing the word search does not.
+        static let meaningMinWords = 3
+
+        /// Letter and number runs: "pet drag fragment" is three. `typed` is `plain(words)`.
+        static func meaningWordCount(_ typed: String) -> Int { typed.split { !$0.isLetter && !$0.isNumber }.count }
+
+        /// A hit that is the same session as one already on screen keeps that row's id, so a highlight chosen on a word hit never goes stale
+        /// when the same session arrives as a meaning row, or the other way round. The id on screen wins.
+        static func adoptingShownIDs(_ incoming: [Item], shown: [Item]) -> [Item] {
+            incoming.map { item in
+                guard let session = item.sessionID,
+                      let same = shown.first(where: { other in other.sessionID.map { sameListed($0, session) } ?? false }) else { return item }
+                var next = item
+                next.id = same.id
+                next.sessionID = same.sessionID
+                return next
+            }
+        }
+
+        /// What one answer does to what the panel holds. Rows for the same words in a second stage replace the first's, but a row the person
+        /// has chosen with a key stays where it was, so a refresh never takes it from under them. A refusal after good rows keeps the rows.
+        static func meaningArrived(_ old: MeaningFound, words: String, stage: MeaningStage, _ outcome: MeaningOutcome, keeping chosen: String?) -> MeaningFound {
+            let same = old.words == words
+            var next = MeaningFound(words: words)
+            let before = same ? old.hits : []
+            func keepChosen(_ hits: [Item]) -> [Item] {
+                var kept = hits
+                if let chosen, let gone = before.first(where: { "hit:" + $0.id == chosen }), !kept.contains(where: { $0.id == gone.id }) {
+                    let at = before.firstIndex(where: { $0.id == gone.id }) ?? kept.count
+                    kept.insert(gone, at: min(at, kept.count))
+                }
+                return kept
+            }
+            switch outcome {
+            case .rows(let items, let asked, let skipped, let reachedBack):
+                next.hits = keepChosen(Array(items.filter { !$0.keepWarm }.prefix(meaningCap)))
+                next.asked = asked
+                next.skipped = skipped
+                next.reachedBack = reachedBack
+                next.phase = stage == .first ? .partial : .done
+            case .refused(let reason, let resetsAt):
+                next.resetsAt = resetsAt
+                if !before.isEmpty, stage == .full {
+                    // The first stage found rows and the second could not go further: the rows are real, so they stay.
+                    next.hits = keepChosen(before)
+                    next.asked = old.asked
+                    next.skipped = old.skipped
+                    next.reachedBack = old.reachedBack
+                    next.phase = .done
+                } else {
+                    next.hits = keepChosen([])
+                    next.phase = .unavailable(reason)
+                }
+            }
+            return next
+        }
+
+        /// "Sep 17": a short day in the person's calendar.
+        static func shortDay(_ date: Date, calendar: Calendar) -> String {
+            let formatter = DateFormatter()
+            formatter.calendar = calendar
+            formatter.timeZone = calendar.timeZone
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "MMM d"
+            return formatter.string(from: date)
+        }
+
+        /// "6 PM" or "6:40 PM", in the person's time.
+        static func clockWords(_ date: Date, calendar: Calendar) -> String {
+            let formatter = DateFormatter()
+            formatter.calendar = calendar
+            formatter.timeZone = calendar.timeZone
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = calendar.component(.minute, from: date) == 0 ? "h a" : "h:mm a"
+            return formatter.string(from: date)
+        }
+
+        /// A line and its second line, in plain words. Nothing here says more than was found: an absence names how many sessions were asked
+        /// about and how far back they reach, and never says "no match" about the rest.
+        struct MeaningLine: Equatable, Sendable {
+            var title: String
+            var detail: String? = nil
+        }
+
+        /// Nothing cleared the bar. Never a false absolute: the count asked and the date reached are the claim, and a file the server could
+        /// not read is said.
+        static func nothingClose(asked: Int, reachedBack: Date?, skipped: Int, calendar: Calendar) -> MeaningLine {
+            var title = "Nothing close by meaning in the sessions it read."
+            if asked > 0 {
+                title = "Nothing close in your newest \(asked) sessions"
+                if let reachedBack { title += ", back to " + shortDay(reachedBack, calendar: calendar) }
+                title += "."
+            }
+            var detail = "Search all sessions looks further."
+            if skipped > 0 { detail = (skipped == 1 ? "1 compressed Codex session could not be read. " : "\(skipped) compressed Codex sessions could not be read. ") + detail }
+            return MeaningLine(title: title, detail: detail)
+        }
+
+        /// What each refusal says. A capped or paused search says when it comes back if the server said, and otherwise says only that it
+        /// does not stay off.
+        static func line(for reason: MeaningReason, resetsAt: Date?, now: Date, calendar: Calendar) -> MeaningLine {
+            func comes(_ fallback: String, _ verb: String) -> String {
+                guard let resetsAt, resetsAt > now else { return fallback }
+                let sameDay = calendar.isDate(resetsAt, inSameDayAs: now)
+                return verb + " " + (sameDay ? "at " : "tomorrow at ") + clockWords(resetsAt, calendar: calendar) + "."
+            }
+            switch reason {
+            case .capReached:
+                return MeaningLine(title: "Meaning search is used up for today.", detail: comes("It starts again within a day.", "It starts again"))
+            case .breakerOpen:
+                return MeaningLine(title: "Meaning search is paused after repeated errors.", detail: comes("It tries again on its own in a while.", "It tries again"))
+            case .timedOut:
+                return MeaningLine(title: "Meaning search took too long.", detail: "Try fewer words. Word matches above still work.")
+            case .failed, .unreachable, .tryLater:
+                return MeaningLine(title: "Meaning search did not answer.", detail: "Word matches above still work. Search all sessions looks further.")
+            case .unauthorized:
+                return MeaningLine(title: "The COS server did not accept the search.", detail: "Word matches above still work.")
+            case .noToken:
+                return MeaningLine(title: "COS Control is not paired with the COS server.", detail: "Word matches above still work.")
+            case .serverTooOld:
+                return MeaningLine(title: "This COS server cannot search by meaning yet.", detail: "Update Server in Settings adds it.")
+            case .sessionsOff:
+                return MeaningLine(title: "AI sessions are off, so there is nothing to search by meaning.", detail: sessionsOffDetail)
+            case .findOff:
+                return MeaningLine(title: "Search by meaning is switched off on this COS server.")
+            case .notConfigured:
+                return MeaningLine(title: "No key is saved for the model that decides.", detail: "Add a Jev or SubQ key in Settings, Decision models.")
+            case .queryTooShort:
+                return MeaningLine(title: "Add a few more words.")
+            case .consentRequired, .providerChanged:
+                return MeaningLine(title: "The model that decides changed.", detail: "Your choice is asked again for the new one.")
+            }
+        }
+
+        /// The question before anything is sent. The first part says what leaves, in full; SubQ's adds what it keeps. Emails, links and
+        /// key-shaped text are removed on the server before anything is sent.
+        static func consentText(_ provider: MeaningProvider) -> String {
+            let sent = "Each search sends the words you type here, plus the title and first 150 characters of the first prompt from up to 508 recent sessions, to \(provider.title). Emails, links and key-shaped text are removed first. Names and other details are not."
+            return sent + (provider.keeps.map { " " + $0 } ?? "")
+        }
+
+        /// The two choices, as rows: turn it on for this model, or never ask for it. Reached by an arrow or a click.
+        private static func consentRows(_ provider: MeaningProvider) -> [Row] {
+            [Row(id: "consent:\(provider.rawValue):on", kind: .consent(provider, .on), group: .meaning, title: "Find sessions by meaning with \(provider.title)",
+                 detail: consentText(provider), trailing: "Turn on"),
+             Row(id: "consent:\(provider.rawValue):never", kind: .consent(provider, .never), group: .meaning, title: "Never find sessions by meaning with \(provider.title)",
+                 trailing: "Never")]
+        }
+
+        /// The meaning part of the listing for these words: the rows, the request the panel may make, and the sessions the rows show.
+        private static func meaningPart(_ inputs: Inputs, raw: String, typed: String, listed: (String?) -> Bool) -> (rows: [Row], ask: MeaningAsk?, shown: [String]) {
+            let m = inputs.meaning
+            guard m.offered, let provider = m.provider, meaningWordCount(typed) >= meaningMinWords else { return ([], nil, []) }
+            if let settled = m.settled {
+                let said = line(for: settled, resetsAt: nil, now: inputs.now, calendar: inputs.calendar)
+                return ([info("meaning-" + settled.rawValue, .meaning, said.title, detail: said.detail)], nil, [])
+            }
+            switch m.choice {
+            case .never: return ([], nil, [])
+            case .ask: return (consentRows(provider), nil, [])
+            case .on: break
+            }
+            // The key shapes in the words are hidden before they are sent, from what was typed (plain words have lost their hyphens). The
+            // server removes them as well. The words that are sent are the words the result is kept under.
+            let sent = String(plain(mask(String(raw.prefix(maxQuestion)))).prefix(200))
+            let ask = consentedProvider(m).map { MeaningAsk(words: sent, provider: $0) }
+            let found = inputs.meaningFound
+            guard found.words == sent else { return ([], ask, []) }
+            var rows: [Row] = []
+            var shown: [String] = []
+            func already(_ id: String?) -> Bool { listed(id) || (id.map { id in shown.contains { sameListed($0, id) } } ?? false) }
+            for item in found.hits where rows.count < meaningCap && !item.keepWarm && !already(item.sessionID) {
+                let ago = when(item.date, now: inputs.now, calendar: inputs.calendar)
+                let detail = [item.strength?.word, item.detail.map(clean), ago].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
+                rows.append(Row(id: "hit:" + item.id, kind: .hit(item.id), group: .meaning, title: hitTitle(item.title), detail: detail.isEmpty ? nil : detail,
+                                state: item.state, trailing: item.openLabel, match: matchLine(item.match, title: item.title), leavesSession: item.leavesSession))
+                if let id = item.sessionID { shown.append(id) }
+            }
+            func status(_ said: MeaningLine, _ id: String) -> Row { info(id, .meaning, said.title, detail: said.detail) }
+            switch found.phase {
+            case .idle: break
+            case .searching: rows.append(info("meaning-searching", .meaning, "Looking for sessions by meaning…"))
+            case .partial:
+                if rows.isEmpty { rows.append(info("meaning-further", .meaning, "Looking further back…")) }
+            case .done:
+                if rows.isEmpty {
+                    rows.append(status(nothingClose(asked: found.asked, reachedBack: found.reachedBack, skipped: found.skipped, calendar: inputs.calendar), "meaning-none"))
+                }
+            case .unavailable(let reason):
+                rows.append(status(line(for: reason, resetsAt: found.resetsAt, now: inputs.now, calendar: inputs.calendar), "meaning-" + reason.rawValue))
+            }
+            return (rows, ask, shown)
+        }
+
         // MARK: Rows
 
         enum Kind: Equatable, Sendable {
@@ -1329,13 +1669,16 @@ enum SetupAssistant {
             case hit(String)
             /// Opens Sessions with the words in its search box, for anything older than the local search reaches.
             case searchAll
+            /// The one-time question before meaning search sends anything (0.5.362): turn it on for this model, or never ask again. Reached by an
+            /// arrow or a click. Return never moves onto it.
+            case consent(MeaningProvider, MeaningChoice)
             case ask, file
             /// Words only: the saved answer, and lines like "Nothing is running."
             case savedAnswer, info
         }
 
         /// What a row is. A rule between groups is the only section marking.
-        enum Group: Int, Sendable { case recording, waiting, running, doing, fixing, commands, places, sessions, found, answer, asking }
+        enum Group: Int, Sendable { case recording, waiting, running, doing, fixing, commands, places, sessions, found, meaning, answer, asking }
 
         struct Row: Identifiable, Equatable, Sendable {
             var id: String
@@ -1372,6 +1715,7 @@ enum SetupAssistant {
                 case .action(let action): return "action." + action.rawValue
                 case .place(let place): return "place." + place.rawValue
                 case .hit: return "hit"
+                case .consent: return "consent"
                 case .searchAll: return "search"
                 case .ask: return "ask"
                 case .file: return "file"
@@ -1398,6 +1742,8 @@ enum SetupAssistant {
             var keepWarm = false
             /// The text the local search matched. Cleaned, masked and shortened where the row is made.
             var match: String? = nil
+            /// How strongly the person's decision model matched it (0.5.362). Nil for a word hit. It draws a word on the row and decides nothing.
+            var strength: Strength? = nil
             /// Opening it takes the person out of the open session (a Sessions row, a held Work or routine run, Cursor without Accessibility).
             var leavesSession = false
         }
@@ -1458,6 +1804,10 @@ enum SetupAssistant {
             var calendar = Calendar(identifier: .gregorian)
             /// What the word search found so far for the words in the box. The panel owns the search; this is only its result.
             var found = Found()
+            /// Whether meaning search may be offered and asked (0.5.362), and what the person chose.
+            var meaning = Meaning()
+            /// What meaning search found so far for the words in the box. The panel owns the search, as it does the word search.
+            var meaningFound = MeaningFound()
             /// Settings > Work and agents > Show AI sessions is off, as the model holds it. Before the list has answered that is only the
             /// starting value (it starts off, and a server that is down never says), so `sessionsOff` says it only once the list answered.
             var sessionsSettingOff = false
@@ -1745,6 +2095,10 @@ enum SetupAssistant {
             /// What the panel's word search should look for, or nil: under three characters, an exact command or place, a noun list,
             /// and Sessions off all skip it. `plain` words, at most 200 characters.
             var searchWords: String? = nil
+            /// What the panel may ask the COS server to find by meaning, or nil (0.5.362). Nil unless every one of these holds: the server says
+            /// it can, a key is saved for the model that decides, the person said yes to that model, and the words are a topic (three words or
+            /// more, no exact command, place or noun list, Sessions on). Nothing is asked of the server without it.
+            var meaningAsk: MeaningAsk? = nil
         }
 
         /// A row Return may move onto from the top of the list: a command or a place. Never a hit, and never the "AI sessions are off"
@@ -1880,6 +2234,11 @@ enum SetupAssistant {
             } else if typed.count >= 3, span == nil, !exact, !inputs.sessionsOff {
                 let search = String(typed.prefix(200))
                 result.searchWords = search
+                // Meaning search (0.5.362): its rows sit in their own group after the word hits, and a session in both shows once, as a
+                // meaning row with its strength. Return reads neither.
+                let meaningResult = meaningPart(inputs, raw: words, typed: typed, listed: listed)
+                result.meaningAsk = meaningResult.ask
+                seen += meaningResult.shown
                 let found = inputs.found
                 if found.words == search {
                     switch found.phase {
@@ -1906,6 +2265,7 @@ enum SetupAssistant {
                         }
                     }
                 }
+                rows += meaningResult.rows
                 rows.append(Row(id: "search-all", kind: .searchAll, group: .found, title: "Search all sessions",
                                 detail: "Opens Sessions with your words in its search box. Sessions' search asks the COS server and can use your OpenAI key.", trailing: "Open Sessions"))
             }
@@ -2034,6 +2394,8 @@ enum SetupAssistant {
                     return Footer(lead: "Return moves to " + sessionWord(row.title), title: row.title, tail: ". Return again opens it.")
                 case .recording, .waiting, .running, .place, .searchAll:
                     return Footer(lead: "Return moves to ", title: row.title, tail: ". Return again opens it.")
+                case .consent:
+                    return Footer(lead: "Return moves to ", title: row.title, tail: ". Return again chooses it.")
                 default:
                     return Footer(lead: "Return moves to ", title: row.title, tail: ". Return again " + (confirmation(row, s) != nil ? "asks first." : "runs it."))
                 }
@@ -2044,6 +2406,8 @@ enum SetupAssistant {
                     return Footer(lead: (confirmation(row, s) != nil ? "Return asks first: " : "Return opens: ") + sessionWord(row.title), title: row.title)
                 case .recording, .waiting, .running, .place, .searchAll:
                     return Footer(lead: confirmation(row, s) != nil ? "Return asks first: " : "Return opens: ", title: row.title)
+                case .consent(_, let choice):
+                    return Footer(lead: choice == .on ? "Return turns on search by meaning for this model." : "Return stops asking about search by meaning for this model.")
                 default:
                     return Footer(lead: (confirmation(row, s) != nil ? "Return asks first: " : "Return runs: "), title: row.title)
                 }
@@ -2090,8 +2454,10 @@ enum SetupAssistant {
         /// Whether the panel keeps its words after this row ran and the panel stayed open. A hit whose open is still under way keeps
         /// them: if the app does not open it the hits are still there, with the notice (0.5.361). Every other row used them up.
         static func keepsWordsWhileStaying(_ row: Row) -> Bool {
-            if case .hit = row.kind { return true }
-            return false
+            switch row.kind {
+            case .hit, .consent: return true
+            default: return false
+            }
         }
 
         /// Whether a send that has finished uses up the words in the box: it was accepted, and the box still holds what was sent
@@ -2128,7 +2494,7 @@ enum SetupAssistant {
                 }
             case .action(let action): return action == .openMeetings || action == .openSpeakers || row.leavesSession
             case .waiting, .running, .session, .hit: return row.leavesSession
-            case .ask, .file, .savedAnswer, .info: return false
+            case .ask, .file, .savedAnswer, .info, .consent: return false
             }
         }
 

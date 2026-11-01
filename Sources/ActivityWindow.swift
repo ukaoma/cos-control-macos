@@ -9629,6 +9629,7 @@ extension ActivityWindow {
         case .hit(let id): return commandOpenHit(id)
         case .place(let place): return commandGo(place)
         case .searchAll: return commandSearchAll(listing.words)
+        case .consent: return .stay
         case .command(let command): return commandRun(command)
         case .action(let action): return commandRun(action, words: listing.words)
         case .ask:
@@ -10576,6 +10577,7 @@ struct CommandCenterPanel: View {
         case .session: return "text.bubble"
         case .hit: return "text.magnifyingglass"
         case .searchAll: return "magnifyingglass"
+        case .consent: return "sparkle"
         case .place: return "arrow.up.forward.square"
         case .recording: return "record.circle.fill"
         case .ask: return "sparkle"
