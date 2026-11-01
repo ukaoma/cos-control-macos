@@ -210,7 +210,8 @@ for key, label in (("TodayHome.enabledKey", "Today home"), ("TodayHome.quietHour
 # same quiet-hours fold, in the same words. The fold itself is TodayHome.fold, executed in ActivityTodayChecks; this pins who reads it.
 core_text = strip((root / "Sources/SetupAssistant.swift").read_text())
 brief_counts = body(today, "    func todayBriefCounts(", "\n    func todayHomeView(")
-need("counts.folded = TodayHome.fold(frame.needs, quiet: TodayHome.isQuiet(now: now, enabled: TodayHome.quietHoursOn(.standard))).tomorrow.count" in brief_counts
+need("let tomorrow = TodayHome.fold(frame.needs, quiet: TodayHome.isQuiet(now: now, enabled: TodayHome.quietHoursOn(.standard))).tomorrow" in brief_counts
+     and "counts.folded = tomorrow.count" in brief_counts and "counts.foldedWork = tomorrow.filter { $0.kind == .work }.count" in brief_counts
      and "Text(TodayHome.brief(todayBriefCounts(frame, now: now)))" in today and "Text(TodayHome.brief(frame.counts))" not in today,
      "[wording] Today's headline reads the quiet-hours fold, so it agrees with the ⌘K panel")
 need("quiet: TodayHome.isQuiet(now: now, enabled: TodayHome.quietHoursOn(.standard)))" in body(today, "    func commandInputs(", "\n    func commandResultInputs()")

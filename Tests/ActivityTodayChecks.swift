@@ -476,6 +476,14 @@ import Foundation
         fullRow.workRunning = true
         let byPrefix = ClaudeSession.listed(hit: hit, loaded: [fullRow], workSessionIDs: [], runningWorkSessionIDs: [])
         check(byPrefix.id == full && byPrefix.workRunning && byPrefix.heldByServer, "a hit the list names by its full id is the list's row")
+        // The Sessions tab's search merges its instant hits and the helper's: one row per session, whichever id names it (round 2).
+        let instantHit = SessionSearchHit(session: session("claude:aaaa1111", "recent", name: "Ask COS run about pricing"), snippet: "", score: 0.4)
+        let remoteHit = SessionSearchHit(session: session(full, "recent", name: "Ask COS run about pricing"), snippet: "pricing", score: 0.9)
+        let other = SessionSearchHit(session: session("claude:bbbb2222", "recent", name: "Another"), snippet: "", score: 0.5)
+        let mergedRows = SessionSearchHit.merged([instantHit, other], [remoteHit])
+        check(mergedRows.map(\.id) == [full, "claude:bbbb2222"] && mergedRows.first?.score == 0.9, "the search merge keeps one row for a session named two ways", "\(mergedRows.map(\.id))")
+        check(SessionSearchHit.merged([remoteHit], [instantHit]).map(\.id) == [full], "the search merge does not care which side came first", "")
+        check(SessionSearchHit.merged([instantHit], [SessionSearchHit(session: session("aaaa1111", "recent", provider: "codex", name: "Codex"), snippet: "", score: 0.3)]).count == 2, "the search merge keeps two providers apart", "")
         // A scheduled job (origin job) is a routine, held and opened in Sessions.
         let job = session("claude:cccc3333", "recent", name: "Nightly sync", job: "Nightly sync")
         let jobHit = ClaudeSession.listed(hit: job, loaded: [], workSessionIDs: [], runningWorkSessionIDs: [])
@@ -521,6 +529,15 @@ import Foundation
         var foldedOpen = TodayHome.Counts(); foldedOpen.needs = 2; foldedOpen.folded = 2
         check(TodayHome.brief(foldedOpen) == "Two things can wait until tomorrow so far.",
               "an unsettled count says so far", TodayHome.brief(foldedOpen))
+        // Work's own rail line reads the fold too (round 2): a Work row the fold moved to tomorrow can wait, and is not hot.
+        var workFolded = TodayHome.Counts(); workFolded.workNeedsYou = 1; workFolded.foldedWork = 1; workFolded.olderToSort = 23; workFolded.settled = true
+        check(TodayHome.story("work", workFolded, now: now, calendar: calendar) == TodayHome.Story(text: "1 can wait until tomorrow, 23 older to sort", hot: false),
+              "Work's rail line agrees with the fold: it can wait", TodayHome.story("work", workFolded, now: now, calendar: calendar).text)
+        var workSome = workFolded; workSome.workNeedsYou = 3; workSome.foldedWork = 2
+        check(TodayHome.story("work", workSome, now: now, calendar: calendar) == TodayHome.Story(text: "1 needs you, 2 can wait until tomorrow, 23 older to sort", hot: true),
+              "Work's rail line names what the fold left", TodayHome.story("work", workSome, now: now, calendar: calendar).text)
+        var workPlain = workFolded; workPlain.workNeedsYou = 3; workPlain.foldedWork = 0
+        check(TodayHome.story("work", workPlain, now: now, calendar: calendar) == TodayHome.Story(text: "3 need you, 23 older to sort", hot: true), "no fold, no change on Work's rail line", "")
         var noFold = TodayHome.Counts(); noFold.needs = 6; noFold.settled = true
         check(TodayHome.brief(noFold) == "Six things need you.", "no fold, no change", TodayHome.brief(noFold))
         // The rail reads the fold too (0.5.361): it counts what is left, says "can wait until tomorrow" when that is all there is,

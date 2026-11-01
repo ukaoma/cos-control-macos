@@ -91,6 +91,12 @@ MUTANTS = [
     ("hit: the loaded row is ignored", M, "        if let row = loaded.first(where: { sameSession($0.id, hit.id) }) { return row }\n", "", "[a hit the list holds is the list's row]"),
     ("hit: never marked as Work", M, "        return markingWork([hit], workSessionIDs: workSessionIDs, runningWorkSessionIDs: runningWorkSessionIDs)[0]\n", "        return hit\n", "[a hit of a running Work session is held by the server]"),
     ("hit: the running set is dropped", M, "        return markingWork([hit], workSessionIDs: workSessionIDs, runningWorkSessionIDs: runningWorkSessionIDs)[0]\n", "        return markingWork([hit], workSessionIDs: workSessionIDs, runningWorkSessionIDs: [])[0]\n", "[a hit of a running Work session is held by the server]"),
+    ("model: Work's rail ignores the fold", M, '            let needsNow = max(0, (c.workNeedsYou ?? 0) - c.foldedWork)\n', '            let needsNow = c.workNeedsYou ?? 0\n', "Work's rail line agrees with the fold"),
+    ("model: Work's rail is hot for folded rows", M, 'return Story(text: bits.joined(separator: ", "), hot: needsNow > 0)', 'return Story(text: bits.joined(separator: ", "), hot: c.workNeedsYou ?? 0 > 0)', "Work's rail line agrees with the fold"),
+    ("model: Work's rail has no can-wait bit", M, '            if c.foldedWork > 0 { bits.append("\\(c.foldedWork) can wait until tomorrow") }\n', '', "Work's rail line agrees with the fold"),
+    ('model: the search merge keeps both ids', M, 'if let at = out.firstIndex(where: { $0.id == hit.id || ClaudeSession.sameSession($0.id, hit.id) }) {', 'if let at = out.firstIndex(where: { $0.id == hit.id }) {', 'the search merge keeps one row for a session named two ways'),
+    ('model: the search merge keeps the weaker score', M, 'if out[at].score < hit.score { out[at] = hit }', 'if out[at].score > hit.score { out[at] = hit }', 'the search merge keeps one row for a session named two ways'),
+    ("view: Work's rail count never reads the fold", W, '        counts.foldedWork = tomorrow.filter { $0.kind == .work }.count\n', '', "[wording] Today's headline reads the quiet-hours fold"),
     ("hit: the loaded row matches on exact ids only", M, "loaded.first(where: { sameSession($0.id, hit.id) })", "loaded.first(where: { $0.id == hit.id })", "a hit the list names by its full id is the list's row"),
     # Quiet hours
     ("quiet: session questions fold", M, "return (rows.filter { $0.tier == 1 }, rows.filter { $0.tier != 1 })", "return ([], rows)", "[tiers 2 to 5 fold"),

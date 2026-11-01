@@ -2801,6 +2801,20 @@ struct SessionSearchHit: Identifiable, Sendable {
         score = o["score"]?.double ?? max(keyword, semantic)
     }
 
+    /// The Sessions tab's instant keyword hits and the helper's answer, one row per session: a hit the list names by 8 characters and the
+    /// helper by the full id are one session (`sameSession`), and the better score wins. Newest score first.
+    static func merged(_ instant: [SessionSearchHit], _ remote: [SessionSearchHit]) -> [SessionSearchHit] {
+        var out: [SessionSearchHit] = []
+        for hit in instant + remote {
+            if let at = out.firstIndex(where: { $0.id == hit.id || ClaudeSession.sameSession($0.id, hit.id) }) {
+                if out[at].score < hit.score { out[at] = hit }
+                continue
+            }
+            out.append(hit)
+        }
+        return out.sorted { $0.score > $1.score }
+    }
+
     static let stopwords: Set<String> = [
         "the", "a", "an", "and", "or", "of", "to", "in", "for", "on", "at", "by",
         "with", "from", "vs", "is", "it", "be", "as", "we", "our",
@@ -14435,6 +14449,8 @@ enum TodayHome {
         /// How many of `needs` the quiet-hours fold moved to tomorrow (TodayHome.fold). The window sets it, because only it knows the
         /// time; the headline reads it so it agrees with ⌘K, which folds too. A session question never folds.
         var folded = 0
+        /// How many of `folded` are Work's own (NeedKind.work), so Work's rail line says what the fold left of Work.
+        var foldedWork = 0
         var running = 0
         var sessionsWaiting = 0
         var agentsWorking = 0
@@ -14739,9 +14755,12 @@ enum TodayHome {
             return Story(text: bits.joined(separator: ", "), hot: c.sessionsWaiting > 0)
         case "work", "tasks":
             var bits: [String] = []
-            if let n = c.workNeedsYou, n > 0 { bits.append(n == 1 ? "1 needs you" : "\(n) need you") }
+            // The quiet-hours fold applies here as it does to Today's line (0.5.361): what it moved to tomorrow can wait, and is not hot.
+            let needsNow = max(0, (c.workNeedsYou ?? 0) - c.foldedWork)
+            if needsNow > 0 { bits.append(needsNow == 1 ? "1 needs you" : "\(needsNow) need you") }
+            if c.foldedWork > 0 { bits.append("\(c.foldedWork) can wait until tomorrow") }
             if let n = c.olderToSort, n > 0 { bits.append("\(n) older to sort") }
-            if !bits.isEmpty { return Story(text: bits.joined(separator: ", "), hot: c.workNeedsYou ?? 0 > 0) }
+            if !bits.isEmpty { return Story(text: bits.joined(separator: ", "), hot: needsNow > 0) }
             return Story(text: c.olderToSort == nil || c.workNeedsYou == nil ? "Your tasks and meeting follow-ups" : "Nothing to sort", hot: false)
         case "dictation":
             var text = c.dictationLast.map { calendar.isDate($0, inSameDayAs: now) ? "Last at " + clock($0, calendar: calendar) : "Last on " + monthDay($0, calendar: calendar) } ?? "Dictate anywhere on this Mac"

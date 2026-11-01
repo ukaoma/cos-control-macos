@@ -2768,8 +2768,12 @@ struct ActivityWindow: View {
     private func sessionRow(_ session: ClaudeSession, snippet: String = "", matchLabel: String? = nil, ambiguous: Set<String>) -> some View {
         VStack(spacing: 0) {
             Button {
-                selectedSessionID = session.id
-                model.openClaudeSession(session)
+                // A search hit names the session by what the search found, which knows nothing of Work: open the list's own row when the list
+                // has the session, else the hit marked as Work or running Work. A running Work session quiet for 30 s would otherwise reach
+                // claude://resume and have a second writer (0.5.250's rule), as a ⌘K hit is guarded.
+                let opened = ClaudeSession.listed(hit: session, loaded: model.claudeSessions, workSessionIDs: model.workSessionIDs, runningWorkSessionIDs: model.runningWorkSessionIDs)
+                selectedSessionID = opened.id
+                model.openClaudeSession(opened)
             } label: {
                 HStack(spacing: 13) {
                     providerGlyph(session)
@@ -8641,7 +8645,9 @@ extension ActivityWindow {
     /// The headline's counts with the quiet-hours fold applied, so it says the same as ⌘K (SetupAssistant.Center.canWaitLine).
     func todayBriefCounts(_ frame: TodayHome.Frame, now: Date) -> TodayHome.Counts {
         var counts = frame.counts
-        counts.folded = TodayHome.fold(frame.needs, quiet: TodayHome.isQuiet(now: now, enabled: TodayHome.quietHoursOn(.standard))).tomorrow.count
+        let tomorrow = TodayHome.fold(frame.needs, quiet: TodayHome.isQuiet(now: now, enabled: TodayHome.quietHoursOn(.standard))).tomorrow
+        counts.folded = tomorrow.count
+        counts.foldedWork = tomorrow.filter { $0.kind == .work }.count
         return counts
     }
 
@@ -9351,6 +9357,8 @@ extension ActivityWindow {
     /// The sessions the word search found, by hit id, so a row opens the hit's own object and a session older than the list opens too.
     /// Written by the panel when the hits arrive; not observed, so it never redraws anything.
     var hitSessions: [String: ClaudeSession] = [:]
+    /// Counts the times the panel opened, so a close that waited on an open can tell the panel it waited on from one opened since.
+    var generation = 0
     /// The words the last Search all put in Sessions' box, so opening Sessions later can take them out again.
     var searchAllWords: String?
     /// The next section change came from the panel, which stays open to say something.
@@ -9558,6 +9566,7 @@ extension ActivityWindow {
         commandKeys.keepOpen = false
         commandKeys.recordFailed = false
         commandKeys.hitSessions = [:]
+        commandKeys.generation += 1
         commandOpen = true
         // The list refreshes when the panel opens (0.5.361), not forced: it walks only when the saved list is stale. The tick is unchanged.
         if commandFixture == nil { Task { await model.loadClaudeSessions() } }
@@ -9641,7 +9650,13 @@ extension ActivityWindow {
         }
         // todayOpenNeed keeps the Cursor fallback.
         todayOpenNeed(row)
-        return .close
+        return commandOpenedEffect()
+    }
+
+    /// After an open was asked for. The key guard refuses at once, with no open under way, and the person has to read why: the panel stays and
+    /// its result line says it (the line reads `platformOpenNotice`). Everything else closes the panel, as before.
+    func commandOpenedEffect() -> CommandEffect {
+        !model.platformOpening && model.platformOpenFailed && model.platformOpenNotice != nil ? .stay : .close
     }
 
     func commandOpenRunning(_ id: String) -> CommandEffect {
@@ -9650,7 +9665,7 @@ extension ActivityWindow {
             return .stay
         }
         todayOpen(row.open)
-        return .close
+        return commandOpenedEffect()
     }
 
     func commandOpenSession(_ id: String) -> CommandEffect {
@@ -9659,7 +9674,7 @@ extension ActivityWindow {
             return .stay
         }
         todayOpen(TodayHome.openFor(session, host: today.hosts[session.id], cursorTrusted: model.petJumpTrusted).action)
-        return .close
+        return commandOpenedEffect()
     }
 
     /// Whether opening this session takes the person out of the one open in Sessions, which discards a reply typed and not sent. A platform
@@ -9694,18 +9709,21 @@ extension ActivityWindow {
         model.platformOpenNotice = nil
         switch TodayHome.openFor(session, host: today.hosts[session.id], cursorTrusted: model.petJumpTrusted).action {
         case .platform:
-            // A session only the server may write opens in Sessions (openSessionInPlatform moves there itself): the panel has done its job.
-            if session.heldByServer { model.openSessionInPlatform(session); return .close }
             model.openSessionInPlatform(session)
             Task { try? await Task.sleep(nanoseconds: 10_000_000_000); if !model.platformOpening { model.platformOpenNotice = nil } }
             // A refusal (the key guard) answers at once with no open under way. The panel stays and says it in its own result line.
             guard model.platformOpening else { return .stay }
             // The app is being asked. The panel stays until it answers: a failure's words land in the panel's result line, where the person
-            // is looking (Today and a matching list row show them only behind the panel), and a clean open closes it.
+            // is looking (Today and a matching list row show them only behind the panel). A clean open closes it and takes the words with it
+            // (a good Codex open sets a notice too, so the failure flag says, not the notice). A panel closed and opened again meanwhile is
+            // the person's new one, and is left alone.
+            let generation = commandKeys.generation
             Task {
                 var waited = 0
                 while model.platformOpening, waited < 300 { try? await Task.sleep(nanoseconds: 100_000_000); waited += 1 }
-                if model.petNotice == nil { closeCommandCenter() }
+                guard !model.platformOpenFailed, commandKeys.generation == generation else { return }
+                commandKeys.draft = ""
+                closeCommandCenter()
             }
             return .stay
         default:

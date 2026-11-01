@@ -519,9 +519,18 @@ pin("inputs.sessionsSettingOff = !model.claudeSessionsEnabled" in window and "in
 
 # A hit's open: the panel stays until the app has answered, so a failed open's words land where the person is looking (QA 0.5.361, U10).
 open_hit = block(window, "    func commandOpenHit(_ id: String) -> CommandEffect {", "    func commandSearchAll(_ words: String) -> CommandEffect {")
-pin("guard model.platformOpening else { return .stay }" in open_hit and "if model.petNotice == nil { closeCommandCenter() }" in open_hit
-    and "if session.heldByServer { model.openSessionInPlatform(session); return .close }" in open_hit,
-    "a hit's failed open keeps the panel open until its notice lands")
+pin("guard model.platformOpening else { return .stay }" in open_hit and "guard !model.platformOpenFailed, commandKeys.generation == generation else { return }" in open_hit
+    and 'commandKeys.draft = ""' in open_hit and "let generation = commandKeys.generation" in open_hit and "petNotice" not in open_hit and "heldByServer" not in open_hit,
+    "a hit's failed open keeps the panel open until its notice lands, a clean one clears the words, a panel opened since is left alone")
+cm = code(read("Sources/ControllerModel.swift"))
+pin("platformOpenFailed = petNotice != nil && !petRevealSucceeded" in cm and cm.count("petRevealSucceeded = true") == 1 and "platformOpenFailed = true; return }" in cm,
+    "a platform open is a failure by its flag: a good Codex note is not one, and the key guard's refusal is")
+pin("SessionSearchHit.merged(instant, remote)" in cm and "let opened = ClaudeSession.listed(hit: session, loaded: model.claudeSessions, workSessionIDs: model.workSessionIDs, runningWorkSessionIDs: model.runningWorkSessionIDs)" in window
+    and "model.openClaudeSession(opened)" in window and "model.openClaudeSession(session)" not in block(window, "    private func sessionRow(", "    private var sessionsStatus: String {"),
+    "a Sessions tab row opens the list's row or the hit marked as Work, and the search merges one row per session")
+for fn, end in (("    func commandOpenWaiting(", "    func commandOpenedEffect()"), ("    func commandOpenRunning(", "    func commandOpenSession("), ("    func commandOpenSession(", "    func commandLeaves(_ session")):
+    pin("return commandOpenedEffect()" in block(window, fn, end), f"{fn.strip()} says whether the panel stays after a refusal")
+pin("!model.platformOpening && model.platformOpenFailed && model.platformOpenNotice != nil ? .stay : .close" in window, "a refusal that answers at once keeps the panel open")
 pin("C.keepsWordsWhileStaying(row)" in panel and "static func keepsWordsWhileStaying(_ row: Row) -> Bool" in core, "a staying hit keeps its words")
 
 # The credential-key rule is a copy of WorkCardFiles.credentialKey (the engine file is Foundation-only): the two bodies must stay equal.

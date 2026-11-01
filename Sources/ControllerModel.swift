@@ -2870,6 +2870,10 @@ final class ControllerModel: ObservableObject {
     @Published var platformOpenSessionID: String?
     @Published var platformOpenNotice: String?
     @Published var platformOpening = false
+    /// The last platform open ended with something the person has to read (a refusal, an app that did not open the session). A good Codex open
+    /// sets `petNotice` too ("Asked Codex to open this session"), so the notice alone cannot say.
+    @Published var platformOpenFailed = false
+    private var petRevealSucceeded = false
     @Published var claudeSessionDetail: ClaudeSessionDetail?
     @Published var claudeSessionDetailLoading = false
     /// 0.5.233: the Claude Code hooks install state as the server reports it. Five
@@ -5872,15 +5876,17 @@ final class ControllerModel: ObservableObject {
             openPetSessionInControl(session)
             return
         }
-        if let line = KeyLanes.refusal(sessionID: session.sessionId) { platformOpenNotice = line; return }
+        if let line = KeyLanes.refusal(sessionID: session.sessionId) { platformOpenNotice = line; platformOpenFailed = true; return }
         guard !platformOpening else { return }
         platformOpenSessionID = session.id
         platformOpenNotice = "Opening session in its app…"
+        platformOpenFailed = false
         platformOpening = true
         petFocusID = session.id
         markPetCompletionSeen(id: session.id)
         Task {
             await revealPetSession(session)
+            platformOpenFailed = petNotice != nil && !petRevealSucceeded
             platformOpenNotice = petNotice ?? "Asked the app to open this session. If it did not appear, open the app and select the session there."
             platformOpening = false
         }
@@ -5901,6 +5907,7 @@ final class ControllerModel: ObservableObject {
 
     private func revealPetSession(_ session: ClaudeSession) async {
         petNotice = nil
+        petRevealSucceeded = false
         var arguments = [
             "session-reveal",
             "--provider", session.provider,
@@ -6078,6 +6085,7 @@ final class ControllerModel: ObservableObject {
            codexThreadID(from: url) != nil,
            NSWorkspace.shared.open(url) {
             petNotice = "Asked Codex to open this session. If its tab did not appear, the conversation is available here in Control."
+            petRevealSucceeded = true
             return
         }
         if let appURL {
@@ -7006,12 +7014,7 @@ final class ControllerModel: ObservableObject {
     }
 
     private func mergeSessionHits(_ instant: [SessionSearchHit], _ remote: [SessionSearchHit]) -> [SessionSearchHit] {
-        var byId: [String: SessionSearchHit] = [:]
-        for hit in instant + remote {
-            if let existing = byId[hit.id], existing.score >= hit.score { continue }
-            byId[hit.id] = hit
-        }
-        return byId.values.sorted { $0.score > $1.score }
+        SessionSearchHit.merged(instant, remote)
     }
 
     private func runSessionSearch(_ query: String, id: UUID) async {
