@@ -52,13 +52,16 @@ class KitBase(unittest.TestCase):
         (self.root / 'Tests/B.swift').write_text('// harness b')
         self.exe('Tests/compile-guard.sh', '#!/bin/sh\nexec "$@"\n')
         self.exe('bin/swiftc', FAKE_SWIFTC)
+        self.exe('bin/sw_vers', '#!/bin/sh\nprintf "${FAKE_HOST_BUILD:-24A1}"\n')
         self.exe('bin/xcrun', '#!/bin/sh\ncase "$1" in --show-sdk-build-version) echo "${FAKE_SDK_BUILD:-1A1}";; *) echo sdk;; esac\n')
         self.log = self.root / 'calls.jsonl'
         self.env = dict(os.environ, PATH=str(self.root / 'bin') + os.pathsep + os.environ['PATH'],
                         FAKE_LOG=str(self.log), COS_TEST_KIT_DIR=str(self.root / 'kits'))
         for key in ('COS_TEST_KIT', 'COS_TEST_KIT_LOG', 'FAKE_FAIL', 'FAKE_TOUCH', 'FAKE_TOUCH_ANY', 'COS_TEST_KIT_PERSIST',
                     'COS_TEST_KIT_STORE', 'COS_TEST_KIT_EVICT_MIN_AGE', 'COS_TEST_KIT_OUT_MAX_ENTRIES',
-                    'COS_TEST_KIT_OUT_MAX_BYTES', 'FAKE_SLEEP', 'FAKE_SLEEP_HARNESS', 'FAKE_SDK_BUILD'):
+                    'COS_TEST_KIT_OUT_MAX_BYTES', 'FAKE_SLEEP', 'FAKE_SLEEP_HARNESS', 'FAKE_SDK_BUILD', 'FAKE_HOST_BUILD',
+                    'COS_TEST_KIT_MIN_FREE_BYTES', 'COS_TEST_KIT_SWEEP_INTERVAL', 'COS_TEST_KIT_STORES_MAX_BYTES', 'SDKROOT',
+                    'DEVELOPER_DIR', 'TOOLCHAINS', 'MACOSX_DEPLOYMENT_TARGET'):
             self.env.pop(key, None)
 
     def tearDown(self):
@@ -290,10 +293,40 @@ class KitTests(KitBase):
 
     def test_old_kits_are_evicted(self):
         models = self.root / 'Sources/Models.swift'
-        for i in range(7):
+        for i in range(12):
             models.write_text(f'// version {i}')
             self.compile(self.app())
-        self.assertEqual(len(list((self.root / 'kits').glob('app-*'))), 4)
+        self.assertEqual(len(list((self.root / 'kits').glob('app-*'))), 10)
+
+    def test_all_five_kit_names_stay_in_a_per_run_dir(self):
+        sources = self.root / 'Sources'
+        sets = [self.app(), self.app(core=True), [str(sources / n) for n in ('LiveTranscript.swift', 'MeetingAskCore.swift', 'Models.swift')],
+                [str(sources / 'Models.swift')], [str(sources / 'MacDictationCore.swift')]]
+        for kit in sets:
+            self.compile(kit)
+        self.assertEqual(len(self.kit_builds()), 5)
+        for kit in sets:
+            self.compile(kit, harness=('Tests/B.swift',))
+        self.assertEqual(len(self.kit_builds()), 5, 'a kit built earlier in the run was evicted before its second lane')
+
+    def test_a_lane_linking_in_the_per_run_layout_keeps_other_builds_out(self):
+        models = self.root / 'Sources/Models.swift'
+        models.write_text('// version 0')
+        self.compile(self.app())
+        before = len(self.calls())
+        slow = self.start(self.app(), env=dict(self.env, FAKE_SLEEP_HARNESS='3'), out='slow')
+        deadline = time.time() + 20
+        while time.time() < deadline and len(self.calls()) == before:
+            time.sleep(0.05)
+        models.write_text('// version 1')
+        second = self.start(self.app(), out='second')  # a NEW kit: its build needs the exclusive lock the link holds shared
+        time.sleep(1.0)
+        self.assertIsNone(second.poll(), 'a build started while another lane was linking')
+        self.assertEqual(len(self.kit_builds()), 1)
+        self.assertEqual(slow.communicate(timeout=30)[0:0] or slow.returncode, 0)
+        out, err = second.communicate(timeout=30)
+        self.assertEqual(second.returncode, 0, err)
+        self.assertEqual(len(self.kit_builds()), 2)
 
 
 class PersistentKitTests(KitBase):
@@ -301,7 +334,8 @@ class PersistentKitTests(KitBase):
 
     def setUp(self):
         super().setUp()
-        self.store = self.root / 'store'
+        self.stores = self.root / 'stores'
+        self.store = self.stores / 'own'
         self.env.update(COS_TEST_KIT_PERSIST='1', COS_TEST_KIT_STORE=str(self.store), COS_TEST_KIT_EVICT_MIN_AGE='0')
 
     def dirs(self, name, where=None):
@@ -330,13 +364,13 @@ class PersistentKitTests(KitBase):
         self.assertEqual(len(self.dirs('app', self.root / 'kits-nostore')), 1)
         self.assertFalse(self.store.exists())
 
-    def test_off_switch_keeps_the_four_kit_eviction_and_no_out_cap(self):
+    def test_off_switch_keeps_the_ten_kit_eviction_and_no_out_cap(self):
         self.env.pop('COS_TEST_KIT_PERSIST')
         self.env['COS_TEST_KIT_OUT_MAX_ENTRIES'] = '1'
-        for i in range(6):
+        for i in range(12):
             self.version(i)
             self.compile(self.app())
-        self.assertEqual(len(self.dirs('app', self.root / 'kits')), 4)
+        self.assertEqual(len(self.dirs('app', self.root / 'kits')), 10)
         helper = [str(self.root / 'Sources/Views.swift')]
         for i in range(4):
             self.compile(helper, flags=('-D', f'X{i}'), out=f'h{i}')
@@ -492,11 +526,14 @@ class PersistentKitTests(KitBase):
         built_default = [c for c in self.kit_builds() if '-D' not in c]
         self.assertEqual(len(built_default), 1, 'five processes with one key must build the kit exactly once')
 
-    def test_a_store_in_a_synced_or_relative_place_is_refused(self):
+    def test_a_store_in_a_synced_or_relative_place_is_refused_in_any_letter_case(self):
         home = self.root / 'home'
+        for sub in ('Documents', 'Desktop', 'Library/CloudStorage', 'Library/Mobile Documents'):
+            (home / sub).mkdir(parents=True)
         self.env['HOME'] = str(home)
-        places = [home / 'Documents/cos-kits', home / 'Desktop/cos-kits', home / 'Library/Mobile Documents/com~apple~CloudDocs/kits',
-                  home / 'Documents/inner/../cos-kits']
+        places = [home / 'Documents/cos-kits', home / 'documents/cos-kits', home / 'DESKTOP/cos-kits', home / 'Desktop/a/b/cos-kits',
+                  home / 'Library/Mobile Documents/com~apple~CloudDocs/kits', home / 'library/MOBILE DOCUMENTS/kits',
+                  home / 'Library/CloudStorage/OneDrive-x/kits', home / 'Documents/inner/../cos-kits']
         for i, place in enumerate(places):
             with self.subTest(place=str(place)):
                 self.env['COS_TEST_KIT_STORE'] = str(place)
@@ -507,7 +544,6 @@ class PersistentKitTests(KitBase):
                 self.assertFalse(place.exists())
                 self.assertEqual(len(self.dirs('app', self.root / f'fallback{i}')), 1)
         link = self.root / 'looks-fine'
-        (home / 'Documents').mkdir(parents=True, exist_ok=True)
         link.symlink_to(home / 'Documents')
         self.env['COS_TEST_KIT_STORE'] = str(link / 'kits')
         self.env['COS_TEST_KIT_DIR'] = str(self.root / 'fallback-link')
@@ -519,6 +555,160 @@ class PersistentKitTests(KitBase):
         self.assertEqual(self.compile(self.app()).returncode, 0)
         self.assertEqual(len(self.dirs('app', good)), 1)
         self.assertEqual(oct(good.stat().st_mode & 0o777), '0o700')
+
+    def test_environment_that_changes_the_compile_but_is_not_hashed_turns_persistence_off(self):
+        cases = {'SWIFT_DRIVER_SWIFT_FRONTEND_EXEC': '/x/frontend', 'SWIFT_DRIVER_SWIFT_AUTOLINK_EXTRACT_EXEC': '/x/y',
+                 'DYLD_LIBRARY_PATH': '/x', 'DYLD_FALLBACK_LIBRARY_PATH': '/x', 'CPATH': '/elsewhere',
+                 'C_INCLUDE_PATH': '/usr/local/include', 'LIBRARY_PATH': '/elsewhere'}
+        for i, (key, value) in enumerate(cases.items()):
+            with self.subTest(key=key):
+                self.env.update({key: value, 'COS_TEST_KIT_DIR': str(self.root / f'run-env{i}')})
+                try:
+                    r = self.compile(self.app())
+                finally:
+                    del self.env[key]
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn(key, r.stderr)
+                self.assertFalse(self.store.exists())
+                self.assertEqual(len(self.dirs('app', self.root / f'run-env{i}')), 1)
+        # The one value /usr/bin/python3 itself puts in CPATH and LIBRARY_PATH is not a reason to refuse.
+        self.env.update(CPATH='/usr/local/include', LIBRARY_PATH='/usr/local/lib')
+        self.assertEqual(self.compile(self.app()).returncode, 0)
+        self.assertEqual(len(self.dirs('app')), 1)
+
+    def test_a_command_with_unhashed_search_paths_does_not_persist(self):
+        directory = self.root / 'somedir'
+        directory.mkdir()
+        cases = {'-I': ['-I', str(directory)], '-F': ['-F', str(directory)], '-L': ['-L', str(directory)],
+                 '-sdk': ['-sdk', str(directory)], '-Xcc': ['-Xcc', '-Dx'],
+                 '-Xlinker directory': ['-Xlinker', str(directory)]}
+        for i, (label, extra) in enumerate(cases.items()):
+            with self.subTest(label=label):
+                self.env['COS_TEST_KIT_DIR'] = str(self.root / f'run-cmd{i}')
+                r = self.compile(self.app(), extra=extra)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn('not hashed', r.stderr)
+                self.assertFalse(self.store.exists())
+                self.assertEqual(len(self.dirs('app', self.root / f'run-cmd{i}')), 1)
+        (self.root / 'Info.plist').write_text('plist')  # a FILE after -Xlinker (the sectcreate lanes) is fine
+        self.compile(self.app(), extra=['-Xlinker', str(self.root / 'Info.plist')])
+        self.assertEqual(len(self.dirs('app')), 1)
+
+    def test_every_hashed_environment_variable_and_the_host_build_are_inputs(self):
+        self.compile(self.app())
+        for n, key in enumerate(('SDKROOT', 'DEVELOPER_DIR', 'TOOLCHAINS', 'MACOSX_DEPLOYMENT_TARGET'), 2):
+            self.env[key] = f'value-{n}'
+            self.compile(self.app())
+            self.assertEqual(len(self.kit_builds()), n, key)
+        self.env['FAKE_HOST_BUILD'] = '25Z9'
+        self.compile(self.app())
+        self.assertEqual(len(self.kit_builds()), 6)
+
+    def test_the_store_carries_its_origin_and_is_touched_on_every_use(self):
+        self.compile(self.app())
+        origin = self.store / '.origin'
+        self.assertEqual(json.loads(origin.read_text())['worktree'], str(SCRIPT.resolve().parent.parent))
+        os.utime(origin, (1000, 1000))
+        self.compile(self.app())
+        self.assertGreater(origin.stat().st_mtime, 10 ** 9 + 1000)
+
+    def make_store(self, name, worktree, age_days=0, size=0):
+        d = self.stores / name
+        d.mkdir(parents=True)
+        (d / '.origin').write_text(json.dumps({'worktree': str(worktree)}))
+        stamp = time.time() - age_days * 86400
+        os.utime(d / '.origin', (stamp, stamp))
+        if size:
+            (d / 'blob').write_bytes(b'x' * size)
+        return d
+
+    def test_the_sweep_removes_stores_of_gone_or_idle_worktrees_and_nothing_else(self):
+        self.env['COS_TEST_KIT_SWEEP_INTERVAL'] = '0'
+        live = self.root / 'live-worktree'
+        live.mkdir()
+        gone = self.make_store('gone', self.root / 'no-such-worktree')
+        idle = self.make_store('idle', live, age_days=20)
+        fresh = self.make_store('fresh', live, age_days=13)
+        foreign = self.stores / 'foreign'
+        foreign.mkdir()
+        (foreign / 'keep.txt').write_text('x')
+        broken = self.stores / 'broken'
+        broken.mkdir()
+        (broken / '.origin').write_text('not json')
+        self.assertEqual(self.compile(self.app()).returncode, 0)
+        self.assertEqual([gone.exists(), idle.exists(), fresh.exists(), foreign.exists(), broken.exists(), self.store.exists()],
+                         [False, False, True, True, True, True])
+
+    def test_the_sweep_caps_all_stores_together_oldest_first_and_never_the_own_store(self):
+        self.env['COS_TEST_KIT_SWEEP_INTERVAL'] = '0'
+        live = self.root / 'live-worktree'
+        live.mkdir()
+        old, mid, new = (self.make_store(n, live, age_days=d, size=3000) for n, d in (('old', 3), ('mid', 2), ('new', 1)))
+        self.env['COS_TEST_KIT_STORES_MAX_BYTES'] = '7000'
+        self.compile(self.app())
+        self.assertEqual([old.exists(), mid.exists(), new.exists()], [False, True, True])
+        self.env['COS_TEST_KIT_STORES_MAX_BYTES'] = '1'
+        self.compile(self.app())
+        self.assertEqual([mid.exists(), new.exists(), self.store.exists()], [False, False, True])
+        self.assertEqual(len(self.dirs('app')), 1)
+
+    def test_the_sweep_leaves_a_store_that_a_lane_is_using(self):
+        import fcntl
+        self.env['COS_TEST_KIT_SWEEP_INTERVAL'] = '0'
+        busy = self.make_store('busy', self.root / 'no-such-worktree')
+        (busy / '.use').mkdir()
+        fd = os.open(busy / '.use' / 'app-0000000000000000.lock', os.O_CREAT | os.O_RDWR)
+        fcntl.flock(fd, fcntl.LOCK_SH)
+        try:
+            self.compile(self.app())
+            self.assertTrue(busy.exists(), 'a store with a kit in use was swept')
+        finally:
+            os.close(fd)
+        self.compile(self.app())
+        self.assertFalse(busy.exists())
+
+    def test_the_sweep_runs_at_most_once_per_interval(self):
+        first = self.make_store('first', self.root / 'no-such-worktree')
+        self.compile(self.app())
+        self.assertFalse(first.exists())
+        second = self.make_store('second', self.root / 'no-such-worktree')
+        self.compile(self.app())
+        self.assertTrue(second.exists(), 'swept again inside the interval')
+        os.utime(self.stores / '.sweep', (1000, 1000))
+        self.compile(self.app())
+        self.assertFalse(second.exists())
+
+    def test_a_cache_write_that_fails_never_fails_a_lane_that_compiled(self):
+        helper = [str(self.root / 'Sources/Views.swift')]
+        self.compile(helper, flags=('-D', 'X0'), out='h0')
+        (self.store / 'out').chmod(0o500)
+        try:
+            r = self.compile(helper, flags=('-D', 'X1'), out='h1')
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('could not keep', r.stderr)
+            self.assertTrue((self.root / 'out/h1').is_file())
+        finally:
+            (self.store / 'out').chmod(0o700)
+        self.assertEqual(len(list((self.store / 'out').glob('*.sha256'))), 1)
+
+    def test_a_store_that_cannot_be_made_or_is_short_of_disk_falls_back_to_per_run(self):
+        locked = self.root / 'locked'
+        locked.mkdir()
+        locked.chmod(0o500)
+        try:
+            self.env['COS_TEST_KIT_STORE'] = str(locked / 'store')
+            r = self.compile(self.app())
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('unusable', r.stderr)
+            self.assertEqual(len(self.dirs('app', self.root / 'kits')), 1)
+        finally:
+            locked.chmod(0o700)
+        self.env.update(COS_TEST_KIT_STORE=str(self.store), COS_TEST_KIT_MIN_FREE_BYTES=str(1 << 60),
+                        COS_TEST_KIT_DIR=str(self.root / 'kits-lowdisk'))
+        r = self.compile(self.app())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('not enough free disk', r.stderr)
+        self.assertEqual(len(self.dirs('app', self.root / 'kits-lowdisk')), 1)
 
     def test_a_run_without_a_per_run_kit_dir_still_keeps_the_store(self):
         del self.env['COS_TEST_KIT_DIR']
@@ -568,7 +758,7 @@ class PersistentKitTests(KitBase):
         self.assertEqual(len(self.kit_builds()), 1)
 
     def test_a_dead_build_directory_is_swept_by_the_next_build(self):
-        self.store.mkdir()
+        self.store.mkdir(parents=True)
         dead = self.store / '.app-building.zzzz'
         (dead / 'obj').mkdir(parents=True)
         self.assertEqual(self.compile(self.app()).returncode, 0)

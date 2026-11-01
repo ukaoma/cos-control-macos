@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """Reuse one successful guarded compile only when all declared inputs match.
 
-The receipt is local to this test run. With the persistent store on (COS_TEST_KIT_PERSIST=1 AND COS_TEST_KIT_STORE, both set by
-Tests/run.sh itself; the rules are in Tests/kit-compile.py) the finished binary and its receipt are ALSO kept in <store>/reuse/, so the
-next run, in a new scratch directory, restores the binary instead of compiling. Off (the default) it is the per-run receipt only.
-Environment values are hashed, never written, and only an allowlist of them (ENV_ALLOW): a session variable cannot change a key.
-Changed source during compilation invalidates the result.
+The receipt is local to this test run, and with the persistent store OFF (the default) this script behaves exactly as it always
+did: the fingerprint covers Sources, HelperSources, Tests, scripts, Resources, Package.swift, Package.resolved, the whole
+environment, the command and the working directory. A changed source during compilation invalidates the result.
 
-Declared inputs: Sources, HelperSources, Resources, Package.swift, Package.resolved, every file the command names (other than its guard
-and its own output), the toolchain with SDK path, version and build, compile-guard.sh, compile-bounded.py and this script. Other
-Tests/ files are NOT inputs: a harness edit cannot change the app build, so it must not force a recompile of it. The per-run scratch
-directory (the --output and --receipt parents, or /tmp/cos-control-tests.*) is masked out of the command and the working directory.
+With the persistent store on (COS_TEST_KIT_PERSIST=1 AND COS_TEST_KIT_STORE, both set by Tests/run.sh itself; the rules and the
+refusals are in Tests/kit-compile.py) the finished binary and its receipt are ALSO kept in <store>/reuse/, so the next run, in a
+new scratch directory, restores the binary instead of compiling. Only then is the NARROWER fingerprint used: Sources,
+HelperSources, Resources, Package.swift, Package.resolved, every file the command names (other than its guard and its own output),
+the toolchain with SDK path, version and build and the host macOS build, compile-guard.sh, compile-bounded.py and this script, an
+allowlist of environment keys (ENV_ALLOW), and the command with the per-run scratch directory (the --output and --receipt
+parents, or /tmp/cos-control-tests.*) masked. Other Tests/ files are not inputs: a harness edit cannot change the app build.
+Persistence is refused, falling back to the exact behavior above, when the environment sets SWIFT_DRIVER_*_EXEC, DYLD_* or
+C_INCLUDE_PATH, or CPATH or LIBRARY_PATH to anything but the /usr/local defaults /usr/bin/python3 itself injects, when the command passes -I, -F, -L, -sdk, -Xcc or a directory to -Xlinker, or when the store is
+unusable or low on disk. A cache write that fails never fails a compile that succeeded.
   COS_TEST_KIT_REUSE_MAX_ENTRIES / COS_TEST_KIT_REUSE_MAX_BYTES   store caps (default 8 binaries or 2 GiB, newest kept).
+  COS_TEST_KIT_MIN_FREE_BYTES                                     free disk needed to persist (default 3 GiB).
 """
 import argparse
 import fcntl
@@ -29,6 +34,11 @@ INPUT_DIRS = ('Sources', 'HelperSources', 'Resources')
 INPUT_FILES = ('Package.swift', 'Package.resolved')
 ENV_ALLOW = ('SDKROOT', 'DEVELOPER_DIR', 'TOOLCHAINS', 'MACOSX_DEPLOYMENT_TARGET', 'SWIFT_DETERMINISTIC_HASHING', 'SOURCE_DATE_EPOCH')
 RUN_TMP = re.compile(r'(?:/private)?/tmp/cos-control-tests\.[A-Za-z0-9_]+')
+UNSAFE_ENV = re.compile(r'^(SWIFT_DRIVER_.*_EXEC|DYLD_.*)$')  # change what a compile reads, and nothing hashes it
+# Search paths: refused when set, EXCEPT to the one value /usr/bin/python3 (the CLT shim) puts in every process it starts.
+SEARCH_ENV = {'CPATH': '/usr/local/include', 'C_INCLUDE_PATH': None, 'LIBRARY_PATH': '/usr/local/lib'}
+SYNCED = (('Documents',), ('Desktop',), ('Library', 'Mobile Documents'), ('Library', 'CloudStorage'))
+CLOUD_PARTS = {'mobile documents', 'cloudstorage', 'com~apple~clouddocs'}
 
 
 def digest(path):
@@ -39,18 +49,55 @@ def say(text):
     print('reuse-compile: ' + text, file=sys.stderr, flush=True)
 
 
-def persistent_store():
-    """Same rules as kit-compile.py: both variables, an absolute path, never an iCloud-synced folder."""
+def synced_place(real):
+    """True when this (resolved) path is, or sits under, a folder iCloud syncs. Case-insensitive: macOS volumes are."""
+    if any(part.casefold() in CLOUD_PARTS for part in real.parts):
+        return True
+    home = Path(os.path.realpath(Path.home()))
+    folded = str(real).casefold()
+    for parts in SYNCED:
+        root = home.joinpath(*parts)
+        name = str(root).casefold()
+        if folded == name or folded.startswith(name + os.sep):
+            return True
+        for ancestor in (real, *real.parents):
+            try:
+                if os.path.samefile(ancestor, root):
+                    return True
+            except OSError:
+                pass
+    return False
+
+
+def command_blocker(args):
+    """Why a command with an unhashed search path or directory may not be cached across runs, or None."""
+    for i, a in enumerate(args):
+        if a in ('-I', '-F', '-L', '-sdk', '-Xcc') or (len(a) > 2 and a[:2] in ('-I', '-F', '-L')):
+            return a
+        if a == '-Xlinker' and i + 1 < len(args) and os.path.isdir(args[i + 1]):
+            return '-Xlinker <directory>'
+    return None
+
+
+def persistent_store(command=()):
+    """The usable persistent store directory, or None (then this script is exactly the per-run tool it always was)."""
     raw = os.environ.get('COS_TEST_KIT_STORE')
     if os.environ.get('COS_TEST_KIT_PERSIST') != '1' or not raw:
+        return None
+    blocker = command_blocker(command[2:])
+    if blocker:
+        say(f'{blocker} is not hashed; nothing persists for this command')
+        return None
+    unsafe = sorted([k for k in os.environ if UNSAFE_ENV.match(k)]
+                    + [k for k, ok in SEARCH_ENV.items() if k in os.environ and os.environ[k] != ok])
+    if unsafe:
+        say(f'{", ".join(unsafe)} changes what a compile reads and is not hashed; nothing persists')
         return None
     if not os.path.isabs(raw):
         say('COS_TEST_KIT_STORE must be an absolute path; nothing persists')
         return None
     real = Path(os.path.realpath(raw))
-    home = Path(os.path.realpath(Path.home()))
-    synced = [home / 'Documents', home / 'Desktop', home / 'Library' / 'Mobile Documents']
-    if 'Mobile Documents' in real.parts or any(real == s or s in real.parents for s in synced):
+    if synced_place(real):
         say('COS_TEST_KIT_STORE is in an iCloud-synced folder; nothing persists')
         return None
     return real
@@ -96,6 +143,21 @@ def tool_digests(command):
     return {'reuse-compile': digest(Path(__file__)),
             'compile-guard': digest(guard) if guard.is_file() else None,
             'compile-bounded': digest(bounded) if bounded.is_file() else None}
+
+
+def legacy_fingerprint(root, command, toolchain):
+    """The fingerprint exactly as it was before the persistent store existed (persistence off)."""
+    files = []
+    for name in ('Sources', 'HelperSources', 'Tests', 'scripts', 'Resources',
+                 'Package.swift', 'Package.resolved'):
+        path = root / name
+        candidates = sorted(path.rglob('*')) if path.is_dir() else [path]
+        for item in candidates:
+            if item.is_file() and '__pycache__' not in item.parts:
+                files.append((str(item.relative_to(root)), digest(item)))
+    env = sorted((key, value) for key, value in os.environ.items() if key not in ('_', 'SHLVL'))
+    material = dict(files=files, command=command, toolchain=toolchain, env=env, cwd=os.getcwd())
+    return hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
 
 
 def fingerprint(root, command, toolchain, output, scratch):
@@ -161,10 +223,16 @@ class Store:
     def save(self, fp, output, output_digest):
         fd, temporary = tempfile.mkstemp(dir=self.dir, prefix='.save-')
         os.close(fd)
-        shutil.copy2(output, temporary)
-        os.replace(temporary, self.dir / (fp + '.bin'))
-        write_json(self.dir / (fp + '.json'), dict(output=output_digest, name=output.name))
-        self.trim()
+        try:
+            shutil.copy2(output, temporary)
+            os.replace(temporary, self.dir / (fp + '.bin'))
+            write_json(self.dir / (fp + '.json'), dict(output=output_digest, name=output.name))
+            self.trim()
+        except BaseException:
+            Path(temporary).unlink(missing_ok=True)
+            (self.dir / (fp + '.bin')).unlink(missing_ok=True)
+            (self.dir / (fp + '.json')).unlink(missing_ok=True)
+            raise
 
     def trim(self):
         """Newest binaries up to the count or byte cap, whichever first (the newest always stays); half-written pairs go."""
@@ -195,6 +263,33 @@ class Store:
                 total += size
 
 
+def claim_store(base, root):
+    """Record which worktree owns this store and that it is in use now (the .origin mtime is its last use)."""
+    origin = base / '.origin'
+    try:
+        os.utime(origin)
+    except FileNotFoundError:
+        fd, temporary = tempfile.mkstemp(dir=base, prefix='.origin-')
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(dict(worktree=str(root)), stream)
+        os.replace(temporary, origin)
+
+
+def usable(base, root):
+    """The store only if it can be created and written with room to spare; otherwise None and nothing persists."""
+    if base is None:
+        return None
+    try:
+        os.makedirs(base / 'reuse', mode=0o700, exist_ok=True)
+        if shutil.disk_usage(base).free < env_number('COS_TEST_KIT_MIN_FREE_BYTES', 3 << 30):
+            raise OSError('not enough free disk')
+        claim_store(base, root)
+        return base
+    except OSError as error:
+        say(f'persistent store unusable ({error}); nothing persists')
+        return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, required=True)
@@ -209,13 +304,22 @@ def main():
     compiler = shutil.which(command[1])
     if not compiler:
         parser.error('compiler missing')
+    base = usable(persistent_store(command), root)
     toolchain = [compiler, digest(Path(compiler)),
                  subprocess.check_output([compiler, '--version'], text=True),
                  subprocess.check_output(['xcrun', '--show-sdk-path'], text=True),
-                 subprocess.check_output(['xcrun', '--show-sdk-version'], text=True),
-                 subprocess.check_output(['xcrun', '--show-sdk-build-version'], text=True)]
-    scratch = scratch_dirs(root, args.output, args.receipt)
-    before = fingerprint(root, command, toolchain, args.output, scratch)
+                 subprocess.check_output(['xcrun', '--show-sdk-version'], text=True)]
+    if base is None:
+        def fingerprint_now():
+            return legacy_fingerprint(root, command, toolchain)
+    else:
+        toolchain += [subprocess.check_output(['xcrun', '--show-sdk-build-version'], text=True),
+                      subprocess.run(['sw_vers', '-buildVersion'], capture_output=True, text=True).stdout.strip()]
+        scratch = scratch_dirs(root, args.output, args.receipt)
+
+        def fingerprint_now():
+            return fingerprint(root, command, toolchain, args.output, scratch)
+    before = fingerprint_now()
     try:
         prior = json.loads(args.receipt.read_text())
         if (prior['input'] == before and args.output.is_file()
@@ -226,10 +330,13 @@ def main():
         pass
     # An unsuccessful attempt must not retain a receipt from an earlier build.
     args.receipt.unlink(missing_ok=True)
-    base = persistent_store()
     if base is not None:
-        with Store(base) as store:
-            restored = store.restore(before, args.output)
+        try:
+            with Store(base) as store:
+                restored = store.restore(before, args.output)
+        except OSError as error:
+            say(f'could not read the persistent store ({error})')
+            restored = None
         if restored:
             write_json(args.receipt, dict(input=before, output=restored))
             print('compile reuse: restored from the persistent store; exact inputs and output verified')
@@ -237,7 +344,7 @@ def main():
     result = subprocess.run(command)
     if result.returncode:
         return result.returncode
-    if fingerprint(root, command, toolchain, args.output, scratch) != before:
+    if fingerprint_now() != before:
         print('compile inputs changed during build; result is unqualified', file=sys.stderr)
         return 1
     if not args.output.is_file():
@@ -246,8 +353,11 @@ def main():
     built = digest(args.output)
     write_json(args.receipt, dict(input=before, output=built))
     if base is not None:
-        with Store(base) as store:
-            store.save(before, args.output, built)
+        try:
+            with Store(base) as store:
+                store.save(before, args.output, built)
+        except (OSError, shutil.Error) as error:  # the compile succeeded: a failed cache write must not fail the lane
+            say(f'could not keep {args.output.name} for reuse ({error}); this run keeps its own output')
     return 0
 
 
