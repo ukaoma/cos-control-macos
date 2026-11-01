@@ -997,8 +997,11 @@ enum SetupAssistant {
             var busy = false
             /// Saving… from Stop until it has saved. Nil once it has, or once the save stopped on an error (Meetings has Retry).
             var saveLine: String? = nil
-            /// Glasses meetings live right now, Mac capture left out.
+            /// Recordings live right now that are not this Mac's capture. Named for the glasses, but a phone or a recording whose
+            /// device is not known counts too: `knownGlasses` says whether the words may call them glasses meetings.
             var glassesLive = 0
+            /// Every one of those is known to be on the glasses. Anything else gets neutral words.
+            var knownGlasses = false
             /// A start from the panel is on its way.
             var inFlight = false
         }
@@ -1061,6 +1064,7 @@ enum SetupAssistant {
             static let saving = "The last recording is still saving."
             static let unsaved = "The last recording has not saved yet. Meetings shows it."
             static let glasses = "A glasses meeting is recording, so this Mac does not record it twice."
+            static let other = "Another recording is running, so this Mac does not record it twice."
             static let server = "Recording needs the COS server. Start it first."
         }
 
@@ -1070,7 +1074,7 @@ enum SetupAssistant {
             if !r.osSupported { return RecordingHeld.os }
             if r.busy {
                 if r.occupied || r.saveLine != nil { return RecordingHeld.saving }
-                return r.glassesLive > 0 ? RecordingHeld.glasses : RecordingHeld.unsaved
+                return r.glassesLive > 0 ? (r.knownGlasses ? RecordingHeld.glasses : RecordingHeld.other) : RecordingHeld.unsaved
             }
             return s.serverReachable ? nil : RecordingHeld.server
         }
@@ -1101,6 +1105,12 @@ enum SetupAssistant {
         }
 
         static let glassesLine = "A glasses meeting is recording. Stop it on the glasses."
+        static let otherLine = "Another recording is running. Stop it where it started."
+        /// Where another recording stops, in words that fit what is known about it.
+        static func elsewhereLine(_ r: Recording, alone: Bool = false) -> String {
+            if r.knownGlasses { return alone ? "Stop it on the glasses." : glassesLine }
+            return alone ? "Stop it where it started." : otherLine
+        }
 
         private static func info(_ id: String, _ group: Group, _ title: String, detail: String? = nil, state: String? = nil) -> Row {
             Row(id: "info:" + id, kind: .info, group: group, title: title, detail: detail, state: state)
@@ -1206,7 +1216,7 @@ enum SetupAssistant {
             if let start = commandRow(.startRecording, inputs, group: .doing) { rows.append(start) }
             if !inputs.live.contains(where: \.canStop), let stop = commandRow(.stopRecording, inputs, group: .doing) { rows.append(stop) }
             if !macListed, !r.stoppable, let line = r.saveLine { rows.append(info("saving", .doing, line, state: "Saving")) }
-            if !glassesListed, r.glassesLive > 0 { rows.append(info("glasses", .doing, r.stoppable ? glassesLine : "Stop it on the glasses.")) }
+            if !glassesListed, r.glassesLive > 0 { rows.append(info("glasses", .doing, elsewhereLine(r, alone: !r.stoppable))) }
             if !fixes.contains(where: { $0.kind == .action(.runDoctor) }), let doctor = commandRow(.runDoctor, inputs, group: .doing) { rows.append(doctor) }
             // With the server down the fix comes next: most of the rest leans on it.
             return live + (s.serverReachable ? rows + fixes : fixes + rows)
@@ -1254,6 +1264,9 @@ enum SetupAssistant {
             var hasAnswer = false
             var nearCommand = false
             var entry: Entry? = nil
+            /// Command rows Return may list but never move to: a Start phrase inside a longer sentence ("how do I record a meeting
+            /// with two speakers"). Start recording asks nothing before it runs, so a second Return from there would record.
+            var returnSkips: Set<String> = []
         }
 
         /// Everything the panel shows for these words.
@@ -1273,9 +1286,10 @@ enum SetupAssistant {
             for (command, rank) in ranked.prefix(commandCap) {
                 if let row = commandRow(command, inputs, group: .commands) {
                     if rank == 0, command.autoHighlights, row.selectable, result.autoHighlight == nil { result.autoHighlight = row.id }
+                    if rank == 2, command == .startRecording { result.returnSkips.insert(row.id) }
                     rows.append(row)
                 } else if command == .stopRecording, inputs.recording.glassesLive > 0 {
-                    rows.append(info("glasses", .commands, glassesLine))
+                    rows.append(info("glasses", .commands, elsewhereLine(inputs.recording)))
                 }
             }
 
@@ -1364,9 +1378,10 @@ enum SetupAssistant {
             if confirming { return .confirm }
             if let id = effective(chosen, listing) { return .activate(id) }
             guard !listing.words.isEmpty else { return .nothing }
-            // The top row is a command that Return may not run on its own (Stop, Doctor, or words that only start or sit inside
-            // its phrase): Return goes to that row, never past it to a Work run on the same words. Its own confirm still applies.
-            if let top = listing.rows.first, case .command = top.kind, top.selectable { return .move(top.id) }
+            // The top row is a command that Return may not run on its own (Stop, Doctor, or words that only start its phrase):
+            // Return goes to that row, never past it to a Work run on the same words. Its own confirm still applies. Start
+            // recording inside a longer sentence has no confirm, so Return skips it and goes to Ask like any near-command.
+            if let top = listing.rows.first, case .command = top.kind, top.selectable, !listing.returnSkips.contains(top.id) { return .move(top.id) }
             // A title that matches is a session to open, not a request: Return goes to the first of them.
             if let session = listing.rows.first(where: { $0.group == .sessions && $0.selectable }) { return .move(session.id) }
             let askable = listing.rows.first { $0.kind == .ask && $0.selectable }
@@ -1438,10 +1453,16 @@ enum SetupAssistant {
             sendsWords(row) ? draft : ""
         }
 
+        /// Whether a send that has finished uses up the words in the box: it was accepted, and the box still holds what was sent
+        /// (ignoring the padding around it). A refused send keeps its words, and so does a box the person has typed more into.
+        static func sentWordsAreUsedUp(sent: String, draft: String, accepted: Bool) -> Bool {
+            accepted && draft.trimmingCharacters(in: .whitespacesAndNewlines) == sent.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
         // MARK: Confirms
 
         static let stopConfirm = Confirmation(question: "Stop and save this recording?",
-                                              consequence: "COS stops this Mac's recording and saves the meeting. A glasses meeting keeps running.", confirm: "Stop and save")
+                                              consequence: "COS stops this Mac's recording and saves the meeting. A recording on your glasses or iPhone keeps running.", confirm: "Stop and save")
         /// main.swift doctorDetails: Query + playback proof asks the provider a real question, up to 60 s.
         static let doctorConfirm = Confirmation(question: "Run Doctor?",
                                                 consequence: "Doctor checks the server, Whisper and your AI apps, and asks your AI app one real question. It can take a minute.", confirm: "Run Doctor")

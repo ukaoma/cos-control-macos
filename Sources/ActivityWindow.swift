@@ -8102,29 +8102,31 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
 
     /// Prep me and Return in the Ask box: one Work run each, through TodayRunGuard. Refused before anything is recorded
     /// (Work busy, an earlier run holds the target, no model): not a start, not a breaker failure. The new receipt is
-    /// matched by its own id.
-    func startRun(target: String, title: String, prompt: String, context: String, handoff: WorkHandoffStore) async {
-        guard !runBusy else { return }
+    /// matched by its own id. Returns whether the run was accepted. runNote says so for the page, but an earlier "Started" note
+    /// outlives this call by 20 seconds, so a caller that must know cannot read the note.
+    @discardableResult
+    func startRun(target: String, title: String, prompt: String, context: String, handoff: WorkHandoffStore) async -> Bool {
+        guard !runBusy else { return false }
         let guardrail = TodayRunGuard(defaults: .standard)
         let admission = guardrail.admission(target: target, inFlight: Self.inFlightTargets(handoff.receipts),
                                             switchOn: TodayHome.workRunsOn(.standard), now: Date())
         guard admission == .allowed else {
             runNote = TodayRunGuard.line(admission) ?? "Work runs from Today is off in Settings."
             todayLog.info("run refused by the guard: \(String(describing: admission), privacy: .public)")
-            return
+            return false
         }
         let holds = handoff.receipts(for: target).contains { WorkChatPreflight.holds($0, continuations: [:]) }
         if let refusal = TodayRunGuard.preflight(busy: handoff.busy || handoff.quietSend, holds: holds) {
             runNote = refusal
             todayLog.info("run not started: work busy=\(handoff.busy || handoff.quietSend) holds=\(holds)")
-            return
+            return false
         }
         runBusy = true
         defer { runBusy = false }
         if handoff.models.isEmpty { await handoff.refresh() }
         guard let index = TodayHome.pickRunModel(handoff.models.map { ($0.id, $0.provider, $0.available) }) else {
             runNote = "No model is available for a Work run. Open Work to start one."
-            return
+            return false
         }
         let id = UUID().uuidString.lowercased()
         let source = WorkSource(id: target, title: title, revision: ActivityHome.dayKey(Date()), project: "today", context: context)
@@ -8134,13 +8136,16 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
         let before = guardrail.pausedUntil(now: Date())
         guardrail.account(outcome, now: Date())
         if before == nil, guardrail.pausedUntil(now: Date()) != nil { todayLog.error("run breaker opened for 15 minutes") }
+        var accepted = false
         switch outcome {
         case .admitted:
             runNote = Self.startedNote
             lastStartedRunID = id
+            accepted = true
         case .refused(let reason), .notStarted(let reason): runNote = reason
         }
         todayLog.info("run outcome: \(String(describing: outcome).prefix(60), privacy: .public) used=\(guardrail.used(now: Date()))")
+        return accepted
     }
 
     static let startedNote = "Started. It shows in Running."
@@ -8720,27 +8725,19 @@ extension ActivityWindow {
         }
     }
 
-    /// Return: one Work run (switch on, through the cap and the breaker). Option Return, or the switch off: the Work inbox.
-    func todaySubmitAsk(_ words: String, file: Bool) {
+    /// Option Return, or the File to Work inbox row: the words become a task in the inbox. A Work run is never started from the
+    /// raw words: Return goes through the Ask row (commandAsk), which carries the saved answer and the rules with them.
+    func todaySubmitAsk(_ words: String) {
         let text = words.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !today.runBusy, !today.captureBusy else { return }
-        if file || !TodayHome.workRunsOn(.standard) {
-            today.captureBusy = true
-            Task {
-                defer { today.captureBusy = false }
-                do {
-                    try await model.captureTask(domain: taskDomain, text: text)
-                    commandKeys.clearDraft()
-                    today.runNote = "Filed to the Work inbox."
-                } catch { today.runNote = error.localizedDescription }
-            }
-            return
-        }
-        let target = "today:ask:" + UUID().uuidString.lowercased()
+        today.captureBusy = true
         Task {
-            await today.startRun(target: target, title: ActivityHome.clip(text, 60), prompt: text,
-                                 context: "Asked from the Today home on \(TodayHome.headerDate(Date())).", handoff: handoffStore)
-            if today.runNote == TodayHomeStore.startedNote { commandKeys.clearWords?() }
+            defer { today.captureBusy = false }
+            do {
+                try await model.captureTask(domain: taskDomain, text: text)
+                commandKeys.clearDraft(afterSend: text, accepted: true)
+                today.runNote = "Filed to the Work inbox."
+            } catch { today.runNote = error.localizedDescription }
         }
     }
 
@@ -9351,6 +9348,14 @@ extension ActivityWindow {
         draft = ""
         clearWords?()
     }
+
+    /// A send that may finish long after it started (a run, a filing, a Doctor report that takes up to 90 seconds) empties the box
+    /// only if it was accepted and the box still holds what was sent. Words typed since are the person's, and a refused send
+    /// keeps its words so they can try again.
+    func clearDraft(afterSend sent: String, accepted: Bool) {
+        guard SetupAssistant.Center.sentWordsAreUsedUp(sent: sent, draft: draft, accepted: accepted) else { return }
+        clearDraft()
+    }
 }
 
 /// Offscreen fixtures (Tests/CommandCenterRender.swift): the state a person reaches with keys, since nothing is typed there.
@@ -9432,6 +9437,9 @@ extension ActivityWindow {
         r.saveLine = !r.stoppable && store.saveLine.headline == MacRecordingSaveStatus.saving ? MacRecordingSaveStatus.saving : nil
         r.glassesLive = TodayHome.nonMacLive(serverLive: model.recordingCount, liveSessionIDs: model.liveTranscriptRows.filter { $0.phase == .live }.map(\.sessionId),
                                              macHeld: store.occupied, captureID: store.manifest?.captureId)
+        // Glasses only when every other live recording is known to be on them. A phone, or a recording no row names, is "another recording".
+        let others = todayRecordings().filter { !$0.isMac }
+        r.knownGlasses = r.glassesLive > 0 && others.count >= r.glassesLive && others.allSatisfy { !$0.isPhone && !$0.isUnknown }
         r.inFlight = today.recordInFlight
         return r
     }
@@ -9525,7 +9533,7 @@ extension ActivityWindow {
             Color.clear.contentShape(Rectangle()).onTapGesture { closeCommandCenter() }.accessibilityHidden(true)
             CommandCenterPanel(base: commandInputs(frame: frame, now: now), keys: commandKeys, store: model.macRecording, fixture: commandFixture,
                                recording: { commandRecording() }, snapshot: { commandSnapshot() }, resultInputs: { commandResultInputs() },
-                               run: { row, listing in commandRun(row, listing) }, submit: { words, file in todaySubmitAsk(words, file: file) },
+                               run: { row, listing in commandRun(row, listing) }, submit: { words in todaySubmitAsk(words) },
                                recordAfterNotice: { commandAcknowledgeAndRecord() }, close: { closeCommandCenter() },
                                maxListHeight: max(160, windowSize.height - top - 44 - 40 - 28))
                 .frame(width: min(CommandCenterPanel.width, max(320, windowSize.width - rail - 2 * gutter)))
@@ -9553,7 +9561,7 @@ extension ActivityWindow {
             commandAsk(listing)
             return .stay
         case .file:
-            todaySubmitAsk(listing.words, file: true)
+            todaySubmitAsk(listing.words)
             return .stay
         case .savedAnswer, .info:
             return .stay
@@ -9709,7 +9717,7 @@ extension ActivityWindow {
             today.runNote = SetupAssistant.Center.askHeld(commandSnapshot())
             return
         }
-        commandStartRun(run)
+        commandStartRun(run, sent: listing.words)
     }
 
     /// The gate and the run guard first, then one at a time, then Doctor, then the run: Doctor spends a real question, so a run
@@ -9732,15 +9740,15 @@ extension ActivityWindow {
                 today.runNote = "The COS server stopped answering, so nothing started."
                 return
             }
-            commandStartRun(run)
+            commandStartRun(run, sent: words)
         }
     }
 
     /// Through the Today cap and breaker, as Prep me and Return are.
-    func commandStartRun(_ run: SetupAssistant.Troubleshoot) {
+    func commandStartRun(_ run: SetupAssistant.Troubleshoot, sent: String) {
         Task {
-            await today.startRun(target: run.target, title: run.title, prompt: run.prompt, context: run.context, handoff: handoffStore)
-            if today.runNote == TodayHomeStore.startedNote { commandKeys.clearDraft() }
+            let accepted = await today.startRun(target: run.target, title: run.title, prompt: run.prompt, context: run.context, handoff: handoffStore)
+            commandKeys.clearDraft(afterSend: sent, accepted: accepted)
         }
     }
 }
@@ -9916,7 +9924,7 @@ struct CommandCenterPanel: View {
     let snapshot: () -> SetupAssistant.Snapshot
     let resultInputs: () -> C.ResultInputs
     let run: (C.Row, C.Listing) -> CommandEffect
-    let submit: (String, Bool) -> Void
+    let submit: (String) -> Void
     let recordAfterNotice: () -> Void
     let close: () -> Void
     let maxListHeight: CGFloat
@@ -10055,7 +10063,7 @@ struct CommandCenterPanel: View {
         case .startRun:
             // The Ask row's own run, so the words go with the saved answer, a short snapshot and the same rules.
             if let ask = listing.rows.first(where: { $0.kind == .ask && $0.selectable }) { activate(ask.id, listing) }
-        case .file: submit(listing.words, true)
+        case .file: submit(listing.words)
         case .move(let id): chosen = id
         }
         focused = true
@@ -10125,6 +10133,8 @@ struct CommandCenterPanel: View {
                         if noticeShowing, row.kind == .command(.startRecording) {
                             MacRecordingNoticeCard(onRecord: {
                                 noticeShowing = false
+                                // The row is used up. Left chosen, a Return after the card would offer Start recording armed.
+                                chosen = nil
                                 recordAfterNotice()
                             }, onNotNow: { noticeShowing = false })
                             .padding(.leading, 41).padding(.trailing, 14).padding(.bottom, 10)

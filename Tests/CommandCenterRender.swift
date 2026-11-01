@@ -39,8 +39,8 @@ import SwiftUI
     static let macSaving = TodayHome.Recording(sessionId: "mac_fixture", start: now.addingTimeInterval(-12 * 60), isMac: true, title: "Zoom meeting 11:48 AM", saving: MacRecordingSaveStatus.saving)
     static let glassesLive = TodayHome.Recording(sessionId: "g2_fixture", start: now.addingTimeInterval(-4 * 60), isMac: false)
     static let onMac = recording { $0.stoppable = true; $0.occupied = true; $0.busy = true }
-    static let onGlasses = recording { $0.busy = true; $0.glassesLive = 1 }
-    static let onBoth = recording { $0.stoppable = true; $0.occupied = true; $0.busy = true; $0.glassesLive = 1 }
+    static let onGlasses = recording { $0.busy = true; $0.glassesLive = 1; $0.knownGlasses = true }
+    static let onBoth = recording { $0.stoppable = true; $0.occupied = true; $0.busy = true; $0.glassesLive = 1; $0.knownGlasses = true }
     static let saving = recording { $0.occupied = true; $0.busy = true; $0.saveLine = MacRecordingSaveStatus.saving }
 
     static let scenes: [Scene] = [
@@ -82,8 +82,8 @@ import SwiftUI
         Scene(name: "notice", fixture: CommandCenterFixture(words: "start recording", noticeShowing: true, recording: recording())),
         Scene(name: "recording", fixture: CommandCenterFixture(recording: recording { $0.stoppable = true; $0.occupied = true; $0.busy = true })),
         Scene(name: "saving", fixture: CommandCenterFixture(recording: recording { $0.occupied = true; $0.busy = true; $0.saveLine = "Saving…" })),
-        Scene(name: "g2-recording", fixture: CommandCenterFixture(recording: recording { $0.busy = true; $0.glassesLive = 1 })),
-        Scene(name: "g2-stop-typed", fixture: CommandCenterFixture(words: "stop recording", recording: recording { $0.busy = true; $0.glassesLive = 1 })),
+        Scene(name: "g2-recording", fixture: CommandCenterFixture(recording: recording { $0.busy = true; $0.glassesLive = 1; $0.knownGlasses = true })),
+        Scene(name: "g2-stop-typed", fixture: CommandCenterFixture(words: "stop recording", recording: recording { $0.busy = true; $0.glassesLive = 1; $0.knownGlasses = true })),
         Scene(name: "macos-old", fixture: CommandCenterFixture(recording: recording { $0.osSupported = false })),
         Scene(name: "failure-line", fixture: CommandCenterFixture(recording: recording(), result: C.ResultInputs(recordingError: "The server did not confirm this recording's source and strict speaker policy."))),
         Scene(name: "started-run", fixture: CommandCenterFixture(recording: recording(), result: C.ResultInputs(runNote: TodayHomeStore.startedNote))),

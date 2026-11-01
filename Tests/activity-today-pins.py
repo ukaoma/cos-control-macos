@@ -147,9 +147,11 @@ need(in_order(start, "guardrail.admission(", "TodayRunGuard.preflight(", "handof
      "[cost guards] admission, then the busy and open-run check, then the one submit, then the accounting")
 need("guard admission == .allowed else {" in start, "[cost guards] nothing starts unless the guard allows it")
 need("intentID: id)" in start and "handoff.receipts.first { $0.id == id }" in start, "[cost guards] the new receipt is matched by its own id")
-need("guard !runBusy else { return }" in start and 'switchOn: TodayHome.workRunsOn(.standard)' in start, "[cost guards] the switch and one at a time")
+need("guard !runBusy else { return false }" in start and 'switchOn: TodayHome.workRunsOn(.standard)' in start, "[cost guards] the switch and one at a time")
+need("-> Bool {" in start and start.count("return false") == 4 and "return accepted" in start and "accepted = true" in start,
+     "[cost guards] startRun says whether the run was accepted, so no caller reads a note that may be 20 seconds old")
 need("TodayHome.pickRunModel(" in start, "[cost guards] runs from Today use the picked non-Opus model")
-need(today.count("today.startRun(") == 3, "[cost guards] only Prep me, Return in the command center and its Ask and troubleshoot rows start Work runs")
+need(today.count("today.startRun(") == 2, "[cost guards] only Prep me and the command center's Ask and troubleshoot rows start Work runs; the Today box only files")
 need("if let refusal = today.runRefusal(" in body(today, "    func commandTroubleshoot(", "\n    func commandStartRun("), "[cost guards] troubleshoot asks the guard before Doctor spends a question")
 refusal = body(store, "    func runRefusal(", "\n    @Published var stopping")
 need("guardrail.account(" not in refusal and "handoff.submit(" not in refusal and "TodayRunGuard(defaults: .standard).admission(" in refusal and "TodayRunGuard.preflight(" in refusal,
@@ -157,8 +159,8 @@ need("guardrail.account(" not in refusal and "handoff.submit(" not in refusal an
 need("static let dailyCap = 20" in models and "static let breakerFailures = 3" in models and "static let breakerPause: TimeInterval = 15 * 60" in models,
      "[cost guards] 20 a day, 3 failures, 15 minutes")
 ask = body(today, "    func todaySubmitAsk(", "\n    func todayNeedsPanel(")
-need("if file || !TodayHome.workRunsOn(.standard) {" in ask and "model.captureTask(" in ask and "!today.captureBusy" in ask,
-     "[cost guards] the switch off (or Option Return) files to the Work inbox, once")
+need("model.captureTask(" in ask and "!today.captureBusy" in ask and "startRun(" not in ask and "file:" not in ask,
+     "[cost guards] Option Return and the File row file to the Work inbox, once, and the raw words never start a run")
 
 # Capability gating (D4, 1b): glasses questions only on a server that advertises the route.
 need("input.jobs = today.jobsSupported == true ? today.jobs : nil" in today, "[capability] no capability, no question rows")

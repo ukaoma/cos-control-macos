@@ -159,7 +159,7 @@ press = block(panel, "    private func pressReturn(", "    private func activate
 pin("private func pressReturn(option: Bool = false) {" in press and "C.onReturn(option: option," in press, "Return reaches the engine's one rule")
 pin("event.keyCode == 36 || event.keyCode == 76, flags == .option" in monitor and "pressReturn(option: true)" in panel,
     "Option-Return goes through the monitor: a single-line field types a line break for it and never submits")
-pin("case .file: submit(listing.words, true)" in press and "case .move(let id): chosen = id" in press,
+pin("case .file: submit(listing.words)" in press and "case .move(let id): chosen = id" in press,
     "Option-Return files, and a near-command only moves the highlight")
 # A bare Return run goes through the Ask row: the saved answer, a short snapshot and the rules ride with the words. The raw words
 # never go to the Today box's submit as a run.
@@ -167,7 +167,7 @@ start_run = block(press, "        case .startRun:", "        case .file:")
 pin("submit(" not in start_run and "listing.rows.first(where: { $0.kind == .ask && $0.selectable })" in start_run and "activate(ask.id, listing)" in start_run,
     "Return with no highlight starts its Work run through the Ask row, never with the raw words")
 pin(press.count("submit(") == 1, "the panel's submit is Option-Return's filing and nothing else")
-pin("submit: { words, file in todaySubmitAsk(words, file: file) }" in ext, "Return reaches today's own submit")
+pin("submit: { words in todaySubmitAsk(words) }" in ext and "file: file" not in window, "Return reaches today's own submit, which only files")
 pin(".onTapGesture { closeCommandCenter() }" in ext, "a click outside closes it")
 
 # A row that ran leaves nothing armed: no highlight, no words in the box, no draft for the next open. The words are used up in
@@ -178,13 +178,23 @@ pin(before(perform, "let effect = run(row, listing)", "if effect != .notice, !C.
     "a row that ran empties its highlight, the box and the draft, unless it sends the words or only showed the notice")
 keys_class = block(window, "@MainActor final class CommandCenterKeys {", "struct CommandCenterFixture {")
 pin('func clearDraft() {\n        draft = ""\n        clearWords?()\n    }' in keys_class, "clearDraft empties the draft directly, then the box if it is on screen")
+pin("guard SetupAssistant.Center.sentWordsAreUsedUp(sent: sent, draft: draft, accepted: accepted) else { return }\n        clearDraft()" in keys_class,
+    "a finished send empties the draft only when it was accepted and the box still holds what was sent")
 filing = block(window, "    func todaySubmitAsk(", "    func todayNeedsPanel(")
-pin(before(filing, "try await model.captureTask(domain: taskDomain, text: text)", "commandKeys.clearDraft()"), "a filing that succeeded empties the draft")
+pin(before(filing, "try await model.captureTask(domain: taskDomain, text: text)", "commandKeys.clearDraft(afterSend: text, accepted: true)"), "a filing that succeeded empties the draft, if it still holds what was filed")
 start_run_fn = block(ext, "    func commandStartRun(", "\n    }\n")
-pin(before(start_run_fn, "if today.runNote == TodayHomeStore.startedNote { commandKeys.clearDraft() }"), "a run that started empties the draft, even with the panel gone")
+pin(before(start_run_fn, "let accepted = await today.startRun(", "commandKeys.clearDraft(afterSend: sent, accepted: accepted)") and "startedNote" not in start_run_fn,
+    "a run the guard accepted empties the draft, if it still holds what was sent, even with the panel gone; the note decides nothing")
 now_fn = block(ext, "    func commandRecordNow() {", "\n    }\n")
 pin(before(now_fn, "today.recordInFlight = true", "commandKeys.clearDraft()", "Task {"), "a recording under way empties the draft")
-pin(window.count("commandKeys.clearDraft()") == 3 and "commandKeys.clearWords?()" not in ext, "a filing, a run and a recording are the only three places that empty the draft")
+pin(window.count("commandKeys.clearDraft(") == 3 and window.count("commandKeys.clearDraft()") == 1 and "commandKeys.clearWords?()" not in ext, "a filing, a run and a recording are the only three places that empty the draft, and only the recording does it unconditionally")
+
+# Return never moves onto Start recording from a Start phrase inside a longer sentence: that row asks nothing before it records.
+notice = block(panel, "MacRecordingNoticeCard(onRecord: {", "}, onNotNow:")
+pin(before(notice, "noticeShowing = false", "chosen = nil", "recordAfterNotice()"), "the card's Record uses the Start row up, so a Return after it arms nothing")
+recording_inputs = block(ext, "    func commandRecording() -> SetupAssistant.Center.Recording {", "\n    }\n")
+pin("r.knownGlasses = r.glassesLive > 0 && others.count >= r.glassesLive && others.allSatisfy { !$0.isPhone && !$0.isUnknown }" in recording_inputs,
+    "the words say glasses only when every other recording is known to be on them")
 
 # Every command and action has a dispatch case, with no default.
 for fn, enum in (("func commandRun(_ command: SetupAssistant.Center.Command) -> CommandEffect {", "enum Command: String, CaseIterable, Sendable {"),
@@ -232,7 +242,7 @@ pin("row.selectable else { return }" in activate, "a held row never runs")
 
 # Asking: troubleshoot's order, and no Doctor for Ask.
 trouble = block(ext, "    func commandTroubleshoot(_ words: String) {", "    func commandStartRun(")
-order = ["SetupAssistant.gate(.troubleshoot, commandSnapshot()) == .ready", "today.runRefusal(", "today.gatheringReport = true", "model.runHelper([", "commandStartRun(run)"]
+order = ["SetupAssistant.gate(.troubleshoot, commandSnapshot()) == .ready", "today.runRefusal(", "today.gatheringReport = true", "model.runHelper([", "commandStartRun(run, sent: words)"]
 pin(all(p in trouble for p in order) and [trouble.index(p) for p in order] == sorted(trouble.index(p) for p in order), "troubleshoot: guard first, in-flight flag, then Doctor, then the run")
 pin("guard !today.gatheringReport, !today.runBusy," in trouble, "troubleshoot: one at a time")
 ask = block(ext, "    func commandAsk(_ listing: SetupAssistant.Center.Listing) {", "    func commandTroubleshoot(")

@@ -283,8 +283,20 @@ import Foundation
             check(returned(phrase) == .move("ask"), "[a near-command moves to Ask]", "\(phrase): \(returned(phrase))")
         }
         // Where the words name a command that is listed first, Return goes to that command's row, not past it to a Work run.
-        check(returned("please start recording the call with Dana right now") == .move("command:startRecording"), "[Return moves to the command row]", "\(returned("please start recording the call with Dana right now"))")
+        // Start recording has no confirm, so a Start phrase inside a longer sentence (a question about recording, not the order)
+        // never moves Return onto it: a second Return from there would record. The row stays listed, and Return goes to Ask.
+        for sentence in ["please start recording the call with Dana right now", "how do i record a meeting with two speakers", "can you start a recording of the standup"] {
+            let listed = C.listing(center(), words: sentence)
+            check(row(listed, "command:startRecording") != nil && listed.returnSkips == ["command:startRecording"], "[a Start phrase inside a sentence stays listed, and Return skips it]", "\(sentence): \(rowIDs(listed))")
+            check(returned(sentence) == .move("ask"), "[a Start phrase inside a sentence moves to Ask]", "\(sentence): \(returned(sentence))")
+            // An arrow key still chooses it: that is the person's own pick.
+            check(returned(sentence, chosen: "command:startRecording") == returnRuns("command:startRecording"), "[a chosen row still runs]", sentence)
+        }
+        // The start of the phrase is still the order being typed, and Stop and Doctor keep moving, because they confirm.
+        check(returned("start rec") == .move("command:startRecording"), "[the start of a Start phrase moves to its row]", "\(returned("start rec"))")
         check(returned("run doctor please") == .move("command:runDoctor"), "[Return moves to the command row]", "\(returned("run doctor please"))")
+        let stoppingNow = center { $0.recording.stoppable = true; $0.recording.occupied = true; $0.recording.busy = true }
+        check(returned("please stop recording the call with Dana right now", inputs: stoppingNow) == .move("command:stopRecording"), "[Stop inside a sentence still moves to its row, which confirms]", "\(returned("please stop recording the call with Dana right now", inputs: stoppingNow))")
         // The rule on its own, because a saved answer can also send Return to Ask: a command's phrase inside a long sentence.
         check(C.nearCommand("please start recording the call with Dana right now"), "[a near-command moves to Ask]", "a command's phrase in a long sentence")
         // A command in the list, still being typed, never starts a run either: Return goes to it.
@@ -363,7 +375,9 @@ import Foundation
             // What the box holds after the row ran, and what Return does when it comes back.
             let draft = C.draftAfterRun(ran, words)
             check(draft.isEmpty, "[a row that ran leaves no draft]", "\(words): \"\(draft)\"")
-            check(returned(draft) == .nothing, "[the next open arms nothing]", "\(words): \(returned(draft))")
+            // What the next open lists is the empty box, so nothing is armed. (An empty draft returns .nothing whatever the code does;
+            // the listing carries the words, so a draft left behind would show in it.)
+            check(C.listing(center(), words: draft) == C.listing(center(), words: ""), "[the next open arms nothing]", "\(words): \"\(draft)\"")
         }
         // The same after Stop and Doctor, which stay in the panel: their words are used up too.
         let live = center { $0.recording.stoppable = true; $0.recording.occupied = true; $0.recording.busy = true }
@@ -373,7 +387,16 @@ import Foundation
         }
         // A recording that has saved: the draft "record" must not be waiting to start another.
         let saved = center()
-        check(returned(C.draftAfterRun(row(C.listing(saved, words: "record"), "command:startRecording")!, "record"), inputs: saved) == .nothing, "[the next open arms nothing]", "record")
+        let nextOpen = C.listing(saved, words: C.draftAfterRun(row(C.listing(saved, words: "record"), "command:startRecording")!, "record"))
+        check(nextOpen.words.isEmpty && nextOpen.autoHighlight == nil && row(nextOpen, "command:startRecording") != nil, "[the next open arms nothing]", "record")
+        // A send that finishes later empties the box only when it was accepted and the box still holds what was sent.
+        let sentWords = "email Gina about pricing"
+        check(C.sentWordsAreUsedUp(sent: sentWords, draft: sentWords, accepted: true), "[an accepted send uses its words up]", "")
+        check(C.sentWordsAreUsedUp(sent: sentWords, draft: "  \(sentWords)\n", accepted: true), "[padding around the words is not typing]", "")
+        check(!C.sentWordsAreUsedUp(sent: sentWords, draft: sentWords, accepted: false), "[a refused send keeps its words]", "")
+        check(!C.sentWordsAreUsedUp(sent: sentWords, draft: sentWords + " and Dana", accepted: true), "[words typed after the send stay]", "")
+        check(!C.sentWordsAreUsedUp(sent: sentWords, draft: "something else", accepted: true), "[a different box is the person's]", "")
+        check(!C.sentWordsAreUsedUp(sent: sentWords, draft: "", accepted: true), "[an emptied box has nothing to clear]", "")
         // Every kind of row but the ones that send the words uses them up, and those keep them until the send is accepted.
         let sends: [C.Kind] = [.ask, .file, .action(.troubleshoot)]
         for kind in sends {
@@ -442,7 +465,7 @@ import Foundation
         check(row(savingList, "command:stopRecording") == nil, "[no Stop while saving]", "")
 
         // A glasses meeting: never double-captured, and says where to stop it.
-        let glasses = center { $0.recording.busy = true; $0.recording.glassesLive = 1 }
+        let glasses = center { $0.recording.busy = true; $0.recording.glassesLive = 1; $0.recording.knownGlasses = true }
         let glassesList = C.listing(glasses, words: "")
         check(row(glassesList, "command:startRecording")?.held == C.RecordingHeld.glasses, "[G2 recording holds Start]", "\(rowIDs(glassesList))")
         check(row(glassesList, "command:startRecording")?.selectable == false, "[G2 recording holds Start]", "")
@@ -451,9 +474,18 @@ import Foundation
         let stopWords = C.listing(glasses, words: "stop recording")
         check(row(stopWords, "command:stopRecording") == nil && row(stopWords, "info:glasses")?.title == C.glassesLine, "[G2 only says to stop it on the glasses]", "\(rowIDs(stopWords))")
         // Both at once: Stop stops the Mac's, and the line says where the other one stops.
-        let both = center { $0.recording.stoppable = true; $0.recording.occupied = true; $0.recording.busy = true; $0.recording.glassesLive = 1 }
+        let both = center { $0.recording.stoppable = true; $0.recording.occupied = true; $0.recording.busy = true; $0.recording.glassesLive = 1; $0.recording.knownGlasses = true }
         let bothList = C.listing(both, words: "")
         check(row(bothList, "command:stopRecording") != nil && row(bothList, "info:glasses")?.title == C.glassesLine, "[G2 and Mac both recording]", "\(rowIDs(bothList))")
+        // Another recording that is not known to be on the glasses (a phone, or one no row names): neutral words, never "glasses".
+        let elsewhere = center { $0.recording.busy = true; $0.recording.glassesLive = 1 }
+        let elsewhereList = C.listing(elsewhere, words: "")
+        check(row(elsewhereList, "command:startRecording")?.held == C.RecordingHeld.other && row(elsewhereList, "command:startRecording")?.selectable == false, "[another recording holds Start, in neutral words]", "\(rowIDs(elsewhereList))")
+        check(row(elsewhereList, "info:glasses")?.title == "Stop it where it started.", "[another recording says where to stop it, in neutral words]", "")
+        check(row(C.listing(elsewhere, words: "stop recording"), "info:glasses")?.title == C.otherLine && C.otherLine == "Another recording is running. Stop it where it started.", "[another recording, asked to stop]", "")
+        let elsewhereBoth = center { $0.recording.stoppable = true; $0.recording.occupied = true; $0.recording.busy = true; $0.recording.glassesLive = 1 }
+        check(row(C.listing(elsewhereBoth, words: ""), "info:glasses")?.title == C.otherLine, "[Mac and another recording, neutral]", "")
+        for line in [C.RecordingHeld.other, C.otherLine, "Stop it where it started.", C.stopConfirm.consequence] { check(!line.lowercased().contains("a glasses meeting"), "[neutral words name no glasses meeting]", line) }
 
         // A Mac capture not saved yet, an old Mac, no server, a start on its way: each says why.
         let unsaved = center { $0.recording.busy = true }
@@ -473,7 +505,7 @@ import Foundation
         let mac = C.LiveRecording(id: "mac_1", title: "Zoom meeting 2:05 PM", detail: "Recording on this Mac, 12 min", isMac: true, canStop: true)
         let glasses = C.LiveRecording(id: "g2-1", title: "Recording from 2:29 PM", detail: "Recording on your glasses, 4 min", stopNote: "Stop it on the glasses")
         let stoppable = { (r: inout C.Recording) in r.stoppable = true; r.occupied = true; r.busy = true }
-        let both = C.listing(center { stoppable(&$0.recording); $0.recording.glassesLive = 1; $0.live = [mac, glasses]; $0.waiting = [waiting("a", "First")]; $0.running = [running("r", "Run")] }, words: "")
+        let both = C.listing(center { stoppable(&$0.recording); $0.recording.glassesLive = 1; $0.recording.knownGlasses = true; $0.live = [mac, glasses]; $0.waiting = [waiting("a", "First")]; $0.running = [running("r", "Run")] }, words: "")
         // First, above Waiting and Running, with Stop under its own recording.
         check(Array(rowIDs(both).prefix(3)) == ["recording:mac_1", "command:stopRecording", "recording:g2-1"], "[recordings are the first rows]", "\(rowIDs(both))")
         check(both.rows.prefix(3).allSatisfy { $0.group == .recording }, "[recordings are the first rows]", "")
@@ -656,13 +688,14 @@ import Foundation
     static func centerCopy() {
         var texts: [String] = C.Command.allCases.map(\.title)
         for confirm in [C.stopConfirm, C.doctorConfirm, C.reportConfirm] { texts += [confirm.question, confirm.consequence, confirm.confirm] }
-        texts += [C.RecordingHeld.starting, C.RecordingHeld.os, C.RecordingHeld.saving, C.RecordingHeld.unsaved, C.RecordingHeld.glasses, C.RecordingHeld.server, C.glassesLine, C.noticeHint]
+        texts += [C.RecordingHeld.starting, C.RecordingHeld.os, C.RecordingHeld.saving, C.RecordingHeld.unsaved, C.RecordingHeld.glasses, C.RecordingHeld.other, C.RecordingHeld.server, C.glassesLine, C.otherLine, C.noticeHint]
         texts += SA.Action.allCases.map(C.rowTitle)
         var off = healthy(); off.workRunsOn = false
         var down = healthy(); down.serverReachable = false; down.runtimeState = "stopped"
         let fixtures: [C.Inputs] = [
             center(), center { $0.snapshot = off }, center { $0.snapshot = down }, center { $0.sessionsOff = true }, center { $0.waitingKnown = false; $0.runningKnown = false },
-            center { $0.recording.stoppable = true; $0.recording.occupied = true; $0.recording.busy = true }, center { $0.recording.busy = true; $0.recording.glassesLive = 1 },
+            center { $0.recording.stoppable = true; $0.recording.occupied = true; $0.recording.busy = true }, center { $0.recording.busy = true; $0.recording.glassesLive = 1; $0.recording.knownGlasses = true },
+            center { $0.recording.busy = true; $0.recording.glassesLive = 1 },
             center { $0.recording.occupied = true; $0.recording.busy = true; $0.recording.saveLine = "Saving…" },
         ]
         for inputs in fixtures {
