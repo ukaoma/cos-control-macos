@@ -18037,7 +18037,14 @@ final class COSControlHelper {
         let end = min(haystack.count, start + 180)
         let lower = haystack.index(haystack.startIndex, offsetBy: start)
         let upper = haystack.index(haystack.startIndex, offsetBy: end)
-        let snippet = String(haystack[lower..<upper]).replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        // A window cut inside a word drops the cut piece at either end, so the head or tail of a key is never what shows. The match itself
+        // stays: a piece is dropped only when it ends before the match starts (40 characters in) or begins after it.
+        var from = lower, to = upper
+        let lead = start == 0 ? nil : haystack[lower..<upper].firstIndex(where: { $0.isWhitespace })
+        if start > 0, !haystack[haystack.index(before: lower)].isWhitespace, let space = lead, haystack.distance(from: lower, to: space) <= 40 { from = space }
+        if end < haystack.count, !haystack[upper].isWhitespace,
+           let space = haystack[from..<upper].lastIndex(where: { $0.isWhitespace }), haystack.distance(from: from, to: space) >= 40 { to = space }
+        let snippet = String(haystack[from..<to]).replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return (score, snippet)
     }

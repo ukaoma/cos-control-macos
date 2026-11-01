@@ -1097,6 +1097,34 @@ import Foundation
         for plain in ["the persona pricing table", "Sources/ActivityWindow.swift line 9591", "version 0.5.361 build 415", "MU-Chief-Staff", "2026-10-31 15:00", "ask the owner about it"] {
             check(C.mask(plain) == plain, "[plain text is not masked]", plain)
         }
+        // .env and JSON shapes, a credential key with an underscore before it, CLI flags, URLs with a password, and the shapes that
+        // `\b` missed (QA 0.5.361, G7, S3). Each secret part must be gone; the words around it stay.
+        let shaped: [(text: String, secret: String)] = [
+            ("OPENAI_API_KEY=abcdef123456", "abcdef123456"), ("DB_PASSWORD=hunter2hunter2", "hunter2hunter2"), ("GITHUB_TOKEN=abcdef123456", "abcdef123456"),
+            ("SERVICE_TOKEN=abcdef123456", "abcdef123456"), ("client_secret: abcdef123456", "abcdef123456"), ("aws_secret_access_key=wJalrXUtnFEMIK7MDENG", "wJalrXUtnFEMIK7MDENG"),
+            ("{\"password\": \"hunter2hunter2\"}", "hunter2hunter2"), ("{\"api_key\":\"abcdef123456\"}", "abcdef123456"), ("'client_secret': 'abcdef123456'", "abcdef123456"),
+            ("run it with --password hunter2hunter2 today", "hunter2hunter2"), ("curl --token=abcdef123456 now", "abcdef123456"),
+            ("Authorization: Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA"), ("use postgres://admin:hunter2hunter2@db.example/prod now", "hunter2hunter2"),
+            ("post to https://hooks.slack.com/services/T0ABC123/B0DEF456/abcdefghijklmnopqrstuvwx", "abcdefghijklmnopqrstuvwx"), ("glpat-abcdefghij1234567890", "abcdefghij1234567890"),
+            ("my_sk-abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz"), ("stripeSecretKey: abcdefgh12345678", "abcdefgh12345678"),
+        ]
+        for (text, secret) in shaped {
+            let out = C.mask("note \(text) end")
+            check(out.contains(C.hidden) && !out.contains(secret) && out.hasPrefix("note ") && out.hasSuffix(" end"), "[key-shaped text is masked in match text]", "\(text): \(out)")
+            check(C.matchLine("the line \(text) and more words", title: "x")?.contains(secret) == false, "[key-shaped text is masked in match text]", text)
+        }
+        // A plan name, a UUID and a key-like word that is not a credential stay readable.
+        for stays in ["PLAN_cmdK_find_sessions_2026-10-31", "3f2504e0-4f89-41d3-9a0c-0305e82c3301", "TOKEN_COUNT=12345678", "MAX_TOKENS: 4096", "secretName: fred", "token: the one",
+                      "claude-code-sessions_find_local_words_2026-10-31_final.md", "basic setup of the pricing table"] {
+            check(C.mask(stays) == stays, "[a name or a plain word is not hidden]", "\(stays): \(C.mask(stays))")
+        }
+        // The same words from a loaded row and from a title search: a listed row's title is masked too.
+        let leaky = [listed("claude:leak0001", "Fix sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx and OPENAI_API_KEY=abcdef123456", days: 0)]
+        for words in ["recent", "fix"] {
+            let listing = C.listing(withSessions(leaky), words: words)
+            let title = row(listing, "session:claude:leak0001")?.title ?? ""
+            check(!title.isEmpty && title.contains(C.hidden) && !title.contains("sk-ant") && !title.contains("abcdef123456"), "[a listed row draws no key]", "\(words): \(title)")
+        }
         let masked = C.listing(withFound(sessions, words: "key", hits: [hit("claude:key00001", "Fix sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWx", match: "see the token: abcdef1234567890 in the notes")]), words: "key")
         check(row(masked, "hit:claude:key00001")?.title.contains("sk-ant") == false && row(masked, "hit:claude:key00001")?.match?.contains("abcdef1234567890") == false
               && row(masked, "hit:claude:key00001")?.match?.contains(C.hidden) == true, "[a hit row draws no key]", "\(String(describing: row(masked, "hit:claude:key00001")))")

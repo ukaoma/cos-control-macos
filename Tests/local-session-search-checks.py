@@ -143,6 +143,24 @@ try:
         check(hits[0].get("workspace") == "quokka-site", "a transcript past the newest 20 has its project from its folder", str(hits[0].get("workspace")))
         check(hits[0].get("name") not in ("", "Claude session") and "quokka" in str(hits[0].get("name")).lower(), "a transcript past the newest 20 has a title, not Claude session", str(hits[0].get("name")))
 
+    # QA item 13: the snippet window never begins or ends inside a key, so a key's head or tail is not what shows.
+    key = ("A1b2C3d4E5" * 6)[:60]
+    windowed = str(uuid.uuid4())
+    make_transcript(windowed, "-tmp-fx-GitHub-window-site", "intro words " + key + " fillerfill windowtoken here and a long run of padding words after it to fill the rest of the snippet window past one hundred and eighty characters")
+    code, hits, _, _ = search("windowtoken")
+    check(len(hits) == 1 and "windowtoken" in str(hits[0].get("snippet")), "a snippet keeps the words it matched", str([h.get("snippet") for h in hits])[:120])
+    if hits:
+        snippet = str(hits[0].get("snippet"))
+        check(not any(key[-n:] in snippet for n in range(8, 61)), "a snippet never begins inside a key", snippet[:80])
+    head_key = ("Z9y8X7w6V5" * 6)[:60]
+    tailed = str(uuid.uuid4())
+    make_transcript(tailed, "-tmp-fx-GitHub-tail-site", "intro words tailtoken " + "pad " * 32 + head_key + " end of the line")
+    code, hits, _, _ = search("tailtoken")
+    check(len(hits) == 1 and "tailtoken" in str(hits[0].get("snippet")), "a snippet keeps the words it matched, whichever end is cut", str([h.get("snippet") for h in hits])[:120])
+    if hits:
+        snippet = str(hits[0].get("snippet"))
+        check(not any(head_key[:n] in snippet for n in range(8, 61)), "a snippet never ends inside a key", snippet[-80:])
+
     # The open path: reveal resolves each id to the record. With Claude Desktop installed the link is the continue link; without it the
     # reason says so. The one thing it must never say is that the id is incomplete.
     def reveal(session):

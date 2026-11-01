@@ -508,6 +508,22 @@ pin("guard model.platformOpening else { return .stay }" in open_hit and "if mode
     "a hit's failed open keeps the panel open until its notice lands")
 pin("C.keepsWordsWhileStaying(row)" in panel and "static func keepsWordsWhileStaying(_ row: Row) -> Bool" in core, "a staying hit keeps its words")
 
+# The credential-key rule is a copy of WorkCardFiles.credentialKey (the engine file is Foundation-only): the two bodies must stay equal.
+def function_body(text, signature):
+    lines = text.splitlines()
+    start = next(i for i, line in enumerate(lines) if signature in line)
+    depth, body = 0, []
+    for line in lines[start + 1:]:
+        depth += line.count("{") - line.count("}")
+        if depth < 0:
+            break
+        body.append(line.strip())
+    return body
+
+mirror = "static func credentialKey(_ key: String) -> Bool {"
+pin(function_body(core, mirror) == function_body(code(read("Sources/WorkCardFiles.swift")), mirror) and len(function_body(core, mirror)) > 8,
+    "the credential key rule equals WorkCardFiles.credentialKey")
+
 if failures:
     for failure in failures:
         print("Setup assistant pin: " + failure, file=sys.stderr)

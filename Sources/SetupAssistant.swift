@@ -1185,21 +1185,81 @@ enum SetupAssistant {
         static let hidden = "[hidden]"
         static let matchCap = 120
 
-        /// Text that looks like a key, a token or a secret, replaced by shape (not by a list of known secrets).
+        /// Text that looks like a key, a token or a secret, replaced by shape (not by a list of known secrets). Each shape starts at a
+        /// non-alphanumeric, never at `\b`: an underscore is a word character, so `\b` failed in `OPENAI_API_KEY` and `my_sk-...`.
         private static let keyShapes = [
-            #"\b(?:sk|pk|rk|sess)[-_][A-Za-z0-9_\-]{16,}"#,
-            #"\bgh[pousr]_[A-Za-z0-9]{16,}|\bgithub_pat_[A-Za-z0-9_]{16,}"#,
-            #"\bxox[abprs]-[A-Za-z0-9\-]{10,}"#,
-            #"\b(?:AKIA|ASIA)[0-9A-Z]{12,}"#,
-            #"\beyJ[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}"#,
-            #"(?i)\bbearer\s+[A-Za-z0-9._~+/\-]{16,}=*"#,
+            #"(?<![A-Za-z0-9])(?:sk|pk|rk|sess)[-_][A-Za-z0-9_\-]{16,}"#,
+            #"(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{16,}|(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{16,}"#,
+            #"(?<![A-Za-z0-9])glpat-[A-Za-z0-9_\-]{16,}"#,
+            #"(?<![A-Za-z0-9])xox[abprs]-[A-Za-z0-9\-]{10,}"#,
+            #"hooks\.slack\.com/services/[A-Za-z0-9/_\-]+"#,
+            #"(?<![A-Za-z0-9])(?:AKIA|ASIA)[0-9A-Z]{12,}"#,
+            #"(?<![A-Za-z0-9])eyJ[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}"#,
+            #"(?i)(?<![A-Za-z0-9])bearer\s+[A-Za-z0-9._~+/\-]{16,}=*"#,
+            #"(?i)(?<![A-Za-z0-9])basic\s+(?=[A-Za-z0-9+/]*(?:[0-9+/]|=))[A-Za-z0-9+/]{16,}={0,2}"#,
             #"-----BEGIN [A-Z ]*PRIVATE KEY-----[^-]*(?:-----END [A-Z ]*PRIVATE KEY-----)?"#,
-            #"(?i)\b(?:api[_-]?key|token|secret|password|passwd)\s*[:=]\s*\S{6,}"#,
-            #"(?<![A-Za-z0-9_\-])(?=[A-Za-z0-9_\-]*[A-Za-z])(?=[A-Za-z0-9_\-]*[0-9])[A-Za-z0-9_\-]{32,}(?![A-Za-z0-9_\-])"#,
+            #"[A-Za-z][A-Za-z0-9+.\-]*://[^/\s:@'"]+:[^/\s@'"]+@"#,
+            #"(?i)(?<![A-Za-z0-9])--(?:password|passwd|token|secret|api[_-]?key)(?:=|\s+)\S{4,}"#,
         ]
 
+        /// A `key: value`, `key=value`, `"key": "value"` or `'key': 'value'` pair. Whether the key names a credential is `credentialKey`.
+        private static let pairShape = #"(?<![A-Za-z0-9])(["']?)([A-Za-z_][A-Za-z0-9_.\-]*)\1[ \t]*[:=][ \t]*(?:"[^"\\]{4,}"|'[^'\\]{4,}'|[^\s"',;]{6,})"#
+
+        /// A run of 32 or more key characters. `mask` decides which of them are keys (a plan name or a UUID is not).
+        private static let longRunShape = #"(?<![A-Za-z0-9_\-])[A-Za-z0-9_\-]{32,}(?![A-Za-z0-9_\-])"#
+
+        /// A key that names a credential: it holds PASSWORD or PASSWD, or ends in a credential word (API_TOKEN, apiKey, oauth_token,
+        /// STRIPE_SECRET_KEY). TOKEN_COUNT, MAX_TOKENS and secretName do not. A copy of WorkCardFiles.credentialKey (this file is
+        /// Foundation-only and cannot import it); Tests/setup-assistant-pins.py fails when the two bodies differ.
+        static func credentialKey(_ key: String) -> Bool {
+            var snake = ""
+            var previous: Character?
+            for ch in key {
+                if ch.isUppercase, let prev = previous, prev.isLowercase || prev.isNumber { snake.append("_") }
+                snake.append(ch); previous = ch
+            }
+            let upper = snake.uppercased().replacingOccurrences(of: "-", with: "_").replacingOccurrences(of: ".", with: "_")
+            if upper.contains("PASSWORD") || upper.contains("PASSWD") { return true }
+            let words = ["PASS", "SECRET", "TOKEN", "APIKEY", "API_KEY", "PRIVATE_KEY", "ACCESS_KEY", "ACCESS_KEY_ID", "SECRET_KEY", "AUTH_KEY", "CREDENTIALS"]
+            return words.contains { upper == $0 || upper.hasSuffix("_" + $0) }
+        }
+
+        /// Replaces each match's range, last first so the earlier ranges stay true.
+        private static func replacing(_ text: String, matches: [NSTextCheckingResult], where hide: (NSTextCheckingResult, String) -> Bool) -> String {
+            var out = text
+            for match in matches.reversed() where hide(match, out) {
+                guard let range = Range(match.range, in: out) else { continue }
+                out.replaceSubrange(range, with: hidden)
+            }
+            return out
+        }
+
+        /// A name, not a key: a plan or file name of words joined by underscores or hyphens ("PLAN_cmdK_find_sessions_2026-10-31"), or a UUID.
+        private static func readsAsName(_ run: String) -> Bool {
+            let uuid = #"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"#
+            if run.range(of: uuid, options: .regularExpression) != nil { return true }
+            let words = run.split(whereSeparator: { $0 == "_" || $0 == "-" }).filter { $0.count >= 4 && $0.allSatisfy(\.isLetter) }
+            return words.count >= 2
+        }
+
         static func mask(_ text: String) -> String {
-            keyShapes.reduce(text) { $0.replacingOccurrences(of: $1, with: hidden, options: .regularExpression) }
+            var out = keyShapes.reduce(text) { $0.replacingOccurrences(of: $1, with: hidden, options: .regularExpression) }
+            if let pairs = try? NSRegularExpression(pattern: pairShape) {
+                let found = pairs.matches(in: out, range: NSRange(out.startIndex..., in: out))
+                out = replacing(out, matches: found) { match, current in
+                    guard let key = Range(match.range(at: 2), in: current) else { return false }
+                    return credentialKey(String(current[key]))
+                }
+            }
+            if let runs = try? NSRegularExpression(pattern: longRunShape) {
+                let found = runs.matches(in: out, range: NSRange(out.startIndex..., in: out))
+                out = replacing(out, matches: found) { match, current in
+                    guard let range = Range(match.range, in: current) else { return false }
+                    let run = String(current[range])
+                    return run.contains(where: \.isLetter) && run.contains(where: \.isNumber) && !readsAsName(run)
+                }
+            }
+            return out
         }
 
         /// A hit's title: one line like every title, and masked.
@@ -1705,7 +1765,7 @@ enum SetupAssistant {
             func listRow(_ item: Item) -> Row {
                 let ago = when(item.date, now: inputs.now, calendar: inputs.calendar)
                 let detail = [item.detail.map(clean), ago].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
-                return Row(id: "session:" + item.id, kind: .session(item.id), group: .sessions, title: clean(item.title),
+                return Row(id: "session:" + item.id, kind: .session(item.id), group: .sessions, title: hitTitle(item.title),
                            detail: detail.isEmpty ? nil : detail, state: item.state, trailing: item.openLabel, leavesSession: item.leavesSession)
             }
             if let span {
@@ -1765,7 +1825,7 @@ enum SetupAssistant {
                 for item in byTier(inputs.waiting) { take(item, waitingRow) }
                 for item in inputs.running { take(item, runningRow) }
                 for item in inputs.sessions {
-                    take(item) { Row(id: "session:" + $0.id, kind: .session($0.id), group: .sessions, title: clean($0.title), detail: $0.detail.map(clean), state: $0.state, trailing: $0.openLabel, leavesSession: $0.leavesSession) }
+                    take(item) { Row(id: "session:" + $0.id, kind: .session($0.id), group: .sessions, title: hitTitle($0.title), detail: $0.detail.map(clean), state: $0.state, trailing: $0.openLabel, leavesSession: $0.leavesSession) }
                 }
             }
             rows += sessions
