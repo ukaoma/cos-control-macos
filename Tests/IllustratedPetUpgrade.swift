@@ -148,12 +148,17 @@ import CryptoKit
    precondition(autoreleasepool{PetSpriteStore.refreshRecognizedBundledCharacter(into:installed,sourceRootOverride:sources,retainedMilesOverride:old)} == .notApplicable
      && (try! Data(contentsOf:installed.appendingPathComponent(PetSpriteStore.stateFileName)))==packMap,"\(id) already current must not be rewritten")
   }
+  // A complete stock V15 install with a still image beside it: without the still-image rule this directory would upgrade.
   let chosenStill=temp.appendingPathComponent("chosenStill")
   try fm.createDirectory(at:chosenStill,withIntermediateDirectories:true)
+  for f in oldFiles {try fm.copyItem(at:old.appendingPathComponent(f),to:chosenStill.appendingPathComponent(f))}
+  try oldData.write(to:chosenStill.appendingPathComponent(PetSpriteStore.stateFileName))
+  func refreshStill()->PetSpriteStore.BundledCharacterRefreshResult {autoreleasepool{PetSpriteStore.refreshRecognizedBundledCharacter(into:chosenStill,sourceRootOverride:sources,retainedMilesOverride:old)}}
   try Data(contentsOf:candidate.appendingPathComponent("session-pet-idle-cutouts-v2.png")).write(to:chosenStill.appendingPathComponent("\(PetSpriteStore.fileStem).png"))
-  try Data(contentsOf:old.appendingPathComponent(PetSpriteStore.stateFileName)).write(to:chosenStill.appendingPathComponent(PetSpriteStore.stateFileName))
-  precondition(autoreleasepool{PetSpriteStore.refreshRecognizedBundledCharacter(into:chosenStill,sourceRootOverride:sources,retainedMilesOverride:old)} == .notApplicable,
-    "a chosen still image must survive even beside a stock map")
+  precondition(refreshStill() == .notApplicable && (try! Data(contentsOf:chosenStill.appendingPathComponent(PetSpriteStore.stateFileName)))==oldData,
+    "a chosen still image must survive even beside a complete stock map")
+  try fm.removeItem(at:chosenStill.appendingPathComponent("\(PetSpriteStore.fileStem).png"))
+  precondition(refreshStill() == .refreshed("jedi-miles-windu"),"the same install with no still image does upgrade, so the check above is about the still")
   print("PASS: V15, 348, 349 and motion-v1 upgrades, custom timing/scale/art protection, a rerun on current packs and a chosen still, missing-asset atomic failure, ambient native slicing/cadence, 13 unchanged casts and both rollback generations")
  }
 }
