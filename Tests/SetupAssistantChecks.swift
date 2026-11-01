@@ -294,6 +294,20 @@ import Foundation
         }
         // The start of the phrase is still the order being typed, and Stop and Doctor keep moving, because they confirm.
         check(returned("start rec") == .move("command:startRecording"), "[the start of a Start phrase moves to its row]", "\(returned("start rec"))")
+        check(returned("record a mee") == .move("command:startRecording"), "[the start of a Start phrase moves to its row]", "\(returned("record a mee"))")
+        // The start of a word inside a phrase is not an order ("meeting", "mac", "this", "on", "me"), and a question mark is never the
+        // whole phrase: "record a meeting?" must not start on one Return, or move onto the row that would.
+        for typed in ["meeting", "mac", "this", "on", "me", "a meeting", "record a meeting?", "record?", "start recording?"] {
+            let listed = C.listing(center(), words: typed)
+            let outcome = returned(typed)
+            check(listed.autoHighlight == nil && outcome != .move("command:startRecording") && outcome != returnRuns("command:startRecording"), "[Start recording is reached only by an order, never by a word inside it or a question]", "\(typed): \(outcome)")
+        }
+        check(C.commandRank(.startRecording, "record a meeting") == 0 && C.commandRank(.startRecording, "record a meeting?") == 2 && C.commandRank(.stopRecording, "stop recording") == 0 && C.commandRank(.stopRecording, "stop recording?") == 2, "[a question mark is never an exact phrase]", "")
+        // A title that matches beats those words. (Words that also name another command, like "meeting" and "me", still go to that command's row.)
+        let titled = center { $0.sessions = [C.Item(id: "s1", title: "Notes on this meeting with me at the mac", sessionID: "s1")] }
+        for typed in ["mac", "this", "on"] {
+            check(returned(typed, inputs: titled) == .move("session:s1"), "[a word inside a Start phrase never outranks a matching session]", "\(typed): \(returned(typed, inputs: titled))")
+        }
         check(returned("run doctor please") == .move("command:runDoctor"), "[Return moves to the command row]", "\(returned("run doctor please"))")
         let stoppingNow = center { $0.recording.stoppable = true; $0.recording.occupied = true; $0.recording.busy = true }
         check(returned("please stop recording the call with Dana right now", inputs: stoppingNow) == .move("command:stopRecording"), "[Stop inside a sentence still moves to its row, which confirms]", "\(returned("please stop recording the call with Dana right now", inputs: stoppingNow))")

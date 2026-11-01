@@ -1228,11 +1228,19 @@ enum SetupAssistant {
             let typed = plain(words)
             guard !typed.isEmpty else { return nil }
             let phrases = command.phrases.map(plain)
-            if phrases.contains(typed) { return 0 }
+            // A typed question mark is a question, never the whole order: "record a meeting?" is not "record a meeting".
+            if phrases.contains(typed) { return words.contains("?") ? 2 : 0 }
             if typed.count >= 2, phrases.contains(where: { $0.hasPrefix(typed) || $0.split(separator: " ").contains { $0.hasPrefix(typed) } }) { return 1 }
             let padded = " " + typed + " "
             if phrases.contains(where: { $0.contains(" ") && padded.contains(" " + $0 + " ") }) { return 2 }
             return nil
+        }
+
+        /// Whether the words are the start of one of the command's whole phrases ("start rec"), as opposed to the start of a word inside
+        /// one ("meeting", "mac", "on", "me"). Only the first is an order being typed.
+        static func startsAPhrase(_ command: Command, _ words: String) -> Bool {
+            let typed = plain(words)
+            return typed.count >= 2 && command.phrases.map(plain).contains { $0.hasPrefix(typed) }
         }
 
         /// Words that read as a command when the text is short.
@@ -1286,7 +1294,9 @@ enum SetupAssistant {
             for (command, rank) in ranked.prefix(commandCap) {
                 if let row = commandRow(command, inputs, group: .commands) {
                     if rank == 0, command.autoHighlights, row.selectable, result.autoHighlight == nil { result.autoHighlight = row.id }
-                    if rank == 2, command == .startRecording { result.returnSkips.insert(row.id) }
+                    // Start recording asks nothing before it records, so Return moves onto it only when the words are an exact phrase
+                    // (which runs) or the start of one. A question, a sentence, or the start of a word inside a phrase goes to Ask.
+                    if command == .startRecording, rank != 0, !(rank == 1 && startsAPhrase(command, words)) { result.returnSkips.insert(row.id) }
                     rows.append(row)
                 } else if command == .stopRecording, inputs.recording.glassesLive > 0 {
                     rows.append(info("glasses", .commands, elsewhereLine(inputs.recording)))
