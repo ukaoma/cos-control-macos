@@ -1144,6 +1144,16 @@ enum SetupAssistant {
 
         // MARK: Word search
 
+        /// The words the local search ignores: the helper's (`sessionSearchStopwords`) and the Sessions tab's, which Tests/setup-assistant-pins.py holds equal.
+        static let searchStopwords: Set<String> = ["the", "a", "an", "and", "or", "of", "to", "in", "for", "on", "at", "by", "with", "from", "vs", "is", "it", "be", "as", "we", "our"]
+
+        /// What a search would look for in these words: two letters or more, no stopword, no repeat. "the" has none, and searching for
+        /// nothing would say "no match" about a question that was never asked. `typed` is `plain(words)`.
+        static func searchTokens(_ typed: String) -> [String] {
+            var seen = Set<String>()
+            return typed.split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { $0.count >= 2 && !searchStopwords.contains($0) && seen.insert($0).inserted }
+        }
+
         enum SearchPhase: Sendable { case idle, searching, done, failed }
 
         /// What the local word search found for one set of words. The panel owns the search (its words, its debounce, its one run at a
@@ -1721,7 +1731,10 @@ enum SetupAssistant {
             // Word search: hits in their own group, after the sessions that matched by title. Return never moves onto one and never
             // runs one. An arrow or a click does. A hit the list already shows is not shown twice.
             let exact = ranked.contains { $0.1 == 0 } || placed.contains { $0.rank == 0 }
-            if typed.count >= 3, span == nil, !exact, !inputs.sessionsOff {
+            if typed.count >= 3, span == nil, !exact, !inputs.sessionsOff, searchTokens(typed).isEmpty {
+                // Only common words ("the", "of to"): nothing to look for, so no search runs and no "no match" is claimed.
+                rows.append(info("search-words", .found, "Add a word that names what you want.", detail: "Common words like the, of and to are skipped."))
+            } else if typed.count >= 3, span == nil, !exact, !inputs.sessionsOff {
                 let search = String(typed.prefix(200))
                 result.searchWords = search
                 let found = inputs.found
@@ -1742,7 +1755,11 @@ enum SetupAssistant {
                             // A second hit for the same session (a Desktop record's id and its transcript's) is not shown either.
                             if let id = item.sessionID { seen.append(id) }
                         }
-                        if shown == 0 { rows.append(info("search-none", .found, sessions.isEmpty ? "No session mentions these words." : "No other session mentions these words.")) }
+                        // The search reads the start of the newest sessions, so "none" cannot mean none: it says what was read, and offers the rest.
+                        if shown == 0 {
+                            rows.append(info("search-none", .found, sessions.isEmpty ? "No match near the start of your newest sessions." : "No other match near the start of your newest sessions.",
+                                             detail: "Search all sessions looks further."))
+                        }
                     }
                 }
                 rows.append(Row(id: "search-all", kind: .searchAll, group: .found, title: "Search all sessions",

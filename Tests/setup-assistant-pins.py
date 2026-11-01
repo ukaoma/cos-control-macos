@@ -409,6 +409,16 @@ reveal_call = helper_lines.split("let transcript = Self.findClaudeSessionFile(",
 pin("desktopSessionsRoot" not in reveal_call, "open never passes the Desktop root to the transcript lookup (it reads every record head, about 9 s)")
 pin("local-session-search-checks.py" in read("Tests/run.sh") and "COS_CONTROL_TEST_HOME" in read("Tests/local-session-search-checks.py"), "the open path is tested through the compiled helper against a fixture home")
 
+# Honest absence (QA item 5): the three stopword lists are one list, and the body read decodes leniently.
+def _words(text, start):
+    return set(re.findall(r'"([a-z]+)"', block(text, start, "]")))
+_core_stop = _words(read("Sources/SetupAssistant.swift"), "static let searchStopwords: Set<String> = [")
+_helper_stop = _words(read("HelperSources/main.swift"), "static let sessionSearchStopwords: Set<String> = [")
+_models_stop = _words(read("Sources/Models.swift"), "static let stopwords: Set<String> = [")
+pin(len(_core_stop) == 21 and _core_stop == _helper_stop == _models_stop, f"the engine, the helper and the Sessions tab skip the same words: {sorted(_core_stop ^ _helper_stop)} {sorted(_core_stop ^ _models_stop)}")
+_peek = block(helper_lines, "    static func peekSessionSearchBody(in file: URL", "        var parts: [String] = []")
+pin("let text = String(decoding: data, as: UTF8.self)" in _peek and "String(data: data, encoding: .utf8)" not in _peek, "the body read decodes leniently, so a window cut inside a character drops nothing")
+
 # Privacy words (QA item 4): the bundled notes say typing stays on this Mac, say what Search all sessions uses, and say the first before the second.
 import json as _json
 _notes = " ".join(_json.loads(read("Resources/WhatsNew.json"))["whatsNew"]["sections"][0]["items"])

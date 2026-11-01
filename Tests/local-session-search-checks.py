@@ -67,6 +67,15 @@ try:
     make_record(r3, r3, "Narwhal budget", "/tmp/fx/narwhal-site")
     make_transcript(r3, "-tmp-fx-narwhal-site", "the kelpforest line needs a second column")
     make_transcript(t4, "-tmp-fx-loose", "an unnamed session about dandelionwine tasting")
+    # A transcript whose first 96 KB window ends inside a two-byte character: the strict decode dropped the whole file (QA item 5).
+    t5 = str(uuid.uuid4())
+    folder = home / ".claude/projects/-tmp-fx-cut"
+    folder.mkdir(parents=True, exist_ok=True)
+    first = json.dumps({"type": "user", "message": {"role": "user", "content": "a note about pelicanbriefing at the start"}}) + "\n"
+    pad = "" if len(first.encode()) % 2 == 1 else " "
+    first = first.replace("note", "note" + pad, 1)
+    assert len(first.encode()) % 2 == 1
+    (folder / f"{t5}.jsonl").write_bytes(first.encode() + ("\u00e9" * 80000).encode())
 
     # A body word: one hit, under the transcript's own id, with the record's title. The record is not listed a second time.
     code, hits, _, _ = search("giraffecrossing")
@@ -85,6 +94,8 @@ try:
     check(len(hits) == 1 and hits[0]["id"].lower() == r3, "a record that is its own cliSessionId is found once", str([h["id"] for h in hits]))
     code, hits, _, _ = search("dandelionwine")
     check(len(hits) == 1 and hits[0]["id"].lower() == t4, "a transcript with no record is found under its full id", str([h["id"] for h in hits]))
+    code, hits, _, _ = search("pelicanbriefing")
+    check(len(hits) == 1 and hits[0]["id"].lower() == t5, "a window cut inside a character still reads the start of the file", str([h["id"] for h in hits]))
     # Nothing lists twice for a word every session shares.
     for rec in (r1, r2, r3):
         pass

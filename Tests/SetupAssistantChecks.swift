@@ -968,12 +968,20 @@ import Foundation
         // The phases are text lines.
         check(row(C.listing(withFound(sessions, words: "persona", phase: .searching, hits: []), words: "persona"), "info:searching")?.title == "Searching sessions…", "[searching is a text line]", "")
         check(row(C.listing(withFound(sessions, words: "persona", phase: .failed, hits: []), words: "persona"), "info:search-failed")?.title == "The search did not run.", "[a failed search says so]", "")
-        check(row(C.listing(withFound(sessions, words: "persona", hits: []), words: "persona"), "info:search-none")?.title == "No session mentions these words.", "[no hit says so]", "")
+        check(row(C.listing(withFound(sessions, words: "persona", hits: []), words: "persona"), "info:search-none")?.title == "No match near the start of your newest sessions.", "[no hit says what was read]", "")
+        check(row(C.listing(withFound(sessions, words: "persona", hits: []), words: "persona"), "info:search-none")?.detail == "Search all sessions looks further.", "[no hit offers Search all]", "")
         check(C.listing(withFound(sessions, words: "persona", phase: .idle, hits: []), words: "persona").rows.allSatisfy { !["info:searching", "info:search-failed", "info:search-none"].contains($0.id) }, "[idle says nothing]", "")
-        check(row(C.listing(withFound(sessions, words: "holiday", hits: []), words: "holiday"), "info:search-none")?.title == "No other session mentions these words.", "[no other hit says so]", "a title match is already listed")
+        check(row(C.listing(withFound(sessions, words: "holiday", hits: []), words: "holiday"), "info:search-none")?.title == "No other match near the start of your newest sessions.", "[no other hit says what was read]", "a title match is already listed")
         for info in ["info:searching", "info:search-failed", "info:search-none"] {
             check(row(C.listing(withFound(sessions, words: "persona", phase: info == "info:searching" ? .searching : (info == "info:search-failed" ? .failed : .done), hits: []), words: "persona"), info)?.selectable == false, "[a status line is not selectable]", info)
         }
+        // Words that name nothing (stopwords) run no search and claim no absence (QA item 5).
+        for common in ["the", "of the", "to and for", "the a an"] {
+            let listing = C.listing(sessions, words: common)
+            check(listing.searchWords == nil && row(listing, "info:search-words")?.title == "Add a word that names what you want.", "[common words run no search]", "\(common): \(rowIDs(listing))")
+            check(row(listing, "search-all") == nil && !listing.rows.contains { $0.id.hasPrefix("info:search-n") }, "[common words claim no absence]", common)
+        }
+        check(C.searchTokens("the persona of pricing pricing a") == ["persona", "pricing"] && C.searchTokens("a") == [] && C.searchTokens("x y") == [] && C.searchTokens("q3 deck") == ["q3", "deck"], "[search tokens]", "\(C.searchTokens("the persona of pricing pricing a"))")
         check(C.foundAnnouncement(1) == "1 session found" && C.foundAnnouncement(5) == "5 sessions found", "[VoiceOver hears a fixed count]", "")
 
         // Match text: cleaned, masked, bounded, and dropped when it only repeats the title.

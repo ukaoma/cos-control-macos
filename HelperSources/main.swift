@@ -18070,7 +18070,9 @@ final class COSControlHelper {
         guard let handle = try? FileHandle(forReadingFrom: file) else { return "" }
         defer { try? handle.close() }
         let data = handle.readData(ofLength: maxBytes)
-        guard let text = String(data: data, encoding: .utf8) else { return "" }
+        // Lenient: a window cut inside a multibyte character made the strict decode drop the whole file (2 of the 80 newest, measured).
+        // The cut line fails its own JSON parse and is skipped.
+        let text = String(decoding: data, as: UTF8.self)
         var parts: [String] = []
         var used = 0
         for line in text.split(whereSeparator: \.isNewline) {
