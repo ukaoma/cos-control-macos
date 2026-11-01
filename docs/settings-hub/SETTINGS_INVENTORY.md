@@ -343,7 +343,7 @@ The panel shows one "Setup guide" line (`PanelConnectAIRow`) that opens `Provide
 | JV-02 | Default (Server default / Jev / SubQ) | Views.swift:1131, 1176 | decisionProviderPicker | picker | `decision-provider-set` | Server has decision settings, else "needs a newer COS server" | No | Decision models |
 | JV-03 | Session suggestions (Use default / Jev / SubQ) + effective line + needs-key line | Views.swift:1134-1140 | decisionProviderPicker | picker | `decision-provider-set` workflow `session` | Same | No | Decision models |
 | JV-04 | Completion checks | Views.swift:1134-1140 | decisionProviderPicker | picker | workflow `completion` | Same | No | Decision models |
-| JV-05 | Work search | Views.swift:1134-1140 | decisionProviderPicker | picker | workflow `search` | Same | No | Decision models |
+| JV-05 | Work search | Views.swift:1134-1140 | decisionProviderPicker | picker | workflow `search` (the hub calls it Work and ⌘K search since 0.5.362) | Same | No | Decision models |
 | JV-06 | Refresh decision settings | Views.swift:1149 | decisionProviderControls | action | reload | None | No | Decision models |
 | JV-07 | SubQ preview and retention text + SubQ data retention link | Views.swift:1150-1152 | decisionProviderControls | status, link | static | None | No | Decision models |
 | JV-08 | SubQ key status, field (SubQ API key / Replace SubQ key), Save key, note | Views.swift:1153-1167 | decisionProviderControls | field, action | `subq-key-set` (validated, stored on the server) | `decisionSettingsAvailable == true` | No | Decision models |
@@ -528,7 +528,7 @@ Notes column: **Apply** = draft then Apply; **Restart** = restarts the server; *
 | JV-12 | Remove Jev key | Delete the saved Jev key from the server. | | |
 | JV-03 | Session suggestions | The provider that suggests Continue, Fork or New. | Yes | |
 | JV-04 | Done checks | The provider that checks whether a reply finished the task. | Yes | |
-| JV-05 | Work search | The provider that searches Work by meaning. | Yes | |
+| JV-05 | Work and ⌘K search | The provider that searches Work by meaning, and finds sessions by meaning in ⌘K. | Yes | |
 | JV-06 | Refresh providers | Read the provider settings from the server again. | Yes | |
 | JV-07 | SubQ data retention | SubQ is a public preview. Read how long it keeps your data. | Yes | |
 | **Your own key** | | | | 6.80.0 |

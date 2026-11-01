@@ -119,6 +119,10 @@ import Foundation
         let hidden = SettingsHubSearch.results("restart", shown: { $0 != "system.server" }).flatMap(\.items).map(\.id)
         check(!hidden.contains("C-01") && SettingsHubSearch.results("restart").flatMap(\.items).map(\.id).contains("C-01"),
               "search leaves out a row whose group is not drawn")
+        // Find sessions by meaning lives in a group that is drawn (Decision models) and is itself hidden with Today home off and on an older
+        // server: the page says so per row, and search leaves it out (QA 0.5.363).
+        check(SettingsHubSearch.results("find sessions by meaning").flatMap(\.items).map(\.id).contains("JV-13"), "JV-13 is found when its control is drawn")
+        check(!SettingsHubSearch.results("find sessions by meaning", itemShown: { $0 != "JV-13" }).flatMap(\.items).map(\.id).contains("JV-13"), "search leaves out a row whose control is hidden inside a drawn group")
         // "Was:" shows only a real former label, one that search finds the row by (QA copy 2026-10-28).
         for (id, former) in SettingsHubCatalog.formerLabels {
             let item = SettingsHubCatalog.item(id)

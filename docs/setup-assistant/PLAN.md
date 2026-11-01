@@ -123,12 +123,12 @@ likelihood". The COS server reads the sessions and asks the model that decides s
   The panel reads the decision settings once when it opens, quietly, so Settings' own line is untouched. Nothing is asked before a yes.
   Settings, Decision models shows and reverses the choice for the model that decides search, with the same words as the panel.
 - **What leaves.** After a yes: the words typed in the box, and the title and first 150 characters of the first prompt of up to 508
-  recent sessions, to the model, through the COS server; emails, links and key-shaped text removed first; names and other details not.
+  recent sessions, to the model, through the COS server; emails, links, file paths and key-shaped text removed first; names and other details not.
   SubQ keeps what it is sent. This reverses 0.5.361's "typing sends nothing off this Mac", for a person who said yes.
 - **Timing.** The first stage 800 ms after the last key, at three words or more, one at a time (a new key cancels the task and the helper
   process). The full stage at 2 s of quiet in all, unless the first stage's top row is Strong. Never on an exact command, place,
   Settings group or noun list, with Sessions off, or under a fixture.
-- **Rows.** A `.meaning` group before Search all. One `hit:` id namespace with the word hits, the strength on the item, one row per session:
+- **Rows.** A `.meaning` group above the word hits and before Search all. One `hit:` id namespace with the word hits, the strength on the item, one row per session:
   a session found both ways shows once, as a meaning row, under the id already on screen. The panel keeps its own `meaningSessions` map. Strength
   is in the detail line ("Strong match, Claude Code, Quilt, 12 days ago") and there is no group heading. Return never moves onto a meaning row,
   before or after rows arrive; the second Return still runs Ask. The scroll follows the highlight when row ids change.

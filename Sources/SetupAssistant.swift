@@ -27,7 +27,7 @@ import Foundation
 //      changing anything. "Ask COS" is the same run without Doctor.
 //   5. Session titles are untrusted. They are cleaned to one line, drawn verbatim, only open their own session, are never
 //      matched for dispatch and never go into a prompt. The one place a title or a first prompt leaves this Mac is search by meaning,
-//      after a yes: the COS server reads them itself, removes emails, links and key-shaped text, and asks the model. Control sends none.
+//      after a yes: the COS server reads them itself, removes emails, links, file paths and key-shaped text, and asks the model. Control sends none.
 //   6. Match text (0.5.361) is a line from inside a session that the local search found. It is held to rule 5, masked when it
 //      looks like a key, shown on its row only and never decides anything. A hit sits in its own group (a word hit, or a meaning
 //      row with its strength): Return never moves onto one and never runs one. It is reached by an arrow or a click. The
@@ -1695,6 +1695,13 @@ enum SetupAssistant {
             return next
         }
 
+        /// What the panel holds once the engine hands over no request. No request clears it, except while a refusal that stays true is settled:
+        /// that refusal is what takes the request away, and the rows the first stage found are the ones it says it keeps. Clearing then took
+        /// them, and a cap or a pause at the full stage left the person nothing (QA 0.5.363).
+        static func meaningKept(_ held: MeaningFound, ask: MeaningAsk?, settled: MeaningReason?) -> MeaningFound {
+            ask == nil && settled == nil ? MeaningFound() : held
+        }
+
         /// "Sep 17": a short day in the person's calendar.
         static func shortDay(_ date: Date, calendar: Calendar) -> String {
             let formatter = DateFormatter()
@@ -1750,7 +1757,7 @@ enum SetupAssistant {
             case .breakerOpen:
                 return MeaningLine(title: "Meaning search is paused after repeated errors.", detail: comes("It tries again on its own in a while.", "It tries again"))
             case .timedOut:
-                return MeaningLine(title: "Meaning search took too long.", detail: "Try fewer words. Word matches above still work.")
+                return MeaningLine(title: "Meaning search took too long.", detail: "Try again. Word matches above still work.")
             case .failed, .unreachable, .tryLater:
                 return MeaningLine(title: "Meaning search did not answer.", detail: "Word matches above still work. Search all sessions looks further.")
             case .unauthorized:
@@ -1808,10 +1815,10 @@ enum SetupAssistant {
             mutating func clear() { text = nil }
         }
 
-        /// The question before anything is sent. The first part says what leaves, in full; SubQ's adds what it keeps. Emails, links and
+        /// The question before anything is sent. The first part says what leaves, in full; SubQ's adds what it keeps. Emails, links, file paths and
         /// key-shaped text are removed on the server before anything is sent.
         static func consentText(_ provider: MeaningProvider) -> String {
-            let sent = "Each search sends the words you type here, plus the title and first 150 characters of the first prompt from up to 508 recent sessions, to \(provider.title). Emails, links and key-shaped text are removed first. Names and other details are not."
+            let sent = "Each search sends the words you type here, plus the title and first 150 characters of the first prompt from up to 508 recent sessions, to \(provider.title). Emails, links, file paths and key-shaped text are removed first. Names and other details are not."
             return sent + (provider.keeps.map { " " + $0 } ?? "")
         }
 
@@ -2117,6 +2124,42 @@ enum SetupAssistant {
         /// The words without the padding `normalized` adds.
         static func plain(_ text: String) -> String {
             normalized(String(text.prefix(maxQuestion))).trimmingCharacters(in: .whitespaces)
+        }
+
+        /// Scripts written without spaces between words (Chinese, Japanese, Thai, Lao, Khmer, Burmese): a term in one can begin anywhere. The
+        /// helper's local search keeps the same list (`sessionTermHasNoWordSpaces`); the two are pinned together.
+        static func hasNoWordSpaces(_ text: String) -> Bool {
+            text.unicodeScalars.contains { scalar in
+                switch scalar.value {
+                case 0x2E80...0x9FFF, 0xF900...0xFAFF, 0x20000...0x2FA1F, 0x0E00...0x0EFF, 0x1780...0x17FF, 0x1000...0x109F: return true
+                default: return false
+                }
+            }
+        }
+
+        /// The title with a space at each new word the eye sees but the spaces do not: a capital after a lowercase letter ("ControllerModel"),
+        /// and where a no-space script meets another script ("修复oauth").
+        static func splitAtBoundaries(_ title: String) -> String {
+            var out = ""
+            var before: Character?
+            for character in title {
+                if let b = before, (b.isLetter || b.isNumber), (character.isLetter || character.isNumber),
+                   (b.isLowercase && character.isUppercase) || hasNoWordSpaces(String(b)) != hasNoWordSpaces(String(character)) {
+                    out.append(" ")
+                }
+                out.append(character)
+                before = character
+            }
+            return out
+        }
+
+        /// A session title matches words typed in ⌘K at the start of a word, never inside one: "miss" no longer lists "Permissions audit".
+        /// A word starts after a space or mark, at a capital after a lowercase letter, and where a no-space script meets another script; a
+        /// term in a no-space script matches anywhere. `typed` is `plain(words)`.
+        static func titleStartsWord(_ title: String, _ typed: String) -> Bool {
+            let flat = plain(title)
+            if hasNoWordSpaces(typed) { return flat.contains(typed) }
+            return (" " + flat).contains(" " + typed) || (" " + plain(splitAtBoundaries(String(title.prefix(maxQuestion))))).contains(" " + typed)
         }
 
         // MARK: Recording gates
@@ -2485,7 +2528,7 @@ enum SetupAssistant {
                 }
             } else {
                 func take(_ item: Item, _ make: (Item) -> Row) {
-                    guard sessions.count < sessionCap, typed.count >= 2, plain(item.title).contains(typed), !listed(item.sessionID) else { return }
+                    guard sessions.count < sessionCap, typed.count >= 2, titleStartsWord(item.title, typed), !listed(item.sessionID) else { return }
                     if let session = item.sessionID { seen.append(session) }
                     var row = make(item)
                     row.group = .sessions
@@ -2509,7 +2552,7 @@ enum SetupAssistant {
             } else if typed.count >= 3, span == nil, !exact, !inputs.sessionsOff {
                 let search = String(typed.prefix(200))
                 result.searchWords = search
-                // Meaning search (0.5.362): its rows sit in their own group after the word hits, and a session in both shows once, as a
+                // Meaning search (0.5.362): its rows sit in their own group above the word hits, and a session in both shows once, as a
                 // meaning row with its strength. Return reads neither.
                 let meaningResult = meaningPart(inputs, raw: words, typed: typed, listed: listed)
                 result.meaningAsk = meaningResult.ask

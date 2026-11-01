@@ -860,8 +860,8 @@ import Foundation
             check(row(listing, id) != nil && listing.autoHighlight == nil && listing.returnSkips.contains(id), "[a first-word match in a sentence is listed only]", "\(sentence): \(rowIDs(listing))")
             check(returned(sentence) == .move("ask"), "[a first-word match in a sentence goes to Ask]", "\(sentence): \(returned(sentence))")
         }
-        // Two letters reach no place: "us" goes on to a session whose title holds it.
-        let plus = center { $0.sessions = [C.Item(id: "claude:plus0001", title: "Plus one review", sessionID: "claude:plus0001")] }
+        // Two letters reach no place: "us" goes on to a session with a word of its title that begins with it.
+        let plus = center { $0.sessions = [C.Item(id: "claude:plus0001", title: "User survey review", sessionID: "claude:plus0001")] }
         check(!C.listing(plus, words: "us").rows.contains { $0.group == .places } && returned("us", inputs: plus) == .move("session:claude:plus0001"), "[us skips Usage and goes to a session]", "\(returned("us", inputs: plus))")
         // Three letters do: the start of a name moves to it, and the second Return opens it.
         check(returned("usa") == .move("place:sessionsUsage") && returned("usa", chosen: "place:sessionsUsage") == returnRuns("place:sessionsUsage"), "[the start of a name moves to it]", "\(returned("usa"))")
@@ -1049,6 +1049,19 @@ import Foundation
         // A title match on a loaded session is not a noun list, and a list never drops a title match for another word.
         let titled = withSessions([listed("claude:pricing1", "Pricing page review", days: 3)])
         check(returned("pricing", inputs: titled) == .move("session:claude:pricing1"), "[a title match may take the move]", "\(returned("pricing", inputs: titled))")
+        // A title matches at the start of a word, never inside one: "miss" does not list "Permissions audit". A capital after a lowercase letter
+        // and a no-space script meeting letters also begin a word, and a term in a no-space script matches anywhere.
+        let wordTitles = withSessions([listed("claude:perm0001", "Permissions audit", days: 2), listed("claude:ctrl0001", "ControllerModel refactor", days: 3),
+                                       listed("claude:glue0001", "\u{4FEE}\u{590D}oauth\u{6D41}\u{7A0B}", days: 4), listed("claude:tier0001", "tier2audit notes", days: 5),
+                                       listed("claude:cjk00001", "\u{7A0E}\u{52D9}\u{78BA}\u{8A8D}\u{306E}\u{4EF6}", days: 6)])
+        func titleRows(_ words: String) -> [String] { C.listing(wordTitles, words: words).rows.map(\.id).filter { $0.hasPrefix("session:") } }
+        check(!titleRows("miss").contains("session:claude:perm0001"), "[a title match is not inside a word]", "\(titleRows("miss"))")
+        check(titleRows("permis").contains("session:claude:perm0001") && titleRows("audit").contains("session:claude:perm0001"), "[a title match is at the start of a word]", "\(titleRows("permis"))")
+        check(titleRows("model").contains("session:claude:ctrl0001") && titleRows("controllermodel").contains("session:claude:ctrl0001"), "[a capital after a lowercase letter begins a word]", "\(titleRows("model"))")
+        check(!titleRows("troller").contains("session:claude:ctrl0001"), "[the middle of a camel-case word is not a start]", "\(titleRows("troller"))")
+        check(titleRows("oauth").contains("session:claude:glue0001"), "[a no-space script meeting letters begins a word]", "\(titleRows("oauth"))")
+        check(!titleRows("audit").contains("session:claude:tier0001"), "[a digit does not begin a word]", "\(titleRows("audit"))")
+        check(titleRows("\u{52D9}\u{78BA}").contains("session:claude:cjk00001"), "[a no-space script term matches anywhere]", "\(titleRows("\u{52D9}\u{78BA}"))")
     }
 
     static func centerSearch() {
@@ -1351,7 +1364,7 @@ import Foundation
         check(askListing.rows.filter { $0.id.hasPrefix("consent:") }.allSatisfy { $0.group == .meaning && $0.selectable }, "[the question is a group of its own, reached by arrow or click]", "")
         check(rowIDs(askListing).firstIndex(of: "consent:jev:never")! < rowIDs(askListing).firstIndex(of: "search-all")! && rowIDs(askListing).firstIndex(of: "search-all")! < rowIDs(askListing).firstIndex(of: "ask")!,
               "[the question comes before Search all and Ask]", "\(rowIDs(askListing))")
-        let jevText = "Each search sends the words you type here, plus the title and first 150 characters of the first prompt from up to 508 recent sessions, to Jev. Emails, links and key-shaped text are removed first. Names and other details are not."
+        let jevText = "Each search sends the words you type here, plus the title and first 150 characters of the first prompt from up to 508 recent sessions, to Jev. Emails, links, file paths and key-shaped text are removed first. Names and other details are not."
         check(row(askListing, "consent:jev:on")?.detail == jevText && C.consentText(.jev) == jevText, "[the question says what leaves, in full]", row(askListing, "consent:jev:on")?.detail ?? "")
         check(C.consentText(.subq) == jevText.replacingOccurrences(of: "to Jev.", with: "to SubQ.") + " SubQ keeps what it is sent.", "[the question for SubQ says it keeps what it is sent]", C.consentText(.subq))
         check(!C.consentText(.jev).contains("keeps"), "[nothing is claimed about what Jev keeps]", "")
@@ -1403,7 +1416,7 @@ import Foundation
         let gone = found(on, words: topic, .done, hits: [hits[1]])
         check(returned(topic, chosen: "hit:claude:abc12345", inputs: gone) == .nothing, "[a chosen hit that is gone returns nothing]", "")
 
-        // The rows: their own group after the word hits and before Search all, the strength on the detail line, the server's order.
+        // The rows: their own group above the word hits and before Search all, the strength on the detail line, the server's order.
         let listing = C.listing(strong, words: topic)
         let meaningRows = listing.rows.filter { $0.group == .meaning }
         check(meaningRows.map(\.id) == hits.map { "hit:" + $0.id } && meaningRows.allSatisfy { $0.selectable } && meaningRows.allSatisfy { if case .hit = $0.kind { return true } else { return false } },
@@ -1573,6 +1586,22 @@ import Foundation
         let afterFull = C.meaningArrived(C.meaningArrived(C.MeaningFound(), words: C.plain(words), stage: .first, .rows([meaningHit("claude:abc12345", "A", .likely)], asked: 254, skipped: 0, reachedBack: nil), keeping: nil),
                                           words: C.plain(words), stage: .full, .refused(.capReached, resetsAt: reset), keeping: nil)
         check(afterFull.phase == .done && afterFull.hits.count == 1, "[a refusal at the full stage keeps the first stage's rows]", "")
+
+        // The window's own loop at a refusal that stays true, run through the engine: the first stage's rows arrive, the full stage is capped or
+        // paused, the engine stops asking, and the window keeps what it holds (QA 0.5.363: it cleared, and the rows vanished).
+        for reason in [C.MeaningReason.capReached, .breakerOpen] {
+            var live = found(meaningCenter(.subq, choices: ["subq": .on]), words: words, .partial, hits: [meaningHit("claude:abc12345", "Jewelry persona review", .likely)])
+            let sent = live.meaningFound.words
+            live.meaningFound = C.meaningArrived(live.meaningFound, words: sent, stage: .full, .refused(reason, resetsAt: reset), keeping: nil)
+            live.meaning.settled = reason
+            live.meaning.settledResetsAt = reset
+            let asking = C.listing(live, words: words)
+            live.meaningFound = C.meaningKept(live.meaningFound, ask: asking.meaningAsk, settled: live.meaning.settled)
+            let after = C.listing(live, words: words)
+            check(asking.meaningAsk == nil && row(after, "hit:claude:abc12345") != nil && row(after, "info:meaning-" + reason.rawValue) != nil, "[a refusal at the full stage keeps the first stage's rows in the panel]", "\(reason.rawValue) \(rowIDs(after))")
+            // With nothing settled, no request still clears: the words fell below three, or the person said Never.
+            check(C.meaningKept(live.meaningFound, ask: nil, settled: nil) == C.MeaningFound() && C.meaningKept(live.meaningFound, ask: C.MeaningAsk(words: sent, provider: .subq), settled: nil) == live.meaningFound, "[no request clears what is held unless a refusal is settled]", "")
+        }
 
         // Rows all listed by title are not "nothing close".
         let title = meaningCenter(sessions: [listed("claude:abc12345ef56", "Jewelry persona review", days: 1)])

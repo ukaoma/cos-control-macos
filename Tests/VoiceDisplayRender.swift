@@ -41,6 +41,16 @@ import SwiftUI
         let short: [[String: Any]] = (next..<(next + 24)).enumerated().map { ["label": "Voice \($1)", "seconds": 14.2 - Double($0) * 0.5] }
         var voices: [[String: Any]] = [voice("Ext", segments: 300), voice("Avery Stone", segments: 42, named: true), voice("Blake Moss", segments: 31, named: true)]
         for n in 1...58 { voices.append(voice("Voice \(n)", segments: 60 - n)) }
+        // COS_WEAK_VOICE=1 (0.5.363 QA): a voice whose closest match the floor withheld, at 0.58 (a menu) and at 0.72 (one click), with a long name,
+        // and nothing else, so the row's controls are drawn at the real 390 pt width and nothing is hidden by a scroll.
+        let weakOnly = ProcessInfo.processInfo.environment["COS_WEAK_VOICE"] != nil
+        if weakOnly {
+            func withheld(_ label: String, _ similarity: Double) -> [String: Any] {
+                ["label": label, "segments": 12, "speakingMs": 0, "nameAsserted": false, "reliability": "weak", "meanSimilarity": similarity,
+                 "phrases": [["text": words(2), "atMs": 41_000, "chunkIndex": NSNull()]]]
+            }
+            voices = [withheld("Bartholomew Featherstonehaugh-Ukaoma", 0.58), withheld("Dana Reyes", 0.58), withheld("Taylor Brooks", 0.72)]
+        }
         let review: [String: Any] = ["sessionId": sid, "title": "Quarterly planning call", "recordId": "ops:quilt:2026-10:fixture.md", "sourceRevision": revision, "reviewIdentityVersion": 1,
             "segments": 783, "attributed": true, "mutable": true, "voices": voices, "durationMs": 3_600_000,
             "timeline": [["speaker": "Avery Stone", "startMs": 0, "endMs": 900_000], ["speaker": "Voice 1", "startMs": 900_000, "endMs": 1_500_000], ["speaker": "Blake Moss", "startMs": 1_500_000, "endMs": 2_400_000], ["speaker": "Ext", "startMs": 2_400_000, "endMs": 3_600_000]],
@@ -64,6 +74,10 @@ import SwiftUI
         precondition(model.openReview?.voiceDisplayLayout != nil, "the stand-in helper did not load the review: \(model.reviewError ?? "?")")
         precondition(model.voiceSuggestions.probed && model.voiceBatch.probed, "the probes did not land")
         func pane() -> some View { SpeakerReviewPane(model: model, showsBackButton: false) }
+        if weakOnly {
+            try render(pane(), height: 760, name: "n-withheld-candidates", out: out)
+            return
+        }
 
         // (a) the list, collapsed.
         try render(pane(), height: 1900, name: "a-rows-and-fold-collapsed", out: out)

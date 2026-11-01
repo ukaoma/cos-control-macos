@@ -11,9 +11,15 @@ import pathlib, shutil, subprocess, sys, os
 
 H = "HelperSources/main.swift"
 MUTANTS = [
-    ("a term inside a word is a hit", "            let inHay = sessionWordStart(hayL, token) != nil\n", "            let inHay = hayL.contains(token)\n", "a term inside a word is not a hit"),
-    ("a script with no word spaces needs a word start", "        if sessionTermHasNoWordSpaces(token) { return text.range(of: token) }\n", "", "no word spaces keeps matching inside"),
-    ("an argument stays decomposed", "Array(CommandLine.arguments.dropFirst()).map { $0.precomposedStringWithCanonicalMapping }", "Array(CommandLine.arguments.dropFirst())", "composed at parse"),
+    ("a term inside a word is a hit", "            let inHay = sessionWordStart(haystack, token) != nil\n", "            let inHay = haystack.lowercased().contains(token)\n", "a term inside a word is not a hit"),
+    ("a script with no word spaces needs a word start", "        if sessionTermHasNoWordSpaces(token) { return text.range(of: token, options: .caseInsensitive) }\n", "", "no word spaces keeps matching inside"),
+    ("a name holds the term inside a word", "            let inTitle = sessionWordStart(title, token) != nil\n", "            let inTitle = title.lowercased().contains(token)\n", "inside a word is not a title hit"),
+    ("a name that holds some words skips the transcript", "            if tokens.allSatisfy({ sessionWordStart(name, $0) != nil }) { continue }\n", "            if tokens.contains(where: { sessionWordStart(name, $0) != nil }) { continue }\n", "holds only part of the words"),
+    ("a name that holds the words inside a word skips the transcript", "            if tokens.allSatisfy({ sessionWordStart(name, $0) != nil }) { continue }\n", "            if tokens.allSatisfy({ name.lowercased().contains($0) }) { continue }\n", "found by a word that begins in its transcript"),
+    ("a capital does not begin a word", "            if before.isLowercase && first.isUppercase { return found }\n", "", "a capital after a lowercase letter begins a word"),
+    ("a script change does not begin a word", "            if sessionTermHasNoWordSpaces(String(before)) != sessionTermHasNoWordSpaces(String(first)) { return found }\n", "", "meeting letters begins a word"),
+    ("a digit ends a word", "            if !(before.isLetter || before.isNumber) { return found }\n", "            if !before.isLetter { return found }\n", "a digit does not begin a word"),
+    ("a letter ends a word", "            if !(before.isLetter || before.isNumber) { return found }\n", "            if !before.isNumber { return found }\n", "a term inside a word is not a hit"),
     ("a Desktop row keeps the record's own id", "        let sessionId = UUID(uuidString: head.cliSessionId) != nil ? head.cliSessionId : id\n", "        let sessionId = id\n",
      "found once, under its cliSessionId"),
     ("the record rows come back from the Sessions scan", "            newest: transcriptNewest,\n            desktopOnlyRows: false\n", "            newest: transcriptNewest\n",

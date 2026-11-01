@@ -10582,7 +10582,8 @@ struct CommandCenterPanel: View {
     private func runMeaning(_ ask: C.MeaningAsk?) async {
         guard fixture == nil else { return }
         guard let ask else {
-            if meaning != C.MeaningFound() { meaning = C.MeaningFound() }
+            let kept = C.meaningKept(meaning, ask: nil, settled: settled)
+            if meaning != kept { meaning = kept }
             return
         }
         let began = Date()

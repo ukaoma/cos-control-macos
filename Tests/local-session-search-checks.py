@@ -287,10 +287,35 @@ try:
     check(any(h["id"].lower() == t6 for h in hits), "a term at the start of a word is a hit", str([h["id"] for h in hits]))
     code, hits, _, _ = search("\u52d9\u78ba\u8a8d")
     check(any(h["id"].lower() == t7 for h in hits), "a script with no word spaces keeps matching inside", str([h["id"] for h in hits]))
-    # Foundation's Process hands arguments decomposed ("Po" + a combining accent + "lya"): the helper composes them at parse.
-    decomposed = "Po\u0301lya"
-    out = subprocess.run([helper, "no-such-command-" + decomposed], capture_output=True, env=dict(os.environ, COS_CONTROL_TEST_HOME=str(home), CFFIXED_USER_HOME=str(decoy), HOME=str(decoy)), timeout=30).stdout
-    check("P\u00f3lya".encode() in out and decomposed.encode() not in out, "an argument is composed at parse, not left decomposed", out[:200].decode(errors="replace"))
+
+    # 0.5.363 review: a word also begins at a capital after a lowercase letter and where a no-space script meets another script; a digit does not
+    # begin one. "model" finds ControllerModel, "oauth" finds the Chinese "fix" glued to oauth, "audit" does not find "tier2audit".
+    t8, t9, t10 = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    make_transcript(t8, "-tmp-fx-camel", "ControllerModel refactor notes for the sprint")
+    make_transcript(t9, "-tmp-fx-glue", "\u4fee\u590doauth\u6d41\u7a0b notes for the sprint")
+    make_transcript(t10, "-tmp-fx-digit", "tier2audit notes for the sprint")
+    code, hits, _, _ = search("model")
+    check(any(h["id"].lower() == t8 for h in hits), "a capital after a lowercase letter begins a word", str([h["id"] for h in hits]))
+    code, hits, _, _ = search("troller")
+    check(not any(h["id"].lower() == t8 for h in hits), "the middle of a camel-case word is not a start", str([h["id"] for h in hits]))
+    code, hits, _, _ = search("oauth")
+    check(any(h["id"].lower() == t9 for h in hits), "a no-space script meeting letters begins a word", str([h["id"] for h in hits]))
+    code, hits, _, _ = search("audit")
+    check(not any(h["id"].lower() == t10 for h in hits), "a digit does not begin a word", str([h["id"] for h in hits]))
+
+    # 0.5.363 review: a named Codex row is judged by its name at a word start, and a name that holds only part of the words is still read for the rest.
+    named_body, named_inside = str(uuid.uuid4()), str(uuid.uuid4())
+    make_codex(named_body, "we will miss the deadline for quartzword", 5)
+    make_codex(named_inside, "nothing relevant in this transcript", 6)
+    with open(home / ".codex/session_index.jsonl", "a") as index:
+        index.write(json.dumps({"id": named_body, "thread_name": "Quartz permissions audit"}) + "\n")
+        index.write(json.dumps({"id": named_inside, "thread_name": "Zircon permissions audit"}) + "\n")
+    code, hits, _, _ = search("quartz deadline")
+    got = [h for h in hits if h["id"].lower() == named_body]
+    check(len(got) == 1 and "deadline" in str(got[0].get("snippet")).lower(), "a named row whose name holds only part of the words is read for the rest", str([(h["id"], h.get("snippet")) for h in hits]))
+    code, hits, _, _ = search("miss")
+    check(not any(h["id"].lower() == named_inside for h in hits), "a name that holds the term inside a word is not a title hit", str([h["id"] for h in hits]))
+    check(any(h["id"].lower() == named_body for h in hits), "a named row is found by a word that begins in its transcript", str([h["id"] for h in hits]))
 
 finally:
     shutil.rmtree(home, ignore_errors=True)

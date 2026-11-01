@@ -418,9 +418,7 @@ final class COSControlHelper {
     private lazy var certsDir = configDir.appendingPathComponent("certs", isDirectory: true)
 
     func run() throws {
-        // Arguments arrive as the system hands them, and Foundation's Process hands them decomposed ("Pólya" as P, o, a combining accent, l, y, a). The
-        // sessions, names and files this helper compares against are composed, so every argument is composed once, here (0.5.363).
-        let args = Array(CommandLine.arguments.dropFirst()).map { $0.precomposedStringWithCanonicalMapping }
+        let args = Array(CommandLine.arguments.dropFirst())
         guard let command = args.first else { throw HelperError.message("missing command") }
         // The app hands over its own identity (same contract as check-app-update)
         // so Doctor and Copy Report can name the build. The helper cannot read it
@@ -18168,7 +18166,7 @@ final class COSControlHelper {
     static func sessionTermHasNoWordSpaces(_ token: String) -> Bool {
         token.unicodeScalars.contains { s in
             switch s.value {
-            case 0x2E80...0x9FFF, 0xF900...0xFAFF, 0x20000...0x2FA1F, 0x0E00...0x0EFF, 0x0E80...0x0EFF, 0x1780...0x17FF, 0x1000...0x109F: return true
+            case 0x2E80...0x9FFF, 0xF900...0xFAFF, 0x20000...0x2FA1F, 0x0E00...0x0EFF, 0x1780...0x17FF, 0x1000...0x109F: return true
             default: return false
             }
         }
@@ -18177,13 +18175,19 @@ final class COSControlHelper {
     /// Where `token` begins a word in `text`, or nil. "miss" is in "permissions" and "failure" only inside a word, so it is not a hit there
     /// (0.5.363, the owner's search for "chuks tax miss" listed four sessions for that). A word starts at the start of the text or after
     /// anything that is not a letter or a number. A term in a script with no word spaces keeps matching anywhere. `text` and `token` are lowercased.
+    /// Where `token` (lowercase) first begins a word in `text` (any case), or nil. A word begins after anything that is not a letter or a digit,
+    /// where a lowercase letter meets a capital ("ControllerModel" has Model), and where a no-space script meets another script
+    /// ("修复oauth" has oauth).
     static func sessionWordStart(_ text: String, _ token: String) -> Range<String.Index>? {
-        if sessionTermHasNoWordSpaces(token) { return text.range(of: token) }
+        if sessionTermHasNoWordSpaces(token) { return text.range(of: token, options: .caseInsensitive) }
         var from = text.startIndex
-        while from < text.endIndex, let found = text.range(of: token, range: from..<text.endIndex) {
+        while from < text.endIndex, let found = text.range(of: token, options: .caseInsensitive, range: from..<text.endIndex) {
             if found.lowerBound == text.startIndex { return found }
             let before = text[text.index(before: found.lowerBound)]
+            let first = text[found.lowerBound]
             if !(before.isLetter || before.isNumber) { return found }
+            if before.isLowercase && first.isUppercase { return found }
+            if sessionTermHasNoWordSpaces(String(before)) != sessionTermHasNoWordSpaces(String(first)) { return found }
             from = text.index(after: found.lowerBound)
         }
         return nil
@@ -18191,20 +18195,18 @@ final class COSControlHelper {
 
     static func scoreSessionKeyword(tokens: [String], title: String, haystack: String) -> (score: Double, snippet: String) {
         guard !tokens.isEmpty else { return (0, "") }
-        let titleL = title.lowercased()
-        let hayL = haystack.lowercased()
         var hits = 0
         var titleHits = 0
         var firstAt = -1
         for token in tokens {
-            let inTitle = sessionWordStart(titleL, token) != nil
-            let inHay = sessionWordStart(hayL, token) != nil
+            let inTitle = sessionWordStart(title, token) != nil
+            let inHay = sessionWordStart(haystack, token) != nil
             if !inTitle && !inHay { continue }
             hits += 1
             if inTitle { titleHits += 1 }
             if firstAt < 0 {
-                if let range = sessionWordStart(hayL, token) {
-                    firstAt = hayL.distance(from: hayL.startIndex, to: range.lowerBound)
+                if let range = sessionWordStart(haystack, token) {
+                    firstAt = haystack.distance(from: haystack.startIndex, to: range.lowerBound)
                 } else {
                     firstAt = 0
                 }
@@ -18571,8 +18573,7 @@ final class COSControlHelper {
             guard let row else { continue }
             let name = row["name"] as? String ?? ""
             let workspace = row["workspace"] as? String ?? ""
-            let nameL = name.lowercased()
-            if tokens.allSatisfy({ sessionWordStart(nameL, $0) != nil }) { continue }
+            if tokens.allSatisfy({ sessionWordStart(name, $0) != nil }) { continue }
             let body = peekSessionSearchBody(in: item.file)
             if body.isEmpty { continue }
             consider(row: row, haystack: "\(name)\n\(workspace)\n\(body)")

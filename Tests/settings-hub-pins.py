@@ -284,8 +284,8 @@ page = body(views, "    func hubPage(mode: SettingsHubLayout.Mode) -> some View 
 pin(page.index("SettingsHubSearchField(query: $hubQuery, focused: $hubSearchFocused)") < page.index("ScrollView(.vertical)"),
     "the narrow search field sits outside the ScrollView whose identity changes, so it keeps focus")
 pin("confirmHubRollback = false" in opened.split("switch category")[0], "a new page cancels an open inline confirm")
-pin("SettingsHubSearch.results(hubQuery, shown: hubGroupShown)" in hub and "guard let group = item.group, shown(group) else { return nil }" in catalog,
-    "search leaves out rows in groups the page does not draw")
+pin("SettingsHubSearch.results(hubQuery, shown: hubGroupShown, itemShown: { $0 != \"JV-13\" || meaningSearchShown })" in hub and "guard let group = item.group, shown(group), itemShown(item.id) else { return nil }" in catalog,
+    "search leaves out rows in groups the page does not draw, and Find sessions by meaning where its control is hidden")
 pin('static let accessibilityRepairHint = "Already on? Use Reset and add again in Settings, Session pet."' in code(read("Sources/ControllerModel.swift"))
     and '.help("Turn the pet off. Turn it back on in Settings, Session pet.")' in connect_views,
     "the Accessibility repair hint names the Session pet card, right in both layouts")

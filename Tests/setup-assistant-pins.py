@@ -439,11 +439,11 @@ pin("first prompts" in _summary and "sends your words" in _summary and "Settings
     "the summary and the notes say what leaves, first prompts included, and name the choice truly")
 _blurb = read("Sources/SettingsHubCatalog.swift")
 pin("session titles and the start of first prompts" in _blurb and 'sends your words and session titles' not in _blurb, "Settings' own line for the control says first prompts too")
-pin(_all[0]["title"] == "0.5.363" and "each search sends the words you type in ⌘K, " + _sent in _notes and "Emails, links and key-shaped text are removed first. Names and other details are not." in _notes
+pin(_all[0]["title"] == "0.5.363" and "each search sends the words you type in ⌘K, " + _sent in _notes and "Emails, links, file paths and key-shaped text are removed first. Names and other details are not." in _notes
     and "SubQ keeps what it is sent" in _notes and "off until you say yes" in _notes and "sends nothing off it" in _notes and _notes.index("off until you say yes") < _notes.index("sends nothing off it"),
     "the notes say plainly what leaves after a yes, and that nothing does before")
 _consent = block(core_raw, '            let sent = "Each search sends the words you type here, ', '"\n')
-pin(_sent in _consent and "Emails, links and key-shaped text are removed first. Names and other details are not." in _consent and "SubQ keeps what it is sent." in core_raw,
+pin(_sent in _consent and "Emails, links, file paths and key-shaped text are removed first. Names and other details are not." in _consent and "SubQ keeps what it is sent." in core_raw,
     "the question in the panel says what the notes say")
 pin("asks the COS server" in _older and "OpenAI" in _older, "the 0.5.361 notes still say what Search all sessions uses")
 _log = read("CHANGELOG.md").split("## 0.5.361")[0]
@@ -687,6 +687,8 @@ pin("version" not in meaning_inputs.lower(), "the capability is never read from 
 # The panel: the request exists only when the engine hands it over, one at a time, nothing under a fixture.
 mean_task = block(panel, "    private func runMeaning(", "    private func askMeaning(")
 pin(".task(id: listing.meaningAsk) { await runMeaning(listing.meaningAsk) }" in panel and "guard fixture == nil else { return }" in mean_task and "guard let ask else {" in mean_task, "meaning search runs only on the engine's request, one at a time, and not under a fixture")
+pin("let kept = C.meaningKept(meaning, ask: nil, settled: settled)" in mean_task and "if meaning != kept { meaning = kept }" in mean_task and "meaning = C.MeaningFound()" not in mean_task,
+    "no request keeps the rows while a refusal that stays true is settled, and clears them otherwise")
 pin(before(mean_task, "Task.sleep(nanoseconds: 800_000_000)", "askMeaning(ask, stage: .first)", "Task.sleep(nanoseconds: UInt64(rest * 1_000_000_000))", "askMeaning(ask, stage: .full)") and "2.0 - Date().timeIntervalSince(began)" in mean_task,
     "the first stage after 800 ms, the full stage at 2 seconds of quiet in all")
 pin(panel.count("try await find(") == 1 and "find: { ask, stage in try await commandFindSessions(ask, stage: stage) }" in ext, "the panel reaches meaning search only through the window's one function")

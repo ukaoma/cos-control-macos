@@ -3739,7 +3739,7 @@ private extension ControlPanel {
                         VStack(alignment: .leading, spacing: 26) {
                             hubTopStrip(reader)
                             if hubSearching {
-                                SettingsHubSearchResults(query: hubQuery, sections: SettingsHubSearch.results(hubQuery, shown: hubGroupShown)) { hubOpen($0, reader) }
+                                SettingsHubSearchResults(query: hubQuery, sections: SettingsHubSearch.results(hubQuery, shown: hubGroupShown, itemShown: { $0 != "JV-13" || meaningSearchShown })) { hubOpen($0, reader) }
                             } else {
                                 SettingsHubPageHeader(title: hubCategory.title, line: hubCategory.blurb, busy: model.busy)
                                 hubCategoryContent(hubCategory)
@@ -4902,7 +4902,10 @@ private struct VoiceRow: View {
                                 }
                                 .font(.system(size: 11))
                                 .controlSize(.small)
-                                .fixedSize()
+                                // A long name gives way first: it never takes the room of "Actually someone else" and "Not in this meeting"
+                                // at the 390 pt panel (rendered with a 36-character name, 0.5.363).
+                                .lineLimit(1)
+                                .layoutPriority(-1)
                                 .disabled(model.mergeInFlight)
                             }
                         }

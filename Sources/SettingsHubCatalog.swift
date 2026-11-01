@@ -147,7 +147,7 @@ enum SettingsHubCatalog {
 
     /// Rows the hub adds that the inventory does not list (it is the hub's own rollback).
     static let extras: [SettingsHubItem] = [
-        .init("JV-13", "Find sessions by meaning", "Each ⌘K search sends your words, plus session titles and the start of first prompts, to the model that decides search. Shown with Today home on.", old: "", group: "ai.decision", advanced: false, mount: .group,
+        .init("JV-13", "Find sessions by meaning", "After you say yes, each ⌘K search sends your words, plus session titles and the start of first prompts, to the model that decides search. Emails, links, file paths and key-shaped text are removed first. Shown with Today home on and a server that supports it.", old: "", group: "ai.decision", advanced: false, mount: .group,
               keywords: ["meaning", "command k", "sessions", "consent", "jev", "subq"]),
         .init("HUB-CL", "Use classic Settings", "Show the earlier one-page Settings in Activity.", old: "", group: "general.app", advanced: true, mount: .group,
               keywords: ["classic", "old settings", "rollback", "one page"]),
@@ -548,11 +548,13 @@ enum SettingsHubSearch {
         return 4
     }
     /// Grouped by category in the sidebar's order; best match first inside each, catalogue order on a tie.
+    /// `itemShown` is the page's test for one row inside a group that is drawn (Find sessions by meaning is hidden with Today home off and on an
+    /// older server, while its group, Decision models, is not): a row the page does not draw is never a result either.
     /// `shown` is the page's own test for a group (a card hidden on an older server, or with nothing to show): a row in
     /// a group the page does not draw is left out, so a result never opens on a card that is not there.
-    static func results(_ query: String, shown: (String) -> Bool = { _ in true }) -> [Section] {
+    static func results(_ query: String, shown: (String) -> Bool = { _ in true }, itemShown: (String) -> Bool = { _ in true }) -> [Section] {
         let ranked = SettingsHubCatalog.searchable.enumerated().compactMap { index, item -> (SettingsHubItem, Int, Int)? in
-            guard let group = item.group, shown(group) else { return nil }
+            guard let group = item.group, shown(group), itemShown(item.id) else { return nil }
             return rank(item, query: query).map { (item, $0, index) }
         }
         return SettingsHubCategory.allCases.compactMap { category in
