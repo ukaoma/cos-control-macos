@@ -6234,6 +6234,11 @@ struct ReviewVoice: Identifiable, Sendable, Hashable {
     var canConfirmCandidate: Bool {
         !isOwner && !nameAsserted && reliability != .unattributed && !confirmedByHuman
     }
+    /// Where a candidate is strong enough for a one-click "Yes, this is ...". Below it the person can still say it, one step further in (a
+    /// menu), so "yes, that really is her" stays expressible without a button that invites a click on a weak guess: the live test on 0.5.362
+    /// suggested a person at 0.58 for a voice with no profile. A row with no similarity is not strong.
+    static let oneClickConfirmBar = 0.65
+    var confirmsInOneClick: Bool { (meanSimilarity ?? 0) >= Self.oneClickConfirmBar }
     /// A voice that was never in the room can be removed. Only meaningful where
     /// a name was actually applied — there is nothing to take back otherwise.
     var canDeattribute: Bool { reliability != .unattributed }

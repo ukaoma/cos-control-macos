@@ -439,7 +439,7 @@ pin("first prompts" in _summary and "sends your words" in _summary and "Settings
     "the summary and the notes say what leaves, first prompts included, and name the choice truly")
 _blurb = read("Sources/SettingsHubCatalog.swift")
 pin("session titles and the start of first prompts" in _blurb and 'sends your words and session titles' not in _blurb, "Settings' own line for the control says first prompts too")
-pin(_all[0]["title"] == "0.5.362" and "each search sends the words you type in ⌘K, " + _sent in _notes and "Emails, links and key-shaped text are removed first. Names and other details are not." in _notes
+pin(_all[0]["title"] == "0.5.363" and "each search sends the words you type in ⌘K, " + _sent in _notes and "Emails, links and key-shaped text are removed first. Names and other details are not." in _notes
     and "SubQ keeps what it is sent" in _notes and "off until you say yes" in _notes and "sends nothing off it" in _notes and _notes.index("off until you say yes") < _notes.index("sends nothing off it"),
     "the notes say plainly what leaves after a yes, and that nothing does before")
 _consent = block(core_raw, '            let sent = "Each search sends the words you type here, ', '"\n')
@@ -780,6 +780,14 @@ pin("let generation = quiet ? decisionReadGeneration : UUID()" in _quiet and "if
     "a quiet settings read neither supersedes a read in flight nor wipes what Settings shows")
 pin("if meaningSearchShown { SettingsHubBlock { meaningSearchControls } }" in views_src, "the hub draws no empty strip where the control is hidden")
 pin("@Published var chatPrefill" in cm2, "the composer hint follows the placed words")
+
+# 0.5.363: a weak voice candidate is not one click. The menu keeps "yes, that really is her" sayable.
+_models = code(read("Sources/Models.swift")); _views = code(read("Sources/Views.swift"))
+pin("static let oneClickConfirmBar = 0.65" in _models and "var confirmsInOneClick: Bool { (meanSimilarity ?? 0) >= Self.oneClickConfirmBar }" in _models, "a candidate is one click only at 0.65 or more")
+pin("if voice.confirmsInOneClick {\n                                Button(\"Yes, this is \\(voice.label)\")" in _views and "Menu(\"It is \\(voice.label)…\")" in _views and _views.count("model.confirmVoice(voice.label)") == 2,
+    "below the bar the candidate is confirmed from a menu, never a button")
+pin("Closest match: " in _views, "the closest match is still said")
+pin("let wordRows = Array(rows[wordStart...])" in core and "rows += meaningFirst ? meaningResult.rows + wordRows : wordRows + meaningResult.rows" in core, "meaning rows go above word hits when there are any")
 
 pin("s.classicSettings = classicSettings" in window and "var classicSettings = false" in core, "the window passes the classic Settings flag")
 

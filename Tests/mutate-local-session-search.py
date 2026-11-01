@@ -11,6 +11,9 @@ import pathlib, shutil, subprocess, sys, os
 
 H = "HelperSources/main.swift"
 MUTANTS = [
+    ("a term inside a word is a hit", "            let inHay = sessionWordStart(hayL, token) != nil\n", "            let inHay = hayL.contains(token)\n", "a term inside a word is not a hit"),
+    ("a script with no word spaces needs a word start", "        if sessionTermHasNoWordSpaces(token) { return text.range(of: token) }\n", "", "no word spaces keeps matching inside"),
+    ("an argument stays decomposed", "Array(CommandLine.arguments.dropFirst()).map { $0.precomposedStringWithCanonicalMapping }", "Array(CommandLine.arguments.dropFirst())", "composed at parse"),
     ("a Desktop row keeps the record's own id", "        let sessionId = UUID(uuidString: head.cliSessionId) != nil ? head.cliSessionId : id\n", "        let sessionId = id\n",
      "found once, under its cliSessionId"),
     ("the record rows come back from the Sessions scan", "            newest: transcriptNewest,\n            desktopOnlyRows: false\n", "            newest: transcriptNewest\n",

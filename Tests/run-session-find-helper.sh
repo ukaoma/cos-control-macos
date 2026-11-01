@@ -10,3 +10,4 @@ trap 'rm -rf "$DIR"' EXIT
   -framework Security -framework AppKit \
   -o "$DIR/cos-control-helper"
 /usr/bin/python3 "$ROOT/Tests/session-find-helper-checks.py" "$DIR/cos-control-helper"
+/usr/bin/python3 "$ROOT/Tests/local-session-search-checks.py" "$DIR/cos-control-helper"

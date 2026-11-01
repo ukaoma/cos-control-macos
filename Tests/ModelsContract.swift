@@ -3157,6 +3157,16 @@ struct ModelsContract {
         precondition(confirmableVoice(label: "Queen Ukaoma", reliability: "weak", asserted: false, confirmed: true)?
             .canConfirmCandidate == false, "confirmed never re-offers, even if the server did not assert")
 
+        // 0.5.363: a one-click "Yes, this is ..." only at 0.65 or more. Weaker, and a row with no similarity, ask one step further in.
+        func with(_ similarity: Double?) -> ReviewVoice? {
+            var fields: [String: JSONValue] = ["label": .string("Ryan"), "segments": .number(1), "isOwner": .bool(false), "reliability": .string("weak"), "nameAsserted": .bool(false),
+                                               "assertionBlockers": .array([]), "thrashesWith": .array([]), "phrases": .array([])]
+            if let similarity { fields["meanSimilarity"] = .number(similarity) }
+            return ReviewVoice(.object(fields))
+        }
+        precondition(with(0.58)?.confirmsInOneClick == false && with(0.58)?.canConfirmCandidate == true, "a weak candidate is not one click, and can still be confirmed")
+        precondition(with(0.65)?.confirmsInOneClick == true && with(0.9)?.confirmsInOneClick == true && with(nil)?.confirmsInOneClick == false, "the bar is 0.65, and no similarity is not strong")
+
         // Old server: the flag is absent, which must read as not-confirmed
         // rather than crashing or defaulting to true.
         let legacy = ReviewVoice(.object([

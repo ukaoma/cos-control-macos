@@ -21,6 +21,7 @@ C = "Sources/SetupAssistant.swift"
 W = "Sources/ActivityWindow.swift"
 HP = "HelperSources/main.swift"
 CM = "Sources/ControllerModel.swift"
+M = "Sources/Models.swift"
 V = "Sources/Views.swift"
 R = "scripts/build-release.sh"
 S = "Tests/run.sh"
@@ -489,6 +490,11 @@ MUTANTS = [
     ("view: a quiet read supersedes Settings", CM, "let generation = quiet ? decisionReadGeneration : UUID()", "let generation = UUID()", "supersedes a read in flight"),
     ("view: a quiet read wipes Settings", CM, "if !quiet { decisionSettingsAvailable = false; decisionSettings = nil }", "decisionSettingsAvailable = false; decisionSettings = nil", "supersedes a read in flight"),
     ("view: the hub draws an empty strip", V, "if meaningSearchShown { SettingsHubBlock { meaningSearchControls } }", "SettingsHubBlock { meaningSearchControls }", "empty strip"),
+    ("center: word hits go above meaning rows", C, "rows += meaningFirst ? meaningResult.rows + wordRows : wordRows + meaningResult.rows", "rows += wordRows + meaningResult.rows", "meaning rows go above word hits"),
+    ("center: Recent is drawn on a word hit", C, "detail: detail.isEmpty ? nil : detail,\n                                            state: item.state == \"Recent\" ? nil : item.state,", "detail: detail.isEmpty ? nil : detail,\n                                            state: item.state,", "Recent is not drawn on a word hit"),
+    ("center: twins are not told apart", C, "                next.detail = [row.detail, stamp].compactMap { $0 }.joined(separator: \", \")\n", "", "say when each last moved"),
+    ("center: a row alone says when it last moved", C, "count[plain(row.title), default: 0] > 1 else { return row }", "count[plain(row.title), default: 0] > 0 else { return row }", "one row with a title says nothing more"),
+    ("view: a weak candidate is one click", M, "    var confirmsInOneClick: Bool { (meanSimilarity ?? 0) >= Self.oneClickConfirmBar }", "    var confirmsInOneClick: Bool { true }", "one click only at 0.65"),
     ("view: a meaning row opens without the server-hold guard", W, "ClaudeSession.listed(hit: hit, loaded: loaded, workSessionIDs: workIDs, runningWorkSessionIDs: runningIDs)", "hit", "server-hold guard"),
     ("view: a meaning row opens from the word hits only", W, "        let held = commandKeys.hitSessions[id] ?? commandKeys.meaningSessions[id]\n            ?? commandKeys.meaningSessions.first(where: { SetupAssistant.Center.sameListed($0.key, id) })?.value\n", "        let held = commandKeys.hitSessions[id]\n", "word hits first"),
     ("view: a compressed Codex row opens in the reader", W, "            guard case .platform = way else {\n                today.flash(\"That session is compressed, so only the Codex app can open it.\")\n                return .stay\n            }\n", "", "Codex app only"),

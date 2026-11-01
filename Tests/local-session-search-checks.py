@@ -276,6 +276,22 @@ try:
     # A Sessions query of exactly --local is a query, not the flag: it takes the server path (no server here, so the local fallback answers).
     code, answer, err, _ = run(["claude-sessions-search", "--query", "--local", "--limit", "5"], "")
     check(code == 0 and answer.get("ok") is True, "a query of the flag's own characters is a query", f"code {code} ok {answer.get('ok')}")
+
+    # 0.5.363: a term matches at the start of a word, never inside one. "miss" is in "permissions" and "failure" only inside them.
+    t6, t7 = str(uuid.uuid4()), str(uuid.uuid4())
+    make_transcript(t6, "-tmp-fx-words", "permissions audit and failure notes for the quarter")
+    make_transcript(t7, "-tmp-fx-cjk", "\u7a0e\u52d9\u78ba\u8a8d\u306e\u4ef6")
+    code, hits, _, _ = search("miss")
+    check(code == 0 and not any(h["id"].lower() == t6 for h in hits), "a term inside a word is not a hit", str([h["id"] for h in hits]))
+    code, hits, _, _ = search("permis")
+    check(any(h["id"].lower() == t6 for h in hits), "a term at the start of a word is a hit", str([h["id"] for h in hits]))
+    code, hits, _, _ = search("\u52d9\u78ba\u8a8d")
+    check(any(h["id"].lower() == t7 for h in hits), "a script with no word spaces keeps matching inside", str([h["id"] for h in hits]))
+    # Foundation's Process hands arguments decomposed ("Po" + a combining accent + "lya"): the helper composes them at parse.
+    decomposed = "Po\u0301lya"
+    out = subprocess.run([helper, "no-such-command-" + decomposed], capture_output=True, env=dict(os.environ, COS_CONTROL_TEST_HOME=str(home), CFFIXED_USER_HOME=str(decoy), HOME=str(decoy)), timeout=30).stdout
+    check("P\u00f3lya".encode() in out and decomposed.encode() not in out, "an argument is composed at parse, not left decomposed", out[:200].decode(errors="replace"))
+
 finally:
     shutil.rmtree(home, ignore_errors=True)
     shutil.rmtree(decoy, ignore_errors=True)

@@ -4887,12 +4887,24 @@ private struct VoiceRow: View {
                         // Ukaoma — the candidate IS the row's label, so a rename
                         // could never express "yes, that really is her".
                         if voice.canConfirmCandidate {
-                            Button("Yes, this is \(voice.label)") {
-                                model.confirmVoice(voice.label)
+                            if voice.confirmsInOneClick {
+                                Button("Yes, this is \(voice.label)") {
+                                    model.confirmVoice(voice.label)
+                                }
+                                .font(.system(size: 11))
+                                .controlSize(.small)
+                                .disabled(model.mergeInFlight)
+                            } else {
+                                // A weak guess (below `oneClickConfirmBar`) is not one click: the person opens this and chooses, which says
+                                // they checked. "Yes, that really is her" is still sayable.
+                                Menu("It is \(voice.label)…") {
+                                    Button("Yes, I checked: this is \(voice.label)") { model.confirmVoice(voice.label) }
+                                }
+                                .font(.system(size: 11))
+                                .controlSize(.small)
+                                .fixedSize()
+                                .disabled(model.mergeInFlight)
                             }
-                            .font(.system(size: 11))
-                            .controlSize(.small)
-                            .disabled(model.mergeInFlight)
                         }
 
                         // The inverse of naming an unknown voice, which the panel

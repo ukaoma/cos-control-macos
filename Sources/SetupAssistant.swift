@@ -1853,7 +1853,7 @@ enum SetupAssistant {
                 let detail = [item.strength?.word, item.detail.map(clean), ago].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
                 // "Recent" says nothing here: the age is on the line. Running, Waiting and Idle do.
                 rows.append(Row(id: "hit:" + item.id, kind: .hit(item.id), group: .meaning, title: hitTitle(item.title), detail: detail.isEmpty ? nil : detail,
-                                state: item.state == "Recent" ? nil : item.state, trailing: item.openLabel, match: matchLine(item.match, title: item.title), leavesSession: item.leavesSession))
+                                state: item.state == "Recent" ? nil : item.state, trailing: item.openLabel, match: matchLine(item.match, title: item.title), leavesSession: item.leavesSession, activity: item.date))
                 if let id = item.sessionID { shown.append(id) }
             }
             // "Continue in this session": the one strong match with a clear gap, offered above the rows. Only when its own row is shown.
@@ -1928,6 +1928,8 @@ enum SetupAssistant {
             /// For a waiting, running, listed or hit row: opening it closes the session that is open in Sessions, and with it a reply typed
             /// and not sent. A platform open (the app's own window) clears nothing. The window decides, from the open path it will take.
             var leavesSession = false
+            /// When the session behind the row last moved. Only used to tell two rows with one title apart.
+            var activity: Date? = nil
 
             var selectable: Bool {
                 switch kind {
@@ -2086,6 +2088,30 @@ enum SetupAssistant {
                 }
             }
             return String(String(out).trimmingCharacters(in: .whitespaces).prefix(titleCap))
+        }
+
+        /// Two sessions can have one title and one first prompt (a fork, a retry), and then their rows read the same. When two rows in the panel
+        /// share a title, each says when its session last moved, to the minute, so they can be told apart.
+        static func twinsTold(_ rows: [Row], now: Date, calendar: Calendar) -> [Row] {
+            var count: [String: Int] = [:]
+            for row in rows where row.activity != nil { count[plain(row.title), default: 0] += 1 }
+            return rows.map { row in
+                guard let at = row.activity, count[plain(row.title), default: 0] > 1 else { return row }
+                var next = row
+                let stamp = "last active " + activityStamp(at, now: now, calendar: calendar)
+                next.detail = [row.detail, stamp].compactMap { $0 }.joined(separator: ", ")
+                return next
+            }
+        }
+
+        /// "3:42 PM" today, "Oct 28, 3:42 PM" on another day.
+        static func activityStamp(_ date: Date, now: Date, calendar: Calendar) -> String {
+            let formatter = DateFormatter()
+            formatter.calendar = calendar
+            formatter.timeZone = calendar.timeZone
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = calendar.isDate(date, inSameDayAs: now) ? "h:mm a" : "MMM d, h:mm a"
+            return formatter.string(from: date)
         }
 
         /// The words without the padding `normalized` adds.
@@ -2407,7 +2433,7 @@ enum SetupAssistant {
                 let ago = when(item.date, now: inputs.now, calendar: inputs.calendar)
                 let detail = [item.detail.map(clean), ago].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
                 return Row(id: "session:" + item.id, kind: .session(item.id), group: .sessions, title: hitTitle(item.title),
-                           detail: detail.isEmpty ? nil : detail, state: item.state, trailing: item.openLabel, leavesSession: item.leavesSession)
+                           detail: detail.isEmpty ? nil : detail, state: item.state, trailing: item.openLabel, leavesSession: item.leavesSession, activity: item.date)
             }
             if let span {
                 result.listOnly = true
@@ -2468,7 +2494,7 @@ enum SetupAssistant {
                 for item in byTier(inputs.waiting) { take(item, waitingRow) }
                 for item in inputs.running { take(item, runningRow) }
                 for item in inputs.sessions {
-                    take(item) { Row(id: "session:" + $0.id, kind: .session($0.id), group: .sessions, title: hitTitle($0.title), detail: $0.detail.map(clean), state: $0.state, trailing: $0.openLabel, leavesSession: $0.leavesSession) }
+                    take(item) { Row(id: "session:" + $0.id, kind: .session($0.id), group: .sessions, title: hitTitle($0.title), detail: $0.detail.map(clean), state: $0.state, trailing: $0.openLabel, leavesSession: $0.leavesSession, activity: $0.date) }
                 }
             }
             rows += sessions
@@ -2489,6 +2515,7 @@ enum SetupAssistant {
                 result.meaningAsk = meaningResult.ask
                 seen += meaningResult.shown
                 let found = inputs.found
+                let wordStart = rows.count
                 if found.words == search {
                     switch found.phase {
                     case .idle: break
@@ -2500,9 +2527,11 @@ enum SetupAssistant {
                         for item in found.hits where shown < hitCap && !item.keepWarm && !listed(item.sessionID) {
                             let ago = when(item.date, now: inputs.now, calendar: inputs.calendar)
                             let detail = [item.detail.map(clean), ago].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
+                            // "Recent" next to the age says nothing twice; Running, Waiting and Idle say something.
                             rows.append(Row(id: "hit:" + item.id, kind: .hit(item.id), group: .found, title: hitTitle(item.title),
                                             detail: detail.isEmpty ? nil : detail,
-                                            state: item.state, trailing: item.openLabel, match: matchLine(item.match, title: item.title), leavesSession: item.leavesSession))
+                                            state: item.state == "Recent" ? nil : item.state, trailing: item.openLabel, match: matchLine(item.match, title: item.title),
+                                            leavesSession: item.leavesSession, activity: item.date))
                             shown += 1
                             // A second hit for the same session (a Desktop record's id and its transcript's) is not shown either.
                             if let id = item.sessionID { seen.append(id) }
@@ -2514,7 +2543,13 @@ enum SetupAssistant {
                         }
                     }
                 }
-                rows += meaningResult.rows
+                // Meaning rows go above the word hits when there are any (the owner, 2026-11-01: "chuks tax miss" drew four word hits above two Strong
+                // matches). The word hits stay as they were, below. Rows are placed, not re-chosen: a highlight is an id, so it does not move, and Return
+                // reads neither.
+                let wordRows = Array(rows[wordStart...])
+                rows.removeSubrange(wordStart...)
+                let meaningFirst = meaningResult.rows.contains { $0.id.hasPrefix("hit:") }
+                rows += meaningFirst ? meaningResult.rows + wordRows : wordRows + meaningResult.rows
                 rows.append(Row(id: "search-all", kind: .searchAll, group: .found, title: "Search all sessions",
                                 detail: "Opens Sessions with your words in its search box. Sessions' search asks the COS server and can use your OpenAI key.", trailing: "Open Sessions"))
             }
@@ -2543,7 +2578,7 @@ enum SetupAssistant {
             }
             rows.append(Row(id: "file", kind: .file, group: .asking, title: "File to Work", detail: "Saves your words to the Work inbox. No run.", trailing: "Option-Return"))
 
-            result.rows = rows
+            result.rows = twinsTold(rows, now: inputs.now, calendar: inputs.calendar)
             // Any command or place in the list counts: "go to se" shows Open Sessions, "go to usage" shows Usage, and Return must not
             // spend a run on them.
             result.nearCommand = !ranked.isEmpty || !placed.isEmpty || !groups.isEmpty || nearCommand(words)

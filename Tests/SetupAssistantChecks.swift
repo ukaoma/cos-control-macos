@@ -84,6 +84,7 @@ import Foundation
         centerMeaning()
         centerStaleRunning()
         centerMeaningPanel()
+        centerOrderAndTwins()
         centerContinue()
         centerFooter()
         centerConfirms()
@@ -1070,7 +1071,7 @@ import Foundation
         check(hitRows.map(\.id) == hits.map { "hit:" + $0.id } && hitRows.allSatisfy { $0.group == .found && $0.selectable }, "[hits are their own group]", "\(rowIDs(listing))")
         check(rowIDs(listing).firstIndex(of: "hit:claude:old00001")! < rowIDs(listing).firstIndex(of: "ask")!, "[hits come before Ask]", "\(rowIDs(listing))")
         check(row(listing, "hit:claude:old00001")?.match == "we should price the jewelry persona tier above the base plan" && row(listing, "hit:cursor:old00003")?.match == nil, "[a hit shows what matched, when it is not the title]", "")
-        check(row(listing, "hit:claude:old00001")?.detail == "Claude Code, Quilt, 12 days ago" && row(listing, "hit:claude:old00001")?.state == "Recent", "[a hit shows tool, project and when]", "\(String(describing: row(listing, "hit:claude:old00001")?.detail))")
+        check(row(listing, "hit:claude:old00001")?.detail == "Claude Code, Quilt, 12 days ago" && row(listing, "hit:claude:old00001")?.state == nil, "[a hit shows tool, project and when]", "\(String(describing: row(listing, "hit:claude:old00001")?.detail))")
         check(row(listing, "search-all")?.kind == .searchAll && row(listing, "search-all")?.title == "Search all sessions" && row(listing, "search-all")?.group == .found, "[Search all sessions is offered]", "")
         // Typing stays on this Mac; Search all sessions does not, and its row says where it goes (QA item 4).
         let searchAllDetail = row(listing, "search-all")?.detail ?? ""
@@ -1584,6 +1585,45 @@ import Foundation
         var run = meaningHit("claude:run00001", "Running one"); run.state = "Running"
         let words3 = C.listing(found(meaningCenter(), words: words, .done, hits: [meaningHit("claude:abc12345", "Recent one"), idle, run]), words: words)
         check(row(words3, "hit:claude:abc12345")?.state == nil && row(words3, "hit:claude:idle0001")?.state == "Idle" && row(words3, "hit:claude:run00001")?.state == "Running", "[Recent is not drawn on a meaning row]", "")
+    }
+
+    static func centerOrderAndTwins() {
+        let on = meaningCenter()
+        let words = "chuks tax miss"
+        let wordHits = [hit("claude:word0001", "Permissions audit", days: 3), hit("claude:word0002", "Failure notes", days: 4)]
+        let meaningRows = [meaningHit("claude:abc12345", "Chuks tax filing", .strong), meaningHit("codex:def67890", "Tax questions", .strong)]
+        var both = withFound(found(on, words: words, .done, hits: meaningRows), words: words, hits: wordHits)
+        both.now = fixedNow
+        let ids = rowIDs(C.listing(both, words: words))
+        let firstWord = ids.firstIndex(of: "hit:claude:word0001")!
+        check(ids.firstIndex(of: "hit:claude:abc12345")! < firstWord && ids.firstIndex(of: "hit:codex:def67890")! < firstWord, "[meaning rows go above word hits]", "\(ids)")
+        check(firstWord < ids.firstIndex(of: "search-all")!, "[word hits stay above Search all]", "\(ids)")
+        // No meaning rows: the word hits are where they were, and the status lines of the meaning part stay after them.
+        var wordOnly = withFound(found(on, words: words, .searching), words: words, hits: wordHits)
+        wordOnly.now = fixedNow
+        let wordIDs = rowIDs(C.listing(wordOnly, words: words))
+        check(wordIDs.firstIndex(of: "hit:claude:word0001")! < wordIDs.firstIndex(of: "info:meaning-searching")!, "[without meaning rows the word hits keep their place]", "\(wordIDs)")
+        // The highlight is an id: it does not move when meaning rows arrive, and Return reads neither list.
+        check(returned(words, chosen: "hit:claude:word0001", inputs: both) == returnRuns("hit:claude:word0001"), "[a chosen word hit stays chosen when meaning rows arrive]", "")
+        check(returned(words, inputs: both) == .move("ask") && returned(words, chosen: "ask", inputs: both) == returnRuns("ask"), "[Return reads no hit, whichever list is first]", "\(returned(words, inputs: both))")
+        check(C.listing(both, words: words).autoHighlight == nil, "[arrival highlights nothing]", "")
+
+        // "Recent" says nothing next to an age on a word hit. Running, Waiting and Idle do.
+        var idle = hit("claude:word0003", "Idle one"); idle.state = "Idle"
+        var run = hit("claude:word0004", "Running one"); run.state = "Running"
+        let states = C.listing(withFound(withSessions([]), words: "persona pricing", hits: [hit("claude:word0001", "Recent one"), idle, run]), words: "persona pricing")
+        check(row(states, "hit:claude:word0001")?.state == nil && row(states, "hit:claude:word0003")?.state == "Idle" && row(states, "hit:claude:word0004")?.state == "Running", "[Recent is not drawn on a word hit]", "")
+
+        // Two sessions with one title: each says when it last moved.
+        let a = listed("claude:twin0001", "Notes", days: 0, hour: 9), b = listed("claude:twin0002", "Notes", days: 0, hour: 14), c = listed("claude:other001", "Notes elsewhere", days: 0, hour: 10)
+        let twins = C.listing(withSessions([a, b, c]), words: "notes")
+        let rowsA = row(twins, "session:claude:twin0001"), rowsB = row(twins, "session:claude:twin0002")
+        check((rowsA?.detail ?? "").hasSuffix("last active 9:00 AM") && (rowsB?.detail ?? "").hasSuffix("last active 2:00 PM"), "[two rows with one title say when each last moved]", "\(String(describing: rowsA?.detail)) \(String(describing: rowsB?.detail))")
+        check(!(row(twins, "session:claude:other001")?.detail ?? "").contains("last active"), "[a row with a title of its own says nothing more]", "")
+        let older = listed("claude:twin0003", "Notes", days: 5, hour: 15)
+        let mixed = C.listing(withSessions([a, older]), words: "notes")
+        check((row(mixed, "session:claude:twin0003")?.detail ?? "").hasSuffix("last active Oct 26, 3:00 PM"), "[another day says the day]", "\(String(describing: row(mixed, "session:claude:twin0003")?.detail))")
+        check(C.twinsTold([], now: fixedNow, calendar: gregorian).isEmpty && C.listing(withSessions([a]), words: "notes").rows.allSatisfy { !($0.detail ?? "").contains("last active") }, "[one row with a title says nothing more]", "")
     }
 
     static func centerContinue() {

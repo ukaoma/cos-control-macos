@@ -418,7 +418,9 @@ final class COSControlHelper {
     private lazy var certsDir = configDir.appendingPathComponent("certs", isDirectory: true)
 
     func run() throws {
-        let args = Array(CommandLine.arguments.dropFirst())
+        // Arguments arrive as the system hands them, and Foundation's Process hands them decomposed ("Pólya" as P, o, a combining accent, l, y, a). The
+        // sessions, names and files this helper compares against are composed, so every argument is composed once, here (0.5.363).
+        let args = Array(CommandLine.arguments.dropFirst()).map { $0.precomposedStringWithCanonicalMapping }
         guard let command = args.first else { throw HelperError.message("missing command") }
         // The app hands over its own identity (same contract as check-app-update)
         // so Doctor and Copy Report can name the build. The helper cannot read it
@@ -18162,6 +18164,31 @@ final class COSControlHelper {
         return tokens
     }
 
+    /// Scripts written without spaces between words (Chinese, Japanese, Thai, Lao, Khmer, Burmese): a term in one can begin anywhere.
+    static func sessionTermHasNoWordSpaces(_ token: String) -> Bool {
+        token.unicodeScalars.contains { s in
+            switch s.value {
+            case 0x2E80...0x9FFF, 0xF900...0xFAFF, 0x20000...0x2FA1F, 0x0E00...0x0EFF, 0x0E80...0x0EFF, 0x1780...0x17FF, 0x1000...0x109F: return true
+            default: return false
+            }
+        }
+    }
+
+    /// Where `token` begins a word in `text`, or nil. "miss" is in "permissions" and "failure" only inside a word, so it is not a hit there
+    /// (0.5.363, the owner's search for "chuks tax miss" listed four sessions for that). A word starts at the start of the text or after
+    /// anything that is not a letter or a number. A term in a script with no word spaces keeps matching anywhere. `text` and `token` are lowercased.
+    static func sessionWordStart(_ text: String, _ token: String) -> Range<String.Index>? {
+        if sessionTermHasNoWordSpaces(token) { return text.range(of: token) }
+        var from = text.startIndex
+        while from < text.endIndex, let found = text.range(of: token, range: from..<text.endIndex) {
+            if found.lowerBound == text.startIndex { return found }
+            let before = text[text.index(before: found.lowerBound)]
+            if !(before.isLetter || before.isNumber) { return found }
+            from = text.index(after: found.lowerBound)
+        }
+        return nil
+    }
+
     static func scoreSessionKeyword(tokens: [String], title: String, haystack: String) -> (score: Double, snippet: String) {
         guard !tokens.isEmpty else { return (0, "") }
         let titleL = title.lowercased()
@@ -18170,13 +18197,13 @@ final class COSControlHelper {
         var titleHits = 0
         var firstAt = -1
         for token in tokens {
-            let inTitle = titleL.contains(token)
-            let inHay = hayL.contains(token)
+            let inTitle = sessionWordStart(titleL, token) != nil
+            let inHay = sessionWordStart(hayL, token) != nil
             if !inTitle && !inHay { continue }
             hits += 1
             if inTitle { titleHits += 1 }
             if firstAt < 0 {
-                if let range = hayL.range(of: token) {
+                if let range = sessionWordStart(hayL, token) {
                     firstAt = hayL.distance(from: hayL.startIndex, to: range.lowerBound)
                 } else {
                     firstAt = 0
@@ -18545,7 +18572,7 @@ final class COSControlHelper {
             let name = row["name"] as? String ?? ""
             let workspace = row["workspace"] as? String ?? ""
             let nameL = name.lowercased()
-            if tokens.allSatisfy({ nameL.contains($0) }) { continue }
+            if tokens.allSatisfy({ sessionWordStart(nameL, $0) != nil }) { continue }
             let body = peekSessionSearchBody(in: item.file)
             if body.isEmpty { continue }
             consider(row: row, haystack: "\(name)\n\(workspace)\n\(body)")
