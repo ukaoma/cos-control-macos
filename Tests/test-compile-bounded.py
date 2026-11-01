@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Watchdog tests use tiny Python children, never run a Swift compiler."""
+import contextlib
 import fcntl
 import errno
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -326,6 +328,111 @@ class BoundedTests(unittest.TestCase):
             bounded.write_receipt(path, {'status': 'passed', 'peakOwnedRSSBytes': 123})
             self.assertEqual(json.loads(path.read_text())['peakOwnedRSSBytes'], 123)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    # ---- --jobs: the trial-only parallelism argument (build-speed B4, 2026-10-31) ----
+    def jobs_base(self, directory):
+        source = Path(directory) / 'main.swift'
+        source.write_text('print("hello")')
+        return ['swiftc', '-target', 'arm64-apple-macosx14.0', '-swift-version', '6', str(source), '-o', directory + '/app']
+
+    def test_jobs_default_is_one_and_n_is_bounded_1_to_8(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = self.jobs_base(directory)
+            default = bounded.normalize(base, {})
+            self.assertEqual(default[1:3], ['-j', '1'])
+            self.assertEqual(bounded.normalize(base, {}, 1), default)  # an explicit 1 IS today's lane, byte for byte
+            self.assertEqual(bounded.MAX_JOBS, 8)
+            for n in range(1, 9):
+                out = bounded.normalize(base, {}, n)
+                self.assertEqual(out[1:3], ['-j', str(n)])
+                # Nothing else moves: still one file per frontend, one thread each, no whole-module work.
+                self.assertEqual(out[3:7], ['-disable-batch-mode', '-no-whole-module-optimization', '-num-threads', '1'])
+                self.assertEqual(out[7:], default[7:])
+            for bad in (0, 9, -1, 100, True, False, 2.0, '4', None):
+                with self.assertRaises(ValueError, msg=repr(bad)):
+                    bounded.normalize(base, {}, bad)
+
+    def test_jobs_never_comes_from_the_environment_or_the_swiftc_line(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = self.jobs_base(directory)
+            for key in ('COS_COMPILE_JOBS', 'COS_COMPILE_J', 'JOBS', 'SWIFT_JOBS', 'SWIFTC_JOBS'):
+                self.assertEqual(bounded.normalize(base, {key: '4'})[1:3], ['-j', '1'], key)
+            # A caller's own -j (any spelling) is refused whether the wrapper runs at 1 or at --jobs 4.
+            for jobs in (1, 4):
+                for args in (['-j', '8'], ['-j', '1'], ['-j8'], ['--jobs', '4'], ['-jobs', '4'], ['-num-threads', '4']):
+                    with self.assertRaises(ValueError, msg=(jobs, args)):
+                        bounded.normalize(base + args, {}, jobs)
+
+    def run_main(self, directory, *wrapper_args, command_tail=()):
+        """bounded.main() with a stand-in run_owned: no compiler runs, the lock lives in the test directory, and the 16 GiB
+        start floor is not consulted. Returns (exit code, receipt dict, the commands main handed to run_owned)."""
+        directory = Path(directory)
+        fake_bin = directory / 'bin'
+        fake_bin.mkdir(exist_ok=True)
+        (fake_bin / 'swiftc').write_text('#!/bin/sh\nexit 99\n')  # resolved by shutil.which; never executed
+        (fake_bin / 'swiftc').chmod(0o755)
+        source = directory / 'a.swift'
+        source.write_text('')
+        receipt = directory / 'receipt.json'
+        calls = []
+        def fake_run_owned(command, **kwargs):
+            calls.append(list(command))
+            if '-driver-print-jobs' in command:
+                kwargs['stdout'].write('/x/swift-frontend -frontend -c -primary-file a.swift\n')
+                return {'status': 'passed', 'exitCode': 0}
+            return {'status': 'passed', 'exitCode': 0, 'peakOwnedRSSBytes': 1}
+        env = {k: v for k, v in os.environ.items() if not k.startswith(('COS_COMPILE', 'SWIFT_'))}
+        env['PATH'] = str(fake_bin) + ':' + env['PATH']
+        argv = ['compile-bounded.py', '--receipt', str(receipt), *wrapper_args, '--', 'swiftc', str(source), '-o', str(directory / 'app'), *command_tail]
+        saved = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
+        try:
+            with mock.patch.object(bounded, 'run_owned', fake_run_owned), \
+                 mock.patch.object(bounded, 'LOCK', str(directory / 'lock')), \
+                 mock.patch.dict(os.environ, env, clear=True), \
+                 mock.patch.object(sys, 'argv', argv), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                code = bounded.main()
+        finally:
+            for sig, handler in saved.items():
+                signal.signal(sig, handler)  # main() installs its own; the test runner must keep its handlers
+        return code, json.loads(receipt.read_text()), calls
+
+    def test_jobs_argument_is_recorded_and_reaches_the_compiler_line(self):
+        with tempfile.TemporaryDirectory() as one, tempfile.TemporaryDirectory() as four:
+            code, receipt, calls = self.run_main(one)
+            self.assertEqual((code, receipt['jobs'], receipt['status']), (0, 1, 'passed'))
+            # calls[0] is the driver-only planning run (-driver-print-jobs comes first), calls[1] the compile itself.
+            self.assertEqual((calls[0][1], calls[0][2:4], calls[1][1:3]), ('-driver-print-jobs', ['-j', '1'], ['-j', '1']))
+            code4, receipt4, calls4 = self.run_main(four, '--jobs', '4')
+            self.assertEqual((code4, receipt4['jobs'], receipt4['status']), (0, 4, 'passed'))
+            self.assertEqual((calls4[0][1], calls4[0][2:4], calls4[1][1:3]), ('-driver-print-jobs', ['-j', '4'], ['-j', '4']))
+            self.assertEqual(len(calls4), 2)
+            self.assertNotEqual(receipt['commandSHA256'], receipt4['commandSHA256'])  # the receipt tells the two lanes apart
+            self.assertEqual(receipt['profile'], 'bounded')
+            self.assertEqual(receipt4['policy'], receipt['policy'])  # --jobs relaxes no resource ceiling
+
+    def test_jobs_out_of_range_or_on_the_swiftc_line_never_launches(self):
+        for wrapper_args in (('--jobs', '0'), ('--jobs', '9'), ('--jobs', '-2')):
+            with tempfile.TemporaryDirectory() as directory:
+                code, receipt, calls = self.run_main(directory, *wrapper_args)
+                self.assertEqual(code, 70, wrapper_args)
+                self.assertEqual(receipt['status'], 'infrastructure-error')
+                self.assertIn('--jobs', receipt['reason'])
+                self.assertEqual(calls, [])
+        with tempfile.TemporaryDirectory() as directory:
+            code, receipt, calls = self.run_main(directory, '--jobs', '4', command_tail=('-j', '2'))
+            self.assertEqual(code, 70)
+            self.assertIn('unsupported bounded compiler argument: -j', receipt['reason'])
+            self.assertEqual(calls, [])
+        with tempfile.TemporaryDirectory() as directory:  # the argument belongs to the wrapper, before the `--`; after it, it is swiftc's
+            code, receipt, calls = self.run_main(directory, command_tail=('--jobs', '4'))
+            self.assertEqual(code, 70)
+            self.assertEqual(receipt['jobs'], 1)
+            self.assertEqual(calls, [])
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as caught:
+                self.run_main(directory, '--jobs', 'many')
+            self.assertEqual(caught.exception.code, 2)
 
 
 if __name__ == '__main__':
