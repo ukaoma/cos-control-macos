@@ -691,6 +691,11 @@ pin(read("Sources/ControllerModel.swift").count("func loadDecisionSettings(quiet
     "a quiet settings read leaves Settings' line and settings alone when it fails")
 pin('"capabilities"' in helper and "sessionFind" in helper and "session-find-helper-checks.py" in read("Tests/run.sh"), "the helper carries the capability and its checks run in the suite")
 
+# A session the helper reads as running that has not moved in hours is not called Running in the panel (the pet's own state is not touched).
+pin("SetupAssistant.Center.staleRunning(state: session.state, updated: session.updatedDate, now: now) ? \"recent\" : session.state" in inputs
+    and "SetupAssistant.Center.staleRunning(state: $0.state, updated: $0.updatedDate, now: now)" in inputs and "petSessions" not in inputs.replace("todaySessions()", ""),
+    "the panel does not call a session that has gone quiet for hours Running, in its list or in Today's Running rows")
+
 pin("s.classicSettings = classicSettings" in window and "var classicSettings = false" in core, "the window passes the classic Settings flag")
 
 if failures:

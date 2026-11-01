@@ -81,6 +81,7 @@ import Foundation
         centerNouns()
         centerSearch()
         centerMeaning()
+        centerStaleRunning()
         centerFooter()
         centerConfirms()
         centerAsk()
@@ -1442,6 +1443,16 @@ import Foundation
             check(!banned.contains { text.contains($0) } && !hedges.contains { (" " + text.lowercased() + " ").contains($0) }, "[meaning copy rules]", text)
         }
         check(said.count >= 40, "[meaning copy rules]", "read \(said.count) strings")
+    }
+
+    static func centerStaleRunning() {
+        let now = fixedNow
+        check(C.staleRunning(state: "running", updated: now.addingTimeInterval(-5 * 86_400), now: now), "[a session that has not moved in hours is not running]", "5 days")
+        check(C.staleRunning(state: "running", updated: now.addingTimeInterval(-7 * 3600), now: now), "[a session that has not moved in hours is not running]", "7 hours")
+        check(!C.staleRunning(state: "running", updated: now.addingTimeInterval(-3600), now: now) && !C.staleRunning(state: "running", updated: now, now: now), "[a session that moved this hour is running]", "")
+        check(!C.staleRunning(state: "running", updated: nil, now: now), "[no date is no evidence]", "")
+        check(!C.staleRunning(state: "waiting", updated: now.addingTimeInterval(-9 * 86_400), now: now) && !C.staleRunning(state: "recent", updated: now.addingTimeInterval(-9 * 86_400), now: now), "[only running goes stale; a wait can last days]", "")
+        check(C.runningFreshness == 6 * 3600, "[the bound is six hours]", "")
     }
 
     static func centerFooter() {

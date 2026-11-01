@@ -1086,6 +1086,18 @@ enum SetupAssistant {
             }
         }
 
+        /// How long a session the helper reads as running may go without moving and still be called Running here. A terminal session left open
+        /// reads "running" from its registry record for as long as the process lives, so the live test (2026-11-01) listed one from 5 days ago
+        /// under "running". Waiting has no limit: a question can wait for days.
+        static let runningFreshness: TimeInterval = 6 * 3600
+
+        /// The helper says running, and the session has not moved for `runningFreshness`. Nothing is changed in the pet or the list; the panel
+        /// only declines to call it Running. No date is no evidence either way.
+        static func staleRunning(state: String, updated: Date?, now: Date) -> Bool {
+            guard state == "running", let updated else { return false }
+            return now.timeIntervalSince(updated) > runningFreshness
+        }
+
         /// "today", "yesterday", "5 days ago". Nil with no date.
         static func when(_ date: Date?, now: Date, calendar: Calendar) -> String? {
             guard let date else { return nil }

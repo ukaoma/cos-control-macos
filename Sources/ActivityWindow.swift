@@ -9539,7 +9539,11 @@ extension ActivityWindow {
         inputs.waiting = folded.now.map { Item(id: $0.id, title: $0.title, detail: $0.source, openLabel: $0.openLabel ?? "Open", tier: $0.tier, sessionID: $0.session?.id, leavesSession: commandLeaves(need: $0)) }
         inputs.waitingKnown = frame.line != .loading
         inputs.foldedCount = commandFixture?.foldedCount ?? folded.tomorrow.count
-        inputs.running = frame.running.map { row in
+        // Today's Running rows too: one whose session has gone quiet for hours is not listed as running in ⌘K.
+        let quiet = { (id: String) -> Bool in
+            todaySessions().first(where: { ClaudeSession.sameSession($0.id, id) }).map { SetupAssistant.Center.staleRunning(state: $0.state, updated: $0.updatedDate, now: now) } ?? false
+        }
+        inputs.running = frame.running.filter { row in !(row.id.hasPrefix("session:") && quiet(String(row.id.dropFirst("session:".count)))) }.map { row in
             Item(id: row.id, title: row.title, detail: row.detail, openLabel: row.openLabel, sessionID: row.id.hasPrefix("session:") ? String(row.id.dropFirst("session:".count)) : nil,
                  leavesSession: commandLeaves(action: row.open))
         }
@@ -9548,9 +9552,11 @@ extension ActivityWindow {
         // had nothing in it; with the pet off it already is the whole list. Bounded to the newest before any row is made.
         func item(_ session: ClaudeSession) -> Item {
             let host = today.hosts[session.id]
+            // A session the helper reads as running that has not moved in hours is not called Running here (the pet's own state is untouched).
+            let state = SetupAssistant.Center.staleRunning(state: session.state, updated: session.updatedDate, now: now) ? "recent" : session.state
             let open = TodayHome.openFor(session, host: host, cursorTrusted: model.petJumpTrusted)
             return Item(id: session.id, title: session.title, detail: TodayHome.platform(session, host: host).badge + (session.workspace.isEmpty ? "" : ", " + session.workspace),
-                        openLabel: open.label, sessionID: session.id, state: Self.commandStateWord(session.state), date: session.updatedDate, keepWarm: session.isKeepWarm,
+                        openLabel: open.label, sessionID: session.id, state: Self.commandStateWord(state), date: session.updatedDate, keepWarm: session.isKeepWarm,
                         leavesSession: commandLeaves(session))
         }
         let newest = { (list: [ClaudeSession]) in Array(list.sorted { ($0.updatedDate ?? .distantPast) > ($1.updatedDate ?? .distantPast) }.prefix(Self.commandSessionLimit)) }
