@@ -1059,6 +1059,11 @@ import Foundation
         // The phases are text lines.
         check(row(C.listing(withFound(sessions, words: "persona", phase: .searching, hits: []), words: "persona"), "info:searching")?.title == "Searching sessions…", "[searching is a text line]", "")
         check(row(C.listing(withFound(sessions, words: "persona", phase: .failed, hits: []), words: "persona"), "info:search-failed")?.title == "The search did not run.", "[a failed search says so]", "")
+        // A timeout is its own line: the search ran for its whole time, which is not "did not run" (QA 0.5.361, G8).
+        let timedOut = C.listing(withFound(sessions, words: "persona", phase: .timedOut, hits: []), words: "persona")
+        check(row(timedOut, "info:search-timeout")?.title == "The search took too long." && row(timedOut, "info:search-timeout")?.detail == "Try fewer words, or Search all sessions."
+              && row(timedOut, "info:search-timeout")?.selectable == false && row(timedOut, "info:search-failed") == nil && row(timedOut, "search-all") != nil, "[a timed out search says so]", "\(rowIDs(timedOut))")
+        check(row(C.listing(withFound(sessions, words: "persona", phase: .failed, hits: []), words: "persona"), "info:search-timeout") == nil, "[a failed search is not a timeout]", "")
         check(row(C.listing(withFound(sessions, words: "persona", hits: []), words: "persona"), "info:search-none")?.title == "No match near the start of your newest sessions.", "[no hit says what was read]", "")
         check(row(C.listing(withFound(sessions, words: "persona", hits: []), words: "persona"), "info:search-none")?.detail == "Search all sessions looks further.", "[no hit offers Search all]", "")
         check(C.listing(withFound(sessions, words: "persona", phase: .idle, hits: []), words: "persona").rows.allSatisfy { !["info:searching", "info:search-failed", "info:search-none"].contains($0.id) }, "[idle says nothing]", "")
@@ -1294,6 +1299,7 @@ import Foundation
             withSessions((0..<10).map { listed("claude:" + String(format: "s%011d", $0), "Session \($0)", days: $0) }),
             withFound(withSessions([listed("claude:holiday1", "Holiday promo landing page", days: 1)]), words: "persona pricing", hits: [hit("claude:old00001", "Persona pricing review", match: "we should price the persona tier"), hit("codex:old00002", "Notes")]),
             withFound(withSessions([]), words: "persona pricing", phase: .searching, hits: []), withFound(withSessions([]), words: "persona pricing", phase: .failed, hits: []),
+            withFound(withSessions([]), words: "persona pricing", phase: .timedOut, hits: []),
             withFound(withSessions([]), words: "persona pricing", hits: []), center { $0.sessionsLoaded = false },
         ]
         for inputs in fixtures {

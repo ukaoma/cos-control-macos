@@ -1159,7 +1159,8 @@ enum SetupAssistant {
             return typed.split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { $0.count >= 2 && !searchStopwords.contains($0) && seen.insert($0).inserted }
         }
 
-        enum SearchPhase: Sendable { case idle, searching, done, failed }
+        /// `timedOut` is its own state (QA 0.5.361, G8): the search ran and used its whole time, which is not "did not run".
+        enum SearchPhase: Sendable { case idle, searching, done, failed, timedOut }
 
         /// What the local word search found for one set of words. The panel owns the search (its words, its debounce, its one run at a
         /// time); the core only draws the result, and only for the words that are in the box now.
@@ -1845,6 +1846,7 @@ enum SetupAssistant {
                     case .idle: break
                     case .searching: rows.append(info("searching", .found, "Searching sessions…"))
                     case .failed: rows.append(info("search-failed", .found, "The search did not run.", detail: "The sessions listed here still open."))
+                    case .timedOut: rows.append(info("search-timeout", .found, "The search took too long.", detail: "Try fewer words, or Search all sessions."))
                     case .done:
                         var shown = 0
                         for item in found.hits where shown < hitCap && !listed(item.sessionID) {

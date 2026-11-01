@@ -9713,6 +9713,18 @@ extension ActivityWindow {
         return .close
     }
 
+    /// A failed word search, as the phase the panel draws and a fixed word for the log. A timeout is the search having run for its whole time.
+    static func searchFailure(_ error: Error) -> (kind: String, phase: SetupAssistant.Center.SearchPhase) {
+        guard let failure = error as? HelperClientError else { return ("failed other", .failed) }
+        switch failure {
+        case .timedOut: return ("timed out", .timedOut)
+        case .commandFailed: return ("failed command", .failed)
+        case .invalidResponse: return ("failed response", .failed)
+        case .helperMissing: return ("failed helper missing", .failed)
+        case .outputLimitExceeded, .progressLimitExceeded, .streamDidNotClose: return ("failed output", .failed)
+        }
+    }
+
     /// Sessions with the words in its own search box, for anything older than the local search reaches. The Sessions tab runs its own
     /// search from there, as if the person had typed it.
     func commandSearchAll(_ words: String) -> CommandEffect {
@@ -10278,6 +10290,7 @@ struct CommandCenterPanel: View {
         try? await Task.sleep(nanoseconds: 500_000_000)
         guard !Task.isCancelled else { return }
         if found.words != words { found = C.Found(words: words, phase: .searching) }
+        let started = Date()
         do {
             let hits = try await search(words)
             guard !Task.isCancelled else { return }
@@ -10289,7 +10302,10 @@ struct CommandCenterPanel: View {
             return
         } catch {
             guard !Task.isCancelled else { return }
-            found = C.Found(words: words, phase: .failed)
+            // What went wrong and how long it took, in fixed words: never the words typed, a path or the helper's own text (QA 0.5.361, G8).
+            let outcome = ActivityWindow.searchFailure(error)
+            todayLog.error("command search \(outcome.kind, privacy: .public) ms=\(Int(Date().timeIntervalSince(started) * 1000))")
+            found = C.Found(words: words, phase: outcome.phase)
         }
     }
 

@@ -464,6 +464,11 @@ MUTANTS = [
     ("center: voices opens Speakers again", C, '                case .openSpeakers: return opener("speakers")\n', '                case .openSpeakers: return opener("speakers") + opener("voices")\n', "[a name two rows answer to is declared]"),
     ("center: voices is declared a shared name", C, '["sessions": "command:openSessions", "recent": "noun"]', '["voices": "command:openSpeakers", "sessions": "command:openSessions", "recent": "noun"]', "[no stale declared name]"),
     ("center: voices is a near command", C, '"meetings", "speakers", "dictation", "memories", "setup"]', '"meetings", "speakers", "voices", "dictation", "memories", "setup"]', "[voices opens the Voices tab]"),
+    # QA 0.5.361 item 15: a timeout is its own line, and the log names the kind and the time
+    ("center: a timeout says did not run", C, '"info:search-timeout"'.replace('"info:search-timeout"', 'info("search-timeout", .found, "The search took too long.", detail: "Try fewer words, or Search all sessions.")'), 'info("search-timeout", .found, "The search did not run.", detail: "Try fewer words, or Search all sessions.")', "[a timed out search says so]"),
+    ("view: a timeout is a failure", W, 'case .timedOut: return ("timed out", .timedOut)', 'case .timedOut: return ("timed out", .failed)', "a timed out search is its own phase"),
+    ("view: the search log names the words", W, 'todayLog.error("command search \\(outcome.kind, privacy: .public) ms=', 'todayLog.error("command search \\(words, privacy: .public) ms=', "a breadcrumb names a kind, never words"),
+    ("view: the search log drops the time", W, ' ms=\\(Int(Date().timeIntervalSince(started) * 1000))")', '")', "the search log names the kind and the elapsed time only"),
     # QA 0.5.361 item 13: masking by credential key, no \\b, names and UUIDs stay, listed rows are masked
     ("center: a word boundary starts a key", C, '            #"(?<![A-Za-z0-9])(?:sk|pk|rk|sess)[-_][A-Za-z0-9_\\-]{16,}"#,\n', '            #"\\b(?:sk|pk|rk|sess)[-_][A-Za-z0-9_\\-]{16,}"#,\n', "[key-shaped text is masked"),
     ("center: every key name is a credential", C, "                    return credentialKey(String(current[key]))\n", "                    _ = key; return true\n", "[a name or a plain word is not hidden]"),

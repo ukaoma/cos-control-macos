@@ -280,7 +280,8 @@ pin("AttributedString" not in panel and "markdown" not in panel.lower(), "a titl
 logs = [line for line in (ext + panel).split("\n") if "todayLog." in line]
 pin(len(logs) >= 3, f"the command center leaves breadcrumbs: {logs}")
 for line in logs:
-    pin("\\(" not in line or "row.logName" in line, f"a breadcrumb names a kind, never words: {line.strip()}")
+    pin("\\(" not in line or "row.logName" in line or ("outcome.kind" in line and "Int(Date().timeIntervalSince(started) * 1000)" in line and "words" not in line),
+        f"a breadcrumb names a kind, never words: {line.strip()}")
 
 # VoiceOver and no motion.
 pin("AccessibilityNotification.Announcement(C.announcement(" in panel and ".accessibilityHint(hint)" in panel, "VoiceOver hears the highlight and what Return will do")
@@ -421,8 +422,10 @@ _core_stop = _words(read("Sources/SetupAssistant.swift"), "static let searchStop
 _helper_stop = _words(read("HelperSources/main.swift"), "static let sessionSearchStopwords: Set<String> = [")
 _models_stop = _words(read("Sources/Models.swift"), "static let stopwords: Set<String> = [")
 pin(len(_core_stop) == 21 and _core_stop == _helper_stop == _models_stop, f"the engine, the helper and the Sessions tab skip the same words: {sorted(_core_stop ^ _helper_stop)} {sorted(_core_stop ^ _models_stop)}")
-_peek = block(helper_lines, "    static func peekSessionSearchBody(in file: URL", "        var parts: [String] = []")
-pin("let text = String(decoding: data, as: UTF8.self)" in _peek and "String(data: data, encoding: .utf8)" not in _peek, "the body read decodes leniently, so a window cut inside a character drops nothing")
+_peek = block(helper_lines, "    static func peekSessionSearchBody(in file: URL", "        return parts.joined(separator: \"\\n\")")
+pin("data.split(separator: 0x0A, omittingEmptySubsequences: true)" in _peek and "String(decoding:" not in _peek and "String(data: data, encoding: .utf8)" not in _peek
+    and "handle.read(upToCount: maxBytes)" in _peek and "isRegularTranscript(file)" in _peek,
+    "the body read splits the bytes at newlines, throws instead of raising and reads regular files only, so a window cut inside a character drops one line, not the file")
 
 # Privacy words (QA item 4): the bundled notes say typing stays on this Mac, say what Search all sessions uses, and say the first before the second.
 import json as _json
@@ -437,11 +440,17 @@ for banned in ("request(", "speakerReviewToken", "readToken", "speakerReviewBody
     pin(banned.lower() not in local.lower(), f"the local search never uses {banned}")
 pin("FileHandle.standardInput.read(upToCount: 4_097 - input.count)" in local and ".prefix(200)" in local and "query.count >= 3" in local, "the local search reads its words from a bounded stdin, 200 characters, at least 3")
 pin("Self.localSessionKeywordHits(query: query, limit: limit, home: home," in local, "the local search is the fallback's own scan, over the helper's home (the person's, or a /tmp fixture under test)")
-pin("desktopNewest: Self.localSearchDesktopNewest, transcriptNewest: Self.localSearchTranscriptNewest, readCursorPins: false)" in local,
-    "the local search bounds its title reads: the newest Desktop records and transcripts, and no sqlite3 process per Cursor workspace")
-pin(re.search(r"static let localSearchDesktopNewest = (\d+)", helper) and int(re.search(r"static let localSearchDesktopNewest = (\d+)", helper).group(1)) <= 40
-    and int(re.search(r"static let localSearchTranscriptNewest = (\d+)", helper).group(1)) <= 40, "the title reads are bounded to 40 each (9.1 s unbounded, 1.7 s at 30 and 20, on 733 Desktop records and 870 transcripts)")
-pin("allowed = Set(dated.sorted { $0.mtime > $1.mtime }.prefix(newest).map(\\.file))" in helper_lines and "if let allowed, !pinned, !allowed.contains(file) { continue }" in helper_lines, "recentClaudeConversations titles only the newest transcripts when it is told to")
+pin("desktopNewest: Self.localSearchDesktopNewest, transcriptNewest: Self.localSearchTranscriptNewest, readCursorPins: false," in local
+    and "codexNewest: Self.localSearchCodexNewest, cursorNewest: Self.localSearchCursorNewest, codexNamesTailBytes: Self.localSearchCodexNamesTailBytes)" in local,
+    "the local search bounds its title reads: the newest Desktop records, Claude transcripts, Codex rollouts and Cursor transcripts, and no sqlite3 process per Cursor workspace")
+def bound(name):
+    found = re.search(r"static let " + name + r" = (\d+)\n", helper)
+    return int(found.group(1)) if found else None
+pin((bound("localSearchDesktopNewest"), bound("localSearchTranscriptNewest"), bound("localSearchCodexNewest"), bound("localSearchCursorNewest")) == (30, 20, 20, 20),
+    "the title reads are bounded to exactly 30 Desktop records and 20 each of Claude, Codex and Cursor transcripts (9.1 s unbounded, about 1.4 s at these, on 733 Desktop records and 870 transcripts)")
+pin(helper_lines.count("allowed = Set(dated.sorted { $0.mtime > $1.mtime }.prefix(newest).map(\\.file))") == 2
+    and helper_lines.count("allowed = Set(dated.sorted { $0.1 > $1.1 }.prefix(newest).map(\\.0))") == 1
+    and helper_lines.count("if let allowed, !pinned, !allowed.contains(file) { continue }") == 3, "the Claude, Codex and Cursor scans title only the newest transcripts when they are told to")
 pin("files = dated.sorted { $0.1 > $1.1 }.prefix(newest).map(\\.0)" in helper_lines, "loadClaudeDesktopIndex reads only the newest heads when it is told to")
 reveal = block(helper, "    private func emitSessionReveal(args: [String]) throws {", "    private func emitSessionHooksStatus() throws {")
 pin("let fullId = transcript.map { $0.deletingPathExtension().lastPathComponent.lowercased() }.flatMap { UUID(uuidString: $0) == nil ? nil : $0 } ?? sessionId" in reveal
@@ -523,6 +532,14 @@ def function_body(text, signature):
 mirror = "static func credentialKey(_ key: String) -> Bool {"
 pin(function_body(core, mirror) == function_body(code(read("Sources/WorkCardFiles.swift")), mirror) and len(function_body(core, mirror)) > 8,
     "the credential key rule equals WorkCardFiles.credentialKey")
+
+# A failed word search: a timeout is its own phase, and the log names the kind and the elapsed time, never the words (QA 0.5.361, G8).
+search_fn = block(panel, "    private func runSearch(_ words: String?) async {", "    private func move(_ delta: Int) -> Bool {")
+failure_fn = block(window, "    static func searchFailure(_ error: Error) -> (kind: String, phase: SetupAssistant.Center.SearchPhase) {", "    func commandSearchAll(")
+pin("case .timedOut: return (\"timed out\", .timedOut)" in failure_fn and "let outcome = ActivityWindow.searchFailure(error)" in search_fn
+    and "found = C.Found(words: words, phase: outcome.phase)" in search_fn, "a timed out search is its own phase")
+pin("todayLog.error(\"command search \\(outcome.kind, privacy: .public) ms=\\(Int(Date().timeIntervalSince(started) * 1000))\")" in search_fn
+    and "words" not in search_fn.split("todayLog.error(", 1)[1].split("\n", 1)[0], "the search log names the kind and the elapsed time only")
 
 if failures:
     for failure in failures:
