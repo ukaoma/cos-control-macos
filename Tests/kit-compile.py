@@ -27,6 +27,14 @@ binary when COS_TEST_KIT_DIR is set.
                        falls back to the per-run layout) under ~/Documents, ~/Desktop or Mobile Documents: iCloud syncs those.
   COS_TEST_KIT_EVICT_MIN_AGE        seconds a kit must be idle before eviction may remove it (default 7200, longer than
                        a suite, so one run can never evict kits it is still using).
+  Persistence is also refused (the run falls back to the per-run layout, with a message) when the environment sets
+  SWIFT_DRIVER_*_EXEC, DYLD_* or C_INCLUDE_PATH, or CPATH or LIBRARY_PATH to anything but the /usr/local defaults that
+  /usr/bin/python3 itself injects, when the command passes -I, -F, -L, -sdk, -Xcc or a
+  directory to -Xlinker (their contents are not hashed), when the store cannot be created or has under
+  COS_TEST_KIT_MIN_FREE_BYTES free (default 3 GiB), and a cache write that fails never fails a lane that compiled.
+  Each store carries .origin (its worktree); about once an hour (COS_TEST_KIT_SWEEP_INTERVAL seconds) a run removes sibling
+  stores whose worktree is gone or that sat idle 14 days, then the oldest stores until all stores fit
+  COS_TEST_KIT_STORES_MAX_BYTES (default 20 GiB). Only directories carrying .origin are ever removed.
   COS_TEST_KIT_OUT_MAX_ENTRIES / COS_TEST_KIT_OUT_MAX_BYTES   out/ caps (default 40 entries or 2 GiB, newest kept).
   The store keeps the newest 2 keys per kit NAME. A process holds a shared lock on its kit (.use/<kit>.lock) from the
   build through the link; eviction removes a kit only after it takes that lock exclusively, without waiting.
@@ -71,10 +79,17 @@ def kit_sets(src_dir):
 PAIRED_COMPILE = {'-target', '-swift-version', '-sdk', '-module-cache-path', '-D', '-I', '-F', '-Xcc'}
 SINGLE_COMPILE = {'-parse-as-library', '-Onone', '-O', '-Osize', '-g', '-warnings-as-errors', '-enable-testing'}
 PAIRED_LINK = {'-framework', '-weak-framework', '-Xlinker', '-L', '-l'}
-ENV_KEYS = ('SDKROOT', 'DEVELOPER_DIR', 'TOOLCHAINS')
-KEEP_KITS = 4                                     # per-run layout: newest 4 across all names (as before)
+ENV_KEYS = ('SDKROOT', 'DEVELOPER_DIR', 'TOOLCHAINS', 'MACOSX_DEPLOYMENT_TARGET')
+KEEP_KITS = 10                                    # per-run layout: newest 10 across all names (5 kit names, room for variants)
 KEEP_PER_NAME = 2                                 # persistent store: newest 2 keys per kit name
 KIT_DIR = re.compile(r'^(.+)-[0-9a-f]{16}$')
+UNSAFE_ENV = re.compile(r'^(SWIFT_DRIVER_.*_EXEC|DYLD_.*)$')  # change what a compile reads, and nothing hashes it
+# Search paths: refused when set, EXCEPT to the one value /usr/bin/python3 (the CLT shim) puts in every process it starts.
+SEARCH_ENV = {'CPATH': '/usr/local/include', 'C_INCLUDE_PATH': None, 'LIBRARY_PATH': '/usr/local/lib'}
+SYNCED = (('Documents',), ('Desktop',))  # under HOME; Mobile Documents and CloudStorage are caught by CLOUD_PARTS anywhere
+CLOUD_PARTS = {'mobile documents', 'cloudstorage', 'com~apple~clouddocs'}
+STORE_IDLE_SECONDS = 14 * 86400
+BLOCK = None                                      # main() sets why THIS command may not persist (unhashed -I, -F, ...)
 # The per-run scratch Tests/run.sh makes (mktemp -d /tmp/cos-control-tests.XXXXXX): never part of an output key.
 RUN_TMP = re.compile(r'(?:/private)?/tmp/cos-control-tests\.[A-Za-z0-9_]+')
 
@@ -142,21 +157,135 @@ def parse(args):
     return dict(compile=compile_opts, link=link_opts, swift=swift, output=output)
 
 
+def synced_place(real):
+    """True when this (resolved) path is, or sits under, a folder iCloud syncs. Case-insensitive: macOS volumes are."""
+    if any(part.casefold() in CLOUD_PARTS for part in real.parts):
+        return True
+    home = Path(os.path.realpath(Path.home()))
+    folded = str(real).casefold()
+    for parts in SYNCED:
+        name = str(home.joinpath(*parts)).casefold()
+        if folded == name or folded.startswith(name + os.sep):
+            return True
+    return False
+
+
+def command_blocker(args):
+    """Why a command with an unhashed search path or directory may not be cached across runs, or None."""
+    for i, a in enumerate(args):
+        if a in ('-I', '-F', '-L', '-sdk', '-Xcc'):  # a joined -I/path never parses, so it never reaches a cache
+            return a
+        if a == '-Xlinker' and i + 1 < len(args) and os.path.isdir(args[i + 1]):
+            return '-Xlinker <directory>'
+    return None
+
+
 def persistent_store():
     """The persistent store directory, or None. Needs COS_TEST_KIT_PERSIST=1 (run.sh sets it) AND COS_TEST_KIT_STORE."""
     raw = os.environ.get('COS_TEST_KIT_STORE')
     if os.environ.get('COS_TEST_KIT_PERSIST') != '1' or not raw:
         return None
+    if BLOCK:
+        say(f'{BLOCK} is not hashed; kits stay per-run for this command')
+        return None
+    unsafe = sorted([k for k in os.environ if UNSAFE_ENV.match(k)]
+                    + [k for k, ok in SEARCH_ENV.items() if k in os.environ and os.environ[k] != ok])
+    if unsafe:
+        say(f'{", ".join(unsafe)} changes what a compile reads and is not hashed; kits stay per-run')
+        return None
     if not os.path.isabs(raw):
         say('COS_TEST_KIT_STORE must be an absolute path; kits stay per-run')
         return None
     real = Path(os.path.realpath(raw))
-    home = Path(os.path.realpath(Path.home()))
-    synced = [home / 'Documents', home / 'Desktop', home / 'Library' / 'Mobile Documents']
-    if 'Mobile Documents' in real.parts or any(real == s or s in real.parents for s in synced):
+    if synced_place(real):
         say('COS_TEST_KIT_STORE is in an iCloud-synced folder; kits stay per-run')
         return None
     return real
+
+
+def claim_store(store):
+    """Record which worktree owns this store and that it is in use now (the .origin mtime is its last use)."""
+    origin = store / '.origin'
+    try:
+        os.utime(origin)
+    except FileNotFoundError:
+        fd, temporary = tempfile.mkstemp(dir=store, prefix='.origin-')
+        with os.fdopen(fd, 'w') as stream:
+            json.dump(dict(worktree=str(Path(__file__).resolve().parent.parent)), stream)
+        os.replace(temporary, origin)
+
+
+def tree_bytes(path):
+    total = 0
+    for here, _, names in os.walk(path):
+        for name in names:
+            try:
+                total += os.lstat(os.path.join(here, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def remove_store(path):
+    """Never a store something is using: its build lock and every kit's use lock must be free. True if removed."""
+    held = []
+    try:
+        for lock in [path / '.lock', *sorted(path.glob('.use/*.lock'))]:
+            try:
+                fd = os.open(lock, os.O_RDWR)
+            except FileNotFoundError:
+                continue
+            held.append(fd)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        shutil.rmtree(path, ignore_errors=True)  # removed while we hold every lock
+        return True
+    except OSError:
+        return False  # a build or a link holds it
+    finally:
+        for fd in held:
+            os.close(fd)
+
+
+def sweep_stores(store):
+    """Beside this store: remove stores whose worktree is gone or idle 14 days, then the oldest until the total fits."""
+    interval = env_number('COS_TEST_KIT_SWEEP_INTERVAL', 3600)
+    parent = store.parent
+    marker = parent / '.sweep'
+    try:
+        if time.time() - marker.stat().st_mtime < interval:
+            return
+    except FileNotFoundError:
+        pass
+    fd = os.open(parent / '.sweep.lock', os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        marker.touch()
+        others = []
+        for p in parent.iterdir():
+            try:
+                worktree = json.loads((p / '.origin').read_text())['worktree']
+                used = (p / '.origin').stat().st_mtime
+            except (OSError, ValueError, KeyError, TypeError):
+                continue  # not one of ours: never touched
+            if p == store:
+                continue
+            if not os.path.isdir(worktree) or time.time() - used > STORE_IDLE_SECONDS:
+                if remove_store(p):
+                    say(f'removed store {p.name}: its worktree is gone or idle')
+                continue
+            others.append((used, p))
+        total = tree_bytes(store) + sum(tree_bytes(p) for _, p in others)
+        for _, p in sorted(others):
+            if total <= env_number('COS_TEST_KIT_STORES_MAX_BYTES', 20 << 30):
+                break
+            size = tree_bytes(p)
+            if remove_store(p):
+                total -= size
+                say(f'removed store {p.name}: all stores together passed the size cap')
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def tool_digests(prefix):
@@ -179,8 +308,12 @@ def toolchain(prefix):
     sdk = subprocess.run(['xcrun', '--show-sdk-path'], capture_output=True, text=True).stdout.strip()
     sdk_version = subprocess.run(['xcrun', '--show-sdk-version'], capture_output=True, text=True).stdout.strip()
     sdk_build = subprocess.run(['xcrun', '--show-sdk-build-version'], capture_output=True, text=True).stdout.strip()
+    try:
+        host_build = subprocess.run(['sw_vers', '-buildVersion'], capture_output=True, text=True).stdout.strip()
+    except OSError:
+        host_build = ''
     return [path, real, st.st_size, st.st_mtime_ns, version, sdk, sdk_version,
-            [(k, os.environ.get(k)) for k in ENV_KEYS], sdk_build, sorted(tool_digests(prefix).items())]
+            [(k, os.environ.get(k)) for k in ENV_KEYS], sdk_build, sorted(tool_digests(prefix).items()), host_build]
 
 
 def match_kit(parsed):
@@ -212,15 +345,29 @@ def env_number(name, default):
 class KitRoot:
     def __init__(self):
         store = persistent_store()
+        if store is not None:
+            try:
+                os.makedirs(store, mode=0o700, exist_ok=True)
+                if shutil.disk_usage(store).free < env_number('COS_TEST_KIT_MIN_FREE_BYTES', 3 << 30):
+                    raise OSError('not enough free disk')
+                self.lock_fd = os.open(store / '.lock', os.O_CREAT | os.O_RDWR, 0o600)
+                claim_store(store)
+            except OSError as error:
+                say(f'persistent store unusable ({error}); kits stay per-run')
+                store = None
         configured = os.environ.get('COS_TEST_KIT_DIR')
         self.persistent = store is not None
         self.private = not self.persistent and not configured
         if self.persistent:
             self.path = store
+            try:
+                sweep_stores(store)
+            except Exception as error:  # a sweep is housekeeping: it never fails a lane
+                say(f'store sweep skipped ({error})')
         else:
             self.path = Path(configured) if configured else Path(tempfile.mkdtemp(prefix='cos-test-kit.', dir='/tmp'))
-        os.makedirs(self.path, mode=0o700 if self.persistent else 0o777, exist_ok=True)
-        self.lock_fd = os.open(self.path / '.lock', os.O_CREAT | os.O_RDWR, 0o600)
+            os.makedirs(self.path, exist_ok=True)
+            self.lock_fd = os.open(self.path / '.lock', os.O_CREAT | os.O_RDWR, 0o600)
         self.held = []
 
     def lock(self, exclusive):
@@ -494,6 +641,11 @@ def run_exact(prefix, args, parsed, tc):
                 receipt.write_text(digest_file(cached))
                 if root.persistent:
                     evict_out(store)
+            except (OSError, shutil.Error) as error:  # the compile succeeded: a failed cache write must not fail the lane
+                say(f'could not keep {Path(parsed["output"]).name} for reuse ({error}); this lane keeps its own output')
+                cached.unlink(missing_ok=True)
+                receipt.unlink(missing_ok=True)
+                log(dict(mode='exact-cache-failed', output=Path(parsed['output']).name, persist=root.persistent))
             finally:
                 root.unlock()
         log(dict(mode='exact-build', output=Path(parsed['output']).name, code=code, persist=root.persistent,
@@ -507,6 +659,8 @@ def main(argv):
     prefix, args = split_prefix(argv)
     if os.environ.get('COS_TEST_KIT', '1') == '0':
         os.execvp(prefix[0], [*prefix, *args])
+    global BLOCK
+    BLOCK = command_blocker(args)
     parsed = parse(args)
     tc = toolchain(prefix)
     match = match_kit(parsed) if parsed else None
