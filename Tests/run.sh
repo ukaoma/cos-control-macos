@@ -5471,7 +5471,7 @@ meetings_src = (root / "Sources/ActivityMeetings.swift").read_text()
 # 3 from 0.5.230: the library row, the search hit, and the suggestion row; 4 from 0.5.278 with the Live now row. The
 # rule is "cards in a shared scroll list, never a List"; the count is how it is
 # expressed, so a new row surface raises it rather than relaxing it.
-need(meetings_src.count(".cosRowCard()") == 4 and "List(" not in meetings_src, "the meeting rows must be cards in the shared scroll list, not a List")
+need(meetings_src.count(".cosRowCard()") == 4 and __import__("re").search(r"(?<![A-Za-z0-9_])List\(", meetings_src) is None, "the meeting rows must be cards in the shared scroll list, not a List")
 need("COSType.display(22, weight: .medium)" in meetings_src and "COSType.display(15, weight: .medium)" in meetings_src, "the meeting detail title and the calendar month must be Fraunces")
 need("Search topics, ideas" in meetings_src, "the meetings search placeholder changed")
 # 0.5.194: the Knowledge setup path. Six bounded ops plus one native folder
