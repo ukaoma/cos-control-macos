@@ -49,10 +49,11 @@ import UniformTypeIdentifiers
         meetingBlockChecks()
         meetingQAChecks()
         try await meetingStoreChecks(home, fixtures)
+        try await spreadsheetChecks(home)
         try await meetingResolveChecks(home, fixtures)
         meetingDropNameChecks()
         try await meetingDropNameStoreChecks(home, fixtures)
-        print("PASS: Work card files (names, sniffing, secrets, caps, duplicates, apps and disk images, iCloud timeout, the block never first and right before the instruction, Cursor keeps every path or refuses, Continue and Fork send only what is new, cleanup and its references, the manifest under its lock, companions made and resumed, drop routes and the private card type, the countdown waits and stops, glasses sends carry the files; fix pass 1: no delete, write or open outside the store or through a link (P1 to P4), no link with a password, secrets by name, content and alias, folders too wide or holding secrets, the identity stamped before the first file, Remove hides with Undo, cleanup only 14 days after completion and the newest file or handoff, never on leaving the board; 0.5.258 files on a meeting: the key grammar and each store's ids, one block with sub-headings, Cursor keeps every path, dedupe, the 20 cap, meeting files dropped first to fit, Continue, Vision text copies, a credential screenshot sent nowhere, paste, aliases, retention; 0.5.259 a nameless meeting drop is named for when it was dropped)")
+        print("PASS: Work card files (0.5.365 a meeting's .xlsx gets its text on this Mac, bounded like the server; names, sniffing, secrets, caps, duplicates, apps and disk images, iCloud timeout, the block never first and right before the instruction, Cursor keeps every path or refuses, Continue and Fork send only what is new, cleanup and its references, the manifest under its lock, companions made and resumed, drop routes and the private card type, the countdown waits and stops, glasses sends carry the files; fix pass 1: no delete, write or open outside the store or through a link (P1 to P4), no link with a password, secrets by name, content and alias, folders too wide or holding secrets, the identity stamped before the first file, Remove hides with Undo, cleanup only 14 days after completion and the newest file or handoff, never on leaving the board; 0.5.258 files on a meeting: the key grammar and each store's ids, one block with sub-headings, Cursor keeps every path, dedupe, the 20 cap, meeting files dropped first to fit, Continue, Vision text copies, a credential screenshot sent nowhere, paste, aliases, retention; 0.5.259 a nameless meeting drop is named for when it was dropped)")
     }
 
     /// Names the behaviour a failure is about, so a mutation is credited to the check that names it.
@@ -1878,5 +1879,176 @@ extension WorkCardFilesChecks {
         await cards.intake(providers: [namelessPromise()], source: card)
         let cardNames = cards.files(for: card.id).map(\.display)
         check(cardNames == ["Dropped file.png"], "card drop name", "through the drop path: \(cardNames) \(flashText(cards, card.id))")
+    }
+}
+
+// MARK: - 0.5.365 spreadsheet text
+//
+// Miles, 2026-11-02 13:09: two .xlsx files dropped on a meeting were refused as unsupported. A meeting's workbook now gets a
+// text copy made on this Mac (WorkCardFiles.spreadsheetText), with the server's limits. Fixtures are real zip files made with
+// /usr/bin/zip from synthetic XML parts; nothing here is a real workbook.
+
+extension WorkCardFilesChecks {
+    struct SheetFixture { var name: String; var rows: String; var path: String? = nil }
+
+    static func xlsx(_ dir: URL, _ name: String, sheets: [SheetFixture], shared: [String]? = nil, sharedXML: String? = nil, workbook: Bool = true) throws -> URL {
+        let stage = dir.appendingPathComponent("stage-" + String(UUID().uuidString.prefix(8)), isDirectory: true)
+        try FileManager.default.createDirectory(at: stage.appendingPathComponent("xl/worksheets"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: stage.appendingPathComponent("xl/_rels"), withIntermediateDirectories: true)
+        try Data("<Types/>".utf8).write(to: stage.appendingPathComponent("[Content_Types].xml"))
+        if workbook {
+            var book = #"<?xml version="1.0"?><workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>"#
+            var rels = #"<?xml version="1.0"?><Relationships>"#
+            for (index, sheet) in sheets.enumerated() {
+                book += #"<sheet name="\#(sheet.name)" sheetId="\#(index + 1)" r:id="rId\#(index + 1)"/>"#
+                rels += #"<Relationship Id="rId\#(index + 1)" Type="worksheet" Target="worksheets/sheet\#(index + 1).xml"/>"#
+                let xml = #"<?xml version="1.0"?><worksheet><sheetData>"# + sheet.rows + "</sheetData></worksheet>"
+                try Data(xml.utf8).write(to: stage.appendingPathComponent(sheet.path ?? "xl/worksheets/sheet\(index + 1).xml"))
+            }
+            try Data((book + "</sheets></workbook>").utf8).write(to: stage.appendingPathComponent("xl/workbook.xml"))
+            try Data((rels + "</Relationships>").utf8).write(to: stage.appendingPathComponent("xl/_rels/workbook.xml.rels"))
+        }
+        if let sharedXML { try Data(sharedXML.utf8).write(to: stage.appendingPathComponent("xl/sharedStrings.xml")) }
+        else if let shared {
+            let items = shared.map { "<si>" + ($0.hasPrefix("<") ? $0 : "<t>\($0)</t>") + "</si>" }.joined()
+            try Data((#"<?xml version="1.0"?><sst>"# + items + "</sst>").utf8).write(to: stage.appendingPathComponent("xl/sharedStrings.xml"))
+        }
+        let out = dir.appendingPathComponent(name)
+        try? FileManager.default.removeItem(at: out)
+        let zip = Process()
+        zip.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        zip.currentDirectoryURL = stage
+        zip.arguments = ["-q", "-X", "-r", out.path, "."]
+        try zip.run(); zip.waitUntilExit()
+        try? FileManager.default.removeItem(at: stage)
+        check(zip.terminationStatus == 0 && FileManager.default.fileExists(atPath: out.path), "spreadsheet text", "the fixture zip was not made")
+        return out
+    }
+
+    static func spreadsheetChecks(_ home: URL) async throws {
+        let dir = home.appendingPathComponent("Sheets.d", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let long = String(repeating: "x", count: 300)
+        // Shared strings with a rich run and a phonetic guide; rows with a formula, a boolean, an inline string, a gap and an empty row.
+        let budget = SheetFixture(name: "Budget &amp; Plan", rows: """
+            <row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c></row>
+            <row r="2"><c r="A2" t="s"><v>3</v></c><c r="B2"><v>120</v></c><c r="C2"><v>95.5</v></c></row>
+            <row r="3"><c r="A3" t="s"><v>4</v></c><c r="B3"><v>7</v></c><c r="C3"><f>B3*2</f><v>14</v></c></row>
+            <row r="4"/>
+            <row r="5"><c r="A5"></c><c r="B5"></c></row>
+            <row r="6"><c r="A6" t="inlineStr"><is><t>Note, with&#9;tab and
+            break</t></is></c><c r="B6" t="b"><v>1</v></c><c r="D6" t="s"><v>5</v></c></row>
+            <row r="7"><c r="C7" t="str"><f>A1</f><v>from formula</v></c></row>
+            <row r="8"><c r="A8" t="s"><v>6</v></c><c r="B8" t="s"><v>99</v></c><c r="C8"><v>1</v></c></row>
+            """)
+        let manyRows = (1...250).map { #"<row r="\#($0)"><c r="A\#($0)" t="inlineStr"><is><t>row \#($0)</t></is></c><c r="B\#($0)"><v>\#($0)</v></c></row>"# }.joined()
+        let shared = ["Brand", "Budget", "Actual", "Bottle POS", #"<r><t>Jewel</t></r><r><t>360</t></r>"#, #"<t>Kaisha</t><rPh sb="0" eb="1"><t>PHONETIC</t></rPh>"#, long]
+        let book = try xlsx(dir, "Budget.xlsx", sheets: [budget, SheetFixture(name: "Second", rows: manyRows)], shared: shared)
+        let text = WorkCardFiles.spreadsheetText(at: book) ?? ""
+        let lines = text.components(separatedBy: "\n")
+        check(lines.first == "Sheet: Budget & Plan", "spreadsheet text", "sheet name, entities decoded: \(lines.first ?? "")")
+        check(lines.contains("Brand\tBudget\tActual") && lines.contains("Bottle POS\t120\t95.5"), "spreadsheet text", "shared strings resolved, tab-separated:\n\(text.prefix(400))")
+        check(lines.contains("Jewel360\t7\t14"), "spreadsheet text", "a formula shows its saved value, a rich string joins its runs")
+        check(!text.contains("B3*2"), "spreadsheet text", "no formula text")
+        check(lines.contains("Note, with tab and break\tTRUE\t\tKaisha"), "spreadsheet text", "inline string cleaned, a boolean, an empty cell kept as a gap, the phonetic guide dropped:\n\(text.prefix(600))")
+        check(!text.contains("PHONETIC"), "spreadsheet text", "phonetic guide")
+        check(lines.contains("\t\tfrom formula"), "spreadsheet text", "a cell far right keeps its column")
+        check(lines.contains(String(repeating: "x", count: 200) + "\t\t1"), "spreadsheet text", "a cell is cut at 200 characters, and a bad shared-string index is empty")
+        check(!lines.contains { $0.contains(String(repeating: "x", count: 201)) }, "spreadsheet text", "201 characters")
+        check(lines.firstIndex(of: "Sheet: Second") != nil, "spreadsheet text", "the second sheet is named, in workbook order")
+        let second = Array(lines.drop { $0 != "Sheet: Second" }.dropFirst())
+        check(second.prefix(200).last == "row 200\t200" && second.count >= 201 && second[200] == "[Only the first 200 rows of this sheet are read.]" && !second.contains("row 201\t201"),
+              "spreadsheet text", "200 rows then the cut note: \(second.count) \(second.dropFirst(199).prefix(3))")
+        check(!text.contains("[Text cut at"), "spreadsheet text", "a small workbook is not cut")
+
+        // The total cap: well under 100,000 bytes, the cut said so.
+        let wide = (1...200).map { r in
+            "<row r=\"\(r)\">" + (1...5).map { c in #"<c r="\#(["A", "B", "C", "D", "E"][c - 1])\#(r)" t="inlineStr"><is><t>\#(String(repeating: "w", count: 200))</t></is></c>"# }.joined() + "</row>"
+        }.joined()
+        let wideBook = try xlsx(dir, "Wide.xlsx", sheets: [SheetFixture(name: "Wide", rows: wide)])
+        let wideText = WorkCardFiles.spreadsheetText(at: wideBook) ?? ""
+        check(wideText.utf8.count <= 100_000 && wideText.hasSuffix("[Text cut at 100000 characters.]") && wideText.hasPrefix("Sheet: Wide\n"), "spreadsheet text cap", "\(wideText.utf8.count) bytes")
+        // Wide characters: the cap is on bytes too, so the meeting's 100 KB file row takes it.
+        let kanji = (1...200).map { r in "<row r=\"\(r)\">" + (1...5).map { c in #"<c r="\#(["A", "B", "C", "D", "E"][c - 1])\#(r)" t="inlineStr"><is><t>\#(String(repeating: "\u{6F22}", count: 100))</t></is></c>"# }.joined() + "</row>" }.joined()
+        let kanjiText = WorkCardFiles.spreadsheetText(at: try xlsx(dir, "Kanji.xlsx", sheets: [SheetFixture(name: "K", rows: kanji)])) ?? ""
+        check(kanjiText.utf8.count <= 100_000 && kanjiText.hasSuffix("[Text cut at 100000 characters.]"), "spreadsheet text cap", "wide characters: \(kanjiText.utf8.count) bytes")
+
+        // 50 columns, 12 sheets.
+        let columns = "<row r=\"1\">" + (1...60).map { c in
+            var n = c, name = ""; while n > 0 { n -= 1; name = String(UnicodeScalar(UInt8(65 + n % 26))) + name; n /= 26 }
+            return #"<c r="\#(name)1" t="inlineStr"><is><t>c\#(c)</t></is></c>"#
+        }.joined() + "</row>"
+        let sixty = WorkCardFiles.spreadsheetText(at: try xlsx(dir, "Columns.xlsx", sheets: [SheetFixture(name: "C", rows: columns)])) ?? ""
+        check(sixty.components(separatedBy: "\n").last?.components(separatedBy: "\t").count == 50 && sixty.hasSuffix("c50") && !sixty.contains("c51"), "spreadsheet text", "50 columns")
+        let fourteen = (1...14).map { SheetFixture(name: "S\($0)", rows: #"<row r="1"><c r="A1"><v>\#($0)</v></c></row>"#) }
+        let fourteenText = WorkCardFiles.spreadsheetText(at: try xlsx(dir, "Fourteen.xlsx", sheets: fourteen)) ?? ""
+        check(fourteenText.contains("Sheet: S12\n12") && !fourteenText.contains("Sheet: S13") && fourteenText.contains("[2 more sheets not read: S13, S14.]"), "spreadsheet text", "12 sheets, the rest named")
+
+        // A zip bomb stops at the cap: a sheet past 16 MB is "could not be read", shared strings past 8 MB read as empty, and both are quick.
+        let started = Date()
+        let hugeRows = #"<row r="1"><c r="A1"><v>ok</v></c></row>"# + String(repeating: " ", count: 17_000_000)
+        let bomb = try xlsx(dir, "Bomb.xlsx", sheets: [SheetFixture(name: "Big", rows: hugeRows), SheetFixture(name: "Fine", rows: #"<row r="1"><c r="A1" t="s"><v>0</v></c></row>"#)],
+                            sharedXML: #"<sst><si><t>"# + String(repeating: "s", count: 9_000_000) + "</t></si></sst>")
+        let bombText = WorkCardFiles.spreadsheetText(at: bomb) ?? ""
+        check(bombText.contains("Sheet: Big\n[This sheet could not be read.]") && bombText.contains("Sheet: Fine") && !bombText.contains("sssss"), "spreadsheet text bomb", "caps: \(bombText.prefix(200))")
+        check(Date().timeIntervalSince(started) < 20, "spreadsheet text bomb", "took \(Date().timeIntervalSince(started)) s")
+
+        // A zip that lies about its sizes (a small declared size, a huge real one) stops at the buffer cap, not at the declared size.
+        var lying = try Data(contentsOf: bomb)
+        var at = 0, patched = 0
+        while at + 28 < lying.count {
+            if lying[at] == 0x50 && lying[at + 1] == 0x4b && lying[at + 2] == 0x01 && lying[at + 3] == 0x02 {
+                for k in 24..<28 { lying[at + k] = k == 24 ? 1 : 0 }
+                patched += 1; at += 46
+            } else { at += 1 }
+        }
+        let lyingURL = dir.appendingPathComponent("Lying.xlsx"); try lying.write(to: lyingURL)
+        let lyingText = WorkCardFiles.spreadsheetText(at: lyingURL) ?? ""
+        check(patched >= 4 && lyingText.contains("Sheet: Big\n[This sheet could not be read.]") && !lyingText.contains("Sheet: Big\nok"), "spreadsheet text bomb",
+              "a part that lies about its size is still capped: \(patched) \(lyingText.prefix(120))")
+
+        // Not a workbook: text, a zip with no workbook part, an encrypted entry, a file past 10 MB.
+        let notZip = dir.appendingPathComponent("Plain.xlsx"); try Data("a,b,c\n1,2,3\n".utf8).write(to: notZip)
+        check(WorkCardFiles.spreadsheetText(at: notZip) == nil, "spreadsheet text", "plain text")
+        check(WorkCardFiles.spreadsheetText(at: try xlsx(dir, "NoBook.xlsx", sheets: [], workbook: false)) == nil, "spreadsheet text", "no workbook part")
+        check(WorkCardFiles.spreadsheetText(at: try xlsx(dir, "NoSheets.xlsx", sheets: [])) == nil, "spreadsheet text", "a workbook with no sheets")
+        var locked = try Data(contentsOf: book)
+        let central = locked.indices.dropLast(46).first { locked[$0] == 0x50 && locked[$0 + 1] == 0x4b && locked[$0 + 2] == 0x01 && locked[$0 + 3] == 0x02 }!
+        locked[central + 8] |= 1
+        let lockedURL = dir.appendingPathComponent("Locked.xlsx"); try locked.write(to: lockedURL)
+        check(WorkCardFiles.spreadsheetText(at: lockedURL) == nil, "spreadsheet text", "an encrypted entry is not read")
+        var truncated = try Data(contentsOf: book); truncated.removeLast(40)
+        let truncatedURL = dir.appendingPathComponent("Cut.xlsx"); try truncated.write(to: truncatedURL)
+        check(WorkCardFiles.spreadsheetText(at: truncatedURL) == nil, "spreadsheet text", "a zip without its end is not read")
+        check(WorkCardFiles.spreadsheetText(at: dir.appendingPathComponent("missing.xlsx")) == nil, "spreadsheet text", "a missing file")
+
+        // The planner: a meeting's workbook gets a text copy; a card's, and any other document, does not.
+        check(WorkCardFiles.companionPlan(kind: "document", width: nil, height: nil, ocr: true, spreadsheet: true) == ["text"]
+              && WorkCardFiles.companionPlan(kind: "document", width: nil, height: nil) == [] && WorkCardFiles.companionPlan(kind: "document", width: nil, height: nil, ocr: true) == []
+              && WorkCardFiles.companionPlan(kind: "pdf", width: nil, height: nil, ocr: true, spreadsheet: true) == ["text"], "companion plan", "only a meeting workbook")
+
+        // Through the meeting store: the drop gets a text copy, and the copy carries the rows.
+        let root = home.appendingPathComponent("cos-data/meeting-context-sheets", isDirectory: true)
+        let meetings = WorkCardFileStore(root: root, policy: .meeting)
+        meetings.loadIfNeeded()
+        await meetings.intakeMeeting(urls: [book], key: meetingKey, info: meetingInfo)
+        await meetings.waitForCompanions()
+        let id = WorkCardFiles.meetingID(forKey: meetingKey)!
+        let dropped = meetings.files(for: id).first
+        let copy = dropped?.companions.first { $0.kind == "text" }
+        check(dropped?.kind == "document" && dropped?.sniffed == WorkCardFiles.xlsxMime && copy?.state == "ready", "meeting spreadsheet", "\(String(describing: dropped?.kind)) \(String(describing: copy))")
+        let folder = WorkCardFiles.folder(root: root, workID: id)
+        let stored = (try? String(contentsOf: folder.appendingPathComponent(copy?.stored ?? "x"), encoding: .utf8)) ?? ""
+        check(stored.contains("Sheet: Budget & Plan") && stored.contains("Bottle POS\t120\t95.5") && stored == text, "meeting spreadsheet", "the stored copy is the workbook's text")
+        // A workbook that cannot be read is a failed copy with its own words, not a crash and not text.
+        await meetings.intakeMeeting(urls: [lockedURL], key: meetingKey, info: meetingInfo)
+        await meetings.waitForCompanions()
+        let broken = meetings.files(for: id).first { $0.display == "Locked.xlsx" }
+        check(broken == nil || broken?.companions.first?.state == "failed", "meeting spreadsheet", "\(String(describing: broken?.companions))")
+        // A card's workbook has no text copy (a card's files go as paths).
+        let work = WorkCardFileStore(root: home.appendingPathComponent("cos-data/work-context-sheets", isDirectory: true))
+        await work.intake(urls: [book], source: WorkSource(id: workID, title: "", revision: "r", project: "", context: ""))
+        await work.waitForCompanions()
+        check(work.files(for: workID).first?.companions.isEmpty == true, "meeting spreadsheet", "a card's workbook gets no text copy")
     }
 }

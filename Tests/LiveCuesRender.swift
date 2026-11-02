@@ -142,7 +142,7 @@ import Vision
                 ("v3-general-topics-off", v3Answer(mode: "general", publicTopics: false),
                  [LiveCues.modeHelp(.general), LiveCues.publicTopicsOffLine, "Local items use Austin, TX.", LiveCues.generalBarTitle, LiveCues.generalMoreCues, LiveCues.generalFewerCues,
                   LiveCues.generalGapTitle, LiveCues.generalAttemptsTitle, LiveCues.generalMaxCuesTitle, LiveCues.generalDailyTopicsTitle, LiveCues.generalDailySearchesTitle,
-                  "Today: 4 topic checks, 2 web searches", LiveCues.glassesLine]),
+                  "Background topic checks today: 4, searches: 2", "Web today: 5 searches (cues 1, assistant 3, fact checks 1), 3 pages read, 1 failed. 2 held back.", LiveCues.glassesLine]),
                 ("v3-all-env", v3Answer(mode: "all", modeSource: "env", modeLocked: true, grounding: "grounded", groundingSource: "env", groundingLocked: true),
                  [LiveCues.modeHelp(.all), LiveCues.modeEnvNote, LiveCues.groundedHelp, LiveCues.glassesLine]),
                 ("v3-breaker-open", v3Answer(mode: "all", breakerOpenUntil: soon), ["General cues are paused until", "after repeated failures", LiveCues.glassesLine]),

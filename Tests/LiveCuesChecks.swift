@@ -452,8 +452,10 @@ import Foundation
               && !LiveCues.readsGeneral(loaded(answered(200, shape(enabled: true, available: true)))), "the general status is read only in a web mode on a v 3 server")
         check(LiveCues.groundedHelp == "Each cue is checked against your past meetings, notes and files, and cites what it used."
               && LiveCues.cueModeTitle == "Cue mode" && LiveCues.groundedTitle == "Grounded cues", "the grounded switch and the picker by name")
-        check(LiveCues.generalUsageLine(LiveCuesGeneralToday(topicCalls: 4, webSearches: 2, breakerOpenUntil: nil)) == "Today: 4 topic checks, 2 web searches"
-              && LiveCues.generalUsageLine(LiveCuesGeneralToday(topicCalls: 1, webSearches: 1, breakerOpenUntil: nil)) == "Today: 1 topic check, 1 web search", "today's general use in words")
+        // 0.5.365: named for what it counts (the general cues' own counters), never "Today: ... web searches" beside the meeting assistant's own.
+        check(LiveCues.generalUsageLine(LiveCuesGeneralToday(topicCalls: 4, webSearches: 2, breakerOpenUntil: nil)) == "Background topic checks today: 4, searches: 2"
+              && LiveCues.generalUsageLine(LiveCuesGeneralToday(topicCalls: 0, webSearches: 0, breakerOpenUntil: nil)) == "Background topic checks today: 0, searches: 0",
+              "today's general use in words, named for the general cues")
         let now = Date(timeIntervalSince1970: 1_790_000_000)
         let zone = Calendar(identifier: .gregorian)
         check(LiveCues.breakerLine(LiveCuesGeneralToday(topicCalls: 0, webSearches: 0, breakerOpenUntil: now.addingTimeInterval(600)), now: now, style: .twentyFourHour, calendar: zone)?
@@ -559,6 +561,151 @@ import Foundation
         check(generalCalls.log.last == ["live-cues-settings", "--general-trigger", "0.70", "--general-daily-web-searches", "20"]
               && generalStore.settings?.limits?.values[.generalTrigger]?.value == 0.7 && generalStore.settings?.limits?.values[.generalDailyWebSearches]?.value == 20
               && generalStore.pendingLimits.isEmpty && generalStore.limitsNote == nil, "one call with the general flags, and the server's echo is what shows")
+
+
+        // ── 0.5.365: the web ledger (`webToday`). The general counters above count general cues only; this counts every lookup.
+        func webBlock(readable: Bool = true, cues: String = #"{"searches":1,"pagesRead":0}"#, ask: String = #"{"searches":3,"pagesRead":2}"#,
+                      fact: String = #"{"searches":1,"pagesRead":1}"#, total: Int = 2) -> String {
+            #","webToday":{"day":"2026-11-02","readable":\#(readable),"cues":\#(cues),"ask":\#(ask),"factCheck":\#(fact),"withheld":{"total":\#(total),"byReason":{"no_public_intent":\#(total)},"byFeature":{"cues":0,"ask":\#(total),"factCheck":0}}}"#
+        }
+        // The older ledger shape (no pagesFailed) reads and says nothing about failed pages; the newer one says it only above zero.
+        let failedAsk = #"{"searches":3,"pagesRead":2,"pagesFailed":1}"#
+        check(LiveCues.webTodayLine(loaded(answeredAPI(3, v3Body() + webBlock(ask: failedAsk)))?.v3?.webToday)
+              == "Web today: 5 searches (cues 1, assistant 3, fact checks 1), 3 pages read, 1 failed. 2 held back.", "failed pages are counted across features and shown above zero")
+        check(LiveCues.webTodayLine(loaded(answeredAPI(3, v3Body() + webBlock(cues: #"{"searches":1,"pagesRead":0,"pagesFailed":2}"#, ask: failedAsk,
+                                                                           fact: #"{"searches":1,"pagesRead":1,"pagesFailed":3}"#)))?.v3?.webToday)
+              == "Web today: 5 searches (cues 1, assistant 3, fact checks 1), 3 pages read, 6 failed. 2 held back.", "failed pages from all three features are added")
+        check(LiveCues.webTodayLine(loaded(answeredAPI(3, v3Body() + webBlock(ask: #"{"searches":3,"pagesRead":2,"pagesFailed":0}"#)))?.v3?.webToday)
+              == LiveCues.webTodayLine(loaded(answeredAPI(3, v3Body() + webBlock()))?.v3?.webToday), "zero failed pages is the same line as the older shape")
+        check(loaded(answeredAPI(3, v3Body() + webBlock(ask: failedAsk)))?.v3?.webToday?.assistant.pagesFailed == 1
+              && loaded(answeredAPI(3, v3Body() + webBlock()))?.v3?.webToday?.assistant.pagesFailed == 0, "pagesFailed is read per feature, zero when absent")
+        let webAnswer = loaded(answeredAPI(3, v3Body() + webBlock()))
+        check(webAnswer?.v3?.webToday == LiveCuesWebToday(cues: .init(searches: 1, pagesRead: 0), assistant: .init(searches: 3, pagesRead: 2),
+                                                         factChecks: .init(searches: 1, pagesRead: 1), heldBack: 2), "the ledger is read: cues, assistant, fact checks and what was held back")
+        check(LiveCues.webTodayLine(webAnswer?.v3?.webToday) == "Web today: 5 searches (cues 1, assistant 3, fact checks 1), 3 pages read. 2 held back.",
+              "the web line adds every feature and says what was held back")
+        check(LiveCues.webTodayLine(loaded(answeredAPI(3, v3Body() + webBlock(cues: #"{"searches":0,"pagesRead":0}"#, ask: #"{"searches":1,"pagesRead":1}"#,
+                                                                           fact: #"{"searches":0,"pagesRead":0}"#, total: 0)))?.v3?.webToday)
+              == "Web today: 1 search (cues 0, assistant 1, fact checks 0), 1 page read.", "one search and one page read in the singular, and no held back sentence at zero")
+        check(LiveCues.webTodayLine(loaded(answeredAPI(3, v3Body() + webBlock(cues: #"{"searches":0,"pagesRead":0}"#, ask: #"{"searches":0,"pagesRead":0}"#,
+                                                                           fact: #"{"searches":0,"pagesRead":0}"#, total: 0)))?.v3?.webToday)
+              == "Web today: 0 searches (cues 0, assistant 0, fact checks 0), 0 pages read.", "a ledger that was read and is empty says zero")
+        // Never a fake zero: no block (an older server), a ledger the server could not read, or a block missing any part shows nothing.
+        check(loaded(answeredAPI(3, v3Body()))?.v3?.webToday == nil && LiveCues.webTodayLine(loaded(answeredAPI(3, v3Body()))?.v3?.webToday) == nil, "an older server sends no ledger: no line")
+        check(loaded(answeredAPI(3, v3Body() + webBlock(readable: false)))?.v3?.webToday == nil, "a ledger the server could not read shows nothing, never its zeros")
+        check(loaded(answeredAPI(3, v3Body() + webBlock(ask: #"{"searches":3}"#)))?.v3?.webToday == nil
+              && loaded(answeredAPI(3, v3Body() + #","webToday":{"readable":true,"cues":{"searches":0,"pagesRead":0}}"#))?.v3?.webToday == nil
+              && loaded(answeredAPI(3, v3Body() + webBlock(cues: #"{"searches":-1,"pagesRead":0}"#)))?.v3?.webToday == nil, "a block missing a part, or with a negative count, shows nothing")
+        check(loaded(answeredAPI(3, v3Body() + webBlock()))?.v3?.today == v3?.today && loaded(answeredAPI(3, v3Body() + webBlock()))?.v3?.mode == v3?.mode,
+              "the ledger leaves the general counters and the rest of v3 as they were")
+        for text in [LiveCues.webTodayLine(webAnswer?.v3?.webToday)!, LiveCues.generalUsageLine(LiveCuesGeneralToday(topicCalls: 4, webSearches: 2, breakerOpenUntil: nil))] {
+            check(!text.contains("\u{2014}") && !text.contains("\u{2192}") && !text.contains("->"), "no em dash or arrow: \(text)")
+        }
+
+        // ── 0.5.365: the limit steppers. A step during a save never kills the save, and an old failure never outlives a later save.
+        // `holding` is a helper that honors cancellation the way the real one does: a cancelled call ends with CancellationError
+        // (the helper is terminated) and counts as killed, while the POST has already reached the server (`applied`).
+        final class Flight { var killed = 0; var applied: [[String]] = []; var serverGate = "0.8" }
+        func echoGate(_ value: String) -> [String: JSONValue] {
+            answered(200, withLimits(shape(enabled: true, available: true), limitsJSON.replacingOccurrences(of: #""value":0.8,"#, with: #""value":\#(value),"#)))
+        }
+        func holding(_ calls: Calls, _ flight: Flight, _ gate: Gate, failFirst: Bool = false) -> LiveCuesStore.Run {
+            var writes = 0
+            return { args, _ in
+                if args.count == 1 { return HelperResponse(ok: true, message: "x", details: echoGate(flight.serverGate)) }
+                calls.log.append(args); flight.applied.append(args); flight.serverGate = args[2]; writes += 1
+                let mine = writes
+                while !gate.open {
+                    do { try await Task.sleep(for: .milliseconds(5)) } catch { flight.killed += 1; throw CancellationError() }
+                }
+                if failFirst && mine == 1 { return HelperResponse(ok: true, message: "x", details: answered(500)) }
+                return HelperResponse(ok: true, message: "x", details: echoGate(args[2]))
+            }
+        }
+        func settle(_ done: () -> Bool) async { var n = 0; while !done() && n < 400 { try? await Task.sleep(for: .milliseconds(10)); n += 1 } }
+
+        // Rapid steps coalesce to one send with the last value.
+        let burst = LiveCuesStore(); let burstCalls = Calls(); let burstFlight = Flight(); let burstGate = Gate(); burstGate.open = true
+        burst.limitsDebounce = .milliseconds(60)
+        await burst.load(fake(burstCalls, [echoGate("0.8")]))
+        let burstRun = holding(burstCalls, burstFlight, burstGate)
+        for value in ["0.55", "0.6", "0.65", "0.7", "0.75"] { burst.propose(.gate, Double(value)!, run: burstRun); try? await Task.sleep(for: .milliseconds(10)) }
+        await settle { burstCalls.log.count >= 2 && !burst.busy }
+        try? await Task.sleep(for: .milliseconds(150))
+        check(burstFlight.applied == [["live-cues-settings", "--gate", "0.75"]] && burstFlight.killed == 0 && burst.settings?.limits?.values[.gate]?.value == 0.75
+              && burst.pendingLimits.isEmpty && burst.limitsNote == nil, "five quick steps are one send, with the last value, and no note")
+
+        // A save in flight is never killed by a newer step; the newer value goes after it.
+        let race = LiveCuesStore(); let raceCalls = Calls(); let raceFlight = Flight(); let raceGate = Gate()
+        race.limitsDebounce = .milliseconds(30)
+        await race.load(fake(raceCalls, [echoGate("0.8")]))
+        let raceRun = holding(raceCalls, raceFlight, raceGate)
+        race.propose(.gate, 0.7, run: raceRun)
+        await settle { raceFlight.applied.count == 1 }
+        check(raceFlight.applied == [["live-cues-settings", "--gate", "0.70"]] && race.busy, "the first value is out")
+        race.propose(.gate, 0.75, run: raceRun)
+        try? await Task.sleep(for: .milliseconds(60))
+        race.propose(.gate, 0.85, run: raceRun)
+        try? await Task.sleep(for: .milliseconds(80))
+        check(raceFlight.killed == 0 && race.limitsNote == nil && raceFlight.applied.count == 1, "steps during the save do not kill it and send nothing while it is out")
+        raceGate.open = true
+        await settle { raceFlight.applied.count == 2 && !race.busy }
+        try? await Task.sleep(for: .milliseconds(100))
+        check(raceFlight.applied == [["live-cues-settings", "--gate", "0.70"], ["live-cues-settings", "--gate", "0.85"]] && raceFlight.killed == 0,
+              "the newer value is sent once, after the first save finished, and nothing was cancelled")
+        check(race.limitsNote == nil && race.pendingLimits.isEmpty && race.settings?.limits?.values[.gate]?.value == 0.85,
+              "no 'could not save' note after a save that landed; the card shows the server's last value")
+
+        // An old failure clears when a later save lands.
+        let stale = LiveCuesStore(); let staleCalls = Calls(); let staleFlight = Flight(); let staleGate = Gate()
+        stale.limitsDebounce = .milliseconds(30)
+        await stale.load(fake(staleCalls, [echoGate("0.8")]))
+        let staleRun = holding(staleCalls, staleFlight, staleGate, failFirst: true)
+        stale.propose(.gate, 0.7, run: staleRun)
+        await settle { staleFlight.applied.count == 1 }
+        stale.propose(.gate, 0.6, run: staleRun)
+        staleGate.open = true
+        await settle { staleFlight.applied.count == 2 && !stale.busy && stale.pendingLimits.isEmpty }
+        try? await Task.sleep(for: .milliseconds(60))
+        check(staleFlight.applied.count == 2 && staleFlight.killed == 0 && stale.limitsNote == nil && stale.settings?.limits?.values[.gate]?.value == 0.6,
+              "the first save failed (500), the second landed: the failure note is gone")
+        let failed = LiveCuesStore(); let failedCalls = Calls()
+        await failed.load(fake(failedCalls, [echoGate("0.8")]))
+        failed.limitsDebounce = .seconds(60)
+        failed.propose(.gate, 0.7, run: fake(failedCalls, []))
+        await failed.flushLimits(fake(failedCalls, [answered(500)]))
+        check(failed.limitsNote == "The limit was not saved (HTTP 500). Try again.", "a real failure still says so")
+
+        // A wait that has run out behind a save is still a wait: a newer step restarts it instead of sending the half-made value early.
+        let queued = LiveCuesStore(); let queuedCalls = Calls(); let queuedFlight = Flight(); let queuedGate = Gate()
+        queued.limitsDebounce = .milliseconds(300)
+        await queued.load(fake(queuedCalls, [echoGate("0.8")]))
+        let queuedRun = holding(queuedCalls, queuedFlight, queuedGate)
+        queued.propose(.gate, 0.6, run: queuedRun)
+        await settle { queuedFlight.applied.count == 1 }
+        try? await Task.sleep(for: .milliseconds(50))
+        queued.propose(.gate, 0.7, run: queuedRun)
+        try? await Task.sleep(for: .milliseconds(350))
+        queued.propose(.gate, 0.75, run: queuedRun)
+        queuedGate.open = true
+        try? await Task.sleep(for: .milliseconds(200))
+        check(queuedFlight.applied.count == 1 && queuedFlight.killed == 0, "a step behind a save restarts the wait: nothing is sent 200 ms after the save landed")
+        await settle { queuedFlight.applied.count == 2 && !queued.busy }
+        check(queuedFlight.applied.last == ["live-cues-settings", "--gate", "0.75"] && queuedFlight.killed == 0 && queued.limitsNote == nil, "then the last step goes once")
+
+        // A cancelled save is not a refusal: read again, no note, the server's value shows.
+        let gone = LiveCuesStore(); let goneCalls = Calls(); let goneFlight = Flight(); let goneGate = Gate()
+        gone.limitsDebounce = .seconds(60)
+        await gone.load(fake(goneCalls, [echoGate("0.8")]))
+        gone.propose(.gate, 0.75, run: holding(goneCalls, goneFlight, goneGate))
+        let goneRun = holding(goneCalls, goneFlight, goneGate)
+        let goneTask = Task { await gone.flushLimits(goneRun) }
+        await settle { goneFlight.applied.count == 1 }
+        goneTask.cancel()
+        await goneTask.value
+        check(goneFlight.killed == 1 && gone.limitsNote == nil && gone.pendingLimits.isEmpty && !gone.busy && gone.settings?.limits?.values[.gate]?.value == 0.75
+              && Array(goneCalls.log.suffix(1)) == [["live-cues-settings", "--gate", "0.75"]],
+              "a cancelled save leaves no note and no waiting value, and the card shows what the server holds (it had applied the POST) after a fresh read")
 
         print("live cues checks: \(passed) passed")
     }

@@ -46,7 +46,7 @@ if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
   OUT="$(env "${RUN_ENV[@]}" "$DIR/live-cues-checks")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*checks: }%% passed*}"
-  (( COUNT >= 224 )) || { print -u2 "live cues checks ran only $COUNT (expected at least 224)"; exit 1; }
+  (( COUNT >= 248 )) || { print -u2 "live cues checks ran only $COUNT (expected at least 248)"; exit 1; }
 fi
 # By hand and for the mutation gate only (Tests/run.sh already builds the helper and runs both): the helper's self-test,
 # which carries the --set grammar and the key whitelist, then the compiled helper against a loopback fixture.

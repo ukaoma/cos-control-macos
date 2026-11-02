@@ -17657,6 +17657,8 @@ final class COSControlHelper {
             if let mode = Self.liveCuesChoice(body["cueMode"], allowed: Self.liveCueModes) { out["cueMode"] = mode }
             if let grounding = Self.liveCuesChoice(body["grounding"], allowed: Self.liveCueGroundings) { out["grounding"] = grounding }
             if let raw = body["general"] as? [String: Any] { out["general"] = Self.liveCuesGeneral(raw) }
+            // 0.5.365 (server 6.97.8): every web lookup COS made today, by feature, and the ones it held back. Beside `general`, not in it.
+            if let raw = body["webToday"] as? [String: Any], let kept = Self.liveCuesWebToday(raw) { out["webToday"] = kept }
         }
         if let reason = code(body["reason"], "\\A[a-z_]{1,64}\\z") { out["reason"] = reason }
         if let field = body["field"] as? String, (Self.liveCuesLimitKeys + Self.liveCuesV3Keys + ["enabled", "v"]).contains(field) { out["field"] = field }
@@ -17692,6 +17694,39 @@ final class COSControlHelper {
         var out: [String: Any] = ["value": chosen]
         if let source = raw["source"] as? String, ["env", "setting", "default"].contains(source) { out["source"] = source }
         if let locked = Self.liveCueFlag(raw["locked"]) { out["locked"] = locked }
+        return out
+    }
+
+    /// 0.5.365: the web ledger's day. `readable` must be a real boolean (a ledger that could not be read says false, and its counts
+    /// are not today's), each feature a pair of counts, and the held-back reasons codes with counts. Anything else is dropped; a
+    /// block without `readable` or without all three features is not passed on at all, so Control never shows a half-made line.
+    private static func liveCuesWebToday(_ raw: [String: Any]) -> [String: Any]? {
+        guard let readable = Self.liveCueFlag(raw["readable"]) else { return nil }
+        var out: [String: Any] = ["readable": readable]
+        if let day = raw["day"] as? String, day.range(of: "\\A[0-9]{4}-[0-9]{2}-[0-9]{2}\\z", options: .regularExpression) != nil { out["day"] = day }
+        for feature in ["cues", "ask", "factCheck"] {
+            guard let part = raw[feature] as? [String: Any], let searches = Self.liveCueCount(part["searches"]),
+                  let pages = Self.liveCueCount(part["pagesRead"]) else { return nil }
+            var kept: [String: Any] = ["searches": searches, "pagesRead": pages]
+            // Server 6.97.8 later added `pagesFailed` (page fetches that returned nothing); an older ledger has none, and a bad one is dropped.
+            if let failed = Self.liveCueCount(part["pagesFailed"]) { kept["pagesFailed"] = failed }
+            out[feature] = kept
+        }
+        guard let held = raw["withheld"] as? [String: Any], let total = Self.liveCueCount(held["total"]) else { return nil }
+        var withheld: [String: Any] = ["total": total]
+        if let reasons = held["byReason"] as? [String: Any] {
+            var kept: [String: Any] = [:]
+            for (reason, value) in reasons.sorted(by: { $0.key < $1.key }).prefix(41) {
+                if reason.range(of: "\\A[a-z0-9][a-z0-9_:.-]{0,47}\\z", options: .regularExpression) != nil, let n = Self.liveCueCount(value) { kept[reason] = n }
+            }
+            withheld["byReason"] = kept
+        }
+        if let features = held["byFeature"] as? [String: Any] {
+            var kept: [String: Any] = [:]
+            for feature in ["cues", "ask", "factCheck"] { if let n = Self.liveCueCount(features[feature]) { kept[feature] = n } }
+            withheld["byFeature"] = kept
+        }
+        out["withheld"] = withheld
         return out
     }
 
@@ -23818,6 +23853,28 @@ final class COSControlHelper {
         let breaker = Self.liveCuesSettingsAnswer(["v": 3, "general": ["today": ["breakerOpenUntil": 1_790_000_000_000]]])
         try expect(((breaker["general"] as? [String: Any])?["today"] as? [String: Any])?["breakerOpenUntil"] as? Double == 1_790_000_000_000,
                    "an open breaker passes the time it ends")
+        // 0.5.365: the web ledger's day (`webToday`) passes whole and sanitized, only from an answer that says v 3.
+        let webBody: [String: Any] = ["v": 3, "webToday": ["day": "2026-11-02", "readable": true, "x": "SECRET",
+            "cues": ["searches": 0, "pagesRead": 0], "ask": ["searches": 3, "pagesRead": 2, "pagesFailed": 1, "x": "SECRET"], "factCheck": ["searches": 1, "pagesRead": 0, "pagesFailed": -4],
+            "withheld": ["total": 4, "byReason": ["no_public_intent": 3, "Bad Reason": 1, "other": 1, "neg": -2], "byFeature": ["cues": 0, "ask": 4, "factCheck": 0, "x": 9]]]]
+        let webOut = Self.liveCuesSettingsAnswer(webBody)["webToday"] as? [String: Any]
+        let webHeld = webOut?["withheld"] as? [String: Any]
+        try expect(webOut?["day"] as? String == "2026-11-02" && webOut?["readable"] as? Bool == true && webOut?["x"] == nil
+                   && (webOut?["ask"] as? [String: Any])?["searches"] as? Int == 3 && (webOut?["ask"] as? [String: Any])?["pagesRead"] as? Int == 2
+                   && (webOut?["ask"] as? [String: Any])?["x"] == nil && (webOut?["factCheck"] as? [String: Any])?["searches"] as? Int == 1
+                   && (webOut?["ask"] as? [String: Any])?["pagesFailed"] as? Int == 1 && (webOut?["factCheck"] as? [String: Any])?["pagesFailed"] == nil
+                   && (webOut?["cues"] as? [String: Any])?["pagesFailed"] == nil
+                   && webHeld?["total"] as? Int == 4 && (webHeld?["byReason"] as? [String: Int]) == ["no_public_intent": 3, "other": 1]
+                   && (webHeld?["byFeature"] as? [String: Int]) == ["cues": 0, "ask": 4, "factCheck": 0],
+                   "webToday passes its day, readable, the three features' counts and the held-back counts, and nothing else")
+        var webV2 = webBody; webV2["v"] = 2
+        var webNoReadable = webBody; webNoReadable["webToday"] = ["day": "2026-11-02", "cues": ["searches": 0, "pagesRead": 0]]
+        var webMissingFeature = webBody
+        webMissingFeature["webToday"] = ["readable": true, "cues": ["searches": 0, "pagesRead": 0], "ask": ["searches": 1],
+                                         "factCheck": ["searches": 0, "pagesRead": 0], "withheld": ["total": 0]]
+        try expect(Self.liveCuesSettingsAnswer(webV2)["webToday"] == nil && Self.liveCuesSettingsAnswer(webNoReadable)["webToday"] == nil
+                   && Self.liveCuesSettingsAnswer(webMissingFeature)["webToday"] == nil,
+                   "webToday is dropped without v 3, without readable, or with a feature missing a count: never a half-made line")
         let v3Refusal = Self.liveCuesSettingsAnswer(["error": "env_locked", "fields": ["cueMode", "rm -rf", "generalTrigger", "grounding"]])
         try expect(v3Refusal["fields"] as? [String] == ["cueMode", "generalTrigger", "grounding"]
                    && Self.liveCuesSettingsAnswer(["error": "invalid_request", "reason": "out_of_bounds", "field": "generalTrigger", "min": 0.4, "max": 0.9, "integer": false])["field"] as? String == "generalTrigger"

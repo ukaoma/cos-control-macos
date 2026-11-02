@@ -818,6 +818,17 @@ struct LiveCuesGeneralToday: Equatable, Sendable {
     var breakerOpenUntil: Date?
 }
 
+/// 0.5.365 (server 6.97.8): every public web lookup COS made today, by feature, from the server's own ledger (`webToday`).
+/// The general cue counters above count general cues only; the meeting assistant and the fact check search and read pages too.
+struct LiveCuesWebToday: Equatable, Sendable {
+    struct Use: Equatable, Sendable { var searches: Int; var pagesRead: Int; var pagesFailed: Int = 0 }
+    var cues: Use
+    var assistant: Use
+    var factChecks: Use
+    /// Lookups COS proposed and held back (a privacy or relevance gate said no).
+    var heldBack: Int
+}
+
 /// 0.5.362 (server API v3): one meeting's general cue status from GET /api/live-cues/status (the helper's `live-cues-status`):
 /// `state` is off, waiting, capped, withheld, breaker or needs_public_topics.
 struct LiveCuesGeneralStatus: Equatable, Sendable {
@@ -835,6 +846,9 @@ struct LiveCuesV3: Equatable, Sendable {
     /// The home city general cues use for local items, or nil when none is set.
     var homeArea: String?
     var today: LiveCuesGeneralToday?
+    /// 0.5.365: the web ledger's day. nil from a server that does not send it, and from a ledger the server could not read
+    /// (its zeros would not describe today), so the card never shows a zero it cannot stand behind.
+    var webToday: LiveCuesWebToday? = nil
 }
 
 /// One spend limit as the server reports it (server 6.79.2): its value, where it came from, whether the server's
@@ -971,7 +985,20 @@ enum LiveCues {
                                          breakerOpenUntil: raw["breakerOpenUntil"]?.double.map { Date(timeIntervalSince1970: $0 / 1000) })
         }
         let area = general["homeArea"]?.string.flatMap { $0.isEmpty ? nil : $0 }
-        return LiveCuesV3(mode: mode, grounding: grounding, publicTopics: publicTopics, homeArea: area, today: today)
+        return LiveCuesV3(mode: mode, grounding: grounding, publicTopics: publicTopics, homeArea: area, today: today, webToday: webToday(details["webToday"]?.object))
+    }
+
+    /// 0.5.365: the ledger's counts, or nil when the block is missing, says it could not be read (`readable` false) or lacks any
+    /// part of the shape. A half-made block is no block.
+    static func webToday(_ raw: [String: JSONValue]?) -> LiveCuesWebToday? {
+        guard let raw, raw["readable"]?.bool == true else { return nil }
+        func use(_ name: String) -> LiveCuesWebToday.Use? {
+            guard let part = raw[name]?.object, let searches = part["searches"]?.int, let pages = part["pagesRead"]?.int, searches >= 0, pages >= 0 else { return nil }
+            return LiveCuesWebToday.Use(searches: searches, pagesRead: pages, pagesFailed: max(0, part["pagesFailed"]?.int ?? 0))
+        }
+        guard let cues = use("cues"), let ask = use("ask"), let fact = use("factCheck"),
+              let held = raw["withheld"]?.object, let total = held["total"]?.int, total >= 0 else { return nil }
+        return LiveCuesWebToday(cues: cues, assistant: ask, factChecks: fact, heldBack: total)
     }
 
     private static func choice<Value>(_ value: JSONValue?, _ make: (String) -> Value?) -> LiveCuesChoice<Value>? {
@@ -1185,9 +1212,23 @@ enum LiveCues {
         return "Local items use \(area)."
     }
 
-    /// "Today: 4 topic checks, 2 web searches".
+    /// "Background topic checks today: 4, searches: 2". 0.5.365: named for what it counts. These are the general cues' own
+    /// counters; the meeting assistant and fact checks have their own searches, on the web line.
     static func generalUsageLine(_ today: LiveCuesGeneralToday) -> String {
-        "Today: \(today.topicCalls) topic \(today.topicCalls == 1 ? "check" : "checks"), \(today.webSearches) web \(today.webSearches == 1 ? "search" : "searches")"
+        "Background topic checks today: \(today.topicCalls), searches: \(today.webSearches)"
+    }
+
+    /// "Web today: 5 searches (cues 1, assistant 3, fact checks 1), 3 pages read, 1 failed. 2 held back." Every lookup COS made, by
+    /// feature. The held back sentence appears only when something was held back. nil without a ledger to stand behind.
+    static func webTodayLine(_ web: LiveCuesWebToday?) -> String? {
+        guard let web else { return nil }
+        let searches = web.cues.searches + web.assistant.searches + web.factChecks.searches
+        let pages = web.cues.pagesRead + web.assistant.pagesRead + web.factChecks.pagesRead
+        let failed = web.cues.pagesFailed + web.assistant.pagesFailed + web.factChecks.pagesFailed
+        var line = "Web today: \(searches) \(searches == 1 ? "search" : "searches") (cues \(web.cues.searches), assistant \(web.assistant.searches), "
+            + "fact checks \(web.factChecks.searches)), \(pages) \(pages == 1 ? "page" : "pages") read" + (failed > 0 ? ", \(failed) failed." : ".")
+        if web.heldBack > 0 { line += " \(web.heldBack) held back." }
+        return line
     }
 
     /// "General cues are paused until 3:20 PM after repeated failures." while the breaker is open, else nil.
@@ -1423,38 +1464,66 @@ final class LiveCuesStore: ObservableObject {
 
     /// A person moved a limit. Nothing is sent until they stop for `limitsDebounce`; then every waiting change goes in
     /// one call. A locked (env) limit, or one the server did not report, never moves.
+    ///
+    /// 0.5.365 (Miles, 2026-11-02): a newer move restarts the wait and nothing else. It used to cancel `limitsFlush`, which was
+    /// also the task awaiting the helper, so a step during a save killed the helper after the server had applied the value
+    /// and the card said "could not save" for a limit that was saved. The task now lets go of `limitsFlush` just before it
+    /// sends, so a later move can only cancel a wait, never a call; the newer value waits its own turn after that call.
     func propose(_ key: LiveCuesLimits.Key, _ value: Double, run: @escaping Run) {
         guard let limit = settings?.limits?.values[key], !limit.locked else { return }
         if value == limit.value { pendingLimits[key] = nil } else { pendingLimits[key] = value }
         limitsNote = nil
         limitsFlush?.cancel()
+        limitsFlush = nil
         guard !pendingLimits.isEmpty else { return }
         let wait = limitsDebounce
         limitsFlush = Task { [weak self] in
             try? await Task.sleep(for: wait)
-            guard !Task.isCancelled else { return }
-            await self?.flushLimits(run)
+            // A call out (a save, a read) finishes first; a newer move during that restarts the wait instead of queueing a send.
+            while let store = self, store.busy, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(50)) }
+            guard !Task.isCancelled, let store = self else { return }
+            // From here a newer move no longer cancels this task: it is the one awaiting the helper.
+            store.limitsFlush = nil
+            await store.flushLimits(run)
         }
     }
 
     /// Send the waiting changes now. The shown values change only from the server's answer (its echo of every limit),
     /// never ahead of it; a refusal says why and shows the server's values again. One call at a time with the switch.
-    func flushLimits(_ run: Run) async {
+    /// A call that was cancelled (the helper stopped) is not a refusal: the server may have applied it, so the card reads
+    /// the server again and shows what it holds.
+    func flushLimits(_ run: @escaping Run) async {
         while busy { try? await Task.sleep(for: .milliseconds(50)) }
         guard let arguments = LiveCues.limitsArguments(pendingLimits) else { return }
         busy = true
         let asked = pendingLimits
-        let answer = try? await run(arguments, nil)
+        var answer: HelperResponse?
+        var cancelled = false
+        do { answer = try await run(arguments, nil) } catch is CancellationError { cancelled = true } catch {}
         busy = false
         // A change made while this one was out stays waiting for its own call.
         for (key, value) in asked where pendingLimits[key] == value { pendingLimits[key] = nil }
+        if cancelled {
+            await rereadAfterCancel(run)
+            return
+        }
         if let refusal = LiveCues.limitsRefusal(answer?.details) {
             limitsNote = refusal
             return
         }
+        limitsNote = nil
         let before = settings
         state = LiveCues.state(answer?.details)
         await keepV3(before, run)
+    }
+
+    /// A cancelled save: read the settings once more, outside the cancelled task, and show what the server holds. No note.
+    private func rereadAfterCancel(_ run: @escaping Run) async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        let answer = await Task { try? await run(["live-cues-settings"], nil) }.value
+        if let read = answer.map({ LiveCues.state($0.details) }), case .loaded = read { state = read }
     }
 
     func set(_ enabled: Bool, run: Run) async {

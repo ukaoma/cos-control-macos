@@ -155,6 +155,23 @@ with tempfile.TemporaryDirectory(prefix='cos-live-cues-', dir='/tmp') as tmp:
         check(d['general']['today'] == {'day': '2026-11-01', 'topicCalls': 4, 'webSearches': 2, 'breakerOpenUntil': None}
               and d['general']['publicTopics'] is True and d['general']['homeArea'] == 'Austin, TX' and 'token' not in d['general'] and 'SECRET' not in json.dumps(got),
               'today, Public topics and the home city cross; nothing else')
+        check('webToday' not in d, 'a v3 answer without the ledger carries no webToday (an older 6.97 server): nothing is made up')
+        # 0.5.365 (server 6.97.8): the web ledger crosses, whole, with its counts only.
+        ledger = {'day': '2026-11-02', 'readable': True, 'x': 'SECRET', 'cues': {'searches': 1, 'pagesRead': 0},
+                  'ask': {'searches': 3, 'pagesRead': 2, 'pagesFailed': 1, 'token': 'SECRET'}, 'factCheck': {'searches': 0, 'pagesRead': 0},
+                  'withheld': {'total': 2, 'byReason': {'no_public_intent': 2, 'Bad Reason': 1}, 'byFeature': {'cues': 0, 'ask': 2, 'factCheck': 0}}}
+        state['body'] = dict(v3, webToday=ledger)
+        got = run()
+        d = got['details']
+        check(d['webToday'] == {'day': '2026-11-02', 'readable': True, 'cues': {'searches': 1, 'pagesRead': 0}, 'ask': {'searches': 3, 'pagesRead': 2, 'pagesFailed': 1},
+                                'factCheck': {'searches': 0, 'pagesRead': 0},
+                                'withheld': {'total': 2, 'byReason': {'no_public_intent': 2}, 'byFeature': {'cues': 0, 'ask': 2, 'factCheck': 0}}}
+              and 'SECRET' not in json.dumps(got), 'webToday crosses with its counts, a bad reason code and every other key dropped')
+        state['body'] = dict(v3, webToday=dict(ledger, readable='yes'))
+        check('webToday' not in run()['details'], 'a ledger whose readable is not a boolean is dropped')
+        state['body'] = dict(v2, webToday=ledger)
+        check('webToday' not in run()['details'], 'a body that does not say v 3 never carries webToday')
+        state['body'] = v3
         before = len(requests)
         # An older server refuses ?v=3, and the helper asks again for the v2 view it knows.
         state['older'] = True; state['body'] = v2

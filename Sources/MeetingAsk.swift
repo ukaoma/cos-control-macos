@@ -917,6 +917,7 @@ struct LiveCuesLimitsRows: View {
         if !store.pendingLimits.isEmpty { SettingsHubNote(text: LiveCues.savingLine) }
         if let note = store.limitsNote { SettingsHubNote(text: note, tone: .warning) }
         if let usage = limits.usage { SettingsHubNote(text: LiveCues.usageLine(usage)) }
+        if let line = LiveCues.webTodayLine(store.settings?.v3?.webToday) { SettingsHubNote(text: line) }
     }
 
     private var panelBody: some View {
@@ -933,6 +934,9 @@ struct LiveCuesLimitsRows: View {
             }
             if let usage = limits.usage {
                 Text(LiveCues.usageLine(usage)).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if let line = LiveCues.webTodayLine(store.settings?.v3?.webToday) {
+                Text(line).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
         .font(COSType.body(12))

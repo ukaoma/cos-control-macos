@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Combine
+import Compression
 import CryptoKit
 import Darwin
 import Foundation
@@ -823,9 +824,11 @@ enum WorkCardFiles {
     }
 
     /// The companions a file gets (video transcription is not yet available).
-    nonisolated static func companionPlan(kind: String, width: Int?, height: Int?, ocr: Bool = false) -> [String] {
+    nonisolated static func companionPlan(kind: String, width: Int?, height: Int?, ocr: Bool = false, spreadsheet: Bool = false) -> [String] {
         // 0.5.258 (Miles, Phase 2): a meeting's image also gets its words, read on this Mac by Vision. Never a card's.
         let words = ocr ? ["text"] : []
+        // 0.5.365: a meeting's .xlsx gets its text the same way (see spreadsheetText). Never a card's.
+        if spreadsheet && kind == "document" { return ["text"] }
         switch kind {
         case "heic": return ["jpeg"] + words
         case "image": return (max(width ?? 0, height ?? 0) > viewEdge ? ["view"] : []) + words
@@ -1746,7 +1749,7 @@ extension WorkCardFiles {
                 let file = WorkContextFile(id: newID(), display: display, stored: stored, sha256: sha, bytes: size, sniffed: sniffed.mime,
                     kind: sniffed.kind, pages: meta.pages, pixelWidth: meta.width, pixelHeight: meta.height, duration: meta.duration,
                     source: source, original: original, addedAt: Date().timeIntervalSince1970,
-                    companions: companionPlan(kind: sniffed.kind, width: meta.width, height: meta.height, ocr: ocr)
+                    companions: companionPlan(kind: sniffed.kind, width: meta.width, height: meta.height, ocr: ocr, spreadsheet: ocr && sniffed.mime == xlsxMime)
                         .map { WorkContextCompanion(kind: $0, stored: companionName($0, base: base, mime: sniffed.mime), state: "preparing") },
                     state: "ready", seq: seq, note: stamped ? nil : unstampedNote)
                 manifest.files.append(file)
@@ -1892,6 +1895,261 @@ extension WorkCardFiles {
         return String(joined.prefix(limit))
     }
 
+    // MARK: Spreadsheet text (0.5.365)
+    //
+    // Miles, 2026-11-02 13:09: two .xlsx files dropped on a meeting were refused ("unsupported; text not available"). A workbook
+    // is a zip of XML parts, so its text is read here the way the server reads a phone upload (server/lib/xlsx-text.ts, same
+    // limits, same output), with no new dependency: Apple's Compression framework inflates a part, Foundation's XMLParser reads
+    // it. Made on this Mac beside the copy, so it works against every server, an older one included: what leaves the Mac is the
+    // text row the meeting assistant already takes for a PDF or a Word file.
+
+    nonisolated static let xlsxMime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    /// The same caps as the server. Inflate caps stop a zip bomb at the cap: a part that fills its buffer is refused.
+    enum SheetLimits {
+        static let maxBytes = 10_000_000, maxSheets = 12, maxRows = 200, maxColumns = 50, maxCellChars = 200, maxChars = 100_000
+        static let maxSharedStringsBytes = 8_000_000, maxSheetBytes = 16_000_000, maxPartBytes = 4_000_000
+        static let cutNote = "[Text cut at 100000 characters.]"
+    }
+
+    private struct ZipPart { var method: UInt16; var compressed: Int; var size: Int; var offset: Int }
+
+    private nonisolated static func le16(_ b: [UInt8], _ at: Int) -> Int { Int(b[at]) | Int(b[at + 1]) << 8 }
+    private nonisolated static func le32(_ b: [UInt8], _ at: Int) -> Int { le16(b, at) | le16(b, at + 2) << 16 }
+
+    /// The central directory: part name to where it is. nil for anything that is not a plain, unencrypted, non-zip64 archive.
+    private nonisolated static func zipParts(_ b: [UInt8]) -> [String: ZipPart]? {
+        guard b.count >= 22, le32(b, 0) == 0x04034b50 else { return nil }
+        var eocd = -1
+        var i = b.count - 22
+        while i >= max(0, b.count - 22 - 65_535) {
+            if le32(b, i) == 0x06054b50 { eocd = i; break }
+            i -= 1
+        }
+        guard eocd >= 0 else { return nil }
+        let count = le16(b, eocd + 10), cdSize = le32(b, eocd + 12), cdOffset = le32(b, eocd + 16)
+        guard count != 0xffff, cdSize != 0xffff_ffff, cdOffset != 0xffff_ffff, cdOffset + cdSize <= b.count, count <= 5_000 else { return nil }
+        var parts: [String: ZipPart] = [:]
+        var p = cdOffset
+        for _ in 0..<count {
+            guard p + 46 <= b.count, le32(b, p) == 0x02014b50, le16(b, p + 8) & 1 == 0 else { return nil }
+            let nameLength = le16(b, p + 28), extra = le16(b, p + 30), comment = le16(b, p + 32)
+            guard p + 46 + nameLength <= b.count else { return nil }
+            let name = String(decoding: b[(p + 46)..<(p + 46 + nameLength)], as: UTF8.self)
+            parts[name] = ZipPart(method: UInt16(le16(b, p + 10)), compressed: le32(b, p + 20), size: le32(b, p + 24), offset: le32(b, p + 42))
+            p += 46 + nameLength + extra + comment
+        }
+        return parts
+    }
+
+    /// One part's bytes, inflated into a buffer of at most `cap` bytes. nil past the cap, for a method other than stored or
+    /// deflate, or when the part is damaged.
+    private nonisolated static func zipPart(_ b: [UInt8], _ part: ZipPart?, cap: Int) -> Data? {
+        guard let part, part.offset + 30 <= b.count, le32(b, part.offset) == 0x04034b50, part.size <= cap else { return nil }
+        let start = part.offset + 30 + le16(b, part.offset + 26) + le16(b, part.offset + 28)
+        guard start + part.compressed <= b.count else { return nil }
+        if part.method == 0 { return part.compressed <= cap ? Data(b[start..<(start + part.compressed)]) : nil }
+        guard part.method == 8 else { return nil }
+        if part.compressed == 0 { return Data() }
+        // One byte more than the cap: a part that fills it is bigger than the cap allows and is refused, never cut.
+        var out = [UInt8](repeating: 0, count: cap + 1)
+        let written = b[start..<(start + part.compressed)].withUnsafeBufferPointer { source in
+            out.withUnsafeMutableBufferPointer { target in
+                compression_decode_buffer(target.baseAddress!, cap + 1, source.baseAddress!, part.compressed, nil, COMPRESSION_ZLIB)
+            }
+        }
+        guard written > 0, written <= cap else { return nil }
+        return Data(out[0..<written])
+    }
+
+    /// Cell and name text as the server shows it: runs of tabs and line breaks become one space, trimmed, capped.
+    private nonisolated static func cleanCell(_ value: String) -> String {
+        var out = "", gap = false
+        for scalar in value.unicodeScalars {
+            if scalar == "\t" || scalar == "\r" || scalar == "\n" { gap = true; continue }
+            if gap { out += " "; gap = false }
+            out.unicodeScalars.append(scalar)
+        }
+        if gap { out += " " }
+        return String(out.trimmingCharacters(in: .whitespacesAndNewlines).prefix(SheetLimits.maxCellChars))
+    }
+
+    /// Zero-based column from a cell reference ("A1" is 0, "AA7" is 26); nil without letters.
+    private nonisolated static func columnIndex(_ ref: String) -> Int? {
+        var n = 0, any = false
+        for scalar in ref.unicodeScalars {
+            let v = scalar.value
+            guard (65...90).contains(v) || (97...122).contains(v) else { break }
+            n = min(n * 26 + Int(v & 0x1f), 1_000_000); any = true
+        }
+        return any ? n - 1 : nil
+    }
+
+    /// The text of every `t` in a shared string or inline string, phonetic guides (`rPh`) left out.
+    private final class StringsReader: NSObject, XMLParserDelegate {
+        var strings: [String] = []
+        private var current = "", inSI = false, inT = false, phonetic = 0
+        func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String] = [:]) {
+            switch name {
+            case "si": inSI = true; current = ""; phonetic = 0
+            case "rPh": phonetic += 1
+            case "t": inT = inSI && phonetic == 0
+            default: break
+            }
+        }
+        func parser(_ parser: XMLParser, foundCharacters string: String) { if inT { current += string } }
+        func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
+            switch name {
+            case "t": inT = false
+            case "rPh": phonetic = max(0, phonetic - 1)
+            case "si": strings.append(current); inSI = false
+            default: break
+            }
+        }
+    }
+
+    /// One sheet's rows as tab-separated lines, at most `maxRows` non-empty rows; parsing stops there.
+    private final class SheetReader: NSObject, XMLParserDelegate {
+        let strings: [String]
+        var lines: [String] = []
+        var cut = false
+        private var row: [String] = [], inRow = false
+        private var cellType = "", column: Int?, nextColumn = 0, value: String?, inline = "", inV = false, inInline = false, inT = false, phonetic = 0
+        init(strings: [String]) { self.strings = strings }
+        func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String] = [:]) {
+            switch name {
+            case "row": inRow = true; row = []; nextColumn = 0
+            case "c" where inRow:
+                cellType = attributes["t"] ?? ""
+                column = attributes["r"].flatMap(WorkCardFiles.columnIndex) ?? nextColumn
+                value = nil; inline = ""
+            case "v": inV = true; value = ""
+            case "is": inInline = true
+            case "rPh": phonetic += 1
+            case "t": inT = inInline && phonetic == 0
+            default: break
+            }
+        }
+        func parser(_ parser: XMLParser, foundCharacters string: String) {
+            if inV { value = (value ?? "") + string } else if inT { inline += string }
+        }
+        func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
+            switch name {
+            case "v": inV = false
+            case "t": inT = false
+            case "rPh": phonetic = max(0, phonetic - 1)
+            case "is": inInline = false
+            case "c" where inRow:
+                guard let at = column else { return }
+                nextColumn = at + 1
+                guard at < SheetLimits.maxColumns else { return }
+                let text: String
+                if cellType == "inlineStr" { text = inline }
+                else if let value {
+                    switch cellType {
+                    case "s": text = Int(value.trimmingCharacters(in: .whitespaces)).flatMap { $0 >= 0 && $0 < strings.count ? strings[$0] : nil } ?? ""
+                    case "b": text = value == "1" ? "TRUE" : "FALSE"
+                    default: text = value
+                    }
+                } else { text = "" }
+                while row.count < at { row.append("") }
+                if row.count == at { row.append(WorkCardFiles.cleanCell(text)) } else { row[at] = WorkCardFiles.cleanCell(text) }
+            case "row":
+                inRow = false
+                while let last = row.last, last.isEmpty { row.removeLast() }
+                guard !row.isEmpty else { return }
+                if lines.count >= SheetLimits.maxRows { cut = true; parser.abortParsing(); return }
+                lines.append(row.joined(separator: "\t"))
+            default: break
+            }
+        }
+    }
+
+    /// The text of an .xlsx workbook: for each sheet in workbook order a "Sheet: <name>" line, then each non-empty row as
+    /// tab-separated cell values. Shared strings are resolved. No formula is evaluated (a formula cell shows the value Excel
+    /// last saved) and a date shows as its stored number. Limits are the server's: 10 MB workbook, 12 sheets, 200 non-empty
+    /// rows per sheet, 50 columns, 200 characters per cell, 100,000 characters in all (cut, and said so). nil when the file is
+    /// not a readable, unencrypted workbook, or has no sheets.
+    nonisolated static func spreadsheetText(at url: URL) -> String? {
+        guard let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize, size <= SheetLimits.maxBytes,
+              let data = try? Data(contentsOf: url, options: .mappedIfSafe), data.count <= SheetLimits.maxBytes else { return nil }
+        let bytes = [UInt8](data)
+        guard let parts = zipParts(bytes), let workbook = zipPart(bytes, parts["xl/workbook.xml"], cap: SheetLimits.maxPartBytes) else { return nil }
+        var targets: [String: String] = [:]
+        if let rels = zipPart(bytes, parts["xl/_rels/workbook.xml.rels"], cap: SheetLimits.maxPartBytes) {
+            let reader = RelationshipsReader()
+            let xml = XMLParser(data: rels); xml.delegate = reader; xml.shouldResolveExternalEntities = false; xml.parse()
+            for (id, target) in reader.targets { targets[id] = target.hasPrefix("/") ? String(target.dropFirst()) : "xl/" + (target.hasPrefix("./") ? String(target.dropFirst(2)) : target) }
+        }
+        let names = SheetNamesReader()
+        let workbookXML = XMLParser(data: workbook); workbookXML.delegate = names; workbookXML.shouldResolveExternalEntities = false; workbookXML.parse()
+        let sheets: [(name: String, path: String)] = names.sheets.enumerated().map { index, sheet in
+            let fallback = "Sheet\(index + 1)"
+            let name = cleanCell(sheet.name ?? fallback)
+            return (name.isEmpty ? fallback : name, sheet.rid.flatMap { targets[$0] } ?? "xl/worksheets/sheet\(index + 1).xml")
+        }
+        guard !sheets.isEmpty else { return nil }
+        var strings: [String] = []
+        if let shared = zipPart(bytes, parts["xl/sharedStrings.xml"], cap: SheetLimits.maxSharedStringsBytes) {
+            let reader = StringsReader()
+            let xml = XMLParser(data: shared); xml.delegate = reader; xml.shouldResolveExternalEntities = false; xml.parse()
+            strings = reader.strings
+        }
+        var blocks: [String] = []
+        var used = 0, capped = false
+        // The cut marker is added after the cap is reached, so the budget leaves room for it.
+        let budget = SheetLimits.maxChars - SheetLimits.cutNote.count - 2
+        func push(_ block: String) -> Bool {
+            if used + block.count + 2 > budget {
+                capped = true
+                let room = budget - used - 2
+                if room > 0 { blocks.append(String(block.prefix(room))) }
+                return false
+            }
+            blocks.append(block); used += block.count + 2
+            return true
+        }
+        for (index, sheet) in sheets.enumerated() {
+            if index >= SheetLimits.maxSheets {
+                let rest = sheets.count - SheetLimits.maxSheets
+                _ = push("[\(rest) more sheet\(rest == 1 ? "" : "s") not read: \(sheets[SheetLimits.maxSheets...].map(\.name).joined(separator: ", ")).]")
+                capped = true
+                break
+            }
+            guard let xml = zipPart(bytes, parts[sheet.path], cap: SheetLimits.maxSheetBytes) else {
+                if !push("Sheet: \(sheet.name)\n[This sheet could not be read.]") { break }
+                continue
+            }
+            let reader = SheetReader(strings: strings)
+            let parser = XMLParser(data: xml); parser.delegate = reader; parser.shouldResolveExternalEntities = false; parser.parse()
+            let lines = ["Sheet: \(sheet.name)"] + reader.lines + (reader.cut ? ["[Only the first \(SheetLimits.maxRows) rows of this sheet are read.]"] : [])
+            if !push(lines.joined(separator: "\n")) { break }
+        }
+        let text = blocks.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let out = capped ? text + "\n\n" + SheetLimits.cutNote : text
+        // The meeting's file row takes at most 100,000 bytes; characters can be wider than a byte, so cut to bytes too.
+        guard out.utf8.count > SheetLimits.maxChars else { return out }
+        var room = SheetLimits.maxChars - SheetLimits.cutNote.utf8.count - 2, kept = String.UnicodeScalarView()
+        for scalar in out.unicodeScalars {
+            room -= UTF8.width(scalar)
+            if room < 0 { break }
+            kept.append(scalar)
+        }
+        return String(kept).trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + SheetLimits.cutNote
+    }
+
+    private final class RelationshipsReader: NSObject, XMLParserDelegate {
+        var targets: [String: String] = [:]
+        func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String] = [:]) {
+            if name == "Relationship", let id = attributes["Id"], let target = attributes["Target"] { targets[id] = target }
+        }
+    }
+    private final class SheetNamesReader: NSObject, XMLParserDelegate {
+        var sheets: [(name: String?, rid: String?)] = []
+        func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String] = [:]) {
+            if name == "sheet" { sheets.append((attributes["name"], attributes["r:id"])) }
+        }
+    }
+
     /// Makes one companion beside its file, through a staging name, and returns it ready or failed (with why).
     nonisolated static func makeCompanion(_ companion: WorkContextCompanion, file: WorkContextFile, root: URL, folder: URL,
                                           progress: @escaping @Sendable (Double) -> Void) async -> WorkContextCompanion {
@@ -1916,10 +2174,12 @@ extension WorkCardFiles {
         switch companion.kind {
         case "text":
             let image = file.kind == "image" || file.kind == "heic"
+            let sheet = file.kind == "document" && file.sniffed == xlsxMime
             // QA round 2 (N1): the whole of an image's words is read and checked, never a first slice of it.
-            guard let text = image ? recognizeText(at: original, limit: 400_000) : extractText(original, kind: file.kind),
+            guard let text = image ? recognizeText(at: original, limit: 400_000) : sheet ? spreadsheetText(at: original) : extractText(original, kind: file.kind),
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                return fail(image ? noWordsFailure : file.kind == "pdf" ? "this PDF has no text layer (a scan)" : "its text could not be read")
+                return fail(image ? noWordsFailure : file.kind == "pdf" ? "this PDF has no text layer (a scan)"
+                            : sheet ? "this workbook has no readable cells, or is encrypted or damaged" : "its text could not be read")
             }
             // 0.5.258: an image's name says nothing about what is in it, so its words are checked as a dropped text file's
             // contents are. A hit keeps the image on the meeting, marked, and out of every send (QA: never silently).
