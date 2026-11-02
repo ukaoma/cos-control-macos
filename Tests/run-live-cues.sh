@@ -35,7 +35,8 @@ if [[ "$LANE" == "all" || "$LANE" == "pins" ]]; then
   OUT="$(/usr/bin/python3 "$ROOT/Tests/live-cues-pins.py" "$ROOT")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*pins: }%% passed*}"
-  (( COUNT >= 116 )) || { print -u2 "live cues pins ran only $COUNT (expected at least 116)"; exit 1; }
+  # 106 at 0.5.364: the newest What's New section is now one check, not one per item (116 counted 0.5.363's 11 items).
+  (( COUNT >= 106 )) || { print -u2 "live cues pins ran only $COUNT (expected at least 106)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
