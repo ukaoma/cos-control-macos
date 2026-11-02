@@ -1601,8 +1601,10 @@ struct CueSourcesList: View {
         return opener.canOpen(link)
     }
 
+    private var anyOpens: Bool { sources.contains { opens($0) } }
+
     var body: some View {
-        if !sources.contains(where: opens) {
+        if !anyOpens {
             Text(CueVerdicts.sourcesLine(sources)).font(COSType.body(size)).foregroundStyle(COSPalette.muted)
         } else {
             VStack(alignment: .leading, spacing: 3) {

@@ -144,7 +144,7 @@ check(opener_src.count("NSWorkspace.shared.open(") == 1 and "case .web(let url)?
       "a web source opens through the link, which is https only; the opener names no scheme")
 check("guard let opener, let link = source.link else { return false }\n        return opener.canOpen(link)" in list_src and "if let opener, opens(source), let link = source.link {" in list_src
       and "Button { opener.open(source) }" in list_src and "Link(" not in list_src, "a source is a button only when it has somewhere to open now")
-check("if !sources.contains(where: opens) {\n            Text(CueVerdicts.sourcesLine(sources))" in list_src and "Text(CueVerdicts.sourcesLead)" in list_src,
+check("if !anyOpens {\n            Text(CueVerdicts.sourcesLine(sources))" in list_src and "Text(CueVerdicts.sourcesLead)" in list_src,
       "with nothing to open the sources are the one 0.5.363 line; when one opens, Sources: leads the list")
 check(ask.count("MeetingSourceOpener(model: model, session:") == 3 and meetings.count("MeetingSourceOpener(model: model, session: feed.sessionId)") == 1,
       "four places build an opener: Ask's source rows, the Cues view, the review pane and the live pane's inline cues")

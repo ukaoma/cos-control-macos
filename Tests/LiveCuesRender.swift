@@ -159,11 +159,18 @@ import Vision
             try await hub(model, appearance: appearance, name: "hub-meetings-general-\(theme)", out: out,
                           // The page is 5,200 px tall at 2x and Vision garbles its lower lines, so the words here are the ones it reads reliably;
                           // the card renders above read every general row whole at 390 pt, and the PNG is read by eye.
-                          words: [LiveCues.cueModeTitle, LiveCues.modeHelp(.general), "Public topics is off, so Mac meetings keep focused cues", "Local items use Austin, TX."])
+                          // The page is 5,200 px tall at 2x and Vision garbles its lines unevenly between light and dark (the help runs three lines beside the
+                          // menu, and it reads the menu's own word into the last), so only the heading is read here. The card renders read every
+                          // sentence whole at 390 pt, and the PNG is read by eye.
+                          words: [LiveCues.cueModeTitle])
             // A v 2 server shows none of it.
             answer(withLimits)
             await store.load(run)
             expect(store.settings?.v3 == nil && store.settings?.limits != nil, "a v 2 answer has no v3 controls")
+            // The old-server Meetings page: no Cue mode, Grounded cues or general limit (Vision reads this page unevenly, so the PNG is
+            // read by eye for what is there; the check here is only what must not be).
+            try await hub(model, appearance: appearance, name: "hub-meetings-v2-\(theme)", out: out, words: [],
+                          absent: [LiveCues.cueModeTitle, LiveCues.groundedTitle, LiveCues.generalBarTitle, LiveCues.generalDailySearchesTitle])
             try card(model, appearance: appearance, name: "v2-no-v3-\(theme)", out: out, words: [LiveCues.barTitle, LiveCues.glassesLine])
             // The 409: the server's environment holds it on, the row says so and shows the switch held.
             answer(shape(enabled: true, available: true))
@@ -207,7 +214,7 @@ import Vision
     /// 0.5.362: the Settings hub's Meetings page at 1280 wide, every group open, with the helper stand-in answering the cue
     /// settings the hub's own loader reads. The scratch home is the run's (the harness is started with HOME set), so no setting
     /// of this Mac is read or written.
-    static func hub(_ model: ControllerModel, appearance: NSAppearance.Name, name: String, out: URL, words: [String]) async throws {
+    static func hub(_ model: ControllerModel, appearance: NSAppearance.Name, name: String, out: URL, words: [String], absent: [String] = []) async throws {
         UserDefaults.standard.set(false, forKey: SettingsHub.classicKey)
         let size = CGSize(width: 1280, height: 2600)
         let page = ControlPanel.hubFixture(model: model, category: .meetings, advanced: Set(SettingsHubCatalog.groups(in: .meetings).map(\.id)))
@@ -226,6 +233,7 @@ import Vision
         try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent("\(name).png"))
         let read = ocr(rep)
         for text in words { expect(flat(read).contains(flat(text)), "\(name): reads whole on the pixels: \(text)", "read: \(read)") }
+        for text in absent { expect(!flat(read).contains(flat(text)), "\(name): is not on the page: \(text)", "read: \(read)") }
         print("\(name): \(Int(size.width)) x \(Int(size.height)) pt")
     }
 

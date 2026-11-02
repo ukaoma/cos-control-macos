@@ -97,6 +97,9 @@ import Vision
             expect(store.generalStatus[session]?.state == "capped", "the general status reads from the stand-in")
             try draw(sidePanel(model, shown: true), size: CGSize(width: 400, height: 720), appearance: appearance, name: "meeting-cues-insight-\(theme)", out: out,
                      words: ["Cues 4", "Insight", "A regional jewelry show moved to March", "Trade Weekly (tradeweekly.example)", CueVerdicts.generalLine(store.generalStatus[session])!])
+            // The same panel at the Settings card's 390 pt.
+            try draw(sidePanel(model, shown: true), size: CGSize(width: 390, height: 720), appearance: appearance, name: "meeting-cues-insight-390-\(theme)", out: out,
+                     words: ["Cues 4", "Insight", "Trade Weekly (tradeweekly.example)", CueVerdicts.generalLine(store.generalStatus[session])!])
             answer("live-cues-history", history(unrated + rated, total: 31, rated: 3))
             await store.loadMeeting(session, days: CueVerdicts.liveDays, force: true, run: run)
         }

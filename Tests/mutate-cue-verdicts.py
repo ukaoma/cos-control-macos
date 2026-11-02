@@ -138,7 +138,7 @@ MUTANTS = [
     ("C30 *.internal opens", "models", CORE, ' !host.hasSuffix(".internal")', ' true'),
     ("C31 a name with no dot opens", "models", CORE, "        guard labels.count >= 2, let last = labels.last, last.first?.isLetter == true else { return false }\n", "        guard let last = labels.last, last.first?.isLetter == true else { return false }\n"),
     ("C32 a numeric last label opens", "models", CORE, "        guard labels.count >= 2, let last = labels.last, last.first?.isLetter == true else { return false }\n", "        guard labels.count >= 2, labels.last != nil else { return false }\n"),
-    ("C33 an IPv6 literal opens", "models", CORE, '!host.hasSuffix("."), !host.contains(".."), !host.contains(":"), !host.contains("["), !host.contains("%") else { return false }', '!host.hasSuffix("."), !host.contains("..") else { return false }'),
+    # No mutant for the IPv6 guard (`!host.contains(":")`): it is equivalent. A valid IPv6 literal has no dot (one label, refused by labels.count >= 2) or ends in a dotted IPv4 (a digit last label); the guard stays as defense in depth.
     ("C34 any port opens", "models", CORE, "              url.port == nil || url.port == (scheme == \"https\" ? 443 : 80) else { return nil }\n", "              true else { return nil }\n"),
     ("C35 the other scheme's port opens", "models", CORE, 'url.port == nil || url.port == (scheme == "https" ? 443 : 80) else', 'url.port == nil || url.port == 443 || url.port == 80 else'),
     ("C36 an empty label opens", "models", CORE, ' !host.hasPrefix("."), !host.hasSuffix("."), !host.contains(".."),', ' !host.hasSuffix("."),'),
@@ -150,7 +150,7 @@ MUTANTS = [
      '        case .web(let url)?: NSWorkspace.shared.open(URL(string: url.absoluteString.replacingOccurrences(of: "https", with: "http")) ?? url)\n'),
     ("P17 a source is a button with nowhere to open", "pins", ASK, "        return opener.canOpen(link)\n", "        return true\n"),
     ("P22 the list leads without Sources:", "pins", ASK, "                Text(CueVerdicts.sourcesLead).font(COSType.body(size)).foregroundStyle(COSPalette.muted)\n", ""),
-    ("P23 a source with no link draws as a list", "pins", ASK, "        if !sources.contains(where: opens) {\n", "        if sources.isEmpty {\n"),
+    ("P23 a source with no link draws as a list", "pins", ASK, "        if !anyOpens {\n", "        if sources.isEmpty {\n"),
     ("P18 the general line shows in a saved meeting", "pins", ASK, "            if polls, readsGeneral, let line = CueVerdicts.generalLine(", "            if readsGeneral, let line = CueVerdicts.generalLine("),
     ("P19 the general status is read outside a web mode", "pins", ASK,
      "                if readsGeneral { await store.loadGeneralStatus(session, run: run) }\n", "                await store.loadGeneralStatus(session, run: run)\n"),
