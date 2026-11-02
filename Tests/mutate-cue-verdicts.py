@@ -5,7 +5,7 @@ Runs the unmutated lanes first and refuses on any failure (a red baseline would 
 must match its target EXACTLY ONCE, and is killed only when its lane fails with a named check ("... FAILED: ..." or a
 failed precondition, or the page canary's assertion); a compile failure or any other exit is an infrastructure error, not
 a kill. Compiles go through the lane, so through Tests/compile-guard.sh, one at a time, never in parallel.
-Usage: python3 Tests/mutate-cue-verdicts.py [--lane pins|models|page|helper]
+Usage: python3 Tests/mutate-cue-verdicts.py [--lane pins|models|page|helper] [--only C1,C2,P12]
 """
 import os
 import subprocess
@@ -87,8 +87,59 @@ MUTANTS = [
     ("P7 Cues offered before the server answered with the history", "pins", ASK,
      "private var cuesOffered: Bool { store.available == true && G2MeetingStop", "private var cuesOffered: Bool { G2MeetingStop"),
     ("P8 the live poll forces every read", "pins", ASK,
-     "                await store.loadMeeting(session, days: days, run: run)\n                try? await Task.sleep",
-     "                await store.loadMeeting(session, days: days, force: true, run: run)\n                try? await Task.sleep"),
+     "                await store.loadMeeting(session, days: days, run: run)\n                if readsGeneral",
+     "                await store.loadMeeting(session, days: days, force: true, run: run)\n                if readsGeneral"),
+    # 0.5.362 (server API v3): insight cues, their sources, the general cue status and the copied context (Tests/CueVerdictsChecks.swift).
+    ("C1 an insight cue has no label", "models", CORE, '        // 0.5.362 (server API v3): a general cue, public context from the web.\n        case "insight": return "Insight"\n', ""),
+    ("C2 an http address opens", "models", CORE,
+     '        guard let url = MeetingAskText.safeURL(text), url.scheme?.lowercased() == "https" else { return nil }\n', '        guard let url = MeetingAskText.safeURL(text) else { return nil }\n'),
+    ("C3 a local address opens", "models", CORE,
+     '        guard let url = MeetingAskText.safeURL(text), url.scheme?.lowercased() == "https" else { return nil }\n',
+     '        guard let text, let url = URL(string: text), url.scheme?.lowercased() == "https" else { return nil }\n'),
+    ("C4 a meeting opens by a memory id", "models", CORE, '        case "meeting": return locator(recordId).map { .meeting(recordId: $0) }\n', '        case "meeting": return locator(recordId ?? memoryId).map { .meeting(recordId: $0) }\n'),
+    ("C5 an empty locator opens", "models", CORE, "        func locator(_ value: String?) -> String? { value.flatMap { $0.isEmpty ? nil : $0 } }\n", "        func locator(_ value: String?) -> String? { value }\n"),
+    ("C6 a web source shows no domain", "models", CORE, '        if let domain = source.domain { return "\\(source.title) (\\(domain))" }\n', ""),
+    ("C7 www stays on the domain", "models", CORE, '        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host\n', "        return host\n"),
+    ("C8 a refusal counts as the status", "models", CORE,
+     '        guard let details, details["transport"]?.string == "answered", details["httpStatus"]?.int == 200 else { return (false, nil) }\n', '        guard let details else { return (false, nil) }\n'),
+    ("C9 a general state outside the six shows", "models", CORE,
+     '        guard let general = details["general"]?.object, let state = general["state"]?.string, generalStates.contains(state) else { return (true, nil) }\n',
+     '        guard let general = details["general"]?.object, let state = general["state"]?.string else { return (true, nil) }\n'),
+    ("C10 needs_public_topics says nothing", "models", CORE,
+     '        case "needs_public_topics": return "General cues need Public topics on, so no web lookups run."\n', ""),
+    ("C11 withheld says nothing", "models", CORE,
+     '        case "withheld": return "General cues are held back while the talk may be private. They start again when it moves on."\n', ""),
+    ("C12 the status has no 15-second floor", "models", CORE,
+     "        if let last = readAt[key], now().timeIntervalSince(last) < CueVerdicts.generalPollSeconds { return }\n", ""),
+    ("C13 a read that did not answer clears the status", "models", CORE,
+     "        guard read.answered, generalStatus[session] != read.status else { return }\n", "        guard generalStatus[session] != read.status else { return }\n"),
+    ("C14 an unchanged status republishes", "models", CORE,
+     "        guard read.answered, generalStatus[session] != read.status else { return }\n", "        guard read.answered else { return }\n"),
+    ("C15 two status reads at once", "models", CORE, "        guard reading.insert(key).inserted else { return }\n", "        reading.insert(key)\n"),
+    ("C16 a cue is copied twice", "models", CORE, "        let rows = cues.filter { seen.insert($0.id).inserted }.sorted {", "        let rows = cues.sorted {"),
+    ("C17 the newest cue is copied first", "models", CORE,
+     "$0.createdAt == $1.createdAt ? $0.id < $1.id : $0.createdAt < $1.createdAt }\n        guard !rows.isEmpty", "$0.createdAt == $1.createdAt ? $0.id < $1.id : $0.createdAt > $1.createdAt }\n        guard !rows.isEmpty"),
+    ("C18 the search is not copied", "models", CORE,
+     '            if let general = cue.general, !general.query.isEmpty { lines.append("Searched the web for: " + general.query) }\n', ""),
+    ("C19 the rating is not copied", "models", CORE, "            if let rated = CueVerdicts.ratedLine(cue.rating) { lines.append(rated) }\n", ""),
+    ("C20 a web address is not copied", "models", CORE,
+     "            for source in cue.sources { if case .web(let url)? = source.link { lines.append(url.absoluteString) } }\n", ""),
+    ("C21 the coverage note is dropped", "models", CORE, "        if let note { parts.append(note) }\n", ""),
+    ("C22 a coverage note alone makes no section", "models", CORE, "        guard !rows.isEmpty || note != nil else { return nil }\n", "        guard !rows.isEmpty else { return nil }\n"),
+    ("C23 the vote is not copied", "models", CORE, "            if let vote = CueVerdicts.voteLine(cue.rating) { lines.append(vote) }\n", ""),
+    ("C24 a headline equal to the cue is repeated", "models", CORE, "            if !cue.headline.isEmpty, cue.headline != cue.detail { lines.append(cue.headline) }\n",
+     "            if !cue.headline.isEmpty { lines.append(cue.headline) }\n"),
+    ("P15 a cue to rate lists its sources as plain text", "pins", ASK, "                CueSourcesList(sources: cue.sources, opener: opener)\n", "                Text(CueVerdicts.sourcesLine(cue.sources))\n"),
+    ("P16 a web source opens as http", "pins", ASK, "        case .web(let url)?: NSWorkspace.shared.open(url)\n",
+     '        case .web(let url)?: NSWorkspace.shared.open(URL(string: url.absoluteString.replacingOccurrences(of: "https", with: "http")) ?? url)\n'),
+    ("P17 a source is a button with nowhere to open", "pins", ASK, "        if let opener, let link = source.link, opener.canOpen(link) {\n", "        if let opener, let link = source.link {\n"),
+    ("P18 the general line shows in a saved meeting", "pins", ASK, "            if polls, readsGeneral, let line = CueVerdicts.generalLine(", "            if readsGeneral, let line = CueVerdicts.generalLine("),
+    ("P19 the general status is read outside a web mode", "pins", ASK,
+     "                if readsGeneral { await store.loadGeneralStatus(session, run: run) }\n", "                await store.loadGeneralStatus(session, run: run)\n"),
+    ("P20 an insight cue's sources hide until the card opens", "pins", ASK,
+     '            if cue.kind == "insight", !showsBefore { CueSourcesList(', '            if false, !showsBefore { CueSourcesList('),
+    ("P21 the sources in the opened card are plain text", "pins", ASK,
+     "                    CueSourcesList(sources: cue.sources, opener: opener, size: 11)\n                }\n                .padding(10)", "                    Text(CueVerdicts.sourcesLine(cue.sources))\n                }\n                .padding(10)"),
     ("P9 a saved meeting polls", "pins", ASK, "            guard polls else { return }\n", ""),
     ("P10 the route flag is written from outside", "pins", MODEL,
      "    @Published private(set) var cueReview: CueVerdicts.Review?", "    @Published var cueReview: CueVerdicts.Review?"),
@@ -143,6 +194,11 @@ def run(lane):
 only = sys.argv[sys.argv.index("--lane") + 1] if "--lane" in sys.argv else None
 lanes = [lane for lane in ("pins", "models", "page", "helper") if only in (None, lane)]
 mutants = [m for m in MUTANTS if m[1] in lanes]
+# --only C1,C2,P12: re-run named mutants (an id, or a prefix letter); the lanes they need still get a green baseline.
+if "--only" in sys.argv:
+    wanted = sys.argv[sys.argv.index("--only") + 1].split(",")
+    mutants = [m for m in mutants if any(m[0].split(" ")[0] == w or (len(w) == 1 and m[0].startswith(w)) for w in wanted)]
+    lanes = [lane for lane in lanes if any(m[1] == lane for m in mutants)]
 for lane in lanes:
     base = run(lane)
     if base.returncode != 0:

@@ -221,8 +221,10 @@ control = body(ask, "struct MeetingAskModelControl: View {")
 # 0.5.289: the Transcription card (server 6.72.0) lives in this file with its own pickers, a separate setting; it is set
 # aside here so the Ask model control is still the only dropdown meeting assistance draws.
 stt_card = body(ask, "struct TranscriptionSettingsCard: View {")
+# 0.5.362: the Cue mode menu (server API v3) is the Live cues row's own, a separate setting, set aside the same way.
+cue_mode = body(ask, "struct LiveCuesModeRows: View {")
 need('COSDropdown("Model", selection: store.modelSelection(model: model), options: Self.options(config),' in control
-     and ask.replace(stt_card, "").count("COSDropdown(") == 1,
+     and ask.replace(stt_card, "").replace(cue_mode, "").count("COSDropdown(") == 1 and cue_mode.count("COSDropdown(") == 1,
      "the model control is a COSDropdown bound to the store's one selection, the only dropdown meeting assistance draws")
 need("modelSelection" not in stt_card and "MeetingAskModelControl" not in stt_card,
      "the Transcription card never draws or binds the Ask model control")

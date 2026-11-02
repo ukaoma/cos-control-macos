@@ -30,6 +30,35 @@ import Foundation
         answered(200, #""v":1,"cues":[\#(rows.joined(separator: ","))],"counts":{"total":\#(total),"rated":\#(rated),"unrated":\#(unrated),"byVerdict":\#(by)}"# + extra)
     }
 
+    /// One status read per meeting at a time: a second call after the floor, while the first is still out, reads nothing. Its own
+    /// function: the compiler (Swift 6.0.2) crashed type-checking main() with this block inside it.
+    @MainActor static func singleFlight() async {
+        final class Latch { var open = false }
+        final class Calls { var log: [[String]] = [] }
+        final class Clock { var now: Date; init(_ now: Date) { self.now = now } }
+        let latch = Latch()
+        let flightCalls = Calls()
+        let flightClock = Clock(Date(timeIntervalSince1970: monday / 1000))
+        let flightStore = CueVerdictsStore()
+        flightStore.now = { flightClock.now }
+        let held: CueVerdictsStore.Run = { args, _ in
+            flightCalls.log.append(args)
+            while !latch.open { try? await Task.sleep(for: .milliseconds(5)) }
+            return HelperResponse(ok: true, message: "x", details: answered(200, #""general":{"state":"capped"}"#))
+        }
+        let firstRead = Task { await flightStore.loadGeneralStatus("meeting_1", run: held) }
+        while flightCalls.log.isEmpty { try? await Task.sleep(for: .milliseconds(5)) }
+        flightClock.now = flightClock.now.addingTimeInterval(16)
+        // Not awaited here: without the guard this call would block on the same latch and the check could never run.
+        let secondRead = Task { await flightStore.loadGeneralStatus("meeting_1", run: held) }
+        try? await Task.sleep(for: .milliseconds(200))
+        check(flightCalls.log.count == 1, "a second status read for the same meeting waits for the first")
+        latch.open = true
+        await firstRead.value
+        await secondRead.value
+        check(flightStore.generalStatus["meeting_1"]?.state == "capped", "the first read lands once it is let go")
+    }
+
     @MainActor static func main() async {
         typealias S = CueVerdicts.State
         var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(identifier: "UTC")!
@@ -473,6 +502,8 @@ import Foundation
         await generalStore.loadGeneralStatus("meeting_1", run: fake(generalCalls, [answered(200, #""state":"ended""#)]))
         check(published == 0, "an unchanged status publishes nothing")
         watchGeneral.cancel()
+
+        await singleFlight()
 
         // Copy full context: the cues the server logged, oldest first, once each, with what was searched and how they were rated.
         var insightCue = LiveCueRecord(id: "cue-i-000001", sessionId: "meeting_1792400000000_abc123", createdAt: Date(timeIntervalSince1970: monday / 1000), kind: "insight",
