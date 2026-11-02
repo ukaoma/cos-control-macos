@@ -1738,6 +1738,22 @@ enum CueVerdicts {
     /// The general status is read no sooner than a meeting's cues are.
     static let generalPollSeconds: TimeInterval = pollSeconds
 
+    /// The general runner's reason codes (server live-cues-general) in plain words. A code not listed here is not shown as one.
+    static let generalReasonLines: [String: String] = [
+        "public_topics_off": "General cues need Public topics on.",
+        "personal_domain": "General cues are off for personal meetings.",
+        "sensitive_window": "General cues paused: the conversation may be private.",
+        "orientation_unreadable": "General cues paused: meeting details could not be read.",
+        "names_unavailable": "General cues paused: voice names could not be read.",
+        "meeting_cues_cap": "General cues reached the limit for this meeting.",
+        "meeting_attempts_cap": "General cues reached the lookup limit for this meeting.",
+        "daily_search_cap": "General cues reached today's limit.",
+        "daily_topic_cap": "General cues reached today's limit.",
+        "daily_trigger_cap": "General cues reached today's limit.",
+        "breaker_open": "General cues paused for an hour after repeated search failures.",
+        "state_unreadable": "General cues paused: usage could not be read.",
+    ]
+
     static func statusArguments(session: String) -> [String] { ["live-cues-status", "--session", session] }
 
     /// The helper's `live-cues-status` details: whether the server answered with its status at all (a refusal or nothing
@@ -1751,6 +1767,8 @@ enum CueVerdicts {
     /// The one line the live view shows when general cues are not running for a reason worth saying: the meeting's general
     /// limit reached, a stretch held back, the breaker open, or Public topics off. Nothing for off, waiting or no status.
     static func generalLine(_ status: LiveCuesGeneralStatus?) -> String? {
+        // The runner's own reason, when Control knows it; any other code reads as the state's generic line below.
+        if let reason = status?.reason, let line = generalReasonLines[reason] { return line }
         switch status?.state {
         case "capped": return "General cues are paused: a general cue limit was reached. They start again in your next meeting or tomorrow."
         case "withheld": return "General cues are held back while the talk may be private. They start again when it moves on."

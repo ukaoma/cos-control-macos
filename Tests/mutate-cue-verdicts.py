@@ -129,6 +129,8 @@ MUTANTS = [
     ("C23 the vote is not copied", "models", CORE, "            if let vote = CueVerdicts.voteLine(cue.rating) { lines.append(vote) }\n", ""),
     ("C24 a headline equal to the cue is repeated", "models", CORE, "            if !cue.headline.isEmpty, cue.headline != cue.detail { lines.append(cue.headline) }\n",
      "            if !cue.headline.isEmpty { lines.append(cue.headline) }\n"),
+    ("C25 a known reason code is ignored", "models", CORE, "        if let reason = status?.reason, let line = generalReasonLines[reason] { return line }\n", ""),
+    ("C26 daily_topic_cap says nothing of today's limit", "models", CORE, '        "daily_topic_cap": "General cues reached today\'s limit.",\n', ""),
     ("P15 a cue to rate lists its sources as plain text", "pins", ASK, "                CueSourcesList(sources: cue.sources, opener: opener)\n", "                Text(CueVerdicts.sourcesLine(cue.sources))\n"),
     ("P16 a web source opens as http", "pins", ASK, "        case .web(let url)?: NSWorkspace.shared.open(url)\n",
      '        case .web(let url)?: NSWorkspace.shared.open(URL(string: url.absoluteString.replacingOccurrences(of: "https", with: "http")) ?? url)\n'),

@@ -46,7 +46,7 @@ if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
   OUT="$(env "${RUN_ENV[@]}" "$DIR/cue-verdicts-checks")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*checks: }%% passed*}"
-  (( COUNT >= 209 )) || { print -u2 "cue verdicts checks ran only $COUNT (expected at least 209)"; exit 1; }
+  (( COUNT >= 237 )) || { print -u2 "cue verdicts checks ran only $COUNT (expected at least 237)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "page" ]]; then

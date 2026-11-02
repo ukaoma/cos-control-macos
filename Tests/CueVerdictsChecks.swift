@@ -471,6 +471,24 @@ import Foundation
               "each state worth saying has its reason in plain words")
         check(CueVerdicts.generalLine(general("off")) == nil && CueVerdicts.generalLine(general("waiting")) == nil && CueVerdicts.generalLine(general("invented")) == nil
               && CueVerdicts.generalLine(nil) == nil, "off, waiting and no status say nothing")
+        // The runner's reason codes, each in its own plain line; any other code reads as the state's generic line.
+        func reasoned(_ state: String, _ reason: String?) -> LiveCuesGeneralStatus { LiveCuesGeneralStatus(state: state, reason: reason, cues: 0, attempts: 0) }
+        let reasons: [(String, String)] = [
+            ("public_topics_off", "General cues need Public topics on."), ("personal_domain", "General cues are off for personal meetings."),
+            ("sensitive_window", "General cues paused: the conversation may be private."), ("orientation_unreadable", "General cues paused: meeting details could not be read."),
+            ("names_unavailable", "General cues paused: voice names could not be read."), ("meeting_cues_cap", "General cues reached the limit for this meeting."),
+            ("meeting_attempts_cap", "General cues reached the lookup limit for this meeting."), ("daily_search_cap", "General cues reached today's limit."),
+            ("daily_topic_cap", "General cues reached today's limit."), ("daily_trigger_cap", "General cues reached today's limit."),
+            ("breaker_open", "General cues paused for an hour after repeated search failures."), ("state_unreadable", "General cues paused: usage could not be read."),
+        ]
+        for (reason, words) in reasons {
+            check(CueVerdicts.generalLine(reasoned("withheld", reason)) == words && CueVerdicts.generalLine(reasoned("off", reason)) == words, "\(reason): \(words)")
+            check(!words.contains("\u{2014}") && !words.contains("\u{2192}") && !words.contains("->") && !words.contains("_"), "plain words: \(words)")
+        }
+        check(CueVerdicts.generalReasonLines.count == 12, "twelve reason codes")
+        check(CueVerdicts.generalLine(reasoned("capped", "something_new")) == CueVerdicts.generalLine(general("capped"))
+              && CueVerdicts.generalLine(reasoned("breaker", "something_new")) == CueVerdicts.generalLine(general("breaker")) && CueVerdicts.generalLine(reasoned("off", "something_new")) == nil
+              && CueVerdicts.generalLine(reasoned("waiting", nil)) == nil, "a reason code Control does not know reads as the state's generic line, or nothing for off and waiting")
         for state in CueVerdicts.generalStates {
             if let text = CueVerdicts.generalLine(general(state)) {
                 check(!text.contains("\u{2014}") && !text.contains("\u{2192}") && !text.contains("->") && !text.contains("_"), "plain words, no em dash, arrow or code: \(text)")
