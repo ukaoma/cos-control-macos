@@ -1,8 +1,21 @@
 {
-  "version": "0.5.363",
+  "version": "0.5.364",
   "whatsNew": {
-    "summary": "With Today home on, ⌘K finds a session by what it was about once you say yes for your decision model (Jev or SubQ): each search then sends your words, plus the titles and first prompts of recent sessions, to it. It also goes to the Memories views, Work layouts and Settings groups, and offers Continue in this session. Plus everything in 0.5.361: ⌘K goes to any pane or tab, lists your sessions and finds words inside them on this Mac.",
+    "summary": "Live cues can now cite where they came from, and you choose the kind of cues you get. Settings, Meetings has Cue mode (Focused, General or All) and Grounded cues. Cue mode stays Focused and Grounded cues stay off until you change them. General cues add public context from the web on Mac meetings and need Public topics on: only a short public topic goes to web search, never the transcript. Cue sources open with a click, and Copy full context includes the meeting's cues. Plus everything in 0.5.363: with Today home on, ⌘K finds a session by what it was about once you say yes for your decision model (Jev or SubQ), and each search then sends your words, plus the titles and first prompts of recent sessions, to it.",
     "sections": [
+      {
+        "title": "0.5.364",
+        "items": [
+          "Settings, Meetings has a Cue mode menu. Focused, the default, gives the cues you have today. General gives public context from the web instead, on Mac meetings. All gives both on Mac meetings. G2 meetings keep focused cues in every mode.",
+          "General cues need Public topics on. Every few minutes COS checks whether the room is on a public topic, such as a company, a place, an event or the news. If it is, COS picks one short topic, sends only that to web search, never the transcript, and shows one line with its source.",
+          "A lookup is skipped when the topic names someone in the meeting, has a number, or names your own company or brands. General cues hold back while the talk turns to health, money, family, legal or school matters, and stay off for meetings marked personal.",
+          "Limits for general cues sit with the other cue limits: how often COS looks, lookups and cues per meeting, and topic and web searches per day. When general cues are not running, one line says why.",
+          "Grounded cues, off until you turn them on, let a cue draw on your COS memories and the files attached to the meeting as well as past meetings, and cite up to two of them. When they are on, short passages from those go to your decision model (Jev or SubQ) so it can judge which fit.",
+          "Cue sources open with a click. A past meeting, memory or file opens as it does in Ask, and a web source opens in your browser. Insight cues show the site they came from.",
+          "Copy full context now includes the meeting's cues.",
+          "These need a newer COS server. With an older server the new controls stay hidden and cues work as before."
+        ]
+      },
       {
         "title": "0.5.363",
         "items": [

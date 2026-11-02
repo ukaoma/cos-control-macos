@@ -1,3 +1,28 @@
+## 0.5.364 (build 418), cue modes, grounded cues and clickable cue sources
+
+Built on 0.5.363 (build 417, b590997), which is public. The ask, 2026-11-01: cues that cite the right past meeting, file or memory far more often, and "general cues vs focused cues" as a setting, so "whenever topics are coming up" COS can run "lower searches in the background" and surface interesting public context, "regardless if we're talking about something that's outside of my field".
+
+The new controls need a COS server that answers `GET /api/live-cues/v2/settings?v=3` (6.97.7 or newer). Control asks for v3 first and falls back to v2 on 400 `unsupported_version`; on an older server the Cue mode menu, the Grounded cues switch and the general limits are hidden, and live cues work exactly as in 0.5.363.
+
+The server keeps both new settings off for everyone: Cue mode is Focused and Grounded cues is classic until the person changes them.
+
+What this build adds by default, for public users, on top of the 0.5.363 list:
+
+- For everyone: cue sources in the live view, the Cues tab and the rating cards open with a click. A past meeting, memory or file goes through the same opener Ask uses; a web source opens in the browser only when its address is https (the helper also drops any other scheme). Before, a source was plain text.
+- For everyone: Copy full context includes the meeting's emitted and rated cues, read fresh, on both the library and live paths.
+- For everyone: the helper asks the cue settings route for v3 before v2. An older server answers 400 and the helper asks again for v2, so one extra request reaches an older server each time the settings load.
+- With a v3 server: Settings, Meetings shows Cue mode (Focused, General, All), Grounded cues and six general limits, next to the existing cue limits. Saving them writes the server's settings file; nothing changes until the person picks a value.
+- With a v3 server that reports it: one line in the live pane header and the Cues tab says why general cues are not running (needs Public topics, a personal meeting, a limit reached, held back while the talk may be personal, paused after search failures).
+- For everyone: insight cues are labeled Insight and show the site they came from. An older server never sends them.
+- New read-only helper verb `live-cues-status --session ID`.
+
+What the server does when the person turns things on (server 6.97.7):
+
+- General (Mac meetings only; G2 meetings keep focused cues in every mode): needs Public topics on. Every few minutes the server asks the decision model whether the room is on a public topic, picks one short topic with a small Claude model, and sends only that topic to one web search, never the transcript. A topic that names a speaker or an enrolled voice, holds a digit or a number word, or names a term from the owner's profile vocabulary is refused; a window about health, money, family, legal or school matters is skipped; a meeting confirmed as personal is skipped. Caps per meeting and per day, and a breaker after repeated search failures.
+- All: focused cues and general cues on Mac meetings.
+- Grounded cues: past meetings, the owner's COS memories and a file attached to the meeting are candidates; each gets its own yes or no from the decision model, and up to two are cited. Short passages from those candidates go to the decision model.
+- Turning either back off returns cues to 0.5.363's behavior.
+
 ## 0.5.363 (build 417), ⌘K finds sessions by meaning
 
 0.5.362 (build 416) was installed and never made public, so this build carries everything in it, with the fixes from the owner's live test with SubQ (the list under "What this build adds by default" ends with them). Built on 0.5.361 (build 415, a4c47c6), which is public. The ask, 2026-10-31: "if I can't remember exactly what I was working on, I should be able to search the topic or adjacently, and then it should reference where and what that session was so I can open it and start continuing work", judged by Jev or SubQ "depending on what the user has for their judgment model", with "a weighted match so we get a view of several sessions that could match in order of likelihood". On 2026-11-01 the owner added the rest of the command center: the places cut from 0.5.361, the stale Running row, and Continue in.

@@ -431,15 +431,17 @@ pin("data.split(separator: 0x0A, omittingEmptySubsequences: true)" in _peek and 
 # nothing without it, and that Search all sessions asks the COS server.
 import json as _json
 _all = _json.loads(read("Resources/WhatsNew.json"))["whatsNew"]["sections"]
-_notes = " ".join(_all[0]["items"])
-_older = " ".join(i for section in _all[1:2] for i in section["items"])
+# 0.5.364: the 0.5.363 and 0.5.361 sections are found by title, now that a newer release section goes first.
+_s363 = next((s for s in _all if s["title"] == "0.5.363"), {"title": "", "items": []})
+_notes = " ".join(_s363["items"])
+_older = " ".join(i for section in _all if section["title"] == "0.5.361" for i in section["items"])
 _sent = "plus the title and first 150 characters of the first prompt from up to 508 recent sessions"
 _summary = _json.loads(read("Resources/WhatsNew.json"))["whatsNew"]["summary"]
 pin("first prompts" in _summary and "sends your words" in _summary and "Settings, Decision models shows and changes your choice for the model that decides search" in _notes and "changes the choice for each model" not in _notes,
     "the summary and the notes say what leaves, first prompts included, and name the choice truly")
 _blurb = read("Sources/SettingsHubCatalog.swift")
 pin("session titles and the start of first prompts" in _blurb and 'sends your words and session titles' not in _blurb, "Settings' own line for the control says first prompts too")
-pin(_all[0]["title"] == "0.5.363" and "each search sends the words you type in ⌘K, " + _sent in _notes and "Emails, links, home-folder paths and key-shaped text are removed first. Names and other details are not." in _notes
+pin(_s363["title"] == "0.5.363" and "each search sends the words you type in ⌘K, " + _sent in _notes and "Emails, links, home-folder paths and key-shaped text are removed first. Names and other details are not." in _notes
     and "SubQ keeps what it is sent" in _notes and "off until you say yes" in _notes and "sends nothing off it" in _notes and _notes.index("off until you say yes") < _notes.index("sends nothing off it"),
     "the notes say plainly what leaves after a yes, and that nothing does before")
 _consent = block(core_raw, '            let sent = "Each search sends the words you type here, ', '"\n')
