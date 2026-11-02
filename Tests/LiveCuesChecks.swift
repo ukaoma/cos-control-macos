@@ -425,9 +425,11 @@ import Foundation
         // The words.
         check(LiveCueMode.allCases.map { LiveCues.modeTitle($0) } == ["Focused", "General", "All"], "the three modes by name")
         check(LiveCues.modeHelp(.focused) == "Cues from the room, drawn from your past meetings and notes."
-              && LiveCues.modeHelp(.general) == "Public context from the web, like news and local items, and it needs Public topics on."
-              && LiveCues.modeHelp(.all) == "Room cues plus public context from the web, and it needs Public topics on.",
-              "one plain sentence per mode")
+              && LiveCues.modeHelp(.general) == "On Mac meetings, only public context from the web, and it needs Public topics on. G2 keeps focused cues."
+              && LiveCues.modeHelp(.all) == "On Mac meetings, focused cues plus public context from the web, and it needs Public topics on. G2 keeps focused cues.",
+              "one plain line per mode, saying what Mac and G2 meetings get")
+        check(LiveCues.modeHelp(.general).contains("G2 keeps focused cues") && LiveCues.modeHelp(.all).contains("G2 keeps focused cues") && !LiveCues.modeHelp(.focused).contains("G2"),
+              "General and All say G2 keeps focused cues")
         check(LiveCues.searchesWeb(.general) && LiveCues.searchesWeb(.all) && !LiveCues.searchesWeb(.focused)
               && LiveCues.modeHelp(.general).contains("web") && LiveCues.modeHelp(.general).contains("Public topics on")
               && LiveCues.modeHelp(.all).contains("web") && LiveCues.modeHelp(.all).contains("Public topics on"), "General and All say they search the web and need Public topics")

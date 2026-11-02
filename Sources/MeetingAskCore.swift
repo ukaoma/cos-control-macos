@@ -1146,12 +1146,13 @@ enum LiveCues {
         }
     }
 
-    /// One plain sentence per mode. General and All say they search the web for public context and need Public topics.
+    /// One plain line per mode (server: General turns focused cues off on Mac meetings, All keeps both, and a G2 meeting keeps focused
+    /// cues in every mode because the lens never gets insights). General and All say they use the web and need Public topics.
     static func modeHelp(_ mode: LiveCueMode) -> String {
         switch mode {
         case .focused: return "Cues from the room, drawn from your past meetings and notes."
-        case .general: return "Public context from the web, like news and local items, and it needs Public topics on."
-        case .all: return "Room cues plus public context from the web, and it needs Public topics on."
+        case .general: return "On Mac meetings, only public context from the web, and it needs Public topics on. G2 keeps focused cues."
+        case .all: return "On Mac meetings, focused cues plus public context from the web, and it needs Public topics on. G2 keeps focused cues."
         }
     }
 
