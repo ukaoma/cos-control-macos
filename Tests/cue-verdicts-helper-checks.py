@@ -167,14 +167,67 @@ with tempfile.TemporaryDirectory(prefix='cos-cue-verdicts-', dir='/tmp') as tmp:
         got = run('live-cues-rate', '--session', SESSION, '--cue', CUE, '--verdict', 'wrong')
         check(got['ok'] and got['details']['httpStatus'] == 401, '401 is an answer')
 
+        # 0.5.362 (server API v3): an insight cue's https sources by kind and locator, and its category and search.
+        insight = dict(row, kind='insight', headline='Show dates moved', detail='A regional jewelry show moves to March.',
+                       sources=[{'id': 'w1', 'date': '', 'title': 'Reuters', 'kind': 'web', 'url': 'https://www.reuters.com/world/x', 'recordId': 'SECRET'},
+                                {'id': 'w2', 'date': '', 'title': 'Plain', 'kind': 'web', 'url': 'http://insecure.example/a'},
+                                {'id': 'w3', 'date': '', 'title': 'Script', 'kind': 'web', 'url': 'javascript:alert(1)'},
+                                {'id': 'm1', 'date': '2026-10-01', 'title': 'Grant review', 'kind': 'meeting', 'recordId': 'rec-1', 'url': 'https://x.example/'},
+                                {'id': 'n1', 'date': '', 'title': 'Note', 'kind': 'memory', 'memoryId': 'mem-1'},
+                                {'id': 'f1', 'date': '', 'title': 'Deck', 'kind': 'file', 'fileId': 'file-1'}],
+                       general={'category': 'news', 'query': 'regional jewelry show dates', 'token': 'SECRET'})
+        state['status'] = 200; state['body'] = dict(history, cues=[insight])
+        got = run('live-cues-history')
+        cue = got['details']['cues'][0]
+        check(cue['kind'] == 'insight' and cue['general'] == {'category': 'news', 'query': 'regional jewelry show dates'} and 'SECRET' not in json.dumps(got), 'an insight row crosses with its category and search')
+        check(len(cue['sources']) == 4 and cue['sources'][0] == {'id': 'w1', 'date': '', 'title': 'Reuters', 'kind': 'web', 'url': 'https://www.reuters.com/world/x'},
+              'a web source keeps its https address; a locator that is not its kind never crosses; the history keeps four sources')
+        state['body'] = dict(history, cues=[dict(insight, sources=insight['sources'][1:])])
+        sources = run('live-cues-history')['details']['cues'][0]['sources']
+        check(sources[0] == {'id': 'w2', 'date': '', 'title': 'Plain', 'kind': 'web'} and sources[1] == {'id': 'w3', 'date': '', 'title': 'Script', 'kind': 'web'}
+              and sources[2] == {'id': 'm1', 'date': '2026-10-01', 'title': 'Grant review', 'kind': 'meeting', 'recordId': 'rec-1'}
+              and sources[3] == {'id': 'n1', 'date': '', 'title': 'Note', 'kind': 'memory', 'memoryId': 'mem-1'},
+              'an http or script address is dropped, the source kept; a meeting and a memory keep their own locator')
+        state['body'] = dict(history, cues=[dict(insight, sources=insight['sources'][4:], general={'category': 'gossip', 'query': 'q'})])
+        got = run('live-cues-history')
+        check(got['details']['cues'][0]['sources'][0] == {'id': 'n1', 'date': '', 'title': 'Note', 'kind': 'memory', 'memoryId': 'mem-1'}
+              and got['details']['cues'][0]['sources'][1] == {'id': 'f1', 'date': '', 'title': 'Deck', 'kind': 'file', 'fileId': 'file-1'} and 'general' not in got['details']['cues'][0],
+              'a file keeps its fileId; a category outside the three is no general block')
+        state['body'] = dict(history, cues=[dict(row, sources=[{'id': '1', 'date': '2026-10-01', 'title': 'Earlier', 'recordId': 'rec-1', 'url': 'https://x.example/'}])])
+        check(run('live-cues-history')['details']['cues'][0]['sources'] == [{'id': '1', 'date': '2026-10-01', 'title': 'Earlier'}], 'a source with no kind crosses as before: id, date and title only')
+
+        # ── live-cues-status
+        status_body = {'protocol': 2, 'enabled': True, 'session': {'sessionId': SESSION, 'state': 'active', 'paused': False, 'ended': False, 'cues': [{'detail': 'SECRET'}],
+                       'general': {'state': 'capped', 'reason': 'meeting_cap', 'cues': 4, 'attempts': 6, 'query': 'SECRET'}, 'evaluations': 3}}
+        state['status'] = 200; state['body'] = status_body
+        got = run('live-cues-status', '--session', SESSION)
+        check(requests[-1] == ('GET', '/api/live-cues/status?sessionId=' + SESSION, True, None), 'the status is one GET of the meeting, with the token')
+        check(got['ok'] and got['details'] == {'transport': 'answered', 'httpStatus': 200, 'state': 'active',
+                                               'general': {'state': 'capped', 'reason': 'meeting_cap', 'cues': 4, 'attempts': 6}} and 'SECRET' not in json.dumps(got),
+              'the meeting state and the general status cross; the cues and the search do not')
+        state['body'] = {'protocol': 2, 'enabled': True, 'session': {'sessionId': SESSION, 'state': 'active', 'general': {'state': 'invented'}}}
+        check('general' not in run('live-cues-status', '--session', SESSION)['details'], 'a general state outside the six does not cross')
+        state['body'] = {'protocol': 2, 'enabled': True, 'session': None}
+        check(run('live-cues-status', '--session', SESSION)['details'] == {'transport': 'answered', 'httpStatus': 200}, 'a null session carries nothing')
+        state['status'] = 404; state['body'] = None
+        check(run('live-cues-status', '--session', SESSION)['details'] == {'transport': 'unsupported', 'httpStatus': 404}, 'a server without the route is unsupported')
+        state['status'] = 500; state['body'] = {'error': 'SECRET stack', 'session': {'general': {'state': 'capped'}}}
+        check(run('live-cues-status', '--session', SESSION)['details'] == {'transport': 'answered', 'httpStatus': 500}, 'a refusal carries no status and no server text')
+        prior = len(requests)
+        for bad in (['--session', 'a b'], ['--session', 'x&y=1'], ['--session', '../x'], ['--session', 'ab'], ['--session'], []):
+            check(not run('live-cues-status', *bad)['ok'], f'live-cues-status refuses {bad}')
+        check(len(requests) == prior, 'a refused status read never reaches the server')
+
         with socket.socket() as s:
             s.bind(('127.0.0.1', 0)); closed = s.getsockname()[1]
         prior = len(requests)
+        check(run('live-cues-status', '--session', SESSION, port=closed)['details'] == {'transport': 'unavailable'}, 'nothing answering the status is unavailable')
         check(run('live-cues-history', port=closed)['details'] == {'transport': 'unavailable'}, 'nothing answering a read is unavailable')
         check(run('live-cues-rate', '--session', SESSION, '--cue', CUE, '--verdict', 'late', port=closed)['details'] == {'transport': 'unavailable'},
               'nothing answering a rating is unavailable')
         env_file.unlink()
         check(run('live-cues-history')['details'] == {'transport': 'no_token'}, 'no pairing token: a read is no_token')
+        check(run('live-cues-status', '--session', SESSION)['details'] == {'transport': 'no_token'}, 'no pairing token: the status is no_token')
         check(run('live-cues-rate', '--session', SESSION, '--cue', CUE, '--verdict', 'late')['details'] == {'transport': 'no_token'}
               and len(requests) == prior, 'no pairing token: a rating is no_token, nothing sent')
         print(f'cue verdicts helper checks: {checks} passed')

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """0.5.322 Live cues (server 6.76.2): the compiled helper's live-cues-settings against a private loopback fixture.
-No real server, account, or credentials. Pins: GET /api/live-cues/v2/settings?v=2 and POST on the route with the token header;
+No real server, account, or credentials. Pins: GET /api/live-cues/v2/settings?v=3 (0.5.362; ?v=2 again only after a 400 unsupported_version) and POST on the route with the token header;
 --set on and --set off post exactly {"v":2,"enabled": true|false} and any other --set never reaches the server; every answer is ok with
 transport and httpStatus (a 404, a 409 env_forced and a 401 included), only the contract's keys cross, an unreachable
 server and a missing token are their own transports, and the token never reaches stdout or stderr.
@@ -25,6 +25,9 @@ with tempfile.TemporaryDirectory(prefix='cos-live-cues-', dir='/tmp') as tmp:
                 raw = b'{"ok":true}'; self.send_response(200); self.send_header('Content-Length', str(len(raw))); self.end_headers(); self.wfile.write(raw); return
             data = self.rfile.read(int(self.headers.get('Content-Length', '0')))
             requests.append((self.command, self.path, self.headers.get('X-COS-Token') == token, data.decode() if data else None))
+            if state.get('older') and self.path.endswith('?v=3'):
+                raw = json.dumps({'error': 'invalid_request', 'reason': 'unsupported_version'}).encode()
+                self.send_response(400); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(raw))); self.end_headers(); self.wfile.write(raw); return
             raw = json.dumps(state['body']).encode()
             self.send_response(state['status']); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(raw))); self.end_headers(); self.wfile.write(raw)
         do_GET = do_PUT = do_POST = answer
@@ -51,9 +54,10 @@ with tempfile.TemporaryDirectory(prefix='cos-live-cues-', dir='/tmp') as tmp:
 
     try:
         got = run()
-        check(requests[-1] == ('GET', '/api/live-cues/v2/settings?v=2', True, None), 'a read is GET ?v=2 on the v2 settings route with the token, no body')
+        check(requests[-1] == ('GET', '/api/live-cues/v2/settings?v=3', True, None), 'a read is GET ?v=3 on the v2 settings route with the token, no body')
         d = got['details']
         check(got['ok'] and d['transport'] == 'answered' and d['httpStatus'] == 200, 'a 200 is answered')
+        check(d['apiVersion'] == 2 and 'cueMode' not in d and 'grounding' not in d and 'general' not in d, 'a 200 whose body does not say v 3 answered as version 2, without v3 keys')
         check(d['enabled'] is False and d['source'] == 'default' and d['capability'] == shape['capability'], 'the contract passes through')
 
         state['body'] = dict(shape, enabled=True, source='setting', extra='SECRET',
@@ -96,7 +100,7 @@ with tempfile.TemporaryDirectory(prefix='cos-live-cues-', dir='/tmp') as tmp:
         state['status'] = 200; state['body'] = v2
         got = run()
         d = got['details']
-        check(requests[-1][1] == '/api/live-cues/v2/settings?v=2' and d['v'] == 2 and d['writerCallsPerMeeting'] == 24
+        check(requests[-1][1] == '/api/live-cues/v2/settings?v=3' and d['v'] == 2 and d['writerCallsPerMeeting'] == 24
               and d['limits']['gate'] == {'value': 0.75, 'source': 'setting', 'locked': False, 'min': 0.5, 'max': 0.95, 'default': 0.8}
               and d['limits']['dailyWriterCalls']['locked'] is True and 'SECRET' not in json.dumps(got), 'a 6.79.2 read crosses v, the limits and the per-meeting writer calls')
         check(d['today'] == {'day': '2026-10-19', 'writerCalls': 12, 'writerTokensIn': 41200, 'writerTokensOut': 2900, 'cues': 7, 'jevTokens': 9100},
@@ -128,6 +132,76 @@ with tempfile.TemporaryDirectory(prefix='cos-live-cues-', dir='/tmp') as tmp:
         state['status'] = 200; state['body'] = dict(shape, enabled=True, source='setting')
         got = run()
         check('v' not in got['details'] and 'limits' not in got['details'], 'an older server answers ?v=2 without v: no limits')
+
+        # 0.5.362 (server API v3, the frozen contract): a v3 read, the version fallback, the v3 writes and their refusals.
+        def lim(v, src='default', lo=1, hi=25, d=25):
+            return {'value': v, 'source': src, 'locked': src == 'env', 'min': lo, 'max': hi, 'default': d}
+        v3 = dict(v2, v=3, cueMode={'value': 'general', 'source': 'setting', 'locked': False, 'x': 'SECRET'},
+                  grounding={'value': 'grounded', 'source': 'env', 'locked': True},
+                  general={'limits': {'intervalSeconds': lim(300, lo=120, hi=1800, d=300), 'trigger': lim(0.6, 'setting', 0.4, 0.9, 0.6),
+                                      'attemptsPerMeeting': lim(8, lo=1, hi=30, d=8), 'maxCuesPerMeeting': lim(4, 'env', 1, 12, 4),
+                                      'dailyTopicCalls': lim(60, lo=1, hi=200, d=60), 'dailyWebSearches': lim(30, lo=1, hi=100, d=30), 'evil': lim(1)},
+                           'today': {'day': '2026-11-01', 'topicCalls': 4, 'webSearches': 2, 'breakerOpenUntil': None, 'usd': 'SECRET'},
+                           'publicTopics': True, 'homeArea': 'Austin, TX', 'token': 'SECRET'})
+        state['status'] = 200; state['body'] = v3
+        got = run()
+        d = got['details']
+        check(requests[-1] == ('GET', '/api/live-cues/v2/settings?v=3', True, None) and d['apiVersion'] == 3 and d['v'] == 3, 'a v3 server answers the ?v=3 read as version 3')
+        check(d['cueMode'] == {'value': 'general', 'source': 'setting', 'locked': False} and d['grounding'] == {'value': 'grounded', 'source': 'env', 'locked': True},
+              'the cue mode and the grounding switch cross with their source and lock, nothing else')
+        check(sorted(d['general']['limits']) == ['attemptsPerMeeting', 'dailyTopicCalls', 'dailyWebSearches', 'intervalSeconds', 'maxCuesPerMeeting', 'trigger']
+              and d['general']['limits']['trigger'] == {'value': 0.6, 'source': 'setting', 'locked': False, 'min': 0.4, 'max': 0.9, 'default': 0.6},
+              'the six general limits cross by the server names; an unknown name does not')
+        check(d['general']['today'] == {'day': '2026-11-01', 'topicCalls': 4, 'webSearches': 2, 'breakerOpenUntil': None}
+              and d['general']['publicTopics'] is True and d['general']['homeArea'] == 'Austin, TX' and 'token' not in d['general'] and 'SECRET' not in json.dumps(got),
+              'today, Public topics and the home city cross; nothing else')
+        before = len(requests)
+        # An older server refuses ?v=3, and the helper asks again for the v2 view it knows.
+        state['older'] = True; state['body'] = v2
+        got = run()
+        d = got['details']
+        check(len(requests) == before + 2 and requests[-2][1] == '/api/live-cues/v2/settings?v=3' and requests[-1][1] == '/api/live-cues/v2/settings?v=2',
+              'a 400 unsupported_version on ?v=3 is followed by one ?v=2 read')
+        check(got['ok'] and d['httpStatus'] == 200 and d['apiVersion'] == 2 and d['v'] == 2 and 'cueMode' not in d and 'general' not in d and 'limits' in d,
+              'the fallback answers as version 2 with the limits and no v3 keys')
+        state['older'] = False
+        before = len(requests)
+        state['status'] = 400; state['body'] = {'error': 'invalid_request', 'reason': 'empty'}
+        got = run()
+        check(len(requests) == before + 1 and got['details']['httpStatus'] == 400 and 'apiVersion' not in got['details'], 'any other 400 on a read is not retried and names no version')
+        state['status'] = 200; state['body'] = v3
+        # The writes. A v2-only write is the v2 body, byte for byte; a v3 field is posted as v 3.
+        got = run('--gate', '0.8')
+        check(requests[-1] == ('POST', '/api/live-cues/v2/settings', True, '{"v":2,"gate":0.8}'), 'a v2 limit still posts v 2')
+        got = run('--mode', 'all')
+        check(requests[-1] == ('POST', '/api/live-cues/v2/settings', True, '{"v":3,"cueMode":"all"}') and got['details']['apiVersion'] == 3 and got['details']['cueMode']['value'] == 'general',
+              'the cue mode posts as v 3 and the answer is the v3 view')
+        run('--grounding', 'classic')
+        check(requests[-1][3] == '{"v":3,"grounding":"classic"}', 'grounding posts as v 3')
+        run('--general-trigger', '0.65', '--general-interval', '600', '--mode', 'general')
+        check(requests[-1][3] == '{"v":3,"cueMode":"general","generalIntervalSeconds":600,"generalTrigger":0.65}', 'v3 fields post sorted, as validated literals')
+        run('--general-attempts', '6', '--general-max-cues', '3', '--general-daily-topic-calls', '40', '--general-daily-web-searches', '20', '--gate', '0.7')
+        check(requests[-1][3] == '{"v":3,"gate":0.7,"generalAttemptsPerMeeting":6,"generalDailyTopicCalls":40,"generalDailyWebSearches":20,"generalMaxCuesPerMeeting":3}',
+              'the four general counts and a v2 limit post together as v 3')
+        prior = len(requests)
+        for bad in (['--mode', 'everything'], ['--mode', 'Focused'], ['--mode', ''], ['--mode'], ['--grounding', 'on'], ['--general-trigger', '1.5'],
+                    ['--general-trigger', '0.5e1'], ['--general-interval', '1.5'], ['--general-interval', '-1'], ['--general-attempts', '08'],
+                    ['--general-daily-web-searches', '1000000'], ['--set', 'on', '--mode', 'general'], ['--mode', 'general', '--gate', '2']):
+            check(not run(*bad)['ok'], f'the v3 writes refuse {bad}')
+        check(len(requests) == prior, 'a refused v3 write never reaches the server')
+        for status, body, want in (
+                (409, {'error': 'env_forced', 'message': 'SECRET'}, {'error': 'env_forced'}),
+                (400, {'error': 'invalid_request', 'reason': 'invalid_value', 'field': 'cueMode', 'x': 'SECRET'}, {'error': 'invalid_request', 'reason': 'invalid_value', 'field': 'cueMode'}),
+                (400, {'error': 'invalid_request', 'reason': 'out_of_bounds', 'field': 'generalTrigger', 'min': 0.4, 'max': 0.9, 'integer': False},
+                 {'error': 'invalid_request', 'reason': 'out_of_bounds', 'field': 'generalTrigger', 'min': 0.4, 'max': 0.9, 'integer': False}),
+                (409, {'error': 'env_locked', 'fields': ['generalTrigger', 'grounding', 'evil']}, {'error': 'env_locked', 'fields': ['generalTrigger', 'grounding']}),
+                (400, {'error': 'invalid_request', 'reason': 'unsupported_version'}, {'error': 'invalid_request', 'reason': 'unsupported_version'})):
+            state['status'] = status; state['body'] = body
+            before = len(requests)
+            got = run('--mode', 'general')
+            check(got['ok'] and got['details'] == dict(want, transport='answered', httpStatus=status) and len(requests) == before + 1 and 'SECRET' not in json.dumps(got),
+                  f'{status} {body.get("reason") or body["error"]} on a v3 write crosses by its codes, and a write is never retried as v 2')
+        state['status'] = 200; state['body'] = shape
 
         with socket.socket() as s:
             s.bind(('127.0.0.1', 0)); closed = s.getsockname()[1]

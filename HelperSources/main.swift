@@ -700,6 +700,7 @@ final class COSControlHelper {
         case "live-cues-settings": try emitLiveCuesSettings(args: args)
         case "live-cues-history": try emitLiveCuesHistory(args: args)
         case "live-cues-rate": try emitLiveCuesRate(args: args)
+        case "live-cues-status": try emitLiveCuesStatus(args: args)
         case "live-provisional": try emitLiveProvisional(args: args)
         case "meeting-stranded-save-all": try emitMeetingStrandedSaveAll()
         case "clear-stranded-video-uploads": try clearStrandedVideoUploads()
@@ -17612,10 +17613,7 @@ final class COSControlHelper {
     /// decisionProvider}, and a refusal's error code. Codes and the model id must look like codes; anything else is
     /// dropped, never passed on.
     static func liveCuesSettingsAnswer(_ body: [String: Any]?) -> [String: Any] {
-        func flag(_ value: Any?) -> Bool? {
-            guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
-            return number.boolValue
-        }
+        func flag(_ value: Any?) -> Bool? { Self.liveCueFlag(value) }
         func code(_ value: Any?, _ pattern: String) -> String? {
             guard let text = value as? String, text.range(of: pattern, options: .regularExpression) != nil else { return nil }
             return text
@@ -17641,14 +17639,7 @@ final class COSControlHelper {
         if let version = Self.liveCueCount(body["v"]), (1...1_000).contains(version) { out["v"] = version }
         if let raw = body["limits"] as? [String: Any] {
             var limits: [String: Any] = [:]
-            for key in Self.liveCuesLimitKeys {
-                guard let limit = raw[key] as? [String: Any], let value = Self.liveCueNumber(limit["value"]), value >= 0 else { continue }
-                var kept: [String: Any] = ["value": value]
-                if let source = limit["source"] as? String, ["env", "setting", "default"].contains(source) { kept["source"] = source }
-                if let locked = flag(limit["locked"]) { kept["locked"] = locked }
-                for bound in ["min", "max", "default"] { if let n = Self.liveCueNumber(limit[bound]), n >= 0 { kept[bound] = n } }
-                limits[key] = kept
-            }
+            for key in Self.liveCuesLimitKeys { if let kept = Self.liveCuesLimit(raw[key]) { limits[key] = kept } }
             out["limits"] = limits
         }
         if let calls = Self.liveCueCount(body["writerCallsPerMeeting"]) { out["writerCallsPerMeeting"] = calls }
@@ -17660,15 +17651,70 @@ final class COSControlHelper {
             }
             out["today"] = today
         }
+        // 0.5.362 (server API v3, live cues modes): the cue mode, the grounding switch and the general cue limits, only
+        // from an answer that says `v: 3`. An older server never sends them, and Control hides them.
+        if Self.liveCueCount(body["v"]) == 3 {
+            if let mode = Self.liveCuesChoice(body["cueMode"], allowed: Self.liveCueModes) { out["cueMode"] = mode }
+            if let grounding = Self.liveCuesChoice(body["grounding"], allowed: Self.liveCueGroundings) { out["grounding"] = grounding }
+            if let raw = body["general"] as? [String: Any] { out["general"] = Self.liveCuesGeneral(raw) }
+        }
         if let reason = code(body["reason"], "\\A[a-z_]{1,64}\\z") { out["reason"] = reason }
-        if let field = body["field"] as? String, (Self.liveCuesLimitKeys + ["enabled", "v"]).contains(field) { out["field"] = field }
+        if let field = body["field"] as? String, (Self.liveCuesLimitKeys + Self.liveCuesV3Keys + ["enabled", "v"]).contains(field) { out["field"] = field }
         if let fields = body["fields"] as? [Any] {
-            out["fields"] = fields.compactMap { $0 as? String }.filter { Self.liveCuesLimitKeys.contains($0) }
+            out["fields"] = fields.compactMap { $0 as? String }.filter { Self.liveCuesLimitKeys.contains($0) || Self.liveCuesV3Keys.contains($0) }
         }
         if out["reason"] as? String == "out_of_bounds" {
             for bound in ["min", "max"] { if let n = Self.liveCueNumber(body[bound]) { out[bound] = n } }
             if let whole = flag(body["integer"]) { out["integer"] = whole }
         }
+        return out
+    }
+
+    /// One limit as the contract has it ({value, source, locked, min, max, default}), or nil without a number for its value.
+    private static func liveCuesLimit(_ value: Any?) -> [String: Any]? {
+        guard let limit = value as? [String: Any], let number = Self.liveCueNumber(limit["value"]), number >= 0 else { return nil }
+        var kept: [String: Any] = ["value": number]
+        if let source = limit["source"] as? String, ["env", "setting", "default"].contains(source) { kept["source"] = source }
+        if let locked = Self.liveCueFlag(limit["locked"]) { kept["locked"] = locked }
+        for bound in ["min", "max", "default"] { if let n = Self.liveCueNumber(limit[bound]), n >= 0 { kept[bound] = n } }
+        return kept
+    }
+
+    private static func liveCueFlag(_ value: Any?) -> Bool? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+        return number.boolValue
+    }
+
+    /// 0.5.362 (server API v3): a choice setting ({value, source, locked}). The value must be one of `allowed`; the source one
+    /// of the three; `locked` a real boolean (the environment holds the setting when it is true).
+    private static func liveCuesChoice(_ value: Any?, allowed: [String]) -> [String: Any]? {
+        guard let raw = value as? [String: Any], let chosen = raw["value"] as? String, allowed.contains(chosen) else { return nil }
+        var out: [String: Any] = ["value": chosen]
+        if let source = raw["source"] as? String, ["env", "setting", "default"].contains(source) { out["source"] = source }
+        if let locked = Self.liveCueFlag(raw["locked"]) { out["locked"] = locked }
+        return out
+    }
+
+    /// 0.5.362 (server API v3): the general cue block. The six limits by the server's names, today's counts and the breaker's
+    /// end (a time, or null while it is closed), whether Public topics is on, and the home city label (or null).
+    private static func liveCuesGeneral(_ raw: [String: Any]) -> [String: Any] {
+        var out: [String: Any] = [:]
+        if let limits = raw["limits"] as? [String: Any] {
+            var kept: [String: Any] = [:]
+            for name in Self.liveCuesGeneralLimitNames { if let limit = Self.liveCuesLimit(limits[name]) { kept[name] = limit } }
+            out["limits"] = kept
+        }
+        if let today = raw["today"] as? [String: Any] {
+            var kept: [String: Any] = [:]
+            if let day = today["day"] as? String, day.range(of: "\\A[0-9]{4}-[0-9]{2}-[0-9]{2}\\z", options: .regularExpression) != nil { kept["day"] = day }
+            for key in ["topicCalls", "webSearches"] { if let n = Self.liveCueCount(today[key]) { kept[key] = n } }
+            if today["breakerOpenUntil"] is NSNull { kept["breakerOpenUntil"] = NSNull() }
+            else if let until = Self.liveCueNumber(today["breakerOpenUntil"]), until > 0 { kept["breakerOpenUntil"] = until }
+            out["today"] = kept
+        }
+        if let on = Self.liveCueFlag(raw["publicTopics"]) { out["publicTopics"] = on }
+        if raw["homeArea"] is NSNull { out["homeArea"] = NSNull() }
+        else if let area = raw["homeArea"] as? String, area.range(of: "\\A[\\p{L} .'\u{2019},-]{1,80}\\z", options: .regularExpression) != nil { out["homeArea"] = area }
         return out
     }
 
@@ -17695,18 +17741,57 @@ final class COSControlHelper {
         return "{" + pairs.joined(separator: ",") + "}"
     }
 
+    // 0.5.362 (server API v3, live cues modes): the cue mode, the grounding switch and the general cue limits. A read asks
+    // for ?v=3 and falls back to ?v=2 when the server answers 400 unsupported_version; the answer says which one answered
+    // (`apiVersion`). A write that carries only v2 fields still posts {"v":2,...} exactly as before; one with a v3 field
+    // posts {"v":3,...}. Every value is a validated literal, and the server owns the real bounds (400 out_of_bounds).
+    static let liveCueModes = ["focused", "general", "all"]
+    static let liveCueGroundings = ["classic", "grounded"]
+    /// The body fields v3 adds, and the helper flag that sets each.
+    static let liveCuesV3Keys = ["cueMode", "grounding", "generalIntervalSeconds", "generalTrigger", "generalAttemptsPerMeeting",
+                                 "generalMaxCuesPerMeeting", "generalDailyTopicCalls", "generalDailyWebSearches"]
+    static let liveCuesV3Flags: [(flag: String, key: String)] = [
+        ("--mode", "cueMode"), ("--grounding", "grounding"), ("--general-interval", "generalIntervalSeconds"), ("--general-trigger", "generalTrigger"),
+        ("--general-attempts", "generalAttemptsPerMeeting"), ("--general-max-cues", "generalMaxCuesPerMeeting"),
+        ("--general-daily-topic-calls", "generalDailyTopicCalls"), ("--general-daily-web-searches", "generalDailyWebSearches"),
+    ]
+    /// The six general limits by the names the server answers them under (`general.limits`).
+    static let liveCuesGeneralLimitNames = ["intervalSeconds", "trigger", "attemptsPerMeeting", "maxCuesPerMeeting", "dailyTopicCalls", "dailyWebSearches"]
+
+    /// The POST body for the flags given: {"v":2,...} when only v2 fields are there (liveCuesLimitsBody, byte for byte as
+    /// before), {"v":3,...} when any v3 field is. nil when one value is malformed or a field is not one of the two lists.
+    static func liveCuesPostBody(_ values: [String: String]) -> String? {
+        guard !values.isEmpty else { return nil }
+        guard !Set(values.keys).isDisjoint(with: liveCuesV3Keys) else { return liveCuesLimitsBody(values) }
+        guard Set(values.keys).isSubset(of: Set(liveCuesLimitKeys + liveCuesV3Keys)) else { return nil }
+        let decimal = "\\A(0(\\.[0-9]{1,3})?|1(\\.0{1,3})?)\\z", whole = "\\A(0|[1-9][0-9]{0,5})\\z"
+        var pairs = [#""v":3"#]
+        for key in values.keys.sorted() {
+            let text = values[key] ?? ""
+            switch key {
+            case "cueMode", "grounding":
+                guard (key == "cueMode" ? liveCueModes : liveCueGroundings).contains(text) else { return nil }
+                pairs.append("\"\(key)\":\"\(text)\"")
+            default:
+                guard text.range(of: key == "gate" || key == "generalTrigger" ? decimal : whole, options: .regularExpression) != nil else { return nil }
+                pairs.append("\"\(key)\":\(text)")
+            }
+        }
+        return "{" + pairs.joined(separator: ",") + "}"
+    }
+
     private func emitLiveCuesSettings(args: [String]) throws {
-        var limits: [String: String] = [:]
-        for (flag, key) in Self.liveCuesLimitFlags where args.contains(flag) { limits[key] = option(flag, in: args) ?? "" }
+        var values: [String: String] = [:]
+        for (flag, key) in Self.liveCuesLimitFlags + Self.liveCuesV3Flags where args.contains(flag) { values[key] = option(flag, in: args) ?? "" }
         let plan: (method: String, body: String?)
-        if limits.isEmpty {
+        if values.isEmpty {
             guard let read = Self.liveCuesSettingsRequest(hasSet: args.contains("--set"), value: option("--set", in: args)) else {
                 throw HelperError.message("Use --set on or --set off")
             }
             plan = read
         } else {
-            guard !args.contains("--set"), let body = Self.liveCuesLimitsBody(limits) else {
-                throw HelperError.message("Use --gate 0 to 1, --max-cues, --cooldown-seconds or --daily-writer-calls as whole numbers, without --set")
+            guard !args.contains("--set"), let body = Self.liveCuesPostBody(values) else {
+                throw HelperError.message("Use --gate 0 to 1, --max-cues, --cooldown-seconds, --daily-writer-calls, --mode focused, general or all, --grounding classic or grounded, or the --general- limits as whole numbers (--general-trigger 0 to 1), without --set")
             }
             plan = ("POST", body)
         }
@@ -17714,14 +17799,25 @@ final class COSControlHelper {
             emit(ok: true, message: "No pairing token", details: ["transport": "no_token"])
             return
         }
-        guard let response = request(Self.liveCuesSettingsPath + (plan.method == "GET" ? "?v=2" : ""), method: plan.method, token: token, body: plan.body,
-                                     timeout: plan.method == "GET" ? 8 : 10) else {
+        let reading = plan.method == "GET"
+        guard var response = request(Self.liveCuesSettingsPath + (reading ? "?v=3" : ""), method: plan.method, token: token, body: plan.body,
+                                     timeout: reading ? 8 : 10) else {
             emit(ok: true, message: "COS server unreachable", details: ["transport": "unavailable"])
             return
+        }
+        // A server from before API v3 refuses ?v=3 with 400 unsupported_version: ask again for the v2 view it knows.
+        if reading, response.status == 400, Self.liveCueErrorCode(response.body) == "unsupported_version" {
+            guard let older = request(Self.liveCuesSettingsPath + "?v=2", method: "GET", token: token, body: nil, timeout: 8) else {
+                emit(ok: true, message: "COS server unreachable", details: ["transport": "unavailable"])
+                return
+            }
+            response = older
         }
         var details = Self.liveCuesSettingsAnswer(response.body)
         details["transport"] = "answered"
         details["httpStatus"] = response.status
+        // Which version answered: 3 only when a 200 body says so, else 2.
+        if response.status == 200 { details["apiVersion"] = Self.liveCueCount(response.body?["v"]) == 3 ? 3 : 2 }
         emit(ok: true, message: "Live cues settings answered (\(response.status))", details: details)
     }
 
@@ -17837,6 +17933,41 @@ final class COSControlHelper {
         return out["verdict"] == nil && out["vote"] == nil ? nil : out
     }
 
+    static let liveCueGeneralCategories = ["news", "local", "notable"]
+    static let liveCueSourceKinds = ["meeting", "memory", "file", "web"]
+
+    /// A locator the app looks a source up by: printable text, 200 characters at most. It is a key, never a path or a command.
+    private static func liveCueLocator(_ value: Any?) -> String? {
+        guard let text = value as? String, !text.isEmpty, text.count <= 200,
+              text.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7F }) else { return nil }
+        return text
+    }
+
+    /// 0.5.362 (server API v3): a web source's address, only when it is https with a host and no credentials. Anything else
+    /// (http, a file or app scheme, a bare string) is dropped here, so the app never has an address it may not open.
+    static func liveCueHTTPSURL(_ value: Any?) -> String? {
+        guard let text = value as? String, text.count <= 2_000, let parts = URLComponents(string: text), parts.scheme?.lowercased() == "https",
+              let host = parts.host, !host.isEmpty, parts.user == nil, parts.password == nil else { return nil }
+        return text
+    }
+
+    /// One source of a cue: id, date and title as before, plus (0.5.362) its kind and the one locator that kind has: a meeting's
+    /// recordId, a memory's memoryId, a file's fileId, a web source's https url. A locator that does not match the kind, and
+    /// any locator without a kind, is dropped.
+    static func liveCueSource(_ item: Any) -> [String: Any]? {
+        guard let source = item as? [String: Any], let title = Self.liveCueText(source["title"], 200) else { return nil }
+        var out: [String: Any] = ["id": Self.liveCueText(source["id"], 200) ?? "", "date": Self.liveCueText(source["date"], 40) ?? "", "title": title]
+        guard let kind = source["kind"] as? String, Self.liveCueSourceKinds.contains(kind) else { return out }
+        out["kind"] = kind
+        switch kind {
+        case "meeting": if let id = Self.liveCueLocator(source["recordId"]) { out["recordId"] = id }
+        case "memory": if let id = Self.liveCueLocator(source["memoryId"]) { out["memoryId"] = id }
+        case "file": if let id = Self.liveCueLocator(source["fileId"]) { out["fileId"] = id }
+        default: if let url = Self.liveCueHTTPSURL(source["url"]) { out["url"] = url }
+        }
+        return out
+    }
+
     /// One cue row of the history, or nil without the fields a card needs (cueId, sessionId, createdAt, kind, detail).
     static func liveCueRow(_ value: Any?) -> [String: Any]? {
         guard let raw = value as? [String: Any],
@@ -17854,11 +17985,10 @@ final class COSControlHelper {
         if let gate = Self.liveCueNumber(raw["gate"]), (0...1).contains(gate) { out["gate"] = gate }
         if let model = raw["model"] as? String, model.range(of: "\\A[A-Za-z0-9._:-]{1,80}\\z", options: .regularExpression) != nil { out["model"] = model }
         if let before = Self.liveCueText(raw["before"], 800) { out["before"] = before }
-        if let sources = raw["sources"] as? [Any] {
-            out["sources"] = sources.prefix(4).compactMap { item -> [String: Any]? in
-                guard let source = item as? [String: Any], let title = Self.liveCueText(source["title"], 200) else { return nil }
-                return ["id": Self.liveCueText(source["id"], 200) ?? "", "date": Self.liveCueText(source["date"], 40) ?? "", "title": title]
-            }
+        if let sources = raw["sources"] as? [Any] { out["sources"] = sources.prefix(4).compactMap { Self.liveCueSource($0) } }
+        // 0.5.362 (server API v3): an insight cue's category and the search it came from.
+        if let general = raw["general"] as? [String: Any], let category = general["category"] as? String, Self.liveCueGeneralCategories.contains(category) {
+            out["general"] = ["category": category, "query": Self.liveCueText(general["query"], 160) ?? ""]
         }
         out["rating"] = Self.liveCueRating(raw["rating"] ?? raw["verdict"]) ?? NSNull()
         return out
@@ -18041,6 +18171,54 @@ final class COSControlHelper {
             "httpStatus": response.status,
             "body": response.body ?? [:],
         ])
+    }
+
+    /// 0.5.362 (server API v3): `live-cues-status --session ID` reads GET /api/live-cues/status?sessionId=ID, the engine's word
+    /// on one meeting. Only the meeting's state and, when the server sends it, the general cue status cross; the cues in the
+    /// answer are read from the history instead.
+    static let liveCuesStatusRoute = "/api/live-cues/status"
+    static let liveCueGeneralStates = ["off", "waiting", "capped", "withheld", "breaker", "needs_public_topics"]
+
+    static func liveCuesStatusPath(session: String?) -> String? {
+        guard let session, Self.liveCueSessionValid(session) else { return nil }
+        return Self.liveCuesStatusRoute + "?sessionId=" + session
+    }
+
+    /// The status answer's contract keys: `state` (active, paused, ended, stopped) and a stop `reason` code, and `general`
+    /// ({state, reason, cues, attempts}) with its state one of the six. Keys only from a 200; a refusal carries its code.
+    static func liveCuesStatusAnswer(status: Int, body: [String: Any]?) -> [String: Any] {
+        var out: [String: Any] = [:]
+        guard let body else { return out }
+        if let code = Self.liveCueErrorCode(body) { out["error"] = code }
+        guard status == 200, let session = body["session"] as? [String: Any] else { return out }
+        if let state = session["state"] as? String, ["active", "paused", "ended", "stopped"].contains(state) { out["state"] = state }
+        if let reason = session["reason"] as? String, reason.range(of: "\\A[a-z_]{1,64}\\z", options: .regularExpression) != nil { out["reason"] = reason }
+        if let raw = session["general"] as? [String: Any], let state = raw["state"] as? String, Self.liveCueGeneralStates.contains(state) {
+            var general: [String: Any] = ["state": state]
+            if let reason = raw["reason"] as? String, reason.range(of: "\\A[a-z_]{1,64}\\z", options: .regularExpression) != nil { general["reason"] = reason }
+            general["cues"] = Self.liveCueCount(raw["cues"]) ?? 0
+            general["attempts"] = Self.liveCueCount(raw["attempts"]) ?? 0
+            out["general"] = general
+        }
+        return out
+    }
+
+    private func emitLiveCuesStatus(args: [String]) throws {
+        guard let path = Self.liveCuesStatusPath(session: option("--session", in: args)) else {
+            throw HelperError.message("Use --session and a meeting session id")
+        }
+        guard let token = try? readToken() else {
+            emit(ok: true, message: "No pairing token", details: ["transport": "no_token"])
+            return
+        }
+        guard let response = request(path, token: token, timeout: 6) else {
+            emit(ok: true, message: "COS server unreachable", details: ["transport": "unavailable"])
+            return
+        }
+        var details = Self.liveCuesStatusAnswer(status: response.status, body: response.body)
+        details["transport"] = Self.liveCuesTransport(status: response.status, body: response.body)
+        details["httpStatus"] = response.status
+        emit(ok: true, message: "Live cues status answered (\(response.status))", details: details)
     }
 
     private func emitMeetingStrandedSave(args: [String]) throws {
@@ -23570,6 +23748,119 @@ final class COSControlHelper {
                    "env_locked passes only known field names; bounds only with out_of_bounds")
         try expect(Self.liveCuesSettingsAnswer(["error": "invalid_request", "reason": "unknown_field", "field": "token"])["field"] == nil,
                    "a field outside the contract is not echoed")
+        // 0.5.362 (server API v3): the cue mode, the grounding switch and the general limits. Posted as validated literals; a
+        // write with only v2 fields is byte for byte what it was; the answer carries the v3 keys only when it says v 3.
+        try expect(Self.liveCuesPostBody(["gate": "0.75", "maxCuesPerMeeting": "12"]) == Self.liveCuesLimitsBody(["gate": "0.75", "maxCuesPerMeeting": "12"])
+                   && Self.liveCuesPostBody(["gate": "0.75", "maxCuesPerMeeting": "12"]) == #"{"v":2,"gate":0.75,"maxCuesPerMeeting":12}"#,
+                   "a write with only v2 fields still posts v 2, exactly as before")
+        try expect(Self.liveCuesPostBody(["cueMode": "general"]) == #"{"v":3,"cueMode":"general"}"#
+                   && Self.liveCuesPostBody(["grounding": "grounded"]) == #"{"v":3,"grounding":"grounded"}"#,
+                   "the cue mode and the grounding switch post as v 3 strings")
+        try expect(Self.liveCuesPostBody(["grounding": "classic", "generalTrigger": "0.65", "generalIntervalSeconds": "300"])
+                   == #"{"v":3,"generalIntervalSeconds":300,"generalTrigger":0.65,"grounding":"classic"}"#
+                   && Self.liveCuesPostBody(["gate": "0.8", "cueMode": "all"]) == #"{"v":3,"cueMode":"all","gate":0.8}"#,
+                   "v 3 fields post sorted as validated literals, and carry a v2 limit beside them")
+        try expect(Self.liveCuesPostBody(["generalAttemptsPerMeeting": "8", "generalMaxCuesPerMeeting": "4", "generalDailyTopicCalls": "60", "generalDailyWebSearches": "30"])
+                   == #"{"v":3,"generalAttemptsPerMeeting":8,"generalDailyTopicCalls":60,"generalDailyWebSearches":30,"generalMaxCuesPerMeeting":4}"#,
+                   "the four general counts post as whole numbers")
+        for bad in [["cueMode": "everything"], ["cueMode": "Focused"], ["cueMode": ""], ["cueMode": "general\""], ["grounding": "on"], ["grounding": "Grounded"],
+                    ["generalTrigger": "1.5"], ["generalTrigger": ".5"], ["generalTrigger": "0.5e1"], ["generalIntervalSeconds": "1.5"],
+                    ["generalIntervalSeconds": "-1"], ["generalAttemptsPerMeeting": "08"], ["generalDailyWebSearches": "1000000"],
+                    ["cueMode": "general", "enabled": "true"], ["cueMode": "general", "v": "3"], ["cueMode": "general", "gate": "2"]] {
+            try expect(Self.liveCuesPostBody(bad) == nil, "the v3 write refuses \(bad)")
+        }
+        try expect(Self.liveCuesPostBody([:]) == nil && Self.liveCuesPostBody(["enabled": "true"]) == nil, "an empty write, or one with a field outside both lists, posts nothing")
+        try expect(Set(Self.liveCuesV3Flags.map { $0.key }) == Set(Self.liveCuesV3Keys) && Self.liveCuesV3Flags.count == 8
+                   && Self.liveCuesV3Flags.map { $0.flag }.contains("--mode") && Self.liveCuesV3Flags.map { $0.flag }.contains("--grounding"),
+                   "every v3 field has one flag")
+        let v3Body: [String: Any] = [
+            "enabled": true, "source": "setting", "capability": ["available": true], "v": 3,
+            "limits": ["gate": ["value": 0.8, "source": "default", "locked": false, "min": 0.5, "max": 0.95, "default": 0.8]],
+            "cueMode": ["value": "general", "source": "setting", "locked": false, "x": "SECRET"],
+            "grounding": ["value": "grounded", "source": "env", "locked": true],
+            "general": [
+                "limits": [
+                    "intervalSeconds": ["value": 300, "source": "default", "locked": false, "min": 120, "max": 1800, "default": 300, "x": "SECRET"],
+                    "trigger": ["value": 0.6, "source": "env", "locked": true, "min": 0.4, "max": 0.9, "default": 0.6],
+                    "attemptsPerMeeting": ["value": "8"], "evil": ["value": 1],
+                ],
+                "today": ["day": "2026-11-01", "topicCalls": 4, "webSearches": 2, "breakerOpenUntil": NSNull(), "usd": "SECRET"],
+                "publicTopics": true, "homeArea": "Austin, TX", "token": "SECRET",
+            ],
+        ]
+        let v3Answer = Self.liveCuesSettingsAnswer(v3Body)
+        let v3Mode = v3Answer["cueMode"] as? [String: Any], v3Grounding = v3Answer["grounding"] as? [String: Any]
+        let v3General = v3Answer["general"] as? [String: Any]
+        let v3Limits = v3General?["limits"] as? [String: [String: Any]], v3Today = v3General?["today"] as? [String: Any]
+        try expect(v3Answer["v"] as? Int == 3 && v3Mode?["value"] as? String == "general" && v3Mode?["source"] as? String == "setting" && v3Mode?["locked"] as? Bool == false
+                   && v3Mode?["x"] == nil && v3Grounding?["value"] as? String == "grounded" && v3Grounding?["locked"] as? Bool == true,
+                   "a v 3 answer passes the cue mode and the grounding switch with their source and lock")
+        try expect(v3Limits?["intervalSeconds"]?["value"] as? Double == 300 && v3Limits?["intervalSeconds"]?["min"] as? Double == 120 && v3Limits?["intervalSeconds"]?["x"] == nil
+                   && v3Limits?["trigger"]?["locked"] as? Bool == true && v3Limits?["attemptsPerMeeting"] == nil && v3Limits?["evil"] == nil && v3Limits?.count == 2,
+                   "the general limits pass by the server's names with their bounds; a non-number and an unknown name are dropped")
+        try expect(v3Today?["day"] as? String == "2026-11-01" && v3Today?["topicCalls"] as? Int == 4 && v3Today?["webSearches"] as? Int == 2
+                   && v3Today?["breakerOpenUntil"] is NSNull && v3Today?["usd"] == nil && v3General?["publicTopics"] as? Bool == true
+                   && v3General?["homeArea"] as? String == "Austin, TX" && v3General?["token"] == nil,
+                   "the general block passes today's counts, a closed breaker as null, Public topics and the home city, nothing else")
+        var v2Body = v3Body; v2Body["v"] = 2
+        let v2Answer = Self.liveCuesSettingsAnswer(v2Body)
+        try expect(v2Answer["cueMode"] == nil && v2Answer["grounding"] == nil && v2Answer["general"] == nil && v2Answer["v"] as? Int == 2 && v2Answer["limits"] != nil,
+                   "an answer that does not say v 3 carries no v3 keys, whatever else it sends")
+        var noVersion = v3Body; noVersion["v"] = nil
+        try expect(Self.liveCuesSettingsAnswer(noVersion)["cueMode"] == nil, "an answer without a version carries no v3 keys")
+        let oddV3 = Self.liveCuesSettingsAnswer(["v": 3, "cueMode": ["value": "everything"], "grounding": ["value": "grounded", "source": "admin", "locked": "yes"],
+                                                 "general": ["publicTopics": 1, "homeArea": "12 Main St, Austin", "today": ["breakerOpenUntil": -5, "topicCalls": -1]]])
+        let oddGeneral = oddV3["general"] as? [String: Any], oddGrounding = oddV3["grounding"] as? [String: Any]
+        try expect(oddV3["cueMode"] == nil && oddGrounding?["value"] as? String == "grounded" && oddGrounding?["source"] == nil && oddGrounding?["locked"] == nil
+                   && oddGeneral?["publicTopics"] == nil && oddGeneral?["homeArea"] == nil
+                   && (oddGeneral?["today"] as? [String: Any])?["breakerOpenUntil"] == nil && (oddGeneral?["today"] as? [String: Any])?["topicCalls"] == nil,
+                   "a mode outside the three, a bad source or lock, a number as a flag, a home city with digits, a past breaker and a negative count are dropped")
+        let breaker = Self.liveCuesSettingsAnswer(["v": 3, "general": ["today": ["breakerOpenUntil": 1_790_000_000_000]]])
+        try expect(((breaker["general"] as? [String: Any])?["today"] as? [String: Any])?["breakerOpenUntil"] as? Double == 1_790_000_000_000,
+                   "an open breaker passes the time it ends")
+        let v3Refusal = Self.liveCuesSettingsAnswer(["error": "env_locked", "fields": ["cueMode", "rm -rf", "generalTrigger", "grounding"]])
+        try expect(v3Refusal["fields"] as? [String] == ["cueMode", "generalTrigger", "grounding"]
+                   && Self.liveCuesSettingsAnswer(["error": "invalid_request", "reason": "out_of_bounds", "field": "generalTrigger", "min": 0.4, "max": 0.9, "integer": false])["field"] as? String == "generalTrigger"
+                   && Self.liveCuesSettingsAnswer(["error": "invalid_request", "reason": "invalid_value", "field": "cueMode"])["reason"] as? String == "invalid_value",
+                   "a refusal names a v3 field only from the lists")
+        try expect(Self.liveCueErrorCode(["error": "invalid_request", "reason": "unsupported_version"]) == "unsupported_version"
+                   && Self.liveCueErrorCode(["error": "env_forced"]) == "env_forced", "the version fallback keys on the server's reason code")
+        // A cue's sources carry their kind and the one locator that kind has; a web address only when it is https.
+        let sourceMeeting = Self.liveCueSource(["id": "s1", "date": "2026-10-01", "title": "Grant review", "kind": "meeting", "recordId": "rec-1", "url": "https://x.example/a"])
+        try expect(sourceMeeting?["kind"] as? String == "meeting" && sourceMeeting?["recordId"] as? String == "rec-1" && sourceMeeting?["url"] == nil && sourceMeeting?["memoryId"] == nil
+                   && sourceMeeting?["title"] as? String == "Grant review", "a meeting source keeps its recordId and nothing else")
+        try expect(Self.liveCueSource(["title": "N", "kind": "memory", "memoryId": "mem-1", "recordId": "rec-1"])?["memoryId"] as? String == "mem-1"
+                   && Self.liveCueSource(["title": "N", "kind": "memory", "memoryId": "mem-1", "recordId": "rec-1"])?["recordId"] == nil
+                   && Self.liveCueSource(["title": "F", "kind": "file", "fileId": "f-1"])?["fileId"] as? String == "f-1"
+                   && Self.liveCueSource(["title": "F", "kind": "file", "memoryId": "m"])?["memoryId"] == nil, "a memory and a file keep their own locator only")
+        try expect(Self.liveCueSource(["title": "W", "kind": "web", "url": "https://www.reuters.com/world/x?y=1"])?["url"] as? String == "https://www.reuters.com/world/x?y=1",
+                   "a web source keeps an https address")
+        for bad in ["http://example.com/a", "javascript:alert(1)", "file:///etc/passwd", "ftp://example.com/x", "https://user:pw@example.com/", "https:///nohost", "example.com/a",
+                    "https://exa mple.com/", "", String(repeating: "a", count: 2_001)] {
+            try expect(Self.liveCueSource(["title": "W", "kind": "web", "url": bad])?["url"] == nil && Self.liveCueSource(["title": "W", "kind": "web", "url": bad])?["kind"] as? String == "web",
+                       "a web source drops the address \(bad.prefix(30).debugDescription)")
+        }
+        try expect(Self.liveCueSource(["title": "W", "kind": "web", "url": NSNumber(value: 5)])?["url"] == nil && Self.liveCueSource(["title": "W", "recordId": "rec-1", "url": "https://x.example"])?["recordId"] == nil
+                   && Self.liveCueSource(["title": "W", "recordId": "rec-1", "url": "https://x.example"])?["url"] == nil && Self.liveCueSource(["title": "W", "recordId": "rec-1"])?["kind"] == nil,
+                   "a locator without a kind is dropped")
+        try expect(Self.liveCueSource(["title": "W", "kind": "pdf", "recordId": "r"])?["kind"] == nil && Self.liveCueSource(["title": "W", "kind": "meeting", "recordId": ""])?["recordId"] == nil
+                   && Self.liveCueSource(["title": "W", "kind": "meeting", "recordId": "a\nb"])?["recordId"] == nil
+                   && Self.liveCueSource(["title": "W", "kind": "meeting", "recordId": String(repeating: "a", count: 201)])?["recordId"] == nil
+                   && Self.liveCueSource(["kind": "meeting", "recordId": "r"]) == nil, "a kind outside the four, an empty, multi-line or long locator, and a source without a title are dropped")
+        let statusAnswer = Self.liveCuesStatusAnswer(status: 200, body: ["protocol": 2, "enabled": true, "session": ["sessionId": "meeting_1", "state": "active", "cues": [["detail": "SECRET"]],
+                                                     "general": ["state": "capped", "reason": "meeting_cap", "cues": 4, "attempts": 6, "query": "SECRET"]]])
+        let statusGeneral = statusAnswer["general"] as? [String: Any]
+        try expect(statusAnswer["state"] as? String == "active" && statusGeneral?["state"] as? String == "capped" && statusGeneral?["reason"] as? String == "meeting_cap"
+                   && statusGeneral?["cues"] as? Int == 4 && statusGeneral?["attempts"] as? Int == 6 && statusGeneral?["query"] == nil && statusAnswer["cues"] == nil,
+                   "live-cues-status passes the meeting's state and the general status, never the cues")
+        try expect(Self.liveCuesStatusAnswer(status: 200, body: ["session": ["state": "active", "general": ["state": "invented"]]])["general"] == nil
+                   && Self.liveCuesStatusAnswer(status: 200, body: ["session": ["state": "active"]])["general"] == nil
+                   && Self.liveCuesStatusAnswer(status: 200, body: ["session": NSNull()]).isEmpty
+                   && Self.liveCuesStatusAnswer(status: 500, body: ["error": "SECRET text", "session": ["general": ["state": "capped"]]]).isEmpty,
+                   "a general state outside the six, no general block, a null session and a refusal carry no general status")
+        try expect(Self.liveCuesStatusPath(session: "meeting_1791635349988_67d6pj") == "/api/live-cues/status?sessionId=meeting_1791635349988_67d6pj"
+                   && Self.liveCuesStatusPath(session: "a b") == nil && Self.liveCuesStatusPath(session: "x&y=1") == nil && Self.liveCuesStatusPath(session: nil) == nil,
+                   "live-cues-status asks for one meeting by a valid session id")
         // 0.5.327: live-cues-history and live-cues-rate. The grammar is refused before anything is sent; only the contract
         // crosses back.
         try expect(Self.liveCuesHistoryPath(days: nil, session: nil, unrated: false) == "/api/live-cues/history?days=7&limit=200",
@@ -23627,6 +23918,23 @@ final class COSControlHelper {
                    "live-cues-history passes the contract's rows and drops a row without its required fields")
         // 0.5.336 (server 6.86.0): a kind this build does not know crosses in the kind spelling, to be drawn as a plain cue.
         try expect(historyRows?[1]["kind"] as? String == "advice", "live-cues-history passes a kind it does not know, never drops it")
+        // 0.5.362 (server API v3): an insight cue's web sources and its category and search.
+        let insightAnswer = Self.liveCuesHistoryAnswer(status: 200, body: ["v": 1, "cues": [
+            ["cueId": cueID, "sessionId": "meeting_1", "createdAt": 1_790_000_000_000, "kind": "insight", "headline": "H", "detail": "D",
+             "sources": [["id": "w1", "date": "", "title": "Reuters", "kind": "web", "url": "https://www.reuters.com/a"],
+                         ["id": "w2", "date": "", "title": "Plain", "kind": "web", "url": "http://example.com/b"]],
+             "general": ["category": "news", "query": "regional jewelry show dates", "token": "SECRET"]],
+            ["cueId": cueID, "sessionId": "meeting_1", "createdAt": 1_790_000_000_001, "kind": "insight", "detail": "D", "general": ["category": "gossip", "query": "q"]],
+            ["cueId": cueID, "sessionId": "meeting_1", "createdAt": 1_790_000_000_002, "kind": "reinforce", "detail": "D", "general": "news"],
+        ]])
+        let insightRows = insightAnswer["cues"] as? [[String: Any]]
+        let insightSources = insightRows?.first?["sources"] as? [[String: Any]]
+        let insightGeneral = insightRows?.first?["general"] as? [String: Any]
+        try expect(insightRows?.count == 3 && insightRows?.first?["kind"] as? String == "insight" && insightSources?.first?["url"] as? String == "https://www.reuters.com/a"
+                   && insightSources?.first?["kind"] as? String == "web" && insightSources?.last?["url"] == nil && insightSources?.last?["title"] as? String == "Plain"
+                   && insightGeneral?["category"] as? String == "news" && insightGeneral?["query"] as? String == "regional jewelry show dates" && insightGeneral?["token"] == nil
+                   && insightRows?[1]["general"] == nil && insightRows?[2]["general"] == nil,
+                   "live-cues-history passes an insight cue's https sources and its category and search; a category outside the three, or a non-object, is dropped")
         try expect(["reinforce", "challenge", "decision", "promise", "followUp", "advice"].allSatisfy(Self.liveCueKindValid)
                    && !["", "Decision", "follow-up", "a b", "x<", String(repeating: "a", count: 33), "decision\n"].contains(where: Self.liveCueKindValid),
                    "a cue kind is the server's spelling: lower camel case, 32 at most")
