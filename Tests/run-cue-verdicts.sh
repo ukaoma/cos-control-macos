@@ -36,7 +36,7 @@ if [[ "$LANE" == "all" || "$LANE" == "pins" ]]; then
   OUT="$(/usr/bin/python3 "$ROOT/Tests/cue-verdicts-pins.py" "$ROOT")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*pins: }%% passed*}"
-  (( COUNT >= 73 )) || { print -u2 "cue verdicts pins ran only $COUNT (expected at least 73)"; exit 1; }
+  (( COUNT >= 81 )) || { print -u2 "cue verdicts pins ran only $COUNT (expected at least 81)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
@@ -46,7 +46,7 @@ if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
   OUT="$(env "${RUN_ENV[@]}" "$DIR/cue-verdicts-checks")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*checks: }%% passed*}"
-  (( COUNT >= 156 )) || { print -u2 "cue verdicts checks ran only $COUNT (expected at least 156)"; exit 1; }
+  (( COUNT >= 209 )) || { print -u2 "cue verdicts checks ran only $COUNT (expected at least 209)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "page" ]]; then

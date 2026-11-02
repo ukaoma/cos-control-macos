@@ -382,6 +382,119 @@ import Foundation
         check(meetingStore.meetings[meeting]?.cues[0].verdict == .useful, "a rating shows on the meeting's card")
         check(meetingStore.counts == nil && meetingStore.queue.isEmpty, "a meeting's rating never invents a week")
 
+        // ── 0.5.362 (server API v3): insight cues, their sources and the general cue status.
+        check(CueVerdicts.kindLabel("insight") == "Insight" && CueVerdicts.kindLabel("decision") == "Decision" && CueVerdicts.kindLabel("advice") == "advice",
+              "an insight cue is labelled Insight; the older kinds and an unknown one read as before")
+        let insightRow = #"{"cueId":"cue-i-000001","sessionId":"meeting_1792400000000_abc123","meetingTitle":"Standup","createdAt":\#(monday),"kind":"insight","headline":"Show dates moved","detail":"A regional jewelry show moves to March.","gate":0.9,"sources":[{"id":"w1","date":"","title":"Reuters","kind":"web","url":"https://www.reuters.com/world/x"},{"id":"w2","date":"","title":"Plain page","kind":"web","url":"http://insecure.example/a"},{"id":"m1","date":"2026-10-01","title":"Grant review","kind":"meeting","recordId":"rec-1"},{"id":"n1","date":"","title":"A note","kind":"memory","memoryId":"mem-1"}],"general":{"category":"news","query":"regional jewelry show dates"},"before":"","rating":null}"#
+        let insight = CueVerdicts.read(history([insightRow], total: 1, rated: 0, unrated: 1)).1?.cues.first
+        check(insight?.kind == "insight" && insight?.general == LiveCueGeneral(category: "news", query: "regional jewelry show dates") && insight?.sources.count == 4,
+              "an insight row carries its category, its search and its sources")
+        check(insight?.sources[0].link == .web(URL(string: "https://www.reuters.com/world/x")!) && insight?.sources[0].domain == "reuters.com",
+              "a web source opens its https address and shows its domain, without www")
+        check(insight?.sources[1].link == nil && insight?.sources[1].domain == nil, "an http address has no link and no domain")
+        check(insight?.sources[2].link == .meeting(recordId: "rec-1") && insight?.sources[3].link == .memory(id: "mem-1"), "a meeting and a memory open by their own locator")
+        check(LiveCueSource(id: "f", date: "", title: "Deck", kind: "file", fileId: "file-1").link == .file(id: "file-1"), "a file opens by its fileId")
+        check(LiveCueSource(id: "1", date: "2026-10-01", title: "Grant review").link == nil && LiveCueSource(id: "1", date: "2026-10-01", title: "Grant review").domain == nil,
+              "a source from an older server has no kind and no link")
+        check(LiveCueSource(id: "x", date: "", title: "t", kind: "meeting", memoryId: "mem-1").link == nil
+              && LiveCueSource(id: "x", date: "", title: "t", kind: "memory", recordId: "rec-1").link == nil
+              && LiveCueSource(id: "x", date: "", title: "t", kind: "file", url: "https://example.com/a").link == nil
+              && LiveCueSource(id: "x", date: "", title: "t", kind: "web", fileId: "file-1").link == nil
+              && LiveCueSource(id: "x", date: "", title: "t", recordId: "rec-1", url: "https://example.com/a").link == nil
+              && LiveCueSource(id: "x", date: "", title: "t", kind: "pdf", recordId: "rec-1").link == nil, "a locator that is not the kind's own, or a kind with none, has no link")
+        check(LiveCueSource(id: "x", date: "", title: "t", kind: "meeting", recordId: "").link == nil && LiveCueSource(id: "x", date: "", title: "t", kind: "memory", memoryId: "").link == nil,
+              "an empty locator has no link")
+        for unsafe in ["http://example.com/a", "javascript:alert(1)", "file:///etc/passwd", "ftp://example.com/x", "https://user:pw@example.com/", "https://localhost/a",
+                       "https://127.0.0.1/a", "https://192.168.1.5/a", "https://10.0.0.2/a", "https://printer.local/a", "https:///nohost", "example.com/a", ""] {
+            check(LiveCueSource(id: "x", date: "", title: "t", kind: "web", url: unsafe).link == nil && LiveCueSource(id: "x", date: "", title: "t", kind: "web", url: unsafe).domain == nil,
+                  "a web source never opens \(unsafe.debugDescription)")
+        }
+        check(LiveCueSource(id: "x", date: "", title: "t", kind: "web", url: "HTTPS://Example.com/Path").link != nil
+              && LiveCueSource(id: "x", date: "", title: "t", kind: "web", url: "https://example.com/Path").domain == "example.com", "the scheme is read without case; the domain is lower case")
+        check(LiveCueSource(id: "x", date: "", title: "t", kind: "web", url: nil).link == nil, "a web source without an address has no link")
+        check(CueVerdicts.sourceText(insight!.sources[0]) == "Reuters (reuters.com)" && CueVerdicts.sourceText(insight!.sources[1]) == "Plain page"
+              && CueVerdicts.sourceText(insight!.sources[2]) == "Grant review (2026-10-01)" && CueVerdicts.sourceText(insight!.sources[3]) == "A note",
+              "a web source shows its domain; the others their date")
+        check(CueVerdicts.sourcesLine(Array(insight!.sources.prefix(2))) == "Sources: Reuters (reuters.com); Plain page", "the sources line names the domain")
+        check(CueVerdicts.read(history([row("cue-g-000001", kind: "insight").replacingOccurrences(of: #""sources":[]"#, with: #""sources":[],"general":{"category":"gossip","query":"q"}"#)],
+                                       total: 1, rated: 0, unrated: 1)).1?.cues.first?.general == nil, "a category outside the three is no general block")
+        check(CueVerdicts.read(history([row("cue-g-000002")], total: 1, rated: 0, unrated: 1)).1?.cues.first?.general == nil, "an older row has none")
+        check(CueVerdicts.cardLine(insight!, style: .twelveHour, calendar: utc) == "9:00 AM · Insight · 0.90", "an insight card's first line")
+
+        // The general cue status.
+        let capped = #""state":"active","general":{"state":"capped","reason":"meeting_cap","cues":4,"attempts":6}"#
+        let statusRead = CueVerdicts.generalStatus(answered(200, capped))
+        check(statusRead.answered && statusRead.status == LiveCuesGeneralStatus(state: "capped", reason: "meeting_cap", cues: 4, attempts: 6), "a status with a general block")
+        check(CueVerdicts.generalStatus(answered(200, #""state":"active""#)).answered && CueVerdicts.generalStatus(answered(200, #""state":"active""#)).status == nil,
+              "an answer without one: answered, nothing to say")
+        check(CueVerdicts.generalStatus(answered(200, #""general":{"state":"invented"}"#)).status == nil && CueVerdicts.generalStatus(answered(200, #""general":{"cues":2}"#)).status == nil,
+              "a state outside the six, or none, is no status")
+        check(!CueVerdicts.generalStatus(nil).answered && !CueVerdicts.generalStatus(details(#"{"transport":"unavailable"}"#)).answered
+              && !CueVerdicts.generalStatus(answered(404)).answered && !CueVerdicts.generalStatus(answered(500, capped)).answered
+              && !CueVerdicts.generalStatus(details(#"{"httpStatus":200}"#)).answered, "nothing answering, a refusal or a 404 is not an answer about the status")
+        check(CueVerdicts.generalStatus(answered(200, #""general":{"state":"waiting"}"#)).status == LiveCuesGeneralStatus(state: "waiting", reason: nil, cues: 0, attempts: 0), "counts default to zero")
+        check(CueVerdicts.statusArguments(session: "meeting_1") == ["live-cues-status", "--session", "meeting_1"], "the status read names the meeting")
+        func general(_ state: String) -> LiveCuesGeneralStatus { LiveCuesGeneralStatus(state: state, reason: nil, cues: 0, attempts: 0) }
+        check(CueVerdicts.generalLine(general("capped")) == "General cues are paused: a general cue limit was reached. They start again in your next meeting or tomorrow."
+              && CueVerdicts.generalLine(general("withheld")) == "General cues are held back while the talk may be private. They start again when it moves on."
+              && CueVerdicts.generalLine(general("breaker")) == "General cues paused after repeated failures. They start again by themselves after a pause."
+              && CueVerdicts.generalLine(general("needs_public_topics")) == "General cues need Public topics on, so no web lookups run.",
+              "each state worth saying has its reason in plain words")
+        check(CueVerdicts.generalLine(general("off")) == nil && CueVerdicts.generalLine(general("waiting")) == nil && CueVerdicts.generalLine(general("invented")) == nil
+              && CueVerdicts.generalLine(nil) == nil, "off, waiting and no status say nothing")
+        for state in CueVerdicts.generalStates {
+            if let text = CueVerdicts.generalLine(general(state)) {
+                check(!text.contains("\u{2014}") && !text.contains("\u{2192}") && !text.contains("->") && !text.contains("_"), "plain words, no em dash, arrow or code: \(text)")
+            }
+        }
+        check(CueVerdicts.generalStates == ["off", "waiting", "capped", "withheld", "breaker", "needs_public_topics"], "the six states of the contract")
+        // The store keeps each meeting's status, reads no sooner than 15 s, and never loses it to a read that did not answer.
+        let generalClock = Clock(Date(timeIntervalSince1970: monday / 1000))
+        let generalStore = CueVerdictsStore(); generalStore.now = { generalClock.now }
+        let generalCalls = Calls()
+        await generalStore.loadGeneralStatus("meeting_1", run: fake(generalCalls, [answered(200, capped)]))
+        check(generalCalls.log == [["live-cues-status", "--session", "meeting_1"]] && generalStore.generalStatus["meeting_1"]?.state == "capped", "the status is read and kept by meeting")
+        await generalStore.loadGeneralStatus("meeting_1", run: fake(generalCalls, [answered(200, #""general":{"state":"breaker"}"#)]))
+        check(generalCalls.log.count == 1 && generalStore.generalStatus["meeting_1"]?.state == "capped", "a second read inside 15 seconds reads nothing")
+        generalClock.now = generalClock.now.addingTimeInterval(16)
+        await generalStore.loadGeneralStatus("meeting_1", run: fake(generalCalls, [details(#"{"transport":"unavailable"}"#)]))
+        check(generalCalls.log.count == 2 && generalStore.generalStatus["meeting_1"]?.state == "capped", "a read that did not answer keeps the last status")
+        generalClock.now = generalClock.now.addingTimeInterval(16)
+        await generalStore.loadGeneralStatus("meeting_1", run: fake(generalCalls, [answered(200, #""general":{"state":"breaker"}"#)]))
+        check(generalStore.generalStatus["meeting_1"]?.state == "breaker", "a newer answer replaces it")
+        await generalStore.loadGeneralStatus("meeting_2", run: fake(generalCalls, [answered(200, #""state":"active""#)]))
+        check(generalCalls.log.count == 4 && generalStore.generalStatus["meeting_2"] == nil && generalStore.generalStatus["meeting_1"]?.state == "breaker", "each meeting has its own clock and its own status")
+        generalClock.now = generalClock.now.addingTimeInterval(16)
+        await generalStore.loadGeneralStatus("meeting_1", run: fake(generalCalls, [answered(200, #""state":"ended""#)]))
+        check(generalStore.generalStatus["meeting_1"] == nil, "an answer without a general block clears the line")
+        var published = 0
+        let watchGeneral = generalStore.$generalStatus.dropFirst().sink { _ in published += 1 }
+        generalClock.now = generalClock.now.addingTimeInterval(16)
+        await generalStore.loadGeneralStatus("meeting_1", run: fake(generalCalls, [answered(200, #""state":"ended""#)]))
+        check(published == 0, "an unchanged status publishes nothing")
+        watchGeneral.cancel()
+
+        // Copy full context: the cues the server logged, oldest first, once each, with what was searched and how they were rated.
+        var insightCue = LiveCueRecord(id: "cue-i-000001", sessionId: "meeting_1792400000000_abc123", createdAt: Date(timeIntervalSince1970: monday / 1000), kind: "insight",
+                                       headline: "Show dates moved", detail: "A regional jewelry show moves to March.",
+                                       sources: [LiveCueSource(id: "w1", date: "", title: "Reuters", kind: "web", url: "https://www.reuters.com/world/x"),
+                                                 LiveCueSource(id: "w2", date: "", title: "Plain page", kind: "web", url: "http://insecure.example/a")],
+                                       general: LiveCueGeneral(category: "news", query: "regional jewelry show dates"))
+        var coachCue = LiveCueRecord(id: "cue-c-000002", sessionId: "meeting_1792400000000_abc123", createdAt: Date(timeIntervalSince1970: monday / 1000 + 360), kind: "challenge",
+                                     headline: "Settle it", detail: "Settle the date.", sources: [LiveCueSource(id: "1", date: "2026-10-01", title: "Grant review")],
+                                     rating: LiveCueRating(verdict: .useful, note: "right call", vote: "up"))
+        let expected = "## Cues\n\n### C1 · Insight · 6 min in\nShow dates moved\nA regional jewelry show moves to March.\nSearched the web for: regional jewelry show dates\nSources: Reuters (reuters.com); Plain page\nhttps://www.reuters.com/world/x"
+            + "\n\n### C2 · Challenge · 12 min in\nSettle it\nSettle the date.\nSources: Grant review (2026-10-01)\nRated Useful · \u{201C}right call\u{201D}\nVoted up on the glasses"
+        check(MeetingAskText.cuesSection([coachCue, insightCue, insightCue], timeZone: TimeZone(identifier: "UTC")!) == expected, "cues in the copied context: oldest first, once each, with sources, search and rating")
+        check(MeetingAskText.cuesSection([]) == nil && MeetingAskText.cuesSection([], note: "Context coverage: cues could not be read from the server.")
+              == "## Cues\n\nContext coverage: cues could not be read from the server.", "no cues, no section; a coverage note stands alone")
+        coachCue.headline = coachCue.detail; coachCue.sessionId = "g2:abc"; coachCue.rating = nil
+        check(MeetingAskText.cuesSection([coachCue], timeZone: TimeZone(identifier: "UTC")!) == "## Cues\n\n### C1 · Challenge · 2026-10-19 09:06\nSettle the date.\nSources: Grant review (2026-10-01)",
+              "without a start the time is the local clock, a headline equal to the cue is not repeated, an unrated cue has no rating line")
+        insightCue.general = nil; insightCue.sources = []
+        check(MeetingAskText.cuesSection([insightCue], timeZone: TimeZone(identifier: "UTC")!)?.contains("Searched the web") == false
+              && MeetingAskText.cuesSection([insightCue], timeZone: TimeZone(identifier: "UTC")!)?.contains("Sources: none, from the room only") == true, "no search line without one")
+
         print("cue verdicts checks: \(passed) passed")
     }
 }

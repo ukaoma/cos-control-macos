@@ -441,7 +441,8 @@ enum MeetingAskText {
         if let start { return (lines[start..<end].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines), false) }
         return (raw, document)
     }
-    static func fullContext(title: String, transcript: String, exchanges: [MeetingAskExchange], files: [MeetingAskFile]) -> String {
+    static func fullContext(title: String, transcript: String, exchanges: [MeetingAskExchange], files: [MeetingAskFile],
+                            cues: [LiveCueRecord] = [], cueNote: String? = nil, timeZone: TimeZone = .current) -> String {
         var sections = ["# " + title, "## Transcript\n" + transcript]
         for (index, exchange) in exchanges.enumerated() {
             let namespace = "Q\(index + 1)"
@@ -459,10 +460,37 @@ enum MeetingAskText {
             if !exchange.notices.isEmpty { part += "\n" + exchange.notices.joined(separator: "\n") }
             sections.append(part)
         }
+        // 0.5.362: the cues the server logged for the meeting, emitted and rated, between the answers and the files.
+        if let cuesText = cuesSection(cues, note: cueNote, timeZone: timeZone) { sections.append(cuesText) }
         if !files.isEmpty {
             sections.append("## Files\n" + files.map { "### \($0.name) [\($0.id)@\($0.revision)] · \($0.status)\n" + ($0.status == "ready" ? $0.text : "Text unavailable: " + ($0.notice ?? $0.status)) }.joined(separator: "\n\n"))
         }
         return sections.joined(separator: "\n\n")
+    }
+    /// 0.5.362: every cue the server logged for the meeting, oldest first, once each: when it came (minutes into the meeting,
+    /// else the local time), its kind, the cue, what it searched, its sources with any web address, and the rating and note
+    /// it was given. `note` is a coverage line when the cues could not be read. nil with no cues and no note.
+    static func cuesSection(_ cues: [LiveCueRecord], note: String? = nil, timeZone: TimeZone = .current) -> String? {
+        var seen = Set<String>()
+        let rows = cues.filter { seen.insert($0.id).inserted }.sorted { $0.createdAt == $1.createdAt ? $0.id < $1.id : $0.createdAt < $1.createdAt }
+        guard !rows.isEmpty || note != nil else { return nil }
+        let stamp = DateFormatter()
+        stamp.locale = Locale(identifier: "en_US_POSIX"); stamp.timeZone = timeZone; stamp.dateFormat = "yyyy-MM-dd HH:mm"
+        var parts = ["## Cues"]
+        for (index, cue) in rows.enumerated() {
+            let when = CueVerdicts.minutesIn(cue).map { "\($0) min in" } ?? stamp.string(from: cue.createdAt)
+            var lines = ["### C\(index + 1) · \(CueVerdicts.kindLabel(cue.kind)) · \(when)"]
+            if !cue.headline.isEmpty, cue.headline != cue.detail { lines.append(cue.headline) }
+            lines.append(cue.detail)
+            if let general = cue.general, !general.query.isEmpty { lines.append("Searched the web for: " + general.query) }
+            lines.append(CueVerdicts.sourcesLine(cue.sources))
+            for source in cue.sources { if case .web(let url)? = source.link { lines.append(url.absoluteString) } }
+            if let rated = CueVerdicts.ratedLine(cue.rating) { lines.append(rated) }
+            if let vote = CueVerdicts.voteLine(cue.rating) { lines.append(vote) }
+            parts.append(lines.joined(separator: "\n"))
+        }
+        if let note { parts.append(note) }
+        return parts.joined(separator: "\n\n")
     }
     /// "Model: Haiku · Through 3:30 · completed · Answer time: 6.4 s" (the answer time only when the server sent it).
     static func exportStatusLine(_ exchange: MeetingAskExchange) -> String {
@@ -750,6 +778,49 @@ struct LiveCuesSettings: Equatable, Sendable {
     var locked: Bool { source == "env" }
     /// 0.5.329: the spend limits and today's usage (server 6.79.2); nil from an older server, which shows the switch alone.
     var limits: LiveCuesLimits? = nil
+    /// 0.5.362 (server API v3): the cue mode, the grounding switch and the general cue state. nil from a server that answers
+    /// v 2 or older (and from a v 3 answer that is not whole); Control then hides all of it.
+    var v3: LiveCuesV3? = nil
+}
+
+/// 0.5.362: what a cue mode does. `focused` is today's cues; `general` and `all` add public context from the web.
+enum LiveCueMode: String, CaseIterable, Sendable { case focused, general, all }
+/// 0.5.362: `classic` is today's cue path; `grounded` checks each cue against the owner's meetings, notes and files.
+enum LiveCueGrounding: String, CaseIterable, Sendable { case classic, grounded }
+
+/// A choice the server holds (cue mode, grounding): its value, where it came from, and whether the server's environment
+/// holds it (then Control shows it and cannot change it).
+struct LiveCuesChoice<Value: Equatable & Sendable>: Equatable, Sendable {
+    var value: Value
+    var source: String?
+    var locked: Bool
+}
+
+/// General cue use today, from the server's own counters.
+struct LiveCuesGeneralToday: Equatable, Sendable {
+    var topicCalls: Int
+    var webSearches: Int
+    /// When the general cue breaker closes again; nil while it is closed.
+    var breakerOpenUntil: Date?
+}
+
+/// 0.5.362 (server API v3): one meeting's general cue status from GET /api/live-cues/status (the helper's `live-cues-status`):
+/// `state` is off, waiting, capped, withheld, breaker or needs_public_topics.
+struct LiveCuesGeneralStatus: Equatable, Sendable {
+    var state: String
+    var reason: String?
+    var cues: Int
+    var attempts: Int
+}
+
+struct LiveCuesV3: Equatable, Sendable {
+    var mode: LiveCuesChoice<LiveCueMode>
+    var grounding: LiveCuesChoice<LiveCueGrounding>
+    /// Whether Public topics is on at the server. General cues search the web only while it is.
+    var publicTopics: Bool
+    /// The home city general cues use for local items, or nil when none is set.
+    var homeArea: String?
+    var today: LiveCuesGeneralToday?
 }
 
 /// One spend limit as the server reports it (server 6.79.2): its value, where it came from, whether the server's
@@ -775,6 +846,8 @@ struct LiveCuesUsage: Equatable, Sendable {
 struct LiveCuesLimits: Equatable, Sendable {
     enum Key: String, CaseIterable, Sendable {
         case gate, maxCuesPerMeeting, cooldownSeconds, dailyWriterCalls
+        // 0.5.362 (server API v3): the general cue limits, by the names a v3 write takes.
+        case generalIntervalSeconds, generalTrigger, generalAttemptsPerMeeting, generalMaxCuesPerMeeting, generalDailyTopicCalls, generalDailyWebSearches
         /// The helper's flag for this limit (`live-cues-settings --gate 0.75`).
         var flag: String {
             switch self {
@@ -782,8 +855,30 @@ struct LiveCuesLimits: Equatable, Sendable {
             case .maxCuesPerMeeting: return "--max-cues"
             case .cooldownSeconds: return "--cooldown-seconds"
             case .dailyWriterCalls: return "--daily-writer-calls"
+            case .generalIntervalSeconds: return "--general-interval"
+            case .generalTrigger: return "--general-trigger"
+            case .generalAttemptsPerMeeting: return "--general-attempts"
+            case .generalMaxCuesPerMeeting: return "--general-max-cues"
+            case .generalDailyTopicCalls: return "--general-daily-topic-calls"
+            case .generalDailyWebSearches: return "--general-daily-web-searches"
             }
         }
+        /// True for the six that sit under `general.limits` in a v3 answer, by `serverName`.
+        var isGeneral: Bool { serverName != rawValue }
+        /// The name the server answers the limit under: the key itself for the four v2 limits, the short name inside `general.limits`.
+        var serverName: String {
+            switch self {
+            case .generalIntervalSeconds: return "intervalSeconds"
+            case .generalTrigger: return "trigger"
+            case .generalAttemptsPerMeeting: return "attemptsPerMeeting"
+            case .generalMaxCuesPerMeeting: return "maxCuesPerMeeting"
+            case .generalDailyTopicCalls: return "dailyTopicCalls"
+            case .generalDailyWebSearches: return "dailyWebSearches"
+            default: return rawValue
+            }
+        }
+        /// A probability (the bar and the general trigger): sent and shown with decimals. The rest are whole numbers.
+        var isDecimal: Bool { self == .gate || self == .generalTrigger }
     }
     var values: [Key: LiveCuesLimit] = [:]
     var usage: LiveCuesUsage?
@@ -845,17 +940,42 @@ enum LiveCues {
                                 capability: LiveCuesCapability(available: available, reason: capability["reason"]?.string,
                                                                model: capability["model"]?.string, memory: capability["memory"]?.string,
                                                                decisionProvider: capability["decisionProvider"]?.string),
-                                limits: limits(details))
+                                limits: limits(details), v3: v3(details))
+    }
+
+    /// 0.5.362 (server API v3): the cue mode, the grounding switch and the general state, only from an answer the helper
+    /// says came from API v3 (`apiVersion` 3) and whose body says `v: 3` with every part in the contract's shape. Anything
+    /// less is nil, and Control hides the controls: a v 2 answer, the v 2 fallback, a 200 without the parts.
+    static func v3(_ details: [String: JSONValue]) -> LiveCuesV3? {
+        guard details["apiVersion"]?.int == 3, details["v"]?.int == 3,
+              let mode = choice(details["cueMode"], LiveCueMode.init(rawValue:)),
+              let grounding = choice(details["grounding"], LiveCueGrounding.init(rawValue:)),
+              let general = details["general"]?.object, let publicTopics = general["publicTopics"]?.bool else { return nil }
+        var today: LiveCuesGeneralToday?
+        if let raw = general["today"]?.object {
+            today = LiveCuesGeneralToday(topicCalls: raw["topicCalls"]?.int ?? 0, webSearches: raw["webSearches"]?.int ?? 0,
+                                         breakerOpenUntil: raw["breakerOpenUntil"]?.double.map { Date(timeIntervalSince1970: $0 / 1000) })
+        }
+        let area = general["homeArea"]?.string.flatMap { $0.isEmpty ? nil : $0 }
+        return LiveCuesV3(mode: mode, grounding: grounding, publicTopics: publicTopics, homeArea: area, today: today)
+    }
+
+    private static func choice<Value>(_ value: JSONValue?, _ make: (String) -> Value?) -> LiveCuesChoice<Value>? {
+        guard let object = value?.object, let raw = object["value"]?.string, let chosen = make(raw) else { return nil }
+        let source = object["source"]?.string
+        return LiveCuesChoice(value: chosen, source: source, locked: object["locked"]?.bool ?? (source == "env"))
     }
 
     /// The limits in the answer, or nil when it has none: only a server that answers `v: 2` (6.79.2, asked with ?v=2)
     /// has them; an older one answers without `v` and shows the switch alone.
     static func limits(_ details: [String: JSONValue]) -> LiveCuesLimits? {
-        guard details["v"]?.int == 2 else { return nil }
+        guard let version = details["v"]?.int, version == 2 || version == 3 else { return nil }
         var out = LiveCuesLimits()
         let raw = details["limits"]?.object ?? [:]
+        // 0.5.362: the six general limits sit under `general.limits`, and only an API v3 answer has them.
+        let general = details["apiVersion"]?.int == 3 && version == 3 ? details["general"]?.object?["limits"]?.object ?? [:] : [:]
         for key in LiveCuesLimits.Key.allCases {
-            guard let limit = raw[key.rawValue]?.object, let value = limit["value"]?.double else { continue }
+            guard let limit = (key.isGeneral ? general : raw)[key.serverName]?.object, let value = limit["value"]?.double else { continue }
             out.values[key] = LiveCuesLimit(value: value, source: limit["source"]?.string, locked: limit["locked"]?.bool ?? (limit["source"]?.string == "env"),
                                             min: limit["min"]?.double, max: limit["max"]?.double, defaultValue: limit["default"]?.double)
         }
@@ -887,14 +1007,23 @@ enum LiveCues {
         case .maxCuesPerMeeting: 1...25
         case .cooldownSeconds: 20...900
         case .dailyWriterCalls: 1...500
+        case .generalIntervalSeconds: 120...1_800
+        case .generalTrigger: 0.4...0.9
+        case .generalAttemptsPerMeeting: 1...30
+        case .generalMaxCuesPerMeeting: 1...12
+        case .generalDailyTopicCalls: 1...200
+        case .generalDailyWebSearches: 1...100
         }
         let low = limit.min ?? fallback.lowerBound, high = limit.max ?? fallback.upperBound
         return low <= high ? low...high : fallback
     }
 
     /// The bar on the slider's 0.05 grid, inside the server's bounds.
-    static func gateSteps(_ limit: LiveCuesLimit) -> [Double] {
-        let r = range(.gate, limit), step = 0.05
+    static func gateSteps(_ limit: LiveCuesLimit) -> [Double] { sliderSteps(.gate, limit) }
+
+    /// A probability's slider stops on the 0.05 grid (the bar, and 0.5.362 the general trigger), inside the server's bounds.
+    static func sliderSteps(_ key: LiveCuesLimits.Key, _ limit: LiveCuesLimit) -> [Double] {
+        let r = range(key, limit), step = 0.05
         var out: [Double] = []
         var n = (r.lowerBound / step).rounded(.up)
         while n * step <= r.upperBound + 1e-9 { out.append((n * step * 100).rounded() / 100); n += 1 }
@@ -911,9 +1040,12 @@ enum LiveCues {
         let low = Int(r.lowerBound.rounded(.up)), high = Int(r.upperBound.rounded(.down))
         guard low <= high else { return [Int(limit.value)] }
         let stops: [Int] = switch key {
-        case .maxCuesPerMeeting, .gate: Array(low...high)
+        case .maxCuesPerMeeting, .gate, .generalTrigger, .generalAttemptsPerMeeting, .generalMaxCuesPerMeeting: Array(low...high)
         case .cooldownSeconds: [0, 15, 30, 45, 60, 90, 120, 180, 240, 300, 420, 600, 900, 1_200, 1_800, 3_600]
         case .dailyWriterCalls: [0, 10, 25, 50, 75, 100, 150, 200, 300, 400, 500, 750, 1_000, 1_500, 2_000, 3_000, 5_000, 10_000]
+        case .generalIntervalSeconds: [120, 180, 240, 300, 420, 600, 900, 1_200, 1_800]
+        case .generalDailyTopicCalls: [1, 5, 10, 20, 30, 45, 60, 80, 100, 150, 200]
+        case .generalDailyWebSearches: [1, 5, 10, 15, 20, 30, 40, 50, 75, 100]
         }
         var out = stops.filter { (low...high).contains($0) }
         if !out.contains(low) { out.insert(low, at: 0) }
@@ -933,7 +1065,7 @@ enum LiveCues {
 
     static func countText(_ key: LiveCuesLimits.Key, _ value: Int) -> String {
         switch key {
-        case .cooldownSeconds: return gapText(value)
+        case .cooldownSeconds, .generalIntervalSeconds: return gapText(value)
         case .dailyWriterCalls: return value == 0 ? "Off" : "\(value)"
         default: return "\(value)"
         }
@@ -952,7 +1084,7 @@ enum LiveCues {
         var arguments = ["live-cues-settings"]
         for key in LiveCuesLimits.Key.allCases {
             guard let value = pending[key] else { continue }
-            arguments += [key.flag, key == .gate ? gateText(value) : String(Int(value.rounded()))]
+            arguments += [key.flag, key.isDecimal ? gateText(value) : String(Int(value.rounded()))]
         }
         return arguments
     }
@@ -989,6 +1121,101 @@ enum LiveCues {
     /// True for the 409 the server sends when its environment holds live cues on and the request turned them off.
     static func envForced(_ details: [String: JSONValue]?) -> Bool {
         details?["transport"]?.string == "answered" && details?["httpStatus"]?.int == 409 && details?["error"]?.string == "env_forced"
+    }
+
+    // ── The cue mode, grounding and general cue words (0.5.362, server API v3). Plain short sentences.
+    static let cueModeTitle = "Cue mode"
+    static let groundedTitle = "Grounded cues"
+    static let groundedHelp = "Each cue is checked against your past meetings, notes and files, and cites what it used."
+    static let modeEnvNote = "Set on the server, so it cannot be changed here."
+    static let publicTopicsOffLine = "Public topics is off on the server, so general cues run no web lookups."
+    static let generalGapTitle = "General check gap"
+    static let generalBarTitle = "General bar"
+    static let generalMoreCues = "More general cues"
+    static let generalFewerCues = "Fewer general cues"
+    static let generalAttemptsTitle = "Topic checks per meeting"
+    static let generalMaxCuesTitle = "General cues per meeting"
+    static let generalDailyTopicsTitle = "Daily topic checks"
+    static let generalDailySearchesTitle = "Daily web searches"
+
+    static func modeTitle(_ mode: LiveCueMode) -> String {
+        switch mode {
+        case .focused: return "Focused"
+        case .general: return "General"
+        case .all: return "All"
+        }
+    }
+
+    /// One plain sentence per mode. General and All say they search the web for public context and need Public topics.
+    static func modeHelp(_ mode: LiveCueMode) -> String {
+        switch mode {
+        case .focused: return "Cues from the room, drawn from your past meetings and notes."
+        case .general: return "Public context from the web, like news and local items, and it needs Public topics on."
+        case .all: return "Room cues plus public context from the web, and it needs Public topics on."
+        }
+    }
+
+    /// True for the modes that search the web.
+    static func searchesWeb(_ mode: LiveCueMode) -> Bool { mode != .focused }
+
+    /// Whether the live view reads a meeting's general cue status: only from a v 3 server whose mode searches the web.
+    static func readsGeneral(_ settings: LiveCuesSettings?) -> Bool { settings?.v3.map { searchesWeb($0.mode.value) } ?? false }
+
+    /// The live state of Public topics for a mode that needs it: a line when it is off, nil otherwise (and always for Focused).
+    static func publicTopicsLine(_ v3: LiveCuesV3) -> String? { searchesWeb(v3.mode.value) && !v3.publicTopics ? publicTopicsOffLine : nil }
+
+    /// "Local items use Austin, TX." when a home city is set and general cues are on.
+    static func homeAreaLine(_ v3: LiveCuesV3) -> String? {
+        guard searchesWeb(v3.mode.value), let area = v3.homeArea, !area.isEmpty else { return nil }
+        return "Local items use \(area)."
+    }
+
+    /// "Today: 4 topic checks, 2 web searches".
+    static func generalUsageLine(_ today: LiveCuesGeneralToday) -> String {
+        "Today: \(today.topicCalls) topic \(today.topicCalls == 1 ? "check" : "checks"), \(today.webSearches) web \(today.webSearches == 1 ? "search" : "searches")"
+    }
+
+    /// "General cues are paused until 3:20 PM after repeated failures." while the breaker is open, else nil.
+    static func breakerLine(_ today: LiveCuesGeneralToday?, now: Date, style: ClockStyle, calendar: Calendar = .current) -> String? {
+        guard let until = today?.breakerOpenUntil, until > now else { return nil }
+        return "General cues are paused until \(CueVerdicts.clock(until, style: style, calendar: calendar)) after repeated failures."
+    }
+
+    /// The title of a general limit row.
+    static func generalTitle(_ key: LiveCuesLimits.Key) -> String? {
+        switch key {
+        case .generalIntervalSeconds: return generalGapTitle
+        case .generalTrigger: return generalBarTitle
+        case .generalAttemptsPerMeeting: return generalAttemptsTitle
+        case .generalMaxCuesPerMeeting: return generalMaxCuesTitle
+        case .generalDailyTopicCalls: return generalDailyTopicsTitle
+        case .generalDailyWebSearches: return generalDailySearchesTitle
+        default: return nil
+        }
+    }
+
+    /// Why a cue mode or grounding change did not take, in words, or nil when the server answered with its v3 settings.
+    static func changeRefusal(_ details: [String: JSONValue]?) -> String? {
+        guard let details else { return "COS Control could not save the change. Try again." }
+        switch details["transport"]?.string {
+        case "unavailable": return "COS server unreachable. The change was not saved."
+        case "no_token": return "Reconnect COS Control to the server to change cues."
+        case "answered": break
+        default: return "COS Control could not save the change. Try again."
+        }
+        switch details["httpStatus"]?.int {
+        case 200: return settings(details)?.v3 == nil ? "The server did not confirm the change. Check again." : nil
+        case 409: return modeEnvNote
+        case 400:
+            switch details["reason"]?.string {
+            case "unknown_field", "unsupported_version": return "Cue modes need a newer server. Update the server in Settings."
+            default: return "The server did not accept that value."
+            }
+        case 404: return "Cue modes need a newer server. Update the server in Settings."
+        case 401, 403: return "Reconnect COS Control to the server to change cues."
+        case let status?: return "The change was not saved (HTTP \(status)). Try again."
+        case nil: return "COS Control could not save the change. Try again."
+        }
     }
 
     /// "claude-sonnet-5-5" reads "Sonnet 5.5"; an id in another shape reads as sent; nil when there is none.
@@ -1127,6 +1354,48 @@ final class LiveCuesStore: ObservableObject {
         state = LiveCues.state(try? await run(["live-cues-settings"], nil).details)
     }
 
+    /// 0.5.362: the live meeting view needs the cue mode before Settings was ever opened. A read only while nothing has been
+    /// read yet (Checking) and nothing is in flight; Settings' own reads are unchanged.
+    func loadIfNeeded(_ run: Run) async {
+        guard case .checking = state, !busy else { return }
+        await load(run)
+    }
+
+    /// 0.5.362 (server API v3): the mode or grounding value a change is asking the server for, while it asks.
+    @Published private(set) var pendingMode: LiveCueMode?
+    @Published private(set) var pendingGrounding: LiveCueGrounding?
+    /// Why the last cue mode or grounding change did not take; cleared by the next one.
+    @Published private(set) var v3Note: String?
+
+    /// A POST for a v 2 field (the switch, a v 2 limit) is answered in the v 2 view, which has no cue mode: when the state
+    /// had the v 3 controls and the answer does not, read again so they stay.
+    private func keepV3(_ before: LiveCuesSettings?, _ run: Run) async {
+        guard before?.v3 != nil, settings?.v3 == nil, settings != nil, !busy else { return }
+        busy = true
+        defer { busy = false }
+        state = LiveCues.state(try? await run(["live-cues-settings"], nil).details)
+    }
+
+    /// Change the cue mode. Only on a server that answered v 3, with the mode not held by its environment, nothing in flight
+    /// and a value that differs. The shown mode changes only from the server's answer.
+    func setMode(_ mode: LiveCueMode, run: Run) async {
+        guard !busy, let v3 = settings?.v3, !v3.mode.locked, v3.mode.value != mode else { return }
+        busy = true; pendingMode = mode; v3Note = nil
+        let answer = try? await run(["live-cues-settings", "--mode", mode.rawValue], nil)
+        pendingMode = nil; busy = false
+        if let refusal = LiveCues.changeRefusal(answer?.details) { v3Note = refusal; return }
+        state = LiveCues.state(answer?.details)
+    }
+
+    func setGrounding(_ grounding: LiveCueGrounding, run: Run) async {
+        guard !busy, let v3 = settings?.v3, !v3.grounding.locked, v3.grounding.value != grounding else { return }
+        busy = true; pendingGrounding = grounding; v3Note = nil
+        let answer = try? await run(["live-cues-settings", "--grounding", grounding.rawValue], nil)
+        pendingGrounding = nil; busy = false
+        if let refusal = LiveCues.changeRefusal(answer?.details) { v3Note = refusal; return }
+        state = LiveCues.state(answer?.details)
+    }
+
     /// 0.5.329: limit values a person moved to and the server has not confirmed yet; the row shows them as Saving.
     @Published private(set) var pendingLimits: [LiveCuesLimits.Key: Double] = [:]
     /// Why the last limits change did not take; cleared by the next one.
@@ -1168,7 +1437,9 @@ final class LiveCuesStore: ObservableObject {
             limitsNote = refusal
             return
         }
+        let before = settings
         state = LiveCues.state(answer?.details)
+        await keepV3(before, run)
     }
 
     func set(_ enabled: Bool, run: Run) async {
@@ -1184,7 +1455,9 @@ final class LiveCuesStore: ObservableObject {
             await load(run)
             return
         }
+        let before = settings
         state = LiveCues.state(answer?.details)
+        await keepV3(before, run)
     }
 }
 
@@ -1208,6 +1481,55 @@ struct LiveCueSource: Equatable, Sendable {
     var id: String
     var date: String
     var title: String
+    /// 0.5.362 (server API v3): `meeting`, `memory`, `file` or `web`, and the one locator that kind has: a meeting's
+    /// recordId, a memory's memoryId, a file's fileId, a web source's https url. All nil from an older server.
+    var kind: String? = nil
+    var recordId: String? = nil
+    var memoryId: String? = nil
+    var fileId: String? = nil
+    var url: String? = nil
+}
+
+/// Where a cue's source opens. A web source opens only an https address that passes MeetingAskText.safeURL (a host that
+/// is not this Mac or a private network, no credentials); anything else has no link and shows as plain text.
+enum LiveCueSourceLink: Equatable, Sendable {
+    case meeting(recordId: String)
+    case memory(id: String)
+    case file(id: String)
+    case web(URL)
+}
+
+extension LiveCueSource {
+    /// The one place a source opens, by its kind and that kind's own locator; nil when it has none (an older server, a locator
+    /// that does not match the kind, an address that is not a safe https one).
+    var link: LiveCueSourceLink? {
+        func locator(_ value: String?) -> String? { value.flatMap { $0.isEmpty ? nil : $0 } }
+        switch kind {
+        case "meeting": return locator(recordId).map { .meeting(recordId: $0) }
+        case "memory": return locator(memoryId).map { .memory(id: $0) }
+        case "file": return locator(fileId).map { .file(id: $0) }
+        case "web": return Self.httpsURL(url).map { .web($0) }
+        default: return nil
+        }
+    }
+
+    static func httpsURL(_ text: String?) -> URL? {
+        guard let url = MeetingAskText.safeURL(text), url.scheme?.lowercased() == "https" else { return nil }
+        return url
+    }
+
+    /// "reuters.com" for a web source with an https address, else nil.
+    var domain: String? {
+        guard kind == "web", let host = Self.httpsURL(url)?.host?.lowercased() else { return nil }
+        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+    }
+}
+
+/// 0.5.362 (server API v3): what an insight cue came from, in the server's log row: its category and the web search.
+struct LiveCueGeneral: Equatable, Sendable {
+    /// `news`, `local` or `notable`.
+    var category: String
+    var query: String
 }
 
 /// What the server stores for a cue: the verdict from Control, its note, and the lens's up or down, kept apart.
@@ -1239,13 +1561,16 @@ struct LiveCueRecord: Identifiable, Equatable, Sendable {
     /// The last few hundred characters said before the cue was written.
     var before: String
     var rating: LiveCueRating?
+    /// 0.5.362: an insight cue's category and search; nil for every other cue and from an older server.
+    var general: LiveCueGeneral? = nil
 
     var verdict: CueVerdict? { rating?.verdict }
 
     init(id: String, sessionId: String, meetingTitle: String = "", createdAt: Date, kind: String, headline: String = "", detail: String,
-         gate: Double? = nil, sources: [LiveCueSource] = [], before: String = "", rating: LiveCueRating? = nil) {
+         gate: Double? = nil, sources: [LiveCueSource] = [], before: String = "", rating: LiveCueRating? = nil, general: LiveCueGeneral? = nil) {
         self.id = id; self.sessionId = sessionId; self.meetingTitle = meetingTitle; self.createdAt = createdAt; self.kind = kind
         self.headline = headline; self.detail = detail; self.gate = gate; self.sources = sources; self.before = before; self.rating = rating
+        self.general = general
     }
 
     /// A row of the helper's history, or nil without what a card needs.
@@ -1256,9 +1581,17 @@ struct LiveCueRecord: Identifiable, Equatable, Sendable {
         self.init(id: id, sessionId: sessionId, meetingTitle: row["meetingTitle"]?.string ?? "", createdAt: Date(timeIntervalSince1970: created / 1000),
                   kind: kind, headline: row["headline"]?.string ?? "", detail: detail, gate: row["gate"]?.double,
                   sources: (row["sources"]?.array ?? []).compactMap { item in
-                      item.object.flatMap { s in s["title"]?.string.map { LiveCueSource(id: s["id"]?.string ?? "", date: s["date"]?.string ?? "", title: $0) } }
+                      item.object.flatMap { s in
+                          s["title"]?.string.map {
+                              LiveCueSource(id: s["id"]?.string ?? "", date: s["date"]?.string ?? "", title: $0, kind: s["kind"]?.string,
+                                            recordId: s["recordId"]?.string, memoryId: s["memoryId"]?.string, fileId: s["fileId"]?.string, url: s["url"]?.string)
+                          }
+                      }
                   },
                   before: row["before"]?.string ?? "")
+        if let general = row["general"]?.object, let category = general["category"]?.string, ["news", "local", "notable"].contains(category) {
+            self.general = LiveCueGeneral(category: category, query: general["query"]?.string ?? "")
+        }
         if ["saved", "library"].contains(row["titleSource"]?.string ?? ""), let title = row["title"]?.string { savedTitle = title }
         armedAt = row["armedAt"]?.double.map { Date(timeIntervalSince1970: $0 / 1000) }
         if let stored = (row["rating"] ?? row["verdict"])?.object {
@@ -1399,6 +1732,33 @@ enum CueVerdicts {
         }
     }
 
+    // ── General cue status (0.5.362, server API v3).
+    static let generalStates = ["off", "waiting", "capped", "withheld", "breaker", "needs_public_topics"]
+    /// The general status is read no sooner than a meeting's cues are.
+    static let generalPollSeconds: TimeInterval = pollSeconds
+
+    static func statusArguments(session: String) -> [String] { ["live-cues-status", "--session", session] }
+
+    /// The helper's `live-cues-status` details: whether the server answered with its status at all (a refusal or nothing
+    /// answering leaves the last line as it was), and the general status when it sent one in the contract's shape.
+    static func generalStatus(_ details: [String: JSONValue]?) -> (answered: Bool, status: LiveCuesGeneralStatus?) {
+        guard let details, details["transport"]?.string == "answered", details["httpStatus"]?.int == 200 else { return (false, nil) }
+        guard let general = details["general"]?.object, let state = general["state"]?.string, generalStates.contains(state) else { return (true, nil) }
+        return (true, LiveCuesGeneralStatus(state: state, reason: general["reason"]?.string, cues: general["cues"]?.int ?? 0, attempts: general["attempts"]?.int ?? 0))
+    }
+
+    /// The one line the live view shows when general cues are not running for a reason worth saying: the meeting's general
+    /// limit reached, a stretch held back, the breaker open, or Public topics off. Nothing for off, waiting or no status.
+    static func generalLine(_ status: LiveCuesGeneralStatus?) -> String? {
+        switch status?.state {
+        case "capped": return "General cues are paused: a general cue limit was reached. They start again in your next meeting or tomorrow."
+        case "withheld": return "General cues are held back while the talk may be private. They start again when it moves on."
+        case "breaker": return "General cues paused after repeated failures. They start again by themselves after a pause."
+        case "needs_public_topics": return "General cues need Public topics on, so no web lookups run."
+        default: return nil
+        }
+    }
+
     static func historyArguments(days: Int, session: String?, unrated: Bool) -> [String] {
         var arguments = ["live-cues-history", "--days", String(min(max(days, 1), 30))]
         if let session { arguments += ["--session", session] }
@@ -1536,6 +1896,8 @@ enum CueVerdicts {
         case "decision": return "Decision"
         case "promise": return "Promise"
         case "followUp": return "Follow-up"
+        // 0.5.362 (server API v3): a general cue, public context from the web.
+        case "insight": return "Insight"
         default: return kind
         }
     }
@@ -1544,7 +1906,13 @@ enum CueVerdicts {
 
     static func sourcesLine(_ sources: [LiveCueSource]) -> String {
         guard !sources.isEmpty else { return "Sources: none, from the room only" }
-        return "Sources: " + sources.map { $0.date.isEmpty ? $0.title : "\($0.title) (\($0.date))" }.joined(separator: "; ")
+        return "Sources: " + sources.map(sourceText).joined(separator: "; ")
+    }
+
+    /// One source in words: a web source shows its domain ("Reuters (reuters.com)"), the others their date.
+    static func sourceText(_ source: LiveCueSource) -> String {
+        if let domain = source.domain { return "\(source.title) (\(domain))" }
+        return source.date.isEmpty ? source.title : "\(source.title) (\(source.date))"
     }
 
     /// "7:54 · Challenge · 0.91", a meeting card's first line.
@@ -1708,6 +2076,22 @@ final class CueVerdictsStore: ObservableObject {
             else if next.state != .loaded || missed >= 2 { next = Meeting(state: state, cues: next.cues, count: next.count) }
         }
         if meetings[session] != next { meetings[session] = next }
+    }
+
+    /// 0.5.362: each live meeting's general cue status, by session id. A meeting without one has no entry.
+    @Published private(set) var generalStatus: [String: LiveCuesGeneralStatus] = [:]
+
+    /// One meeting's general cue status, no sooner than `pollSeconds` after the last read and one read at a time. Published
+    /// only when it changed. A read that did not answer leaves the last status (a Mac waking, a server restarting).
+    func loadGeneralStatus(_ session: String, run: Run) async {
+        let key = "general:" + session
+        if let last = readAt[key], now().timeIntervalSince(last) < CueVerdicts.generalPollSeconds { return }
+        guard reading.insert(key).inserted else { return }
+        defer { reading.remove(key) }
+        readAt[key] = now()
+        let read = CueVerdicts.generalStatus(try? await run(CueVerdicts.statusArguments(session: session), nil).details)
+        guard read.answered, generalStatus[session] != read.status else { return }
+        generalStatus[session] = read.status
     }
 
     /// The cue moves to the end of the queue; nothing is sent.

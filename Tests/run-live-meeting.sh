@@ -20,7 +20,7 @@ if [[ "$LANE" == "all" || "$LANE" == "pins" ]]; then
   OUT="$(/usr/bin/python3 "$ROOT/Tests/live-meeting-pins.py" "$ROOT")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*pins: }%% passed*}"
-  (( COUNT >= 280 )) || { print -u2 "live meeting pins ran only $COUNT (expected at least 280)"; exit 1; }
+  (( COUNT >= 357 )) || { print -u2 "live meeting pins ran only $COUNT (expected at least 357)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
@@ -30,7 +30,7 @@ if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
   print -r -- "$OUT"
   # A floor on the count: a check that silently stops running must fail this.
   COUNT="${${OUT##*checks: }%% passed*}"
-  (( COUNT >= 83 )) || { print -u2 "live meeting checks ran only $COUNT (expected at least 83)"; exit 1; }
+  (( COUNT >= 122 )) || { print -u2 "live meeting checks ran only $COUNT (expected at least 122)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "helper" ]]; then

@@ -385,6 +385,174 @@ import Foundation
         await flight.value
         check(heldLimits.pendingLimits == [.gate: 0.9], "the newer move stays waiting after the older one lands")
 
+        // ── 0.5.362: server API v3 (the cue mode, grounding and the general cue limits). Shapes from the frozen contract.
+        let generalJSON = #""general":{"limits":{"intervalSeconds":{"value":300,"source":"default","locked":false,"min":120,"max":1800,"default":300},"trigger":{"value":0.6,"source":"setting","locked":false,"min":0.4,"max":0.9,"default":0.6},"attemptsPerMeeting":{"value":8,"source":"default","locked":false,"min":1,"max":30,"default":8},"maxCuesPerMeeting":{"value":4,"source":"env","locked":true,"min":1,"max":12,"default":4},"dailyTopicCalls":{"value":60,"source":"default","locked":false,"min":1,"max":200,"default":60},"dailyWebSearches":{"value":30,"source":"default","locked":false,"min":1,"max":100,"default":30}},"today":{"day":"2026-11-01","topicCalls":4,"webSearches":2,"breakerOpenUntil":null},"publicTopics":true,"homeArea":"Austin, TX"}"#
+        let v3Limits = limitsJSON.replacingOccurrences(of: #""v":2,"#, with: #""v":3,"#)
+        func v3Body(mode: String = #"{"value":"general","source":"setting","locked":false}"#, grounding: String = #"{"value":"classic","source":"default","locked":false}"#,
+                    general: String? = nil, limits: String? = nil) -> String {
+            let block = general ?? generalJSON
+            return shape(enabled: true, available: true) + "," + (limits ?? v3Limits) + #","cueMode":"# + mode + #","grounding":"# + grounding + (block.isEmpty ? "" : "," + block)
+        }
+        func answeredAPI(_ version: Int?, _ body: String) -> [String: JSONValue] {
+            details(#"{"transport":"answered","httpStatus":200"# + (version.map { #","apiVersion":\#($0)"# } ?? "") + "," + body + "}")
+        }
+        let v3Settings = loaded(answeredAPI(3, v3Body()))
+        let v3 = v3Settings?.v3
+        check(v3?.mode == LiveCuesChoice(value: LiveCueMode.general, source: "setting", locked: false)
+              && v3?.grounding == LiveCuesChoice(value: LiveCueGrounding.classic, source: "default", locked: false)
+              && v3?.publicTopics == true && v3?.homeArea == "Austin, TX", "a v 3 answer carries the cue mode, the grounding switch, Public topics and the home city")
+        check(v3?.today == LiveCuesGeneralToday(topicCalls: 4, webSearches: 2, breakerOpenUntil: nil), "today's general counts are read; a closed breaker is nil")
+        check(v3Settings?.limits?.values.count == 10 && v3Settings?.limits?.values[.generalTrigger]?.value == 0.6 && v3Settings?.limits?.values[.generalIntervalSeconds]?.min == 120
+              && v3Settings?.limits?.values[.generalMaxCuesPerMeeting]?.locked == true && v3Settings?.limits?.values[.gate]?.value == 0.8,
+              "the six general limits sit beside the four, each by the server's name inside general.limits")
+        check(v3Settings?.limits?.usage?.cues == 7, "the v 2 usage still reads from a v 3 answer")
+        check(loaded(answeredAPI(3, v3Body(mode: #"{"value":"all","source":"env"}"#)))?.v3?.mode == LiveCuesChoice(value: LiveCueMode.all, source: "env", locked: true),
+              "a mode from the environment is locked without a locked flag")
+        check(loaded(answeredAPI(3, v3Body(general: generalJSON.replacingOccurrences(of: #""breakerOpenUntil":null"#, with: #""breakerOpenUntil":1790000000000"#))))?.v3?.today?.breakerOpenUntil
+              == Date(timeIntervalSince1970: 1_790_000_000), "an open breaker carries the time it ends")
+        check(loaded(answeredAPI(3, v3Body(general: generalJSON.replacingOccurrences(of: #","homeArea":"Austin, TX""#, with: #","homeArea":null"#))))?.v3?.homeArea == nil,
+              "no home city is nil")
+        // Everything v3 is hidden when the helper reports v 2, or the answer is not whole.
+        check(loaded(answeredAPI(2, v3Body()))?.v3 == nil && loaded(answeredAPI(nil, v3Body()))?.v3 == nil, "apiVersion 2 or missing: no v3 controls, whatever the body says")
+        check(loaded(answeredAPI(2, v3Body()))?.limits?.values.count == 4, "under apiVersion 2 only the four v 2 limits read, never the general ones")
+        check(loaded(answeredAPI(3, v3Body(limits: limitsJSON)))?.v3 == nil, "a body that says v 2 under apiVersion 3 has no v3 controls")
+        check(loaded(answeredAPI(3, v3Body(limits: limitsJSON)))?.limits?.values.count == 4, "and no general limits")
+        check(loaded(answeredAPI(3, v3Body(mode: #"{"value":"everything"}"#)))?.v3 == nil && loaded(answeredAPI(3, v3Body(grounding: #"{"value":"on"}"#)))?.v3 == nil,
+              "a mode or grounding outside the enum hides v3")
+        check(loaded(answeredAPI(3, v3Body(general: "")))?.v3 == nil && loaded(answeredAPI(3, v3Body(general: #""general":{"limits":{}}"#)))?.v3 == nil,
+              "no general block, or one without Public topics, hides v3")
+        check(loaded(answered(200, withLimits(shape(enabled: true, available: true))))?.v3 == nil, "a v 2 server has no v3")
+        // The words.
+        check(LiveCueMode.allCases.map { LiveCues.modeTitle($0) } == ["Focused", "General", "All"], "the three modes by name")
+        check(LiveCues.modeHelp(.focused) == "Cues from the room, drawn from your past meetings and notes."
+              && LiveCues.modeHelp(.general) == "Public context from the web, like news and local items, and it needs Public topics on."
+              && LiveCues.modeHelp(.all) == "Room cues plus public context from the web, and it needs Public topics on.",
+              "one plain sentence per mode")
+        check(LiveCues.searchesWeb(.general) && LiveCues.searchesWeb(.all) && !LiveCues.searchesWeb(.focused)
+              && LiveCues.modeHelp(.general).contains("web") && LiveCues.modeHelp(.general).contains("Public topics on")
+              && LiveCues.modeHelp(.all).contains("web") && LiveCues.modeHelp(.all).contains("Public topics on"), "General and All say they search the web and need Public topics")
+        func v3With(_ mode: LiveCueMode, topics: Bool, area: String? = nil) -> LiveCuesV3 {
+            LiveCuesV3(mode: LiveCuesChoice(value: mode, source: "setting", locked: false), grounding: LiveCuesChoice(value: .classic, source: nil, locked: false),
+                       publicTopics: topics, homeArea: area, today: nil)
+        }
+        check(LiveCues.publicTopicsLine(v3With(.general, topics: false)) == LiveCues.publicTopicsOffLine && LiveCues.publicTopicsLine(v3With(.all, topics: false)) == LiveCues.publicTopicsOffLine
+              && LiveCues.publicTopicsLine(v3With(.general, topics: true)) == nil && LiveCues.publicTopicsLine(v3With(.focused, topics: false)) == nil,
+              "the live state of Public topics shows when it is off and the mode needs it")
+        check(LiveCues.homeAreaLine(v3With(.general, topics: true, area: "Austin, TX")) == "Local items use Austin, TX."
+              && LiveCues.homeAreaLine(v3With(.focused, topics: true, area: "Austin, TX")) == nil && LiveCues.homeAreaLine(v3With(.all, topics: true)) == nil,
+              "the home city line shows with a city and a web mode")
+        check(LiveCues.readsGeneral(v3Settings) && !LiveCues.readsGeneral(loaded(answeredAPI(3, v3Body(mode: #"{"value":"focused"}"#)))) && !LiveCues.readsGeneral(nil)
+              && !LiveCues.readsGeneral(loaded(answered(200, shape(enabled: true, available: true)))), "the general status is read only in a web mode on a v 3 server")
+        check(LiveCues.groundedHelp == "Each cue is checked against your past meetings, notes and files, and cites what it used."
+              && LiveCues.cueModeTitle == "Cue mode" && LiveCues.groundedTitle == "Grounded cues", "the grounded switch and the picker by name")
+        check(LiveCues.generalUsageLine(LiveCuesGeneralToday(topicCalls: 4, webSearches: 2, breakerOpenUntil: nil)) == "Today: 4 topic checks, 2 web searches"
+              && LiveCues.generalUsageLine(LiveCuesGeneralToday(topicCalls: 1, webSearches: 1, breakerOpenUntil: nil)) == "Today: 1 topic check, 1 web search", "today's general use in words")
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        let zone = Calendar(identifier: .gregorian)
+        check(LiveCues.breakerLine(LiveCuesGeneralToday(topicCalls: 0, webSearches: 0, breakerOpenUntil: now.addingTimeInterval(600)), now: now, style: .twentyFourHour, calendar: zone)?
+                .hasPrefix("General cues are paused until ") == true
+              && LiveCues.breakerLine(LiveCuesGeneralToday(topicCalls: 0, webSearches: 0, breakerOpenUntil: now.addingTimeInterval(-1)), now: now, style: .twentyFourHour) == nil
+              && LiveCues.breakerLine(LiveCuesGeneralToday(topicCalls: 0, webSearches: 0, breakerOpenUntil: nil), now: now, style: .twentyFourHour) == nil
+              && LiveCues.breakerLine(nil, now: now, style: .twentyFourHour) == nil, "the breaker line shows while it is open, and says when it ends")
+        check(LiveCuesLimits.Key.allCases.filter(\.isGeneral).count == 6 && LiveCuesLimits.Key.allCases.filter { !$0.isGeneral }.map(\.rawValue) == ["gate", "maxCuesPerMeeting", "cooldownSeconds", "dailyWriterCalls"],
+              "six general keys, the four v 2 keys unchanged")
+        check(LiveCuesLimits.Key.allCases.filter(\.isDecimal) == [.gate, .generalTrigger], "the two probabilities send decimals")
+        check(LiveCuesLimits.Key.generalMaxCuesPerMeeting.serverName == "maxCuesPerMeeting" && LiveCuesLimits.Key.generalMaxCuesPerMeeting.rawValue == "generalMaxCuesPerMeeting"
+              && LiveCuesLimits.Key.generalIntervalSeconds.serverName == "intervalSeconds" && LiveCuesLimits.Key.maxCuesPerMeeting.serverName == "maxCuesPerMeeting",
+              "a general limit is read by the short name and written by the long one")
+        check(LiveCuesLimits.Key.allCases.map(\.flag) == ["--gate", "--max-cues", "--cooldown-seconds", "--daily-writer-calls", "--general-interval", "--general-trigger",
+                                                          "--general-attempts", "--general-max-cues", "--general-daily-topic-calls", "--general-daily-web-searches"], "one helper flag per limit")
+        check(LiveCues.limitsArguments([.generalTrigger: 0.7, .generalIntervalSeconds: 600, .gate: 0.8])
+              == ["live-cues-settings", "--gate", "0.80", "--general-interval", "600", "--general-trigger", "0.70"], "general limits ride the same one call, in a fixed order")
+        let trigger = v3Settings!.limits!.values[.generalTrigger]!
+        check(LiveCues.sliderSteps(.generalTrigger, trigger) == [0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9], "the general bar steps 0.40 to 0.90 by 0.05")
+        check(LiveCues.range(.generalTrigger, LiveCuesLimit(value: 0.6, source: nil, locked: false)) == 0.4...0.9
+              && LiveCues.range(.generalIntervalSeconds, LiveCuesLimit(value: 300, source: nil, locked: false)) == 120...1_800
+              && LiveCues.range(.generalAttemptsPerMeeting, LiveCuesLimit(value: 8, source: nil, locked: false)) == 1...30
+              && LiveCues.range(.generalMaxCuesPerMeeting, LiveCuesLimit(value: 4, source: nil, locked: false)) == 1...12
+              && LiveCues.range(.generalDailyTopicCalls, LiveCuesLimit(value: 60, source: nil, locked: false)) == 1...200
+              && LiveCues.range(.generalDailyWebSearches, LiveCuesLimit(value: 30, source: nil, locked: false)) == 1...100, "the contract's bounds are the fallback")
+        let interval = LiveCues.ladder(.generalIntervalSeconds, v3Settings!.limits!.values[.generalIntervalSeconds]!)
+        check(interval.first == 120 && interval.last == 1_800 && interval.contains(300) && interval == interval.sorted(), "the general gap ladder, 2 to 30 minutes, holds the default")
+        check(LiveCues.ladder(.generalMaxCuesPerMeeting, v3Settings!.limits!.values[.generalMaxCuesPerMeeting]!) == Array(1...12)
+              && LiveCues.ladder(.generalAttemptsPerMeeting, v3Settings!.limits!.values[.generalAttemptsPerMeeting]!) == Array(1...30), "per-meeting counts one at a time")
+        let searches = LiveCues.ladder(.generalDailyWebSearches, v3Settings!.limits!.values[.generalDailyWebSearches]!)
+        let topics = LiveCues.ladder(.generalDailyTopicCalls, v3Settings!.limits!.values[.generalDailyTopicCalls]!)
+        check(searches.first == 1 && searches.last == 100 && searches.contains(30) && topics.first == 1 && topics.last == 200 && topics.contains(60), "the daily ladders hold their defaults")
+        check(LiveCues.countText(.generalIntervalSeconds, 300) == "5 min" && LiveCues.countText(.generalDailyWebSearches, 30) == "30", "values in words")
+        check(LiveCues.generalTitle(.generalTrigger) == "General bar" && LiveCues.generalTitle(.generalIntervalSeconds) == "General check gap" && LiveCues.generalTitle(.gate) == nil
+              && LiveCuesLimits.Key.allCases.filter(\.isGeneral).allSatisfy { LiveCues.generalTitle($0) != nil }, "every general limit has a title")
+        check(LiveCues.changeRefusal(answeredAPI(3, v3Body())) == nil && LiveCues.changeRefusal(answeredAPI(2, v3Body())) == "The server did not confirm the change. Check again."
+              && LiveCues.changeRefusal(answered(409, #""error":"env_forced""#)) == LiveCues.modeEnvNote
+              && LiveCues.changeRefusal(answered(400, #""error":"invalid_request","reason":"unsupported_version""#)) == "Cue modes need a newer server. Update the server in Settings."
+              && LiveCues.changeRefusal(answered(400, #""error":"invalid_request","reason":"invalid_value","field":"cueMode""#)) == "The server did not accept that value."
+              && LiveCues.changeRefusal(answered(404)) == "Cue modes need a newer server. Update the server in Settings."
+              && LiveCues.changeRefusal(details(#"{"transport":"unavailable"}"#)) == "COS server unreachable. The change was not saved."
+              && LiveCues.changeRefusal(nil) == "COS Control could not save the change. Try again.", "each refusal of a mode change in words")
+        var v3Words = [LiveCues.cueModeTitle, LiveCues.groundedTitle, LiveCues.groundedHelp, LiveCues.modeEnvNote, LiveCues.publicTopicsOffLine, LiveCues.generalBarTitle,
+                       LiveCues.generalMoreCues, LiveCues.generalFewerCues, LiveCues.generalGapTitle, LiveCues.generalAttemptsTitle, LiveCues.generalMaxCuesTitle,
+                       LiveCues.generalDailyTopicsTitle, LiveCues.generalDailySearchesTitle]
+        v3Words += LiveCueMode.allCases.flatMap { [LiveCues.modeTitle($0), LiveCues.modeHelp($0)] }
+        for text in v3Words {
+            check(!text.contains("\u{2014}") && !text.contains("\u{2192}") && !text.contains("->") && !text.contains("_"), "plain words, no em dash, arrow or code: \(text)")
+        }
+
+        // The store: the mode and grounding change only through the server's answer.
+        let v3Store = LiveCuesStore(); let v3Calls = Calls()
+        await v3Store.loadIfNeeded(fake(v3Calls, [answeredAPI(3, v3Body())]))
+        check(v3Calls.log == [["live-cues-settings"]] && v3Store.settings?.v3?.mode.value == .general, "the first read happens once, from loadIfNeeded")
+        await v3Store.loadIfNeeded(fake(v3Calls, [answeredAPI(3, v3Body())]))
+        check(v3Calls.log.count == 1, "loadIfNeeded reads nothing once something has been read")
+        await v3Store.setMode(.general, run: fake(v3Calls, [answeredAPI(3, v3Body())]))
+        check(v3Calls.log.count == 1, "asking for the mode the server already holds sends nothing")
+        await v3Store.setMode(.all, run: fake(v3Calls, [answeredAPI(3, v3Body(mode: #"{"value":"all","source":"setting","locked":false}"#))]))
+        check(v3Calls.log.last == ["live-cues-settings", "--mode", "all"] && v3Store.settings?.v3?.mode.value == .all && v3Store.pendingMode == nil && v3Store.v3Note == nil,
+              "a mode change is `--mode all`, and the server's answer is what shows")
+        await v3Store.setGrounding(.grounded, run: fake(v3Calls, [answeredAPI(3, v3Body(mode: #"{"value":"all","source":"setting","locked":false}"#, grounding: #"{"value":"grounded","source":"setting","locked":false}"#))]))
+        check(v3Calls.log.last == ["live-cues-settings", "--grounding", "grounded"] && v3Store.settings?.v3?.grounding.value == .grounded, "grounding is `--grounding grounded`")
+        let beforeRefusal = v3Calls.log.count
+        await v3Store.setMode(.focused, run: fake(v3Calls, [answered(409, #""error":"env_forced""#)]))
+        check(v3Calls.log.count == beforeRefusal + 1 && v3Store.settings?.v3?.mode.value == .all && v3Store.v3Note == LiveCues.modeEnvNote && v3Store.pendingMode == nil,
+              "a refused change says why and keeps the server's mode, never the refused one")
+        await v3Store.setGrounding(.classic, run: fake(v3Calls, [details(#"{"transport":"unavailable"}"#)]))
+        check(v3Store.settings?.v3?.grounding.value == .grounded && v3Store.v3Note == "COS server unreachable. The change was not saved.", "nothing answering keeps what was shown, with the reason")
+        // A mode the environment holds never sends a change; neither does a server without v3.
+        let lockedStore = LiveCuesStore(); let lockedCalls = Calls()
+        await lockedStore.load(fake(lockedCalls, [answeredAPI(3, v3Body(mode: #"{"value":"focused","source":"env","locked":true}"#, grounding: #"{"value":"classic","source":"env","locked":true}"#))]))
+        await lockedStore.setMode(.all, run: fake(lockedCalls, [answeredAPI(3, v3Body())]))
+        await lockedStore.setGrounding(.grounded, run: fake(lockedCalls, [answeredAPI(3, v3Body())]))
+        check(lockedCalls.log.count == 1, "a mode or grounding the server's environment holds sends no change")
+        let olderStore = LiveCuesStore(); let olderCalls = Calls()
+        await olderStore.load(fake(olderCalls, [answered(200, withLimits(shape(enabled: true, available: true)))]))
+        await olderStore.setMode(.all, run: fake(olderCalls, [answeredAPI(3, v3Body())]))
+        await olderStore.setGrounding(.grounded, run: fake(olderCalls, [answeredAPI(3, v3Body())]))
+        check(olderCalls.log.count == 1 && olderStore.settings?.v3 == nil, "a v 2 server is sent no mode and no grounding")
+        // A v 2 write on a v 3 server is answered in the v 2 view: Control reads again, so the v3 controls stay.
+        let keepStore = LiveCuesStore(); let keepCalls = Calls()
+        await keepStore.load(fake(keepCalls, [answeredAPI(3, v3Body())]))
+        await keepStore.set(false, run: fake(keepCalls, [answered(200, shape(enabled: false, available: true)), answeredAPI(3, v3Body())]))
+        check(keepCalls.log == [["live-cues-settings"], ["live-cues-settings", "--set", "off"], ["live-cues-settings"]] && keepStore.settings?.v3 != nil && !keepStore.busy,
+              "a switch change answered in the v 2 view is followed by a read, so the cue mode stays")
+        keepStore.limitsDebounce = .seconds(60)
+        keepStore.propose(.cooldownSeconds, 90, run: fake(keepCalls, []))
+        await keepStore.flushLimits(fake(keepCalls, [answered(200, withLimits(shape(enabled: true, available: true))), answeredAPI(3, v3Body())]))
+        check(keepCalls.log.suffix(2) == [["live-cues-settings", "--cooldown-seconds", "90"], ["live-cues-settings"]] && keepStore.settings?.v3 != nil,
+              "a v 2 limit change answered in the v 2 view is followed by a read too")
+        // A general limit goes through the same debounce and the same one call.
+        let generalStore = LiveCuesStore(); let generalCalls = Calls()
+        generalStore.limitsDebounce = .seconds(60)
+        await generalStore.load(fake(generalCalls, [answeredAPI(3, v3Body())]))
+        generalStore.propose(.generalMaxCuesPerMeeting, 6, run: fake(generalCalls, []))
+        check(generalStore.pendingLimits.isEmpty, "a general limit set in the server's environment never moves")
+        generalStore.propose(.generalTrigger, 0.7, run: fake(generalCalls, []))
+        generalStore.propose(.generalDailyWebSearches, 20, run: fake(generalCalls, []))
+        check(generalStore.pendingLimits == [.generalTrigger: 0.7, .generalDailyWebSearches: 20] && generalStore.limitValue(.generalTrigger) == 0.7, "general moves wait, and show where they were moved")
+        let changed = v3Body(general: generalJSON.replacingOccurrences(of: #""trigger":{"value":0.6"#, with: #""trigger":{"value":0.7"#).replacingOccurrences(of: #""dailyWebSearches":{"value":30"#, with: #""dailyWebSearches":{"value":20"#))
+        await generalStore.flushLimits(fake(generalCalls, [answeredAPI(3, changed)]))
+        check(generalCalls.log.last == ["live-cues-settings", "--general-trigger", "0.70", "--general-daily-web-searches", "20"]
+              && generalStore.settings?.limits?.values[.generalTrigger]?.value == 0.7 && generalStore.settings?.limits?.values[.generalDailyWebSearches]?.value == 20
+              && generalStore.pendingLimits.isEmpty && generalStore.limitsNote == nil, "one call with the general flags, and the server's echo is what shows")
+
         print("live cues checks: \(passed) passed")
     }
 }

@@ -84,6 +84,17 @@ import Foundation
         let full = MeetingAskText.fullContext(title: "Meeting", transcript: "Speech", exchanges: [exchange, next], files: [.init(id: "f", revision: "r", name: "Slide", status: "unsupported", text: "must not claim read")])
         check(full.contains("[Q1:T1]") && full.contains("[Q2:T1]"), "answer citations namespaced")
         check(full.contains("Text unavailable") && !full.contains("must not claim read"), "unread files honest")
+        // 0.5.362: the cues sit between the answers and the files, and nothing changes without them.
+        check(!full.contains("## Cues"), "no cues, no cues section")
+        let copiedCue = LiveCueRecord(id: "cue-x-000001", sessionId: "meeting_1792400000000_abc123", createdAt: Date(timeIntervalSince1970: 1_792_400_300), kind: "challenge",
+                                      detail: "Settle the date.", rating: LiveCueRating(verdict: .useful))
+        let withCues = MeetingAskText.fullContext(title: "Meeting", transcript: "Speech", exchanges: [exchange, next], files: [.init(id: "f", revision: "r", name: "Slide", status: "unsupported", text: "")],
+                                                  cues: [copiedCue], timeZone: TimeZone(identifier: "UTC")!)
+        check(withCues.contains("## Cues\n\n### C1 · Challenge · 5 min in\nSettle the date.\nSources: none, from the room only\nRated Useful")
+              && withCues.range(of: "## Q2")!.lowerBound < withCues.range(of: "## Cues")!.lowerBound && withCues.range(of: "## Cues")!.lowerBound < withCues.range(of: "## Files")!.lowerBound,
+              "emitted and rated cues are in the copied full context, after the answers and before the files")
+        check(MeetingAskText.fullContext(title: "Meeting", transcript: "Speech", exchanges: [exchange, next], files: [], cues: [], cueNote: "Context coverage: cues could not be read from the server.")
+              .hasSuffix("## Cues\n\nContext coverage: cues could not be read from the server."), "a coverage note shows when the cues could not be read")
         // 0.5.321: the export prints the meeting position as the panel does, never "ms" that reads as a wait, and the
         // answer time only when the server measured it.
         var placed = exchange; placed.throughMs = 210_666; placed.model = "Haiku"

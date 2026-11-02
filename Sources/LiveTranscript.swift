@@ -986,6 +986,9 @@ enum LiveMeetingFiles {
 enum LiveMeeting {
     /// The five kinds the 6.86.0 writer can write, in the server's spelling (shared/live-cues-v2.ts CUE_KINDS).
     static let knownKinds = ["reinforce", "challenge", "decision", "promise", "followUp"]
+    /// 0.5.362 (server API v3): the general cue kind (shared/live-cues-v2.ts GENERAL_CUE_KINDS), a separate list from the five
+    /// above. It has a label but is never counted in the header, which counts what was decided or promised.
+    static let generalKinds = ["insight"]
     /// The kinds the header counts: what was decided or promised in the meeting, not the coaching ones.
     static let countedKinds = ["decision", "promise", "followUp"]
     /// The inline cues re-ask the cue history this often; the history store's own 15 s floor decides when it reads.
@@ -1001,6 +1004,7 @@ enum LiveMeeting {
         case "followUp": "Follow-up"
         case "challenge": "Challenge"
         case "reinforce": "Reinforce"
+        case "insight": "Insight"
         default: nil
         }
     }

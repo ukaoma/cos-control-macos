@@ -50,6 +50,14 @@ import Foundation
         // ── Kind labels: the five, and a kind this build does not know draws as a plain cue (no label, never dropped).
         check(LiveMeeting.knownKinds.compactMap(LiveMeeting.kindLabel) == ["Reinforce", "Challenge", "Decision", "Promise", "Follow-up"], "the five labels")
         check(LiveMeeting.kindLabel("advice") == nil && LiveMeeting.kindLabel("FollowUp") == nil && LiveMeeting.kindLabel("") == nil, "unknown kinds have no label")
+        // 0.5.362 (server API v3): the general cue kind has its own label and is not one of the five, nor counted in the header.
+        check(LiveMeeting.generalKinds == ["insight"] && LiveMeeting.generalKinds.compactMap(LiveMeeting.kindLabel) == ["Insight"], "the insight kind is labelled Insight")
+        check(!LiveMeeting.knownKinds.contains("insight") && !LiveMeeting.countedKinds.contains("insight") && LiveMeeting.kindLabel("Insight") == nil,
+              "insight is not one of the five server kinds, and the label is the server's spelling only")
+        check(LiveMeeting.countsPhrase(kinds: ["insight", "insight"]) == nil && LiveMeeting.countsPhrase(kinds: ["insight", "decision"]) == "1 decision",
+              "insight cues are not counted in the header")
+        check(LiveMeeting.statusLine(mac: true, ended: false, kinds: ["insight", "decision", "challenge"]) == "Recording on this Mac · 1 decision so far",
+              "the status line counts what was decided, not insights")
 
         // ── Counts: from the cue history's kinds, zero LLM.
         check(LiveMeeting.countsPhrase(kinds: ["decision", "promise", "decision", "followUp", "challenge", "reinforce"]) == "2 decisions, 1 promise and 1 follow-up",
