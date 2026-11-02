@@ -425,8 +425,8 @@ import Foundation
         // The words.
         check(LiveCueMode.allCases.map { LiveCues.modeTitle($0) } == ["Focused", "General", "All"], "the three modes by name")
         check(LiveCues.modeHelp(.focused) == "Cues from the room, drawn from your past meetings and notes."
-              && LiveCues.modeHelp(.general) == "On Mac meetings, only public context from the web, and it needs Public topics on. G2 keeps focused cues."
-              && LiveCues.modeHelp(.all) == "On Mac meetings, focused cues plus public context from the web, and it needs Public topics on. G2 keeps focused cues.",
+              && LiveCues.modeHelp(.general) == "On Mac meetings, public context from the web instead of focused cues. Needs Public topics on, in Ask settings in the phone app. Until then Mac meetings keep focused cues. G2 keeps focused cues."
+              && LiveCues.modeHelp(.all) == "On Mac meetings, focused cues plus public context from the web. Needs Public topics on, in Ask settings in the phone app. Until then Mac meetings keep focused cues only. G2 keeps focused cues.",
               "one plain line per mode, saying what Mac and G2 meetings get")
         check(LiveCues.modeHelp(.general).contains("G2 keeps focused cues") && LiveCues.modeHelp(.all).contains("G2 keeps focused cues") && !LiveCues.modeHelp(.focused).contains("G2"),
               "General and All say G2 keeps focused cues")
@@ -440,6 +440,11 @@ import Foundation
         check(LiveCues.publicTopicsLine(v3With(.general, topics: false)) == LiveCues.publicTopicsOffLine && LiveCues.publicTopicsLine(v3With(.all, topics: false)) == LiveCues.publicTopicsOffLine
               && LiveCues.publicTopicsLine(v3With(.general, topics: true)) == nil && LiveCues.publicTopicsLine(v3With(.focused, topics: false)) == nil,
               "the live state of Public topics shows when it is off and the mode needs it")
+        check(LiveCues.publicTopicsOffLine == "Public topics is off, so Mac meetings keep focused cues. Turn it on in Ask settings in the phone app."
+              && LiveCues.modeHelp(.general).contains("Ask settings in the phone app") && LiveCues.modeHelp(.general).contains("Until then Mac meetings keep focused cues")
+              && LiveCues.modeHelp(.all).contains("Ask settings in the phone app") && LiveCues.modeHelp(.all).contains("Until then Mac meetings keep focused cues only")
+              && !LiveCues.modeHelp(.focused).contains("Public topics"),
+              "the amber line and the help say where Public topics is turned on, and that Mac meetings keep focused cues until then")
         check(LiveCues.homeAreaLine(v3With(.general, topics: true, area: "Austin, TX")) == "Local items use Austin, TX."
               && LiveCues.homeAreaLine(v3With(.focused, topics: true, area: "Austin, TX")) == nil && LiveCues.homeAreaLine(v3With(.all, topics: true)) == nil,
               "the home city line shows with a city and a web mode")

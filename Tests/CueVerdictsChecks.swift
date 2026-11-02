@@ -434,12 +434,28 @@ import Foundation
         check(LiveCueSource(id: "x", date: "", title: "t", kind: "meeting", recordId: "").link == nil && LiveCueSource(id: "x", date: "", title: "t", kind: "memory", memoryId: "").link == nil,
               "an empty locator has no link")
         for unsafe in ["http://example.com/a", "javascript:alert(1)", "file:///etc/passwd", "ftp://example.com/x", "https://user:pw@example.com/", "https://localhost/a",
-                       "https://127.0.0.1/a", "https://192.168.1.5/a", "https://10.0.0.2/a", "https://printer.local/a", "https:///nohost", "example.com/a", ""] {
+                       "https://127.0.0.1/a", "https://192.168.1.5/a", "https://10.0.0.2/a", "https://printer.local/a", "https:///nohost", "example.com/a", "",
+                       // 0.5.364 review: spellings of the same private hosts, ports, and names that are not public.
+                       "https://localhost./a", "https://localhost../a", "https://app.localhost/a", "https://app.localhost./a", "https://wiki.internal/a", "https://wiki.internal./a",
+                       "https://printer.local./a", "https://intranet/a", "https://example.com:8443/a", "https://example.com:80/a", "https://example.com:0/a",
+                       "https://0x7f.0.0.1/a", "https://0177.0.0.1/a", "https://2130706433/a", "https://127.1/a", "https://100.64.0.1/a", "https://100.127.255.254/a",
+                       "https://172.16.0.1/a", "https://169.254.169.254/a", "https://8.8.8.8/a", "https://[::1]/a", "https://[2001:db8::1]/a", "https://[::ffff:127.0.0.1]/a",
+                       "https://example.com../a", "https://a..b.com/a", "https://.example.com/a", "https://example.com@evil.example/a", "https://0x7f/a", "https://1.2.3.0x4/a"] {
             check(LiveCueSource(id: "x", date: "", title: "t", kind: "web", url: unsafe).link == nil && LiveCueSource(id: "x", date: "", title: "t", kind: "web", url: unsafe).domain == nil,
                   "a web source never opens \(unsafe.debugDescription)")
         }
         check(LiveCueSource(id: "x", date: "", title: "t", kind: "web", url: "HTTPS://Example.com/Path").link != nil
               && LiveCueSource(id: "x", date: "", title: "t", kind: "web", url: "https://example.com/Path").domain == "example.com", "the scheme is read without case; the domain is lower case")
+        for safe in ["https://example.com/a", "https://example.com:443/a", "https://www.reuters.com/world/x?y=1", "https://news.example.co.uk/a", "https://xn--bcher-kva.example/a", "https://example.com./a", "https://a-b.example.org/a"] {
+            check(LiveCueSource(id: "x", date: "", title: "t", kind: "web", url: safe).link != nil, "a public https address opens: \(safe)")
+        }
+        check(LiveCueSource(id: "x", date: "", title: "t", kind: "web", url: "https://www.Example.com./a").domain == "example.com", "the domain drops a trailing dot and www")
+        check(MeetingAskText.publicHost("example.com") && MeetingAskText.publicHost("Example.COM.") && !MeetingAskText.publicHost("localhost.") && !MeetingAskText.publicHost("com")
+              && !MeetingAskText.publicHost("") && !MeetingAskText.publicHost(".") && !MeetingAskText.publicHost("1.1.1.1") && !MeetingAskText.publicHost("a.b.0x7f"),
+              "the host rule: public names only, one trailing dot ignored, no IP spelling")
+        check(CueVerdicts.sourcesLead == "Sources:" && CueVerdicts.sourcesLine([]) == "Sources: none, from the room only"
+              && CueVerdicts.sourcesLine([LiveCueSource(id: "1", date: "2026-10-01", title: "A"), LiveCueSource(id: "2", date: "", title: "B")]) == "Sources: A (2026-10-01); B",
+              "the Sources lead and a source without a link read exactly as 0.5.363 did")
         check(LiveCueSource(id: "x", date: "", title: "t", kind: "web", url: nil).link == nil, "a web source without an address has no link")
         check(CueVerdicts.sourceText(insight!.sources[0]) == "Reuters (reuters.com)" && CueVerdicts.sourceText(insight!.sources[1]) == "Plain page"
               && CueVerdicts.sourceText(insight!.sources[2]) == "Grant review (2026-10-01)" && CueVerdicts.sourceText(insight!.sources[3]) == "A note",
@@ -479,7 +495,7 @@ import Foundation
             ("names_unavailable", "General cues paused: voice names could not be read."), ("meeting_cues_cap", "General cues reached the limit for this meeting."),
             ("meeting_attempts_cap", "General cues reached the lookup limit for this meeting."), ("daily_search_cap", "General cues reached today's limit."),
             ("daily_topic_cap", "General cues reached today's limit."), ("daily_trigger_cap", "General cues reached today's limit."),
-            ("breaker_open", "General cues paused for an hour after repeated search failures."), ("state_unreadable", "General cues paused: usage could not be read."),
+            ("breaker_open", "General cues paused for an hour after repeated failures."), ("state_unreadable", "General cues paused: usage could not be read."),
         ]
         for (reason, words) in reasons {
             check(CueVerdicts.generalLine(reasoned("withheld", reason)) == words && CueVerdicts.generalLine(reasoned("off", reason)) == words, "\(reason): \(words)")

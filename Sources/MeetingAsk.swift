@@ -1589,17 +1589,24 @@ struct LiveAskPanel: View {
 
 /// 0.5.362: a cue's sources as links. A source with somewhere to open is a button that opens it (an earlier meeting, a memory,
 /// a file in Finder, a web page in the browser); one without, or with no opener (a render), is plain text. A web source shows
-/// its domain. No sources reads as the room only.
+/// its domain. With nothing to open (every older server, a source with no link) it is the one muted line 0.5.363 drew ("Sources:
+/// A (date); B", or none, from the room only); when some source opens, "Sources:" leads and each source follows on its own line.
 struct CueSourcesList: View {
     let sources: [LiveCueSource]
     var opener: MeetingSourceOpener? = nil
     var size: CGFloat = 11.5
 
+    private func opens(_ source: LiveCueSource) -> Bool {
+        guard let opener, let link = source.link else { return false }
+        return opener.canOpen(link)
+    }
+
     var body: some View {
-        if sources.isEmpty {
+        if !sources.contains(where: opens) {
             Text(CueVerdicts.sourcesLine(sources)).font(COSType.body(size)).foregroundStyle(COSPalette.muted)
         } else {
             VStack(alignment: .leading, spacing: 3) {
+                Text(CueVerdicts.sourcesLead).font(COSType.body(size)).foregroundStyle(COSPalette.muted)
                 ForEach(Array(sources.enumerated()), id: \.offset) { _, source in row(source) }
             }
         }
@@ -1607,7 +1614,7 @@ struct CueSourcesList: View {
 
     @ViewBuilder private func row(_ source: LiveCueSource) -> some View {
         let text = CueVerdicts.sourceText(source)
-        if let opener, let link = source.link, opener.canOpen(link) {
+        if let opener, opens(source), let link = source.link {
             Button { opener.open(source) } label: {
                 Text(verbatim: text).font(COSType.body(size)).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
             }

@@ -70,6 +70,12 @@ import Foundation
         check(MeetingAskText.safeURL("file:///etc/passwd") == nil, "no local links")
         check(MeetingAskText.safeURL("https://secret@example.com") == nil, "no credential URL")
         check(MeetingAskText.safeURL("http://127.0.0.1/test") == nil, "no loopback URL")
+        for odd in ["https://localhost./a", "http://app.localhost/a", "https://wiki.internal/a", "https://example.com:8443/a", "http://example.com:443/a", "https://0x7f.0.0.1/a",
+                    "https://0177.0.0.1/a", "https://2130706433/a", "https://100.64.0.1/a", "https://[::1]/a", "https://intranet/a"] {
+            check(MeetingAskText.safeURL(odd) == nil, "no private or odd-port URL: \(odd)")
+        }
+        check(MeetingAskText.safeURL("http://example.com/a") != nil && MeetingAskText.safeURL("http://example.com:80/a") != nil && MeetingAskText.safeURL("https://example.com:443/a") != nil
+              && MeetingAskText.safeURL("https://example.com./a") != nil, "a public http or https address opens on its own port")
         check(MeetingAskText.failure("model_unavailable").contains("settings"), "unavailable model has an actionable recovery")
         check(!MeetingAskText.failure("PRIVATE raw provider stderr").contains("PRIVATE"), "unknown failure does not expose provider output")
         let source = LiveAskSource(id: "T1", kind: "transcript", title: "Speaker", text: "Evidence")

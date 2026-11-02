@@ -159,7 +159,7 @@ import Vision
             try await hub(model, appearance: appearance, name: "hub-meetings-general-\(theme)", out: out,
                           // The page is 5,200 px tall at 2x and Vision garbles its lower lines, so the words here are the ones it reads reliably;
                           // the card renders above read every general row whole at 390 pt, and the PNG is read by eye.
-                          words: [LiveCues.cueModeTitle, LiveCues.modeHelp(.general), "Public topics is off on the server", "Local items use Austin, TX."])
+                          words: [LiveCues.cueModeTitle, LiveCues.modeHelp(.general), "Public topics is off, so Mac meetings keep focused cues", "Local items use Austin, TX."])
             // A v 2 server shows none of it.
             answer(withLimits)
             await store.load(run)

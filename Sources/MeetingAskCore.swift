@@ -499,14 +499,28 @@ enum MeetingAskText {
         if let total = exchange.timings?.totalMs { line += " · Answer time: " + String(format: "%.1f s", total / 1000) }
         return line
     }
+    /// A web address the app may open for a source: https or http, a public host, no credentials, and no port but the scheme's own
+    /// (443 for https, 80 for http). See `publicHost` for what a public host is.
     static func safeURL(_ value: String?) -> URL? {
-        guard let value, let url = URL(string: value), ["https", "http"].contains(url.scheme?.lowercased() ?? ""),
-              let host = url.host?.lowercased(), !host.isEmpty, url.user == nil, url.password == nil,
-              host != "localhost", host != "::1", !host.hasSuffix(".local"), !host.hasPrefix("127."), !host.hasPrefix("10."), !host.hasPrefix("192.168."), !host.contains(":"), !host.hasPrefix("169.254."), !host.hasPrefix("0.") else { return nil }
-        let parts = host.split(separator: ".")
-        if parts.count == 4, let first = Int(parts[0]), let second = Int(parts[1]),
-           (first == 172 && (16...31).contains(second)) || first >= 224 { return nil }
+        guard let value, let url = URL(string: value), let scheme = url.scheme?.lowercased(), ["https", "http"].contains(scheme),
+              let host = url.host, publicHost(host), url.user == nil, url.password == nil,
+              url.port == nil || url.port == (scheme == "https" ? 443 : 80) else { return nil }
         return url
+    }
+
+    /// A host a stranger on the internet could own: the only kind a source may open. One trailing dot is dropped before anything is
+    /// compared ("localhost." is "localhost"). Rejected: no host; localhost and any *.localhost, *.local or *.internal name; a name with
+    /// no dot (an intranet name); an IPv6 literal; and every IP spelling, which is any host whose last label does not start with a
+    /// letter (dotted decimal, one decimal number, hex "0x7f.1", octal "0177.0.0.1"), because a public name's last label always does.
+    /// That covers 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12 and 192.168/16 without listing them, and a public IPv4 literal too.
+    static func publicHost(_ raw: String) -> Bool {
+        var host = raw.lowercased()
+        if host.hasSuffix(".") { host.removeLast() }
+        guard !host.isEmpty, !host.hasPrefix("."), !host.hasSuffix("."), !host.contains(".."), !host.contains(":"), !host.contains("["), !host.contains("%") else { return false }
+        guard host != "localhost", !host.hasSuffix(".localhost"), !host.hasSuffix(".local"), !host.hasSuffix(".internal") else { return false }
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count >= 2, let last = labels.last, last.first?.isLetter == true else { return false }
+        return true
     }
 }
 
@@ -1128,7 +1142,7 @@ enum LiveCues {
     static let groundedTitle = "Grounded cues"
     static let groundedHelp = "Each cue is checked against your past meetings, notes and files, and cites what it used."
     static let modeEnvNote = "Set on the server, so it cannot be changed here."
-    static let publicTopicsOffLine = "Public topics is off on the server, so general cues run no web lookups."
+    static let publicTopicsOffLine = "Public topics is off, so Mac meetings keep focused cues. Turn it on in Ask settings in the phone app."
     static let generalGapTitle = "General check gap"
     static let generalBarTitle = "General bar"
     static let generalMoreCues = "More general cues"
@@ -1146,13 +1160,13 @@ enum LiveCues {
         }
     }
 
-    /// One plain line per mode (server: General turns focused cues off on Mac meetings, All keeps both, and a G2 meeting keeps focused
+    /// One plain line per mode (server: General puts insights in place of focused cues on Mac meetings once Public topics is on, All keeps both, and a G2 meeting keeps focused
     /// cues in every mode because the lens never gets insights). General and All say they use the web and need Public topics.
     static func modeHelp(_ mode: LiveCueMode) -> String {
         switch mode {
         case .focused: return "Cues from the room, drawn from your past meetings and notes."
-        case .general: return "On Mac meetings, only public context from the web, and it needs Public topics on. G2 keeps focused cues."
-        case .all: return "On Mac meetings, focused cues plus public context from the web, and it needs Public topics on. G2 keeps focused cues."
+        case .general: return "On Mac meetings, public context from the web instead of focused cues. Needs Public topics on, in Ask settings in the phone app. Until then Mac meetings keep focused cues. G2 keeps focused cues."
+        case .all: return "On Mac meetings, focused cues plus public context from the web. Needs Public topics on, in Ask settings in the phone app. Until then Mac meetings keep focused cues only. G2 keeps focused cues."
         }
     }
 
@@ -1491,8 +1505,9 @@ struct LiveCueSource: Equatable, Sendable {
     var url: String? = nil
 }
 
-/// Where a cue's source opens. A web source opens only an https address that passes MeetingAskText.safeURL (a host that
-/// is not this Mac or a private network, no credentials); anything else has no link and shows as plain text.
+/// Where a cue's source opens. A web source opens only an https address that passes MeetingAskText.safeURL: a public host
+/// (MeetingAskText.publicHost: no localhost, .local or .internal name, no IP spelling, no name without a dot, one trailing dot
+/// ignored), no credentials, and no port but 443. Anything else has no link and shows as plain text.
 enum LiveCueSourceLink: Equatable, Sendable {
     case meeting(recordId: String)
     case memory(id: String)
@@ -1521,7 +1536,8 @@ extension LiveCueSource {
 
     /// "reuters.com" for a web source with an https address, else nil.
     var domain: String? {
-        guard kind == "web", let host = Self.httpsURL(url)?.host?.lowercased() else { return nil }
+        guard kind == "web", var host = Self.httpsURL(url)?.host?.lowercased() else { return nil }
+        if host.hasSuffix(".") { host.removeLast() }
         return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
     }
 }
@@ -1750,7 +1766,7 @@ enum CueVerdicts {
         "daily_search_cap": "General cues reached today's limit.",
         "daily_topic_cap": "General cues reached today's limit.",
         "daily_trigger_cap": "General cues reached today's limit.",
-        "breaker_open": "General cues paused for an hour after repeated search failures.",
+        "breaker_open": "General cues paused for an hour after repeated failures.",
         "state_unreadable": "General cues paused: usage could not be read.",
     ]
 
@@ -1923,9 +1939,12 @@ enum CueVerdicts {
 
     static func score(_ gate: Double?) -> String? { gate.map { String(format: "%.2f", $0) } }
 
+    /// The lead of the sources line, and of the list when some source opens (Sources/MeetingAsk.swift CueSourcesList).
+    static let sourcesLead = "Sources:"
+
     static func sourcesLine(_ sources: [LiveCueSource]) -> String {
-        guard !sources.isEmpty else { return "Sources: none, from the room only" }
-        return "Sources: " + sources.map(sourceText).joined(separator: "; ")
+        guard !sources.isEmpty else { return sourcesLead + " none, from the room only" }
+        return sourcesLead + " " + sources.map(sourceText).joined(separator: "; ")
     }
 
     /// One source in words: a web source shows its domain ("Reuters (reuters.com)"), the others their date.

@@ -142,8 +142,10 @@ opener_src = code(body(ask, "@MainActor struct MeetingSourceOpener {", "/// 0.5.
 list_src = code(body(ask, "struct CueSourcesList: View {", "/// 0.5.283: an answer's labeled rows"))
 check(opener_src.count("NSWorkspace.shared.open(") == 1 and "case .web(let url)?: NSWorkspace.shared.open(url)" in opener_src and "http" not in opener_src,
       "a web source opens through the link, which is https only; the opener names no scheme")
-check("if let opener, let link = source.link, opener.canOpen(link) {" in list_src and "Button { opener.open(source) }" in list_src and "Link(" not in list_src,
-      "a source is a button only when it has somewhere to open now")
+check("guard let opener, let link = source.link else { return false }\n        return opener.canOpen(link)" in list_src and "if let opener, opens(source), let link = source.link {" in list_src
+      and "Button { opener.open(source) }" in list_src and "Link(" not in list_src, "a source is a button only when it has somewhere to open now")
+check("if !sources.contains(where: opens) {\n            Text(CueVerdicts.sourcesLine(sources))" in list_src and "Text(CueVerdicts.sourcesLead)" in list_src,
+      "with nothing to open the sources are the one 0.5.363 line; when one opens, Sources: leads the list")
 check(ask.count("MeetingSourceOpener(model: model, session:") == 3 and meetings.count("MeetingSourceOpener(model: model, session: feed.sessionId)") == 1,
       "four places build an opener: Ask's source rows, the Cues view, the review pane and the live pane's inline cues")
 check(sum(s.count("CueVerdicts.pollSeconds") for s in sources.values()) == 2, "the 15 seconds are named in the floor and the loop, nowhere else")
