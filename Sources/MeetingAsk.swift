@@ -421,8 +421,21 @@ final class MeetingAskStore: ObservableObject {
         var seen = Set<String>()
         let rows = snapshot.sessions.flatMap { records[$0]?.exchanges ?? [] }.filter { seen.insert($0.id).inserted }
         let files = MeetingAskText.evidenceFiles(exchanges: rows, current: snapshot.localFiles + snapshot.sessions.flatMap { records[$0]?.files ?? [] })
+        // 0.5.362: the cues the server logged for these meetings, read fresh (the Cues view may never have been opened). A server
+        // without the cue routes adds nothing; one that could not be read adds a coverage line instead of a silent gap.
+        var cues: [LiveCueRecord] = [], cueCoverage: String?
+        if cueVerdicts.available != false {
+            for session in snapshot.sessions where G2MeetingStop.isGlassesSession(session) || (model.liveMeetingCapability.macCues && session.hasPrefix("mac_")) {
+                await cueVerdicts.loadMeeting(session, days: CueVerdicts.savedDays, force: true, run: CueReviewPane.run(model))
+                guard matches() else { notice = "COS connection changed. Nothing was copied."; return nil }
+                let meeting = cueVerdicts.meetings[session]
+                cues += meeting?.cues ?? []
+                if let state = meeting?.state, ![.loaded, .olderServer, .checking].contains(state) { cueCoverage = "Context coverage: cues could not be read from the server." }
+            }
+        }
         let coverage = snapshot.sessions.compactMap { errors[$0].map { "Context coverage: " + $0 } }.joined(separator: "\n")
-        let text = MeetingAskText.fullContext(title: snapshot.title, transcript: snapshot.transcript, exchanges: rows, files: files) + (coverage.isEmpty ? "" : "\n\n" + coverage)
+        let text = MeetingAskText.fullContext(title: snapshot.title, transcript: snapshot.transcript, exchanges: rows, files: files, cues: cues, cueNote: cueCoverage)
+            + (coverage.isEmpty ? "" : "\n\n" + coverage)
         guard text.utf8.count <= 4_000_000 else { notice = "Full context exceeds the 4 MB clipboard limit. Nothing was copied; saved history remains available."; return nil }
         return text
     }
@@ -635,6 +648,175 @@ struct HomeCitySettings: View {
     }
 }
 
+/// 0.5.362 (server API v3, live cues modes): the Cue mode and the Grounded cues switch, under the Live cues switch. Drawn only
+/// for a server that answered v 3 (LiveCuesSettings.v3); an older server never sees either. The mode is a menu (Focused,
+/// General, All) with one plain sentence under it that changes with the choice; General and All say they search the web, and
+/// a line in amber says so when Public topics is off on the server, since general cues then run no lookups. A setting the
+/// server's environment holds shows its value and cannot move. Both change only through the store, and show the server's
+/// answer, never ahead of it.
+struct LiveCuesModeRows: View {
+    @ObservedObject var store: LiveCuesStore
+    let v3: LiveCuesV3
+    let run: LiveCuesStore.Run
+    @Environment(\.settingsHubHosted) private var hosted
+
+    private var modeBinding: Binding<LiveCueMode> {
+        Binding(get: { store.pendingMode ?? v3.mode.value }, set: { mode in Task { await store.setMode(mode, run: run) } })
+    }
+    private var groundedBinding: Binding<Bool> {
+        Binding(get: { (store.pendingGrounding ?? v3.grounding.value) == .grounded },
+                set: { on in Task { await store.setGrounding(on ? .grounded : .classic, run: run) } })
+    }
+    /// The words follow the mode on screen, which is the one waiting for the server while a change is out.
+    private var shownMode: LiveCueMode { store.pendingMode ?? v3.mode.value }
+
+    private func picker(width: CGFloat?) -> some View {
+        COSDropdown(LiveCues.cueModeTitle, selection: modeBinding,
+                    options: LiveCueMode.allCases.map { COSDropdownOption($0, LiveCues.modeTitle($0)) }, showsLabel: false)
+            .frame(width: width)
+            .disabled(v3.mode.locked || store.busy)
+            .accessibilityIdentifier("settings-cue-mode")
+    }
+
+    var body: some View {
+        if hosted { hubBody } else { panelBody }
+    }
+
+    @ViewBuilder private var hubBody: some View {
+        SettingsHubRow(label: LiveCues.cueModeTitle, detail: LiveCues.modeHelp(shownMode), anchor: "item.HUB-CM") { picker(width: 150) }
+        if v3.mode.locked { SettingsHubNote(text: LiveCues.modeEnvNote) }
+        if let line = LiveCues.publicTopicsLine(v3) { SettingsHubNote(text: line, tone: .warning) }
+        if let line = LiveCues.homeAreaLine(v3) { SettingsHubNote(text: line) }
+        SettingsHubRow(label: LiveCues.groundedTitle, detail: LiveCues.groundedHelp, anchor: "item.HUB-CG") {
+            SettingsHubSwitch(label: LiveCues.groundedTitle, isOn: groundedBinding).disabled(v3.grounding.locked || store.busy)
+        }
+        if v3.grounding.locked { SettingsHubNote(text: LiveCues.modeEnvNote) }
+        if let note = store.v3Note { SettingsHubNote(text: note, tone: .warning) }
+    }
+
+    private var panelBody: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(LiveCues.cueModeTitle).font(COSType.body(12, weight: .semibold))
+                Spacer(minLength: 8)
+                picker(width: 140)
+            }
+            Text(LiveCues.modeHelp(shownMode)).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if v3.mode.locked { Text(LiveCues.modeEnvNote).font(COSType.body(11)).foregroundStyle(.secondary) }
+            if let line = LiveCues.publicTopicsLine(v3) {
+                Text(line).font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+            }
+            if let line = LiveCues.homeAreaLine(v3) { Text(line).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+            Toggle(LiveCues.groundedTitle, isOn: groundedBinding)
+                .toggleStyle(COSSwitchStyle())
+                .font(COSType.body(12, weight: .semibold))
+                .disabled(v3.grounding.locked || store.busy)
+                .accessibilityIdentifier("settings-grounded-cues")
+            Text(LiveCues.groundedHelp).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if v3.grounding.locked { Text(LiveCues.modeEnvNote).font(COSType.body(11)).foregroundStyle(.secondary) }
+            if let note = store.v3Note { Text(note).font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true) }
+        }
+        .padding(.top, 2)
+    }
+}
+
+/// 0.5.362: the general cue limits, in the style of the Live cues limits above them: the general bar (a slider, lower gives more
+/// general cues), then the gap between checks, topic checks and cues per meeting, and the daily topic checks and web searches
+/// as steppers, each inside the server's bounds. One set in the server's .env shows its value and cannot move. A move goes out
+/// after the person stops, through the same store and the same one call as the other limits. Drawn only while the mode
+/// searches the web. Under them: today's use, and, while the breaker is open, when general cues start again.
+struct LiveCuesGeneralRows: View {
+    @ObservedObject var store: LiveCuesStore
+    let limits: LiveCuesLimits
+    let today: LiveCuesGeneralToday?
+    let clock: ClockStyle
+    let run: LiveCuesStore.Run
+    @Environment(\.settingsHubHosted) private var hosted
+
+    static let stepperKeys: [LiveCuesLimits.Key] = [.generalIntervalSeconds, .generalAttemptsPerMeeting, .generalMaxCuesPerMeeting,
+                                                    .generalDailyTopicCalls, .generalDailyWebSearches]
+
+    var body: some View {
+        if hosted { hubBody } else { panelBody }
+    }
+
+    @ViewBuilder private var hubBody: some View {
+        if let trigger = limits.values[.generalTrigger] { bar(trigger).font(COSType.body(13)).settingsHubBlock() }
+        ForEach(Self.stepperKeys, id: \.self) { key in
+            if let limit = limits.values[key] { stepper(key, limit).font(COSType.body(13)).settingsHubBlock() }
+        }
+        if let line = LiveCues.breakerLine(today, now: Date(), style: clock) { SettingsHubNote(text: line, tone: .warning) }
+        if let today { SettingsHubNote(text: LiveCues.generalUsageLine(today)) }
+    }
+
+    private var panelBody: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let trigger = limits.values[.generalTrigger] { bar(trigger) }
+            ForEach(Self.stepperKeys, id: \.self) { key in
+                if let limit = limits.values[key] { stepper(key, limit) }
+            }
+            if let line = LiveCues.breakerLine(today, now: Date(), style: clock) {
+                Text(line).font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+            }
+            if let today { Text(LiveCues.generalUsageLine(today)).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+        }
+        .font(COSType.body(12))
+        .padding(.top, 2)
+    }
+
+    private func locked(_ title: String, _ value: String) -> some View {
+        HStack(spacing: 8) {
+            Text(title).lineLimit(1)
+            Spacer(minLength: 8)
+            Text(value).font(COSType.mono(11.5)).monospacedDigit()
+            Text(LiveCues.envNote).font(COSType.body(11)).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func bar(_ limit: LiveCuesLimit) -> some View {
+        let shown = store.limitValue(.generalTrigger) ?? limit.value
+        if limit.locked {
+            locked(LiveCues.generalBarTitle, LiveCues.gateText(limit.value))
+        } else {
+            let steps = LiveCues.sliderSteps(.generalTrigger, limit)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text(LiveCues.generalBarTitle)
+                    Spacer(minLength: 8)
+                    Text(LiveCues.gateText(shown)).font(COSType.mono(11.5)).monospacedDigit()
+                }
+                Slider(value: Binding(get: { shown }, set: { store.propose(.generalTrigger, (($0 * 100).rounded()) / 100, run: run) }),
+                       in: (steps.first ?? limit.value)...(steps.last ?? limit.value), step: 0.05)
+                    .controlSize(.small)
+                    .accessibilityLabel(LiveCues.generalBarTitle)
+                    .accessibilityValue(LiveCues.gateText(shown))
+                HStack {
+                    Text(LiveCues.generalMoreCues)
+                    Spacer(minLength: 8)
+                    Text(LiveCues.generalFewerCues)
+                }
+                .font(COSType.body(10.5))
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func stepper(_ key: LiveCuesLimits.Key, _ limit: LiveCuesLimit) -> some View {
+        let title = LiveCues.generalTitle(key) ?? key.rawValue
+        let shown = Int((store.limitValue(key) ?? limit.value).rounded())
+        if limit.locked {
+            locked(title, LiveCues.countText(key, Int(limit.value.rounded())))
+        } else {
+            let ladder = LiveCues.ladder(key, limit)
+            let index = ladder.firstIndex(of: shown) ?? ladder.lastIndex { $0 <= shown } ?? 0
+            COSStepper(title, value: Binding(get: { index }, set: { store.propose(key, Double(ladder[$0]), run: run) }),
+                       in: 0...max(0, ladder.count - 1), valueText: LiveCues.countText(key, shown))
+        }
+    }
+}
+
 /// 0.5.322 (Miles, 2026-10-17): Live cues on or off, inside the Meeting assistant card, so nobody edits the server's
 /// .env by hand. A switch and one line in words (LiveCues in Sources/MeetingAskCore.swift) for every state the server
 /// can be in. The switch is drawn only for a server that answered; set in the server's environment it shows and cannot
@@ -691,9 +873,17 @@ struct LiveCuesSettingsRow: View {
             case .none:
                 EmptyView()
             }
+            // 0.5.362 (server API v3): the cue mode and Grounded cues, only from a server that answered v 3.
+            if let v3 = store.settings?.v3 {
+                LiveCuesModeRows(store: store, v3: v3, run: Self.run(model))
+            }
             // 0.5.329: the spend limits, only from a server that reports them (6.79.2); an older one shows the switch alone.
             if let limits = store.settings?.limits {
                 LiveCuesLimitsRows(store: store, limits: limits, run: Self.run(model))
+            }
+            // 0.5.362: the general cue limits, while the mode searches the web.
+            if let v3 = store.settings?.v3, LiveCues.searchesWeb(v3.mode.value), let limits = store.settings?.limits {
+                LiveCuesGeneralRows(store: store, limits: limits, today: v3.today, clock: model.clockStyle, run: Self.run(model))
             }
             Text(LiveCues.glassesLine).font(COSType.body(11)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -793,6 +983,8 @@ struct LiveCuesLimitsRows: View {
         case .maxCuesPerMeeting: LiveCues.maxCuesTitle
         case .cooldownSeconds: LiveCues.gapTitle
         case .dailyWriterCalls: LiveCues.dailyTitle
+        // 0.5.362: this view draws the four v 2 limits only; the general ones are LiveCuesGeneralRows'.
+        default: LiveCues.generalTitle(key) ?? key.rawValue
         }
     }
 
@@ -1334,20 +1526,107 @@ struct LiveAskPanel: View {
                     Link(url.host ?? "Open source", destination: url).foregroundStyle(COSPalette.accent)
                     Text("Retained search evidence" + (source.retrievedAt.map { " · " + $0 } ?? "")).foregroundStyle(.secondary)
                 }
+                // 0.5.362: the three destinations are MeetingSourceOpener's, shared with the cue cards' sources.
+                let opener = MeetingSourceOpener(model: model, session: session)
                 if let id = source.recordId {
-                    if let row = model.libraryMeetings.first(where: { $0.recordId == id }) { Button("Open earlier meeting") { model.meetingAskOpenRecordID = row.recordId }.buttonStyle(COSTextButtonStyle()) }
+                    if let row = opener.meeting(id) { Button("Open earlier meeting") { opener.openMeeting(row) }.buttonStyle(COSTextButtonStyle()) }
                     else { Text("Retained source excerpt · meeting is not in the loaded list").foregroundStyle(.secondary) }
                 }
                 if source.kind == "memory", let id = source.memoryId, !id.isEmpty {
-                    Button("Open COS memory") {
-                        model.meetingAskOpenMemory = model.memoryRecords.first(where: { $0.id == id }) ?? ContextRecord(id: id, title: source.title, subtitle: "Retained source excerpt", body: source.text, createdAt: "", filePath: nil)
-                    }.buttonStyle(COSTextButtonStyle())
+                    Button("Open COS memory") { opener.openMemory(id: id, title: source.title, text: source.text) }.buttonStyle(COSTextButtonStyle())
                 }
-                if source.kind == "file", let id = source.fileId, let file = model.workHandoffStore?.meetingFiles.meetingFiles(keys: [LibraryMeeting.captureContextKey(session)]).first(where: { $0.file.id == id }), !file.file.isLink {
-                    Button("Reveal file") { NSWorkspace.shared.activateFileViewerSelecting([file.folder.appendingPathComponent(file.file.stored)]) }.buttonStyle(COSTextButtonStyle())
+                if source.kind == "file", let id = source.fileId, let url = opener.fileURL(id) {
+                    Button("Reveal file") { opener.reveal(url) }.buttonStyle(COSTextButtonStyle())
                 }
             }
         }.id(key)
+    }
+}
+
+/// 0.5.362: where a source opens, shared by the Ask panel's source rows and the cue cards' sources. The same three
+/// destinations Ask has: an earlier meeting in the loaded library, a COS memory, a meeting file in Finder. Which locator a
+/// source has, and that a web address must be https, is `LiveCueSource.link`; this is the doing.
+@MainActor struct MeetingSourceOpener {
+    let model: ControllerModel
+    /// The meeting the source belongs to; its files are looked up by this meeting's context key.
+    let session: String
+
+    func meeting(_ recordId: String) -> LibraryMeeting? { model.libraryMeetings.first(where: { $0.recordId == recordId }) }
+    func openMeeting(_ meeting: LibraryMeeting) { model.meetingAskOpenRecordID = meeting.recordId }
+    func openMemory(id: String, title: String, text: String) {
+        model.meetingAskOpenMemory = model.memoryRecords.first(where: { $0.id == id })
+            ?? ContextRecord(id: id, title: title, subtitle: "Retained source excerpt", body: text, createdAt: "", filePath: nil)
+    }
+    /// The file on this Mac, or nil when the meeting has no such file or it is a link.
+    func fileURL(_ id: String) -> URL? {
+        guard let file = model.workHandoffStore?.meetingFiles.meetingFiles(keys: [LibraryMeeting.captureContextKey(session)]).first(where: { $0.file.id == id }),
+              !file.file.isLink else { return nil }
+        return file.folder.appendingPathComponent(file.file.stored)
+    }
+    func reveal(_ url: URL) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+
+    /// Whether the source has somewhere to open right now: its meeting is in the loaded list, its memory is loaded, its file
+    /// is on this Mac, its web address is a safe https one (LiveCueSource.link).
+    func canOpen(_ link: LiveCueSourceLink) -> Bool {
+        switch link {
+        case .meeting(let recordId): return meeting(recordId) != nil
+        case .memory(let id): return model.memoryRecords.contains(where: { $0.id == id })
+        case .file(let id): return fileURL(id) != nil
+        case .web: return true
+        }
+    }
+
+    func open(_ source: LiveCueSource) {
+        switch source.link {
+        case .meeting(let recordId)?: if let row = meeting(recordId) { openMeeting(row) }
+        case .memory(let id)?: openMemory(id: id, title: source.title, text: "")
+        case .file(let id)?: if let url = fileURL(id) { reveal(url) }
+        case .web(let url)?: NSWorkspace.shared.open(url)
+        case nil: break
+        }
+    }
+}
+
+/// 0.5.362: a cue's sources as links. A source with somewhere to open is a button that opens it (an earlier meeting, a memory,
+/// a file in Finder, a web page in the browser); one without, or with no opener (a render), is plain text. A web source shows
+/// its domain. No sources reads as the room only.
+struct CueSourcesList: View {
+    let sources: [LiveCueSource]
+    var opener: MeetingSourceOpener? = nil
+    var size: CGFloat = 11.5
+
+    var body: some View {
+        if sources.isEmpty {
+            Text(CueVerdicts.sourcesLine(sources)).font(COSType.body(size)).foregroundStyle(COSPalette.muted)
+        } else {
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(Array(sources.enumerated()), id: \.offset) { _, source in row(source) }
+            }
+        }
+    }
+
+    @ViewBuilder private func row(_ source: LiveCueSource) -> some View {
+        let text = CueVerdicts.sourceText(source)
+        if let opener, let link = source.link, opener.canOpen(link) {
+            Button { opener.open(source) } label: {
+                Text(verbatim: text).font(COSType.body(size)).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+            }
+            .buttonStyle(COSTextButtonStyle())
+            .help(helpText(link))
+            .accessibilityLabel(text)
+            .accessibilityHint(helpText(link))
+        } else {
+            Text(verbatim: text).font(COSType.body(size)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func helpText(_ link: LiveCueSourceLink) -> String {
+        switch link {
+        case .meeting: return "Open the earlier meeting"
+        case .memory: return "Open the COS memory"
+        case .file: return "Show the file in Finder"
+        case .web(let url): return "Open " + (url.host ?? "the page") + " in your browser"
+        }
     }
 }
 
@@ -1730,7 +2009,7 @@ struct CueReviewPane: View {
                         CueRateCard(cue: cue, title: CueVerdicts.title(cue, library: model.libraryMeetings), when: CueVerdicts.when(cue, now: Date(), style: model.clockStyle),
                                     left: max(store.queue.count, store.counts?.unrated ?? 0), saving: store.saving.contains(cue.id), error: store.rateErrors[cue.id],
                                     rate: { verdict, note in Task { await store.rate(cue, verdict: verdict, note: note, run: Self.run(model)) } },
-                                    skip: { store.skip(cue) })
+                                    skip: { store.skip(cue) }, opener: MeetingSourceOpener(model: model, session: cue.sessionId))
                             .id(cue.id)
                         if store.queue.count > 1 {
                             Text(CueVerdicts.nextLine(store.queue[1], style: model.clockStyle))
@@ -1790,6 +2069,8 @@ struct CueRateCard: View {
     let error: String?
     let rate: (CueVerdict, String) -> Void
     let skip: () -> Void
+    /// 0.5.362: opens a source (nil in a render: the sources are plain text).
+    var opener: MeetingSourceOpener? = nil
     private enum Focus: Hashable { case card, note }
     @FocusState private var focus: Focus?
     @State private var note = ""
@@ -1812,7 +2093,10 @@ struct CueRateCard: View {
                     .lineSpacing(4)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
-                Text(CueVerdicts.sourcesLine(cue.sources)).font(COSType.body(11.5)).foregroundStyle(COSPalette.muted)
+                CueSourcesList(sources: cue.sources, opener: opener)
+                if let general = cue.general, !general.query.isEmpty {
+                    Text("Searched the web for: " + general.query).font(COSType.body(11.5)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+                }
                 if !cue.before.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("What was said just before").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
@@ -1950,7 +2234,9 @@ struct MeetingSidePanel<Ask: View>: View {
             if cuesOffered && shown == .cues {
                 MeetingCuesPanel(store: store, session: session, polls: live, days: live ? CueVerdicts.liveDays : CueVerdicts.savedDays,
                                  clock: model.clockStyle, run: CueReviewPane.run(model),
-                                 limits: model.meetingAsk.liveCues.settings?.limits, cuesOn: model.meetingAsk.liveCues.settings?.enabled)
+                                 limits: model.meetingAsk.liveCues.settings?.limits, cuesOn: model.meetingAsk.liveCues.settings?.enabled,
+                                 opener: MeetingSourceOpener(model: model, session: session),
+                                 readsGeneral: LiveCues.readsGeneral(model.meetingAsk.liveCues.settings))
             } else {
                 ask()
             }
@@ -1977,6 +2263,9 @@ struct MeetingCuesPanel: View {
     /// 0.5.337 (loop audit W8): the server's limits and today's usage, and whether Live cues is on, for the lines below.
     var limits: LiveCuesLimits? = nil
     var cuesOn: Bool? = nil
+    /// 0.5.362: opens a cue's source (nil in a render), and whether to read the general cue status beside the cues.
+    var opener: MeetingSourceOpener? = nil
+    var readsGeneral = false
 
     var body: some View {
         let meeting = store.meetings[session]
@@ -1999,11 +2288,15 @@ struct MeetingCuesPanel: View {
                 Text(CueVerdicts.emptyLine(polls: polls, cuesOn: polls ? cuesOn : nil))
                     .font(COSType.body(12)).foregroundStyle(.secondary)
             }
+            // 0.5.362: why general cues are not running, while the meeting is live and the mode searches the web.
+            if polls, readsGeneral, let line = CueVerdicts.generalLine(store.generalStatus[session]) {
+                Text(line).font(COSType.body(11.5)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+            }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
                     ForEach(cues) { cue in
                         MeetingCueCard(cue: cue, line: CueVerdicts.cardLine(cue, style: clock), saving: store.saving.contains(cue.id),
-                                       error: store.rateErrors[cue.id]) { verdict in
+                                       error: store.rateErrors[cue.id], opener: opener) { verdict in
                             Task { await store.rate(cue, verdict: verdict, note: cue.rating?.note, run: run) }
                         }
                     }
@@ -2013,11 +2306,12 @@ struct MeetingCuesPanel: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .task(id: "\(session) \(polls)") {
+        .task(id: "\(session) \(polls) \(readsGeneral)") {
             guard polls else { return }
             // A read as Cues opens (skipped by the store's floor when the panel read in the last 15 seconds), then every 15.
             while !Task.isCancelled {
                 await store.loadMeeting(session, days: days, run: run)
+                if readsGeneral { await store.loadGeneralStatus(session, run: run) }
                 try? await Task.sleep(for: .seconds(CueVerdicts.pollSeconds))
             }
         }
@@ -2031,6 +2325,8 @@ struct MeetingCueCard: View {
     let line: String
     let saving: Bool
     let error: String?
+    /// 0.5.362: opens a source (nil in a render: plain text).
+    var opener: MeetingSourceOpener? = nil
     let rate: (CueVerdict) -> Void
     @State private var changing = false
     @State private var showsBefore = false
@@ -2044,10 +2340,15 @@ struct MeetingCueCard: View {
             }
             .buttonStyle(.plain)
             .help(showsBefore ? "Hide what was said" : "Show what was said just before")
+            // 0.5.362: an insight cue's sources (with their domains) show on the card itself, where a tap on them opens the page.
+            if cue.kind == "insight", !showsBefore { CueSourcesList(sources: cue.sources, opener: opener, size: 11) }
             if showsBefore {
                 VStack(alignment: .leading, spacing: 4) {
                     if !cue.before.isEmpty { Text(cue.before).font(COSType.body(12)).fixedSize(horizontal: false, vertical: true) }
-                    Text(CueVerdicts.sourcesLine(cue.sources)).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    if let general = cue.general, !general.query.isEmpty {
+                        Text("Searched the web for: " + general.query).font(COSType.body(11)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+                    }
+                    CueSourcesList(sources: cue.sources, opener: opener, size: 11)
                 }
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)

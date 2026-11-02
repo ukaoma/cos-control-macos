@@ -13,6 +13,9 @@ import Vision
 ///   - the whole Settings panel at 390 x 640 with the jump the key button makes (panelScrollTarget = the Decision
 ///     models anchor): Decision models opens and its Jev key and SubQ key fields are on screen.
 ///
+///   - 0.5.362 (server API v3): the Cue mode menu, Grounded cues and the general cue limits in the same card, in four states
+///     (Focused; General with Public topics off; All held by the server's environment; the breaker open), read on the pixels.
+///
 /// No window is ordered in, no event is sent, nothing becomes active. Prints "live cues render: N passed".
 @main @MainActor struct LiveCuesRender {
     static var passed = 0
@@ -72,6 +75,17 @@ import Vision
             (LiveCues.dailyTitle + " locked", NSHostingView(rootView: HStack(spacing: 8) {
                 Text(LiveCues.dailyTitle); Text("500").font(COSType.mono(11.5)); Text(LiveCues.envNote).font(COSType.body(11))
             }.font(COSType.body(12)).fixedSize()).fittingSize.width),
+            // 0.5.362: the widest general limit rows, a stepper and a locked one with the longest titles, and the mode menu's row.
+            (LiveCues.generalAttemptsTitle, NSHostingView(rootView: COSStepper(LiveCues.generalAttemptsTitle, value: .constant(3), in: 0...10, valueText: "30")
+                .font(COSType.body(12)).fixedSize()).fittingSize.width),
+            (LiveCues.generalMaxCuesTitle + " locked", NSHostingView(rootView: HStack(spacing: 8) {
+                Text(LiveCues.generalMaxCuesTitle); Text("12").font(COSType.mono(11.5)); Text(LiveCues.envNote).font(COSType.body(11))
+            }.font(COSType.body(12)).fixedSize()).fittingSize.width),
+            (LiveCues.cueModeTitle, NSHostingView(rootView: HStack(spacing: 8) {
+                Text(LiveCues.cueModeTitle).font(COSType.body(12, weight: .semibold))
+                COSDropdown(LiveCues.cueModeTitle, selection: .constant(LiveCueMode.general), options: LiveCueMode.allCases.map { COSDropdownOption($0, LiveCues.modeTitle($0)) }, showsLabel: false)
+                    .frame(width: 140)
+            }.fixedSize()).fittingSize.width),
         ]
         for (what, width) in controls {
             expect(width > 20 && width <= inside, "\(what) fits the card at 390 pt", "\(width) of \(inside) pt")
@@ -100,6 +114,12 @@ import Vision
         // 0.5.329: the limits under the switch (server 6.79.2), one set from .env.
         let limitsJSON = #","v":2,"limits":{"gate":{"value":0.8,"source":"default","locked":false,"min":0.5,"max":0.95,"default":0.8},"maxCuesPerMeeting":{"value":25,"source":"setting","locked":false,"min":1,"max":25,"default":25},"cooldownSeconds":{"value":45,"source":"default","locked":false,"min":20,"max":900,"default":45},"dailyWriterCalls":{"value":150,"source":"env","locked":true,"min":1,"max":500,"default":150}},"writerCallsPerMeeting":50,"today":{"day":"2026-10-19","writerCalls":12,"writerTokensIn":41200,"writerTokensOut":2900,"cues":7,"jevTokens":9100}}}"#
         let withLimits = String(shape(enabled: true, available: true).dropLast(2)) + limitsJSON
+        // 0.5.362 (server API v3, the frozen contract's shape): the four v2 limits as v 3, the cue mode, grounding and the general block.
+        func v3Answer(mode: String, modeSource: String = "setting", modeLocked: Bool = false, grounding: String = "classic", groundingSource: String = "default",
+                      groundingLocked: Bool = false, publicTopics: Bool = true, breakerOpenUntil: String = "null") -> String {
+            let general = #","cueMode":{"value":"\#(mode)","source":"\#(modeSource)","locked":\#(modeLocked)},"grounding":{"value":"\#(grounding)","source":"\#(groundingSource)","locked":\#(groundingLocked)},"general":{"limits":{"intervalSeconds":{"value":300,"source":"default","locked":false,"min":120,"max":1800,"default":300},"trigger":{"value":0.6,"source":"setting","locked":false,"min":0.4,"max":0.9,"default":0.6},"attemptsPerMeeting":{"value":8,"source":"default","locked":false,"min":1,"max":30,"default":8},"maxCuesPerMeeting":{"value":4,"source":"env","locked":true,"min":1,"max":12,"default":4},"dailyTopicCalls":{"value":60,"source":"default","locked":false,"min":1,"max":200,"default":60},"dailyWebSearches":{"value":30,"source":"default","locked":false,"min":1,"max":100,"default":30}},"today":{"day":"2026-11-01","topicCalls":4,"webSearches":2,"breakerOpenUntil":\#(breakerOpenUntil)},"publicTopics":\#(publicTopics),"homeArea":"Austin, TX"}}}"#
+            return String(shape(enabled: true, available: true).dropLast(2)) + limitsJSON.dropLast(2).replacingOccurrences(of: #""v":2"#, with: #""v":3,"apiVersion":3"#) + general
+        }
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             let theme = appearance == .darkAqua ? "dark" : "light"
             for (name, text) in states {
@@ -115,6 +135,36 @@ import Vision
             try card(model, appearance: appearance, name: "limits-\(theme)", out: out,
                      words: [LiveCues.barTitle, LiveCues.moreCues, LiveCues.fewerCues, "0.80", LiveCues.maxCuesTitle, LiveCues.gapTitle, "45",
                              LiveCues.dailyTitle, LiveCues.envNote, "Today: 7 cues, 12 writer calls, ~44K tokens", LiveCues.glassesLine])
+            // 0.5.362: the cue mode, Grounded cues and the general limits, in four states.
+            let soon = String(Int(Date().addingTimeInterval(1800).timeIntervalSince1970 * 1000))
+            let v3States: [(String, String, [String])] = [
+                ("v3-focused", v3Answer(mode: "focused"), [LiveCues.cueModeTitle, LiveCues.modeHelp(.focused), LiveCues.groundedTitle, LiveCues.groundedHelp, LiveCues.barTitle, LiveCues.glassesLine]),
+                ("v3-general-topics-off", v3Answer(mode: "general", publicTopics: false),
+                 [LiveCues.modeHelp(.general), LiveCues.publicTopicsOffLine, "Local items use Austin, TX.", LiveCues.generalBarTitle, LiveCues.generalMoreCues, LiveCues.generalFewerCues,
+                  LiveCues.generalGapTitle, LiveCues.generalAttemptsTitle, LiveCues.generalMaxCuesTitle, LiveCues.generalDailyTopicsTitle, LiveCues.generalDailySearchesTitle,
+                  "Today: 4 topic checks, 2 web searches", LiveCues.glassesLine]),
+                ("v3-all-env", v3Answer(mode: "all", modeSource: "env", modeLocked: true, grounding: "grounded", groundingSource: "env", groundingLocked: true),
+                 [LiveCues.modeHelp(.all), LiveCues.modeEnvNote, LiveCues.groundedHelp, LiveCues.glassesLine]),
+                ("v3-breaker-open", v3Answer(mode: "all", breakerOpenUntil: soon), ["General cues are paused until", "after repeated failures", LiveCues.glassesLine]),
+            ]
+            for (name, text, words) in v3States {
+                answer(text)
+                await store.load(run)
+                expect(store.settings?.v3 != nil, "\(name): the v3 fixture reads", store.line)
+                try card(model, appearance: appearance, name: "\(name)-\(theme)", out: out, words: words)
+            }
+            // The Settings hub's Meetings page: the same rows as hub rows (a menu with its sentence under the label, the switch on the right).
+            answer(v3Answer(mode: "general", publicTopics: false))
+            await store.load(run)
+            try await hub(model, appearance: appearance, name: "hub-meetings-general-\(theme)", out: out,
+                          // The page is 5,200 px tall at 2x and Vision garbles its lower lines, so the words here are the ones it reads reliably;
+                          // the card renders above read every general row whole at 390 pt, and the PNG is read by eye.
+                          words: [LiveCues.cueModeTitle, LiveCues.modeHelp(.general), "Public topics is off on the server", "Local items use Austin, TX."])
+            // A v 2 server shows none of it.
+            answer(withLimits)
+            await store.load(run)
+            expect(store.settings?.v3 == nil && store.settings?.limits != nil, "a v 2 answer has no v3 controls")
+            try card(model, appearance: appearance, name: "v2-no-v3-\(theme)", out: out, words: [LiveCues.barTitle, LiveCues.glassesLine])
             // The 409: the server's environment holds it on, the row says so and shows the switch held.
             answer(shape(enabled: true, available: true))
             await store.load(run)
@@ -152,6 +202,31 @@ import Vision
             expect(read.contains(want), "\(name): reads whole on the pixels: \(text)", "read: \(ocr(rep))")
         }
         print("card \(name): \(Int(fit.width)) x \(Int(fit.height)) pt")
+    }
+
+    /// 0.5.362: the Settings hub's Meetings page at 1280 wide, every group open, with the helper stand-in answering the cue
+    /// settings the hub's own loader reads. The scratch home is the run's (the harness is started with HOME set), so no setting
+    /// of this Mac is read or written.
+    static func hub(_ model: ControllerModel, appearance: NSAppearance.Name, name: String, out: URL, words: [String]) async throws {
+        UserDefaults.standard.set(false, forKey: SettingsHub.classicKey)
+        let size = CGSize(width: 1280, height: 2600)
+        let page = ControlPanel.hubFixture(model: model, category: .meetings, advanced: Set(SettingsHubCatalog.groups(in: .meetings).map(\.id)))
+        let host = NSHostingView(rootView: page.frame(width: size.width, height: size.height))
+        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: size.width, height: size.height), styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: appearance); host.appearance = NSAppearance(named: appearance)
+        window.contentView = host
+        host.frame = NSRect(origin: .zero, size: size)
+        defer { window.close() }
+        settle(host, 0.3)
+        // The hub's loaders are tasks on the main actor: suspend once so they run (see jump).
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        settle(host, 1.0)
+        let rep = snapshot(host)
+        try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent("\(name).png"))
+        let read = ocr(rep)
+        for text in words { expect(flat(read).contains(flat(text)), "\(name): reads whole on the pixels: \(text)", "read: \(read)") }
+        print("\(name): \(Int(size.width)) x \(Int(size.height)) pt")
     }
 
     /// The whole panel at 390 x 640: the key button's jump opens Decision models with both key fields on screen.

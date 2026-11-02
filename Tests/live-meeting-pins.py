@@ -91,7 +91,7 @@ inline = body(pane, "private func inlineCues(_ session: String) -> [LiveCueRecor
 need("guard model.liveMeetingCapability.inlineCues else { return [] }" in inline, "inline cues only on a server with the live meeting surface")
 need("kinds: model.liveMeetingCapability.counts ? inlineCues(id).map(\\.kind) : nil" in pane, "the counts only when the server lists its kinds")
 need("LiveMeeting.anchor(cues: cues.map { ($0.id, $0.createdAt) }, turns: feed.turns, start: feed.startTime)" in pane, "cues anchor by createdAt")
-need("LiveInlineCueRow(cue: cue, saving: cueStore.saving.contains(cue.id), error: cueStore.rateErrors[cue.id])" in pane
+need("LiveInlineCueRow(cue: cue, saving: cueStore.saving.contains(cue.id), error: cueStore.rateErrors[cue.id]," in pane
      and "await cueStore.rate(cue, verdict: verdict, note: cue.rating?.note, run: CueReviewPane.run(model))" in pane,
      "inline cues keep the verdicts, through the one cue store")
 row = body(meetings, "struct LiveInlineCueRow: View {")
@@ -101,6 +101,26 @@ follow = body(pane, "private func followInlineCues(_ session: String?) async {")
 need("guard let session, !PhoneMeetingCapture.protected(session), model.liveMeetingCapability.inlineCues" in follow and "LiveMeeting.inlineCueCheckSeconds" in follow
      and "force" not in follow and "await cueStore.loadMeeting(session, days: CueVerdicts.liveDays, run: CueReviewPane.run(model))" in follow,
      "the inline cues re-ask through the store's 15 s floor, never forced, only on the surface")
+# 0.5.362 (server API v3): the general cue status line, the insight sources and the settings read.
+need("await model.meetingAsk.liveCues.loadIfNeeded(LiveCuesSettingsRow.run(model))" in follow
+     and follow.index("loadIfNeeded(") < follow.index("while !Task.isCancelled {"), "the first pass reads the cue settings if nothing has, before the loop")
+need("if LiveCues.readsGeneral(model.meetingAsk.liveCues.settings) {\n                await cueStore.loadGeneralStatus(session, run: CueReviewPane.run(model))\n            }" in follow,
+     "the general cue status is read only in a web mode on a v 3 server, through the store's floor")
+need("if feed?.ended != true, let id = model.liveTranscriptOpenID, LiveCues.readsGeneral(model.meetingAsk.liveCues.settings),\n               let line = CueVerdicts.generalLine(cueStore.generalStatus[id]) {" in pane,
+     "one line for why general cues are not running, only while the meeting is live and the mode searches the web")
+need("LiveInlineCueRow(cue: cue, saving: cueStore.saving.contains(cue.id), error: cueStore.rateErrors[cue.id],\n                                             opener: MeetingSourceOpener(model: model, session: feed.sessionId))" in pane
+     and 'if cue.kind == "insight", !cue.sources.isEmpty { CueSourcesList(sources: cue.sources, opener: opener, size: 11) }' in row, "an insight cue names its sources, with their domains, and a tap opens the page")
+# Copy full context: both Copy buttons go through captureCopy and prepareCopy, the one place that adds the cues.
+ask_raw = (root / "Sources/MeetingAsk.swift").read_text()
+prepare = body(strip_comments(ask_raw), "func prepareCopy(_ snapshot: MeetingAskCopySnapshot, model: ControllerModel) async -> String? {")
+need("if cueVerdicts.available != false {" in prepare and "await cueVerdicts.loadMeeting(session, days: CueVerdicts.savedDays, force: true, run: CueReviewPane.run(model))" in prepare
+     and "files: files, cues: cues, cueNote: cueCoverage)" in prepare, "Copy full context reads the meeting's cues fresh and puts them in the text")
+need(prepare.index("loadMeeting(session") < prepare.index("MeetingAskText.fullContext(") and prepare.count("guard matches() else") == 3,
+     "the cues are read before the text is built, and a changed connection still copies nothing")
+need(len(re.findall(r"meetingAsk\.prepareCopy\(|[^.]\bprepareCopy\(snapshot", meetings + model)) == 2 and meetings.count("captureCopy(") == 1 and model.count("captureCopy(") == 1,
+     "the saved meeting's Copy full context and the live one's are the only two callers, both through prepareCopy")
+need(strip_comments(ask_raw).count("MeetingAskText.fullContext(") == 1, "the copied text is built in one place")
+
 need("@ObservedObject private var cueStore: CueVerdictsStore" in pane and "_cueStore = ObservedObject(wrappedValue: model.meetingAsk.cueVerdicts)" in pane,
      "the pane observes the cue store, so read cues redraw it")
 need("macCues: model.liveMeetingCapability.macCues" in pane, "the Cues tab is offered beside a Mac recording only when the server cues them")
@@ -108,9 +128,12 @@ side = body(ask, "struct MeetingSidePanel<Ask: View>: View {")
 need("G2MeetingStop.isGlassesSession(session) || (macCues && session.hasPrefix(\"mac_\"))" in side, "glasses meetings, or Mac recordings the server cues")
 kinds_pure = dict(re.findall(r'case "(\w+)": "([^"]+)"', body(pure, "static func kindLabel(_ kind: String) -> String? {")))
 kinds_core = dict(re.findall(r'case "(\w+)": return "([^"]+)"', body(ask_core, "static func kindLabel(_ kind: String) -> String {")))
-need(kinds_pure == kinds_core and set(kinds_pure) == {"reinforce", "challenge", "decision", "promise", "followUp"},
-     "the inline lines and the Cues tab label the five kinds the same way")
+need(kinds_pure == kinds_core and set(kinds_pure) == {"reinforce", "challenge", "decision", "promise", "followUp", "insight"},
+     "the inline lines and the Cues tab label the five kinds and the 0.5.362 insight kind the same way")
+need(kinds_pure["insight"] == "Insight", "the general cue kind is labelled Insight")
 need('static let knownKinds = ["reinforce", "challenge", "decision", "promise", "followUp"]' in pure, "the kinds in the server's spelling")
+need('static let generalKinds = ["insight"]' in pure and 'static let countedKinds = ["decision", "promise", "followUp"]' in pure,
+     "insight is a separate list from the five and is never counted in the header")
 need("Self.liveCueKindValid(kind)" in body(helper, "static func liveCueRow(_ value: Any?) -> [String: Any]? {"),
      "the helper keeps a kind it does not know, in the kind spelling")
 

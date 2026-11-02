@@ -10,7 +10,9 @@ import Vision
 ///     meeting, time, kind, score, cue, sources, what was said just before, the five keyed verdicts, the note and Skip,
 ///     and Next up; then Rated cues, and the older server's one line;
 ///   - the panel beside a meeting at 400 x 720: the switch with Live COS Ask and Cues N, the used line, a rated card and
-///     unrated cards with their verdicts; and on an older server the Ask panel alone, with no switch.
+///     unrated cards with their verdicts; and on an older server the Ask panel alone, with no switch;
+///   - 0.5.362 (server API v3): an insight cue in that panel with its web source named by domain, and the one line that says
+///     why general cues are not running.
 ///
 /// Vision reads the words that must show whole on the pixels. No window is ordered in, no event is sent, nothing becomes
 /// active. Prints "cue verdicts render: N passed".
@@ -83,6 +85,20 @@ import Vision
             await store.loadMeeting(session, days: CueVerdicts.liveDays, force: true, run: run)
             try draw(sidePanel(model, shown: true), size: CGSize(width: 400, height: 720), appearance: appearance, name: "meeting-cues-\(theme)", out: out,
                      words: ["Live COS Ask", "Cues 3", "3 of 25 used", "Rated Repeat", "Change", "Useful", "Obvious", "Not rated"])
+            // 0.5.362: an insight cue, its source by domain, and why general cues are paused (the server's cue mode is General).
+            let insight = #"{"cueId":"cue-0009-iiii","sessionId":"\#(session)","meetingTitle":"Northwind weekly","createdAt":\#(1_792_400_000_000.0 + 10 * 60_000),"kind":"insight","headline":"Regional show moves","detail":"A regional jewelry show moved to March, per a trade news report.","gate":0.9,"sources":[{"id":"w1","date":"","title":"Trade Weekly","kind":"web","url":"https://www.tradeweekly.example/news/show-moves"}],"general":{"category":"news","query":"regional jewelry show dates"},"model":"claude-sonnet-5-5","before":"","rating":null}"#
+            answer("live-cues-history", history([insight] + unrated + rated, total: 32, rated: 3))
+            answer("live-cues-settings", #"{"ok":true,"message":"x","details":{"transport":"answered","httpStatus":200,"apiVersion":3,"v":3,"enabled":true,"source":"setting","capability":{"available":true,"protocol":2,"model":"claude-sonnet-5-5","memory":"notes"},"limits":{"gate":{"value":0.8,"source":"default","locked":false,"min":0.5,"max":0.95,"default":0.8}},"cueMode":{"value":"general","source":"setting","locked":false},"grounding":{"value":"classic","source":"default","locked":false},"general":{"limits":{},"publicTopics":true,"homeArea":null}}}"#)
+            answer("live-cues-status", #"{"ok":true,"message":"x","details":{"transport":"answered","httpStatus":200,"state":"active","general":{"state":"capped","reason":"meeting_cap","cues":4,"attempts":6}}}"#)
+            await model.meetingAsk.liveCues.load(LiveCuesSettingsRow.run(model))
+            expect(LiveCues.readsGeneral(model.meetingAsk.liveCues.settings), "the General cue mode reads from the stand-in")
+            await store.loadMeeting(session, days: CueVerdicts.liveDays, force: true, run: run)
+            await store.loadGeneralStatus(session, run: run)
+            expect(store.generalStatus[session]?.state == "capped", "the general status reads from the stand-in")
+            try draw(sidePanel(model, shown: true), size: CGSize(width: 400, height: 720), appearance: appearance, name: "meeting-cues-insight-\(theme)", out: out,
+                     words: ["Cues 4", "Insight", "A regional jewelry show moved to March", "Trade Weekly (tradeweekly.example)", CueVerdicts.generalLine(store.generalStatus[session])!])
+            answer("live-cues-history", history(unrated + rated, total: 31, rated: 3))
+            await store.loadMeeting(session, days: CueVerdicts.liveDays, force: true, run: run)
         }
         // An older server: the review says so in one line; beside the meeting there is no switch, only Ask.
         answer("live-cues-history", #"{"ok":true,"message":"x","details":{"transport":"answered","httpStatus":404}}"#)

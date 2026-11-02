@@ -2415,6 +2415,11 @@ struct LiveTranscriptPane: View {
                     }
                 }
             }
+            // 0.5.362 (server API v3): why general cues are not running right now, in one line, while the meeting is live.
+            if feed?.ended != true, let id = model.liveTranscriptOpenID, LiveCues.readsGeneral(model.meetingAsk.liveCues.settings),
+               let line = CueVerdicts.generalLine(cueStore.generalStatus[id]) {
+                Text(line).font(COSType.body(11)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+            }
             Text(LiveTranscript.header)
                 .font(COSType.body(12))
                 .foregroundStyle(.secondary)
@@ -2550,7 +2555,8 @@ struct LiveTranscriptPane: View {
                         LiveTurnRow(turn: turn, hours: hours)
                         // 0.5.336: each cue under the turn it belongs to, with its verdicts.
                         ForEach(byTurn[turn.id] ?? []) { cue in
-                            LiveInlineCueRow(cue: cue, saving: cueStore.saving.contains(cue.id), error: cueStore.rateErrors[cue.id]) { verdict in
+                            LiveInlineCueRow(cue: cue, saving: cueStore.saving.contains(cue.id), error: cueStore.rateErrors[cue.id],
+                                             opener: MeetingSourceOpener(model: model, session: feed.sessionId)) { verdict in
                                 Task { await cueStore.rate(cue, verdict: verdict, note: cue.rating?.note, run: CueReviewPane.run(model)) }
                             }
                         }
@@ -2601,8 +2607,13 @@ struct LiveTranscriptPane: View {
     private func followInlineCues(_ session: String?) async {
         guard let session, !PhoneMeetingCapture.protected(session), model.liveMeetingCapability.inlineCues, model.openLiveTranscriptFeed?.ended != true,
               G2MeetingStop.isGlassesSession(session) || model.liveMeetingCapability.macCues else { return }
+        // 0.5.362: the cue mode decides whether the general cue status is read; the first pass reads the settings if nothing has.
+        await model.meetingAsk.liveCues.loadIfNeeded(LiveCuesSettingsRow.run(model))
         while !Task.isCancelled {
             await cueStore.loadMeeting(session, days: CueVerdicts.liveDays, run: CueReviewPane.run(model))
+            if LiveCues.readsGeneral(model.meetingAsk.liveCues.settings) {
+                await cueStore.loadGeneralStatus(session, run: CueReviewPane.run(model))
+            }
             try? await Task.sleep(for: .seconds(LiveMeeting.inlineCueCheckSeconds))
         }
     }
@@ -3148,6 +3159,8 @@ struct LiveInlineCueRow: View {
     let cue: LiveCueRecord
     let saving: Bool
     let error: String?
+    /// 0.5.362: opens an insight cue's source (nil in a render: plain text).
+    var opener: MeetingSourceOpener? = nil
     let rate: (CueVerdict) -> Void
     @State private var changing = false
 
@@ -3163,6 +3176,8 @@ struct LiveInlineCueRow: View {
             }
             .fixedSize(horizontal: false, vertical: true)
             .textSelection(.enabled)
+            // 0.5.362: an insight cue names where it came from, with the domain; a tap opens the page.
+            if cue.kind == "insight", !cue.sources.isEmpty { CueSourcesList(sources: cue.sources, opener: opener, size: 11) }
             if let rated = CueVerdicts.ratedLine(cue.rating), !changing {
                 HStack(spacing: 8) {
                     Text(rated).font(COSType.body(11, weight: .medium)).foregroundStyle(COSPalette.accent)

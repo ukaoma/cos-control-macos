@@ -63,6 +63,20 @@ import Foundation
         check(SettingsHubCatalog.item("HUB-CL")?.advanced == true && SettingsHubCatalog.item("HUB-CL")?.group == "general.app",
               "Use classic Settings is in General, Advanced")
         check(SettingsHub.classicKey == "cos.settings.classic", "the classic switch's key")
+        // 0.5.362 (server API v3): the cue mode, Grounded cues and the general limits are the hub's own rows in Live cues, not
+        // inventory rows: the inventory count above is unchanged.
+        let cueRows = ["HUB-CM", "HUB-CG", "HUB-GB", "HUB-GI", "HUB-GA", "HUB-GM", "HUB-GT", "HUB-GW", "HUB-GU"]
+        for id in cueRows {
+            check(SettingsHubCatalog.extras.contains { $0.id == id } && !items.contains { $0.id == id }, "\(id) is a hub row, not an inventory row")
+            let row = SettingsHubCatalog.item(id)
+            check(row?.group == "meetings.cues" && row?.advanced == false && row?.mount == .group, "\(id) is in Live cues, not Advanced")
+            check(SettingsHubRoute.destination(id)?.group == "meetings.cues", "\(id) routes to Live cues")
+        }
+        check(SettingsHubCatalog.item("HUB-CM")?.label == "Cue mode" && SettingsHubCatalog.item("HUB-CG")?.label == "Grounded cues", "the two controls by name")
+        check(SettingsHubCatalog.item("HUB-CM")?.detail.contains("Public topics") == true && SettingsHubCatalog.item("HUB-CM")?.detail.contains("web") == true,
+              "the cue mode row says General and All search the web and need Public topics")
+        check(SettingsHubCatalog.items(inGroup: "meetings.cues").filter { $0.id.hasPrefix("HUB-") }.count == cueRows.count && SettingsHubCatalog.items(inGroup: "meetings.cues").contains { $0.id == "MA-06" },
+              "Live cues holds the nine new rows beside the inventory's")
     }
 
     static func routes() {
@@ -145,6 +159,11 @@ import Foundation
         check(ids("pairing token").contains("UT-21"), "every word must match: pairing token")
         check(!ids("pairing zebra").contains("UT-21"), "a word that matches nothing removes the row")
         check(ids("classic").contains("HUB-CL"), "search finds Use classic Settings")
+        // 0.5.362: the cue mode and general limit rows are found by their names and their keywords.
+        check(ids("cue mode").first == "HUB-CM" && ids("grounded").contains("HUB-CG") && ids("daily web searches").first == "HUB-GW", "search finds the cue mode, Grounded cues and the daily web searches")
+        check(ids("general cues").contains("HUB-GB") && ids("general cues").contains("HUB-GI") && ids("insight").contains("HUB-GM") && ids("public topics").contains("HUB-CM"),
+              "search finds the general limits by what they are")
+        check(!SettingsHubSearch.results("daily web searches").contains { $0.category != .meetings && $0.items.contains { $0.id.hasPrefix("HUB-G") } }, "they live in Meetings")
         check(ids("zzqxv").isEmpty && SettingsHubSearch.results("zzqxv").isEmpty, "no match is an empty result")
         check(SettingsHubSearch.results("   ").isEmpty, "a blank query has no results")
         check(!ids("Dock menu").contains("MN-06"), "rows outside Settings never show in search")

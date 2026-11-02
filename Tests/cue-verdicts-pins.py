@@ -126,10 +126,26 @@ check("MeetingSidePanel(store: model.meetingAsk.cueVerdicts, model: model, sessi
 check('MeetingSidePanel(store: model.meetingAsk.cueVerdicts, model: model, session: session,\n                                                 macCues: model.liveMeetingCapability.macCues, askTitle: "Meeting Ask") {\n                                    LiveAskPanel(state: model.meetingAsk, model: model, session: session, saved: true' in meetings,
       "a saved meeting's capture wraps Meeting Ask")
 panel = body(ask, "struct MeetingCuesPanel: View {", "struct MeetingCueCard: View {")
-poll = body(panel, '.task(id: "\\(session) \\(polls)") {')
+poll = body(panel, '.task(id: "\\(session) \\(polls) \\(readsGeneral)") {')
 check("guard polls else { return }" in poll and "try? await Task.sleep(for: .seconds(CueVerdicts.pollSeconds))" in poll
       and "await store.loadMeeting(session, days: days, run: run)" in poll and "force" not in poll,
       "the live list polls every 15 seconds only while it shows, through the store's floor")
+check("if readsGeneral { await store.loadGeneralStatus(session, run: run) }" in poll, "0.5.362: the general cue status is read in the same loop, only in a web mode")
+check("if polls, readsGeneral, let line = CueVerdicts.generalLine(store.generalStatus[session]) {" in panel, "the Cues view says why general cues are not running, only while live")
+# 0.5.362: the cards open their sources through the one shared opener; a web source only as a safe https address.
+check(card.count("CueSourcesList(sources: cue.sources, opener: opener)") == 1 and "Text(CueVerdicts.sourcesLine(cue.sources))" not in card, "the cue to rate lists its sources as links")
+cue_card = body(ask, "struct MeetingCueCard: View {")
+check(cue_card.count("CueSourcesList(sources: cue.sources, opener: opener") == 2 and "Text(CueVerdicts.sourcesLine(cue.sources))" not in cue_card,
+      "the meeting's cue card lists its sources as links, an insight cue's on the card itself")
+check('if cue.kind == "insight", !showsBefore { CueSourcesList(sources: cue.sources, opener: opener, size: 11) }' in cue_card, "an insight cue's sources show on its card, before it is opened")
+opener_src = code(body(ask, "@MainActor struct MeetingSourceOpener {", "/// 0.5.362: a cue's sources as links."))
+list_src = code(body(ask, "struct CueSourcesList: View {", "/// 0.5.283: an answer's labeled rows"))
+check(opener_src.count("NSWorkspace.shared.open(") == 1 and "case .web(let url)?: NSWorkspace.shared.open(url)" in opener_src and "http" not in opener_src,
+      "a web source opens through the link, which is https only; the opener names no scheme")
+check("if let opener, let link = source.link, opener.canOpen(link) {" in list_src and "Button { opener.open(source) }" in list_src and "Link(" not in list_src,
+      "a source is a button only when it has somewhere to open now")
+check(ask.count("MeetingSourceOpener(model: model, session:") == 3 and meetings.count("MeetingSourceOpener(model: model, session: feed.sessionId)") == 1,
+      "four places build an opener: Ask's source rows, the Cues view, the review pane and the live pane's inline cues")
 check(sum(s.count("CueVerdicts.pollSeconds") for s in sources.values()) == 2, "the 15 seconds are named in the floor and the loop, nowhere else")
 
 # ── Inline only, house controls.

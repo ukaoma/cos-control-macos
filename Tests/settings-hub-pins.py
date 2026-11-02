@@ -125,6 +125,12 @@ pin(hub.count("MeetingAskSettings(store: model.meetingAsk, model: model, part: .
     "Meeting assistant and Live cues: one part each")
 pin(hub.count("SettingsHubSetupRow(") == 2 and "id: .ollama)" in hub and "id: .voice)" in hub, "the guide's Ollama and Voice rows, once each")
 card = body(ask, "struct MeetingAskSettings: View {", "struct HomeCitySettings: View {")
+# 0.5.362: the cue mode, Grounded cues and the general limits are the hub's own rows in Live cues (extras), and search lands on them.
+pin(all(re.search(r'\.init\("' + item_id + r'", .*?group: "meetings\.cues", *\n? *advanced: false', catalog, flags=re.S) for item_id in
+        ("HUB-CM", "HUB-CG", "HUB-GB", "HUB-GI", "HUB-GA", "HUB-GM", "HUB-GT", "HUB-GW", "HUB-GU")), "the nine cue mode and general rows are in Live cues, none Advanced")
+pin('anchor: "item.HUB-CM"' in ask and 'anchor: "item.HUB-CG"' in ask, "search lands on the cue mode and Grounded cues rows")
+pin(catalog.index('.init("HUB-CM"') > catalog.index("static let extras: [SettingsHubItem] = [") and catalog.index('.init("HUB-CM"') < catalog.index("static let items: [SettingsHubItem] = ["),
+    "the new rows are extras, outside the 253 the inventory lists")
 pin("var part: MeetingAskSettingsPart = .all" in card and "if part != .liveCues {" in card and "if part != .assistant { LiveCuesSettingsRow(" in card,
     "MeetingAskSettings draws both parts unless the hub asks for one")
 panel = body(views, "    private var mainPanel: some View {", "\n    }\n\n")

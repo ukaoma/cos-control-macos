@@ -151,6 +151,26 @@ enum SettingsHubCatalog {
               keywords: ["meaning", "command k", "sessions", "consent", "jev", "subq"]),
         .init("HUB-CL", "Use classic Settings", "Show the earlier one-page Settings in Activity.", old: "", group: "general.app", advanced: true, mount: .group,
               keywords: ["classic", "old settings", "rollback", "one page"]),
+        // 0.5.362 (server API v3, live cues modes): the cue mode, grounding and the general cue limits. They show only for a server
+        // that answers API v3, and the six limits only while the mode searches the web. Added here, not to the inventory.
+        .init("HUB-CM", "Cue mode", "Focused, General or All. General and All search the web for public context and need Public topics on.", old: "", group: "meetings.cues",
+              advanced: false, mount: .group, keywords: ["focused", "general cues", "insight", "web", "public topics", "mode"]),
+        .init("HUB-CG", "Grounded cues", "Check each cue against your past meetings, notes and files, and cite what it used.", old: "", group: "meetings.cues",
+              advanced: false, mount: .group, keywords: ["grounding", "sources", "classic"]),
+        .init("HUB-GB", "General bar", "Lower gives more general cues. Higher gives fewer.", old: "", group: "meetings.cues",
+              advanced: false, mount: .group, keywords: ["general cues", "trigger"]),
+        .init("HUB-GI", "General check gap", "The shortest time between two checks for something worth a general cue.", old: "", group: "meetings.cues",
+              advanced: false, mount: .group, keywords: ["general cues", "interval"]),
+        .init("HUB-GA", "Topic checks per meeting", "The most topic checks one meeting can get.", old: "", group: "meetings.cues",
+              advanced: false, mount: .group, keywords: ["general cues", "attempts"]),
+        .init("HUB-GM", "General cues per meeting", "The most general cues one meeting can get.", old: "", group: "meetings.cues",
+              advanced: false, mount: .group, keywords: ["insight", "maximum"]),
+        .init("HUB-GT", "Daily topic checks", "The most topic checks general cues can run in one day.", old: "", group: "meetings.cues",
+              advanced: false, mount: .group, keywords: ["general cues", "daily cap"]),
+        .init("HUB-GW", "Daily web searches", "The most web searches general cues can run in one day.", old: "", group: "meetings.cues",
+              advanced: false, mount: .group, keywords: ["general cues", "daily cap", "search"]),
+        .init("HUB-GU", "General cue usage", "Today's topic checks and web searches, and when general cues start again after a pause.", old: "", group: "meetings.cues",
+              advanced: false, mount: .group, keywords: ["general cues", "breaker"]),
     ]
 
     /// Every inventory row, in the inventory's order (section 3). Labels and descriptions are the inventory's new copy.

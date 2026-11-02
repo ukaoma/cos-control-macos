@@ -87,6 +87,37 @@ check("guard let limit = settings?.limits?.values[key], !limit.locked else { ret
 check("try? await Task.sleep(for: wait)" in store_src and "limitsFlush?.cancel()" in store_src, "moves are debounced: each cancels the one before")
 check("state = LiveCues.state(answer?.details)" in body(store_src, "func flushLimits(", "func set("), "what shows after a change is the server's echo")
 
+# 0.5.362 (server API v3, live cues modes): the cue mode, Grounded cues and the general limits. Only from a server that answered v 3,
+# moved only through the store, a menu (never a row of pill buttons), the web mode's state in words.
+check("if let v3 = store.settings?.v3 {\n                LiveCuesModeRows(store: store, v3: v3, run: Self.run(model))" in row
+      and sum(s.count("LiveCuesModeRows(") for s in sources.values()) == 1, "the cue mode and Grounded cues draw only when the server answered v 3, in one place")
+check("if let v3 = store.settings?.v3, LiveCues.searchesWeb(v3.mode.value), let limits = store.settings?.limits {\n                LiveCuesGeneralRows(" in row
+      and sum(s.count("LiveCuesGeneralRows(") for s in sources.values()) == 1, "the general limits draw only for a v 3 server whose mode searches the web, in one place")
+check(row.index("Toggle(LiveCues.title") < row.index("LiveCuesModeRows(") < row.index("LiveCuesLimitsRows(") < row.index("LiveCuesGeneralRows(") < row.index("Text(LiveCues.glassesLine)"),
+      "the mode sits under the switch, the general limits under the v 2 limits")
+modes_view = body(ask, "struct LiveCuesModeRows: View {", "struct LiveCuesGeneralRows: View {")
+check("COSDropdown(LiveCues.cueModeTitle, selection: modeBinding," in modes_view and "LiveCueMode.allCases.map { COSDropdownOption($0, LiveCues.modeTitle($0)) }" in modes_view,
+      "the cue mode is one menu with the three modes")
+check("Button(" not in modes_view and "ForEach(" not in modes_view and "COSViewSwitch(" not in modes_view, "no row of pill buttons or tabs for the mode")
+check("Task { await store.setMode(mode, run: run) }" in modes_view and "Task { await store.setGrounding(on ? .grounded : .classic, run: run) }" in modes_view
+      and "runHelper" not in modes_view, "the mode and grounding change only through the store")
+check(modes_view.count(".disabled(v3.mode.locked || store.busy)") == 1 and modes_view.count(".disabled(v3.grounding.locked || store.busy)") == 2,
+      "a mode or grounding the server's environment holds, or a call in flight, holds the control")
+check("LiveCues.modeHelp(shownMode)" in modes_view and modes_view.count("LiveCues.publicTopicsLine(v3)") == 2 and "tone: .warning" in modes_view,
+      "one sentence for the mode on screen, and Public topics off shown as a warning in both layouts")
+check(modes_view.count("Toggle(") == 1 and ".toggleStyle(COSSwitchStyle())" in modes_view, "Grounded cues is one COS switch in the panel")
+general_view = body(ask, "struct LiveCuesGeneralRows: View {", "/// 0.5.322 (Miles, 2026-10-17): Live cues on or off")
+check(general_view.count("store.propose(") == 2 and "runHelper" not in general_view and "if limit.locked {" in general_view, "the general limits move only through the store; a locked one is read-only")
+check("COSStepper(" in general_view and "Stepper(" not in general_view.replace("COSStepper(", ""), "the house stepper")
+for banned in (".sheet(", ".alert(", ".confirmationDialog(", ".popover(", "NSAlert", "COSViewSwitch(", ".tracking(", ".textCase(.uppercase)"):
+    check(banned not in modes_view and banned not in general_view, f"the v3 rows have no {banned}")
+v3_store = body(store_src, "func loadIfNeeded(", "func flushLimits(")
+check("guard !busy, let v3 = settings?.v3, !v3.mode.locked, v3.mode.value != mode else { return }" in v3_store
+      and "guard !busy, let v3 = settings?.v3, !v3.grounding.locked, v3.grounding.value != grounding else { return }" in v3_store, "a locked, unchanged or v 2 setting sends nothing")
+check(store_src.count("await keepV3(before, run)") == 2 and 'run(["live-cues-settings", "--mode", mode.rawValue], nil)' in v3_store
+      and 'run(["live-cues-settings", "--grounding", grounding.rawValue], nil)' in v3_store, "the v 2 writes read again so the v3 controls stay; the two v3 calls")
+check(row.count(".task(id:") == 1, "the v3 rows add no loader of their own")
+
 # The jump: Decision models opens and the panel scrolls to it.
 scroll = body(views, "private func scrollToTarget(_ reader: ScrollViewProxy) {", "DispatchQueue.main.async {")
 check("if target == LiveCues.decisionKeysAnchor { jevExpanded = true }" in scroll, "the jump opens Decision models before it scrolls")
@@ -123,9 +154,22 @@ check('Self.liveCuesSettingsRequest(hasSet: args.contains("--set"), value: optio
 check('details: ["transport": "unavailable"]' in emit and 'details: ["transport": "no_token"]' in emit, "no answer and no token are their own states")
 check("var details = Self.liveCuesSettingsAnswer(response.body)" in emit and "response.body ?? " not in emit and '"body":' not in emit,
       "only the whitelisted keys cross")
-check(emit.count('request(Self.liveCuesSettingsPath + (plan.method == "GET" ? "?v=2" : ""), method: plan.method') == 1,
-      "one request, the planned method; a read asks for v 2 (server 6.79.2 then sends the limits)")
+check(emit.count('request(Self.liveCuesSettingsPath + (reading ? "?v=3" : ""), method: plan.method') == 1
+      and emit.count('request(Self.liveCuesSettingsPath + "?v=2", method: "GET"') == 1,
+      "one planned request: a read asks for v 3 (server API v3 sends the cue mode), and asks again for v 2 only after the 400 below")
+check('if reading, response.status == 400, Self.liveCueErrorCode(response.body) == "unsupported_version" {' in emit,
+      "the v 2 read is the fallback for 400 unsupported_version and nothing else")
+check('if response.status == 200 { details["apiVersion"] = Self.liveCueCount(response.body?["v"]) == 3 ? 3 : 2 }' in emit,
+      "the answer says which version answered: 3 only from a 200 body that says v 3")
 check('"/api/live-cues/v2/settings"' not in emit, "the verb reaches the route only through the constant")
+
+# 0.5.362: live-cues-status is the one new verb, read-only, named once.
+check(helper.count('case "live-cues-status": try emitLiveCuesStatus(args: args)') == 1, "the status verb is dispatched once")
+check('static let liveCuesStatusRoute = "/api/live-cues/status"' in helper and code(helper).count('"/api/live-cues/status"') == 1, "the helper names the status route in its constant only")
+status_emit = body(helper, "private func emitLiveCuesStatus(args: [String]) throws {", "private func emitMeetingStrandedSave(")
+check("request(path, token: token, timeout: 6)" in status_emit and 'method: "POST"' not in status_emit and "Self.liveCuesStatusAnswer(status: response.status, body: response.body)" in status_emit,
+      "the status verb is one read, and only its whitelist crosses")
+check('details: ["transport": "unavailable"]' in status_emit and 'details: ["transport": "no_token"]' in status_emit, "status: no answer and no token are their own states")
 
 # The suite runs it.
 check(suite.count('zsh "$ROOT/Tests/run-live-cues.sh"') == 1, "the full suite runs the live cues gate")
