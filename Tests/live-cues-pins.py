@@ -84,7 +84,7 @@ for banned in (".sheet(", ".alert(", ".popover(", "@AppStorage", "UserDefaults",
     check(banned not in limits_view, f"the limits have no {banned} (the store owns timing; the server owns the values)")
 store_src = body(core, "final class LiveCuesStore: ObservableObject {", "// MARK: Live cue verdicts")
 check("guard let limit = settings?.limits?.values[key], !limit.locked else { return }" in store_src, "a locked or unreported limit never moves")
-check("try? await Task.sleep(for: wait)" in store_src and "limitsFlush?.cancel()" in store_src, "moves are debounced: each cancels the one before")
+check("try? await self?.limitsSleep(wait)" in store_src and "limitsFlush?.cancel()" in store_src, "moves are debounced: each cancels the one before")
 check("state = LiveCues.state(answer?.details)" in body(store_src, "func flushLimits(", "func set("), "what shows after a change is the server's echo")
 
 # 0.5.362 (server API v3, live cues modes): the cue mode, Grounded cues and the general limits. Only from a server that answered v 3,

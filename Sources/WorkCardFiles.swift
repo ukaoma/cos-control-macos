@@ -849,7 +849,10 @@ enum WorkCardFiles {
     nonisolated static func companionNote(_ companion: WorkContextCompanion) -> String? {
         guard companion.state == "failed" else { return nil }
         switch companion.kind {
-        case "text": return companion.failure?.contains("no text layer") == true ? "No text copy (a scan)." : "No text copy."
+        case "text":
+            if companion.failure == sheetTooLargeFailure { return "Too large to read (over 10 MB)." }
+            if companion.failure == sheetTooComplexFailure { return "Too complex to read." }
+            return companion.failure?.contains("no text layer") == true ? "No text copy (a scan)." : "No text copy."
         case "jpeg": return "Couldn't convert the photo."
         case "view": return "No smaller copy."
         case "frames": return "No frames."
@@ -1903,13 +1906,42 @@ extension WorkCardFiles {
     // it. Made on this Mac beside the copy, so it works against every server, an older one included: what leaves the Mac is the
     // text row the meeting assistant already takes for a PDF or a Word file.
 
+    nonisolated static let sheetTooLargeFailure = "this workbook is larger than 10 MB"
+    nonisolated static let sheetTooComplexFailure = "this workbook is too large or complex to read here"
+    nonisolated static let sheetUnreadableFailure = "this workbook has no readable cells, or is encrypted or damaged"
     nonisolated static let xlsxMime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     /// The same caps as the server. Inflate caps stop a zip bomb at the cap: a part that fills its buffer is refused.
     enum SheetLimits {
         static let maxBytes = 10_000_000, maxSheets = 12, maxRows = 200, maxColumns = 50, maxCellChars = 200, maxChars = 100_000
         static let maxSharedStringsBytes = 8_000_000, maxSheetBytes = 16_000_000, maxPartBytes = 4_000_000
+        /// All parts of one workbook together, and the time one read may take (the server's 48 MB and 2 s).
+        static let maxTotalInflatedBytes = 48_000_000
+        static let maxWorkSeconds = 2.0
         static let cutNote = "[Text cut at 100000 characters.]"
     }
+
+    /// The work bound of one read, shared by the zip reader and the scanners: total inflated bytes and a deadline. A scanner calls
+    /// `tick` as it advances; the clock is read every `every` calls, and past the deadline the parse is aborted.
+    private final class SheetWork {
+        private let deadline: Double, every: Int
+        private var ticks = 0
+        var inflated = 0
+        private(set) var tooComplex = false
+        init(seconds: Double, every: Int) { deadline = ProcessInfo.processInfo.systemUptime + seconds; self.every = max(1, every) }
+        func tick(_ parser: XMLParser) {
+            ticks += 1
+            if ticks % every == 0, ProcessInfo.processInfo.systemUptime > deadline { tooComplex = true; parser.abortParsing() }
+        }
+        /// False (and tooComplex) once the parts inflated so far pass the total cap.
+        func inflate(_ bytes: Int) -> Bool {
+            inflated += bytes
+            if inflated > SheetLimits.maxTotalInflatedBytes { tooComplex = true; return false }
+            return true
+        }
+    }
+
+    /// What a read came to: its text, or why there is none (too big, too much work, or not a readable workbook).
+    enum SheetOutcome: Equatable { case text(String), tooLarge, tooComplex, unreadable }
 
     private struct ZipPart { var method: UInt16; var compressed: Int; var size: Int; var offset: Int }
 
@@ -1941,23 +1973,25 @@ extension WorkCardFiles {
         return parts
     }
 
-    /// One part's bytes, inflated into a buffer of at most `cap` bytes. nil past the cap, for a method other than stored or
-    /// deflate, or when the part is damaged.
-    private nonisolated static func zipPart(_ b: [UInt8], _ part: ZipPart?, cap: Int) -> Data? {
+    /// One part's bytes, inflated into a buffer of at most the smaller of `cap` and the part's declared size. nil past either (a
+    /// part that is bigger than it says is damaged or lying), for a method other than stored or deflate, or when the work
+    /// bound's total is passed.
+    private nonisolated static func zipPart(_ b: [UInt8], _ part: ZipPart?, cap: Int, work: SheetWork) -> Data? {
         guard let part, part.offset + 30 <= b.count, le32(b, part.offset) == 0x04034b50, part.size <= cap else { return nil }
         let start = part.offset + 30 + le16(b, part.offset + 26) + le16(b, part.offset + 28)
         guard start + part.compressed <= b.count else { return nil }
-        if part.method == 0 { return part.compressed <= cap ? Data(b[start..<(start + part.compressed)]) : nil }
+        if part.method == 0 { return part.compressed <= part.size && work.inflate(part.compressed) ? Data(b[start..<(start + part.compressed)]) : nil }
         guard part.method == 8 else { return nil }
         if part.compressed == 0 { return Data() }
-        // One byte more than the cap: a part that fills it is bigger than the cap allows and is refused, never cut.
-        var out = [UInt8](repeating: 0, count: cap + 1)
+        // One byte more than the limit: a part that fills it is bigger than allowed and is refused, never cut.
+        let limit = min(cap, part.size)
+        var out = [UInt8](repeating: 0, count: limit + 1)
         let written = b[start..<(start + part.compressed)].withUnsafeBufferPointer { source in
             out.withUnsafeMutableBufferPointer { target in
-                compression_decode_buffer(target.baseAddress!, cap + 1, source.baseAddress!, part.compressed, nil, COMPRESSION_ZLIB)
+                compression_decode_buffer(target.baseAddress!, limit + 1, source.baseAddress!, part.compressed, nil, COMPRESSION_ZLIB)
             }
         }
-        guard written > 0, written <= cap else { return nil }
+        guard written > 0, written <= limit, work.inflate(written) else { return nil }
         return Data(out[0..<written])
     }
 
@@ -1988,7 +2022,10 @@ extension WorkCardFiles {
     private final class StringsReader: NSObject, XMLParserDelegate {
         var strings: [String] = []
         private var current = "", inSI = false, inT = false, phonetic = 0
+        private let work: SheetWork
+        init(work: SheetWork) { self.work = work }
         func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String] = [:]) {
+            work.tick(parser)
             switch name {
             case "si": inSI = true; current = ""; phonetic = 0
             case "rPh": phonetic += 1
@@ -1996,8 +2033,13 @@ extension WorkCardFiles {
             default: break
             }
         }
-        func parser(_ parser: XMLParser, foundCharacters string: String) { if inT { current += string } }
+        func parser(_ parser: XMLParser, foundCharacters string: String) {
+            work.tick(parser)
+            // A cell shows at most 200 characters; keep a few times that, so a huge string is not built up for nothing.
+            if inT, current.utf8.count < 4 * SheetLimits.maxCellChars { current.append(string) }
+        }
         func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
+            work.tick(parser)
             switch name {
             case "t": inT = false
             case "rPh": phonetic = max(0, phonetic - 1)
@@ -2014,8 +2056,10 @@ extension WorkCardFiles {
         var cut = false
         private var row: [String] = [], inRow = false
         private var cellType = "", column: Int?, nextColumn = 0, value: String?, inline = "", inV = false, inInline = false, inT = false, phonetic = 0
-        init(strings: [String]) { self.strings = strings }
+        private let work: SheetWork
+        init(strings: [String], work: SheetWork) { self.strings = strings; self.work = work }
         func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String] = [:]) {
+            work.tick(parser)
             switch name {
             case "row": inRow = true; row = []; nextColumn = 0
             case "c" where inRow:
@@ -2030,9 +2074,13 @@ extension WorkCardFiles {
             }
         }
         func parser(_ parser: XMLParser, foundCharacters string: String) {
-            if inV { value = (value ?? "") + string } else if inT { inline += string }
+            work.tick(parser)
+            // Appended in place and held to a few times what a cell can show: a huge value costs a pass over it, not a copy per piece.
+            if inV, (value?.utf8.count ?? 0) < 4 * SheetLimits.maxCellChars { value?.append(string) }
+            else if inT, inline.utf8.count < 4 * SheetLimits.maxCellChars { inline.append(string) }
         }
         func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
+            work.tick(parser)
             switch name {
             case "v": inV = false
             case "t": inT = false
@@ -2067,15 +2115,29 @@ extension WorkCardFiles {
     /// The text of an .xlsx workbook: for each sheet in workbook order a "Sheet: <name>" line, then each non-empty row as
     /// tab-separated cell values. Shared strings are resolved. No formula is evaluated (a formula cell shows the value Excel
     /// last saved) and a date shows as its stored number. Limits are the server's: 10 MB workbook, 12 sheets, 200 non-empty
-    /// rows per sheet, 50 columns, 200 characters per cell, 100,000 characters in all (cut, and said so). nil when the file is
-    /// not a readable, unencrypted workbook, or has no sheets.
+    /// rows per sheet, 50 columns, 200 characters per cell, 100,000 characters in all (cut, and said so), 48 MB inflated in all
+    /// and 2 s of work. nil when there is no text; `spreadsheetRead` says why.
     nonisolated static func spreadsheetText(at url: URL) -> String? {
-        guard let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize, size <= SheetLimits.maxBytes,
-              let data = try? Data(contentsOf: url, options: .mappedIfSafe), data.count <= SheetLimits.maxBytes else { return nil }
+        if case .text(let text) = spreadsheetRead(at: url) { return text }
+        return nil
+    }
+
+    /// `workSeconds` and `checkEvery` are the work bound's deadline and how often it reads the clock; checks lower them.
+    nonisolated static func spreadsheetRead(at url: URL, workSeconds: Double = SheetLimits.maxWorkSeconds, checkEvery: Int = 4_096) -> SheetOutcome {
+        guard let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize else { return .unreadable }
+        guard size <= SheetLimits.maxBytes else { return .tooLarge }
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return .unreadable }
+        guard data.count <= SheetLimits.maxBytes else { return .tooLarge }
+        let work = SheetWork(seconds: workSeconds, every: checkEvery)
+        guard let text = readWorkbook(data, work: work) else { return work.tooComplex ? .tooComplex : .unreadable }
+        return work.tooComplex ? .tooComplex : .text(text)
+    }
+
+    private nonisolated static func readWorkbook(_ data: Data, work: SheetWork) -> String? {
         let bytes = [UInt8](data)
-        guard let parts = zipParts(bytes), let workbook = zipPart(bytes, parts["xl/workbook.xml"], cap: SheetLimits.maxPartBytes) else { return nil }
+        guard let parts = zipParts(bytes), let workbook = zipPart(bytes, parts["xl/workbook.xml"], cap: SheetLimits.maxPartBytes, work: work) else { return nil }
         var targets: [String: String] = [:]
-        if let rels = zipPart(bytes, parts["xl/_rels/workbook.xml.rels"], cap: SheetLimits.maxPartBytes) {
+        if let rels = zipPart(bytes, parts["xl/_rels/workbook.xml.rels"], cap: SheetLimits.maxPartBytes, work: work) {
             let reader = RelationshipsReader()
             let xml = XMLParser(data: rels); xml.delegate = reader; xml.shouldResolveExternalEntities = false; xml.parse()
             for (id, target) in reader.targets { targets[id] = target.hasPrefix("/") ? String(target.dropFirst()) : "xl/" + (target.hasPrefix("./") ? String(target.dropFirst(2)) : target) }
@@ -2089,8 +2151,8 @@ extension WorkCardFiles {
         }
         guard !sheets.isEmpty else { return nil }
         var strings: [String] = []
-        if let shared = zipPart(bytes, parts["xl/sharedStrings.xml"], cap: SheetLimits.maxSharedStringsBytes) {
-            let reader = StringsReader()
+        if let shared = zipPart(bytes, parts["xl/sharedStrings.xml"], cap: SheetLimits.maxSharedStringsBytes, work: work) {
+            let reader = StringsReader(work: work)
             let xml = XMLParser(data: shared); xml.delegate = reader; xml.shouldResolveExternalEntities = false; xml.parse()
             strings = reader.strings
         }
@@ -2111,15 +2173,17 @@ extension WorkCardFiles {
         for (index, sheet) in sheets.enumerated() {
             if index >= SheetLimits.maxSheets {
                 let rest = sheets.count - SheetLimits.maxSheets
+                // Only the 100,000 character cap says "cut"; this notice is its own line.
                 _ = push("[\(rest) more sheet\(rest == 1 ? "" : "s") not read: \(sheets[SheetLimits.maxSheets...].map(\.name).joined(separator: ", ")).]")
-                capped = true
                 break
             }
-            guard let xml = zipPart(bytes, parts[sheet.path], cap: SheetLimits.maxSheetBytes) else {
+            if work.tooComplex { return nil }
+            guard let xml = zipPart(bytes, parts[sheet.path], cap: SheetLimits.maxSheetBytes, work: work) else {
+                if work.tooComplex { return nil }
                 if !push("Sheet: \(sheet.name)\n[This sheet could not be read.]") { break }
                 continue
             }
-            let reader = SheetReader(strings: strings)
+            let reader = SheetReader(strings: strings, work: work)
             let parser = XMLParser(data: xml); parser.delegate = reader; parser.shouldResolveExternalEntities = false; parser.parse()
             let lines = ["Sheet: \(sheet.name)"] + reader.lines + (reader.cut ? ["[Only the first \(SheetLimits.maxRows) rows of this sheet are read.]"] : [])
             if !push(lines.joined(separator: "\n")) { break }
@@ -2175,11 +2239,20 @@ extension WorkCardFiles {
         case "text":
             let image = file.kind == "image" || file.kind == "heic"
             let sheet = file.kind == "document" && file.sniffed == xlsxMime
+            // 0.5.365: a workbook says why it gave no text (too big, too much work, or not readable) in its own words.
+            var sheetText: String?, sheetWhy = sheetUnreadableFailure
+            if sheet {
+                switch spreadsheetRead(at: original) {
+                case .text(let text): sheetText = text
+                case .tooLarge: sheetWhy = sheetTooLargeFailure
+                case .tooComplex: sheetWhy = sheetTooComplexFailure
+                case .unreadable: break
+                }
+            }
             // QA round 2 (N1): the whole of an image's words is read and checked, never a first slice of it.
-            guard let text = image ? recognizeText(at: original, limit: 400_000) : sheet ? spreadsheetText(at: original) : extractText(original, kind: file.kind),
+            guard let text = image ? recognizeText(at: original, limit: 400_000) : sheet ? sheetText : extractText(original, kind: file.kind),
                   !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                return fail(image ? noWordsFailure : file.kind == "pdf" ? "this PDF has no text layer (a scan)"
-                            : sheet ? "this workbook has no readable cells, or is encrypted or damaged" : "its text could not be read")
+                return fail(image ? noWordsFailure : file.kind == "pdf" ? "this PDF has no text layer (a scan)" : sheet ? sheetWhy : "its text could not be read")
             }
             // 0.5.258: an image's name says nothing about what is in it, so its words are checked as a dropped text file's
             // contents are. A hit keeps the image on the meeting, marked, and out of every send (QA: never silently).

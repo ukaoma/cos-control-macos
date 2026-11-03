@@ -477,7 +477,13 @@ extension ControllerModel {
             if WorkCardFiles.secretFlagged(file) { result.status = "secret-held"; result.notice = "Content appears to contain credentials."; return result }
             if let hold = WorkCardFiles.ocrHold(file) { result.status = file.state == "preparing" ? "pending" : "failed"; result.notice = hold; return result }
             let companion = file.companions.first { $0.kind == "text" }
-            if let companion, companion.state != "ready" { result.status = companion.state == "preparing" ? "pending" : "failed"; result.notice = "Text extraction is " + companion.state; return result }
+            if let companion, companion.state != "ready" {
+                result.status = companion.state == "preparing" ? "pending" : "failed"
+                // 0.5.365: a workbook that is too big to read says so; every other copy keeps its words.
+                let sheetNote = companion.state == "failed" && file.kind == "document" ? WorkCardFiles.companionNote(companion) : nil
+                result.notice = sheetNote.flatMap { $0.hasPrefix("No text copy") ? nil : $0 } ?? "Text extraction is " + companion.state
+                return result
+            }
             let name = companion?.stored ?? (file.kind == "text" ? file.stored : "")
             guard !name.isEmpty else { return result }
             do {

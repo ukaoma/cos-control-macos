@@ -609,64 +609,112 @@ import Foundation
         func echoGate(_ value: String) -> [String: JSONValue] {
             answered(200, withLimits(shape(enabled: true, available: true), limitsJSON.replacingOccurrences(of: #""value":0.8,"#, with: #""value":\#(value),"#)))
         }
-        func holding(_ calls: Calls, _ flight: Flight, _ gate: Gate, failFirst: Bool = false) -> LiveCuesStore.Run {
+        /// How the stand-in helper treats a limits save: it answers, it answers 500 the first time, or it throws (as a helper that
+        /// timed out or exited non-zero does) after the server applied the POST, or before.
+        enum Save { case answers, fails500First, throwsAfterApply, throwsBeforeApply }
+        func holding(_ calls: Calls, _ flight: Flight, _ gate: Gate, _ save: Save = .answers) -> LiveCuesStore.Run {
             var writes = 0
             return { args, _ in
                 if args.count == 1 { return HelperResponse(ok: true, message: "x", details: echoGate(flight.serverGate)) }
-                calls.log.append(args); flight.applied.append(args); flight.serverGate = args[2]; writes += 1
+                calls.log.append(args); flight.applied.append(args); writes += 1
+                if save != .throwsBeforeApply { flight.serverGate = args[2] }
                 let mine = writes
                 while !gate.open {
                     do { try await Task.sleep(for: .milliseconds(5)) } catch { flight.killed += 1; throw CancellationError() }
                 }
-                if failFirst && mine == 1 { return HelperResponse(ok: true, message: "x", details: answered(500)) }
+                if save == .throwsAfterApply || save == .throwsBeforeApply { throw NSError(domain: "helper", code: 2, userInfo: [NSLocalizedDescriptionKey: "helper timed out"]) }
+                if save == .fails500First && mine == 1 { return HelperResponse(ok: true, message: "x", details: answered(500)) }
                 return HelperResponse(ok: true, message: "x", details: echoGate(args[2]))
             }
         }
         func settle(_ done: () -> Bool) async { var n = 0; while !done() && n < 400 { try? await Task.sleep(for: .milliseconds(10)); n += 1 } }
+        /// A store whose waits run on a clock this check drives by hand: no real time is slept, so a loaded machine changes nothing.
+        func stepper(_ calls: Calls, _ clock: ManualClock) async -> LiveCuesStore {
+            let store = LiveCuesStore()
+            store.limitsSleep = clock.sleep
+            await store.load(fake(calls, [echoGate("0.8")]))
+            return store
+        }
 
         // Rapid steps coalesce to one send with the last value.
-        let burst = LiveCuesStore(); let burstCalls = Calls(); let burstFlight = Flight(); let burstGate = Gate(); burstGate.open = true
-        burst.limitsDebounce = .milliseconds(60)
-        await burst.load(fake(burstCalls, [echoGate("0.8")]))
+        let burstClock = ManualClock(); let burstCalls = Calls(); let burstFlight = Flight(); let burstGate = Gate(); burstGate.open = true
+        let burst = await stepper(burstCalls, burstClock)
         let burstRun = holding(burstCalls, burstFlight, burstGate)
-        for value in ["0.55", "0.6", "0.65", "0.7", "0.75"] { burst.propose(.gate, Double(value)!, run: burstRun); try? await Task.sleep(for: .milliseconds(10)) }
-        await settle { burstCalls.log.count >= 2 && !burst.busy }
-        try? await Task.sleep(for: .milliseconds(150))
+        for value in ["0.55", "0.6", "0.65", "0.7", "0.75"] { burst.propose(.gate, Double(value)!, run: burstRun); await burstClock.advance(100) }
+        check(burstFlight.applied.isEmpty && burst.pendingLimits == [.gate: 0.75], "nothing is sent while the person keeps stepping")
+        await burstClock.advance(600)
+        await settle { burstFlight.applied.count == 1 && !burst.busy }
+        await burstClock.advance(2_000)
         check(burstFlight.applied == [["live-cues-settings", "--gate", "0.75"]] && burstFlight.killed == 0 && burst.settings?.limits?.values[.gate]?.value == 0.75
               && burst.pendingLimits.isEmpty && burst.limitsNote == nil, "five quick steps are one send, with the last value, and no note")
 
         // A save in flight is never killed by a newer step; the newer value goes after it.
-        let race = LiveCuesStore(); let raceCalls = Calls(); let raceFlight = Flight(); let raceGate = Gate()
-        race.limitsDebounce = .milliseconds(30)
-        await race.load(fake(raceCalls, [echoGate("0.8")]))
+        let raceClock = ManualClock(); let raceCalls = Calls(); let raceFlight = Flight(); let raceGate = Gate()
+        let race = await stepper(raceCalls, raceClock)
         let raceRun = holding(raceCalls, raceFlight, raceGate)
         race.propose(.gate, 0.7, run: raceRun)
+        await raceClock.advance(600)
         await settle { raceFlight.applied.count == 1 }
         check(raceFlight.applied == [["live-cues-settings", "--gate", "0.70"]] && race.busy, "the first value is out")
         race.propose(.gate, 0.75, run: raceRun)
-        try? await Task.sleep(for: .milliseconds(60))
+        await raceClock.advance(700)
         race.propose(.gate, 0.85, run: raceRun)
-        try? await Task.sleep(for: .milliseconds(80))
+        await raceClock.advance(700)
         check(raceFlight.killed == 0 && race.limitsNote == nil && raceFlight.applied.count == 1, "steps during the save do not kill it and send nothing while it is out")
         raceGate.open = true
+        await settle { !race.busy }
+        await raceClock.advance(100)
         await settle { raceFlight.applied.count == 2 && !race.busy }
-        try? await Task.sleep(for: .milliseconds(100))
+        await raceClock.advance(2_000)
         check(raceFlight.applied == [["live-cues-settings", "--gate", "0.70"], ["live-cues-settings", "--gate", "0.85"]] && raceFlight.killed == 0,
               "the newer value is sent once, after the first save finished, and nothing was cancelled")
         check(race.limitsNote == nil && race.pendingLimits.isEmpty && race.settings?.limits?.values[.gate]?.value == 0.85,
               "no 'could not save' note after a save that landed; the card shows the server's last value")
 
+        // Stepping back to the value the server still shows, while a different one is on its way, is a change: it is sent next.
+        let backClock = ManualClock(); let backCalls = Calls(); let backFlight = Flight(); let backGate = Gate()
+        let back = await stepper(backCalls, backClock)
+        let backRun = holding(backCalls, backFlight, backGate)
+        back.propose(.gate, 0.7, run: backRun)
+        await backClock.advance(600)
+        await settle { backFlight.applied.count == 1 }
+        back.propose(.gate, 0.8, run: backRun)
+        check(back.pendingLimits == [.gate: 0.8] && back.limitValue(.gate) == 0.8, "back to the server's old value while 0.70 is out stays waiting, and shows")
+        backGate.open = true
+        await settle { !back.busy }
+        check(back.settings?.limits?.values[.gate]?.value == 0.7 && back.pendingLimits == [.gate: 0.8], "the first value landed; the step back still waits")
+        await backClock.advance(700)
+        await settle { backFlight.applied.count == 2 && !back.busy }
+        await backClock.advance(2_000)
+        check(backFlight.applied.last == ["live-cues-settings", "--gate", "0.80"] && backFlight.serverGate == "0.80" && back.settings?.limits?.values[.gate]?.value == 0.8
+              && back.pendingLimits.isEmpty && back.limitsNote == nil, "the undone value is sent after the first lands, and the server ends where the person left it")
+        // And stepping to the value already on its way asks for nothing more.
+        let sameClock = ManualClock(); let sameCalls = Calls(); let sameFlight = Flight(); let sameGate = Gate()
+        let same = await stepper(sameCalls, sameClock)
+        let sameRun = holding(sameCalls, sameFlight, sameGate)
+        same.propose(.gate, 0.7, run: sameRun)
+        await sameClock.advance(600)
+        await settle { sameFlight.applied.count == 1 }
+        same.propose(.gate, 0.7, run: sameRun)
+        check(same.pendingLimits.isEmpty && same.limitValue(.gate) == 0.7, "the value already on its way is shown and not sent twice")
+        sameGate.open = true
+        await settle { !same.busy }
+        await sameClock.advance(2_000)
+        check(sameFlight.applied.count == 1, "no second send")
+
         // An old failure clears when a later save lands.
-        let stale = LiveCuesStore(); let staleCalls = Calls(); let staleFlight = Flight(); let staleGate = Gate()
-        stale.limitsDebounce = .milliseconds(30)
-        await stale.load(fake(staleCalls, [echoGate("0.8")]))
-        let staleRun = holding(staleCalls, staleFlight, staleGate, failFirst: true)
+        let staleClock = ManualClock(); let staleCalls = Calls(); let staleFlight = Flight(); let staleGate = Gate()
+        let stale = await stepper(staleCalls, staleClock)
+        let staleRun = holding(staleCalls, staleFlight, staleGate, .fails500First)
         stale.propose(.gate, 0.7, run: staleRun)
+        await staleClock.advance(600)
         await settle { staleFlight.applied.count == 1 }
         stale.propose(.gate, 0.6, run: staleRun)
         staleGate.open = true
-        await settle { staleFlight.applied.count == 2 && !stale.busy && stale.pendingLimits.isEmpty }
-        try? await Task.sleep(for: .milliseconds(60))
+        await settle { !stale.busy }
+        await staleClock.advance(700)
+        await settle { staleFlight.applied.count == 2 && !stale.busy }
+        await staleClock.advance(2_000)
         check(staleFlight.applied.count == 2 && staleFlight.killed == 0 && stale.limitsNote == nil && stale.settings?.limits?.values[.gate]?.value == 0.6,
               "the first save failed (500), the second landed: the failure note is gone")
         let failed = LiveCuesStore(); let failedCalls = Calls()
@@ -675,25 +723,52 @@ import Foundation
         failed.propose(.gate, 0.7, run: fake(failedCalls, []))
         await failed.flushLimits(fake(failedCalls, [answered(500)]))
         check(failed.limitsNote == "The limit was not saved (HTTP 500). Try again.", "a real failure still says so")
+        check(failed.limitValue(.gate) == 0.8, "after a failure the card shows the server's value, not the one that was out")
+        failed.propose(.gate, 0.7, run: fake(failedCalls, []))
+        check(failed.pendingLimits == [.gate: 0.7], "and asking for that value again is a new change, sent next")
 
         // A wait that has run out behind a save is still a wait: a newer step restarts it instead of sending the half-made value early.
-        let queued = LiveCuesStore(); let queuedCalls = Calls(); let queuedFlight = Flight(); let queuedGate = Gate()
-        queued.limitsDebounce = .milliseconds(300)
-        await queued.load(fake(queuedCalls, [echoGate("0.8")]))
+        let queuedClock = ManualClock(); let queuedCalls = Calls(); let queuedFlight = Flight(); let queuedGate = Gate()
+        let queued = await stepper(queuedCalls, queuedClock)
         let queuedRun = holding(queuedCalls, queuedFlight, queuedGate)
         queued.propose(.gate, 0.6, run: queuedRun)
+        await queuedClock.advance(600)
         await settle { queuedFlight.applied.count == 1 }
-        try? await Task.sleep(for: .milliseconds(50))
+        await queuedClock.advance(50)
         queued.propose(.gate, 0.7, run: queuedRun)
-        try? await Task.sleep(for: .milliseconds(350))
+        await queuedClock.advance(650)
         queued.propose(.gate, 0.75, run: queuedRun)
         queuedGate.open = true
-        try? await Task.sleep(for: .milliseconds(200))
+        await settle { !queued.busy }
+        await queuedClock.advance(200)
         check(queuedFlight.applied.count == 1 && queuedFlight.killed == 0, "a step behind a save restarts the wait: nothing is sent 200 ms after the save landed")
+        await queuedClock.advance(500)
         await settle { queuedFlight.applied.count == 2 && !queued.busy }
+        await queuedClock.advance(2_000)
         check(queuedFlight.applied.last == ["live-cues-settings", "--gate", "0.75"] && queuedFlight.killed == 0 && queued.limitsNote == nil, "then the last step goes once")
 
-        // A cancelled save is not a refusal: read again, no note, the server's value shows.
+        // A save whose helper throws (a timeout, a non-zero exit) is read back, not assumed lost: when the server applied it there is no note.
+        for (save, landed) in [(Save.throwsAfterApply, true), (Save.throwsBeforeApply, false)] {
+            let calls = Calls(); let flight = Flight(); let gate = Gate(); gate.open = true
+            let thrown = LiveCuesStore()
+            thrown.limitsDebounce = .seconds(60)
+            await thrown.load(fake(calls, [echoGate("0.8")]))
+            let run = holding(calls, flight, gate, save)
+            thrown.propose(.gate, 0.75, run: run)
+            await thrown.flushLimits(run)
+            check(thrown.settings?.limits?.values[.gate]?.value == (landed ? 0.75 : 0.8) && thrown.pendingLimits.isEmpty && !thrown.busy
+                  && (thrown.limitsNote == nil) == landed && (landed || thrown.limitsNote == "COS Control could not save the limit. Try again."),
+                  landed ? "a save that the server applied before the helper threw shows the server's value and no note" : "a save that never reached the server says so, and shows the old value")
+        }
+        let blind = LiveCuesStore(); let blindCalls = Calls()
+        blind.limitsDebounce = .seconds(60)
+        await blind.load(fake(blindCalls, [echoGate("0.8")]))
+        blind.propose(.gate, 0.75, run: fake(blindCalls, []))
+        await blind.flushLimits(fake(blindCalls, []))
+        check(blind.limitsNote == "COS Control could not save the limit. Try again." && blind.settings?.limits?.values[.gate]?.value == 0.8 && !blind.busy,
+              "when the read back fails too, the note says it could not be saved and the old value stays")
+
+        // A cancelled save is read back the same way: no note, the server's value shows.
         let gone = LiveCuesStore(); let goneCalls = Calls(); let goneFlight = Flight(); let goneGate = Gate()
         gone.limitsDebounce = .seconds(60)
         await gone.load(fake(goneCalls, [echoGate("0.8")]))
@@ -708,5 +783,45 @@ import Foundation
               "a cancelled save leaves no note and no waiting value, and the card shows what the server holds (it had applied the POST) after a fresh read")
 
         print("live cues checks: \(passed) passed")
+    }
+}
+
+/// A clock the checks drive by hand. `sleep` registers a waiter that ends only when `advance` reaches its time (or its task is
+/// cancelled, which throws, as `Task.sleep` does), so debounce and polling waits take no real time and cannot be reordered by load.
+@MainActor final class ManualClock {
+    private var now = 0, next = 0
+    private var waiters: [Int: (due: Int, cont: CheckedContinuation<Void, Error>)] = [:]
+
+    var sleep: (Duration) async throws -> Void { { [self] duration in try await self.wait(duration) } }
+
+    func wait(_ duration: Duration) async throws {
+        let ms = Int(duration.components.seconds) * 1_000 + Int(duration.components.attoseconds / 1_000_000_000_000_000)
+        let id = next; next += 1
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled { cont.resume(throwing: CancellationError()) } else { waiters[id] = (now + ms, cont) }
+            }
+        } onCancel: {
+            Task { @MainActor in self.cancel(id) }
+        }
+    }
+
+    private func cancel(_ id: Int) { waiters.removeValue(forKey: id)?.cont.resume(throwing: CancellationError()) }
+
+    /// Lets every ready task run until none is.
+    private func drain() async { for _ in 0..<60 { await Task.yield() } }
+
+    /// Moves time forward, waking each waiter at its own time, in order, and letting what it does run before the next.
+    func advance(_ ms: Int) async {
+        let target = now + ms
+        while true {
+            await drain()
+            guard let (id, waiter) = waiters.min(by: { $0.value.due < $1.value.due }), waiter.due <= target else { break }
+            now = max(now, waiter.due)
+            waiters.removeValue(forKey: id)
+            waiter.cont.resume()
+        }
+        now = target
+        await drain()
     }
 }

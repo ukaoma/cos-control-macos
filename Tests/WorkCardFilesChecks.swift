@@ -1925,6 +1925,8 @@ extension WorkCardFilesChecks {
         return out
     }
 
+    static func notZipFixture(_ dir: URL) -> URL { dir.appendingPathComponent("Plain.xlsx") }
+
     static func spreadsheetChecks(_ home: URL) async throws {
         let dir = home.appendingPathComponent("Sheets.d", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -1983,6 +1985,7 @@ extension WorkCardFilesChecks {
         let fourteen = (1...14).map { SheetFixture(name: "S\($0)", rows: #"<row r="1"><c r="A1"><v>\#($0)</v></c></row>"#) }
         let fourteenText = WorkCardFiles.spreadsheetText(at: try xlsx(dir, "Fourteen.xlsx", sheets: fourteen)) ?? ""
         check(fourteenText.contains("Sheet: S12\n12") && !fourteenText.contains("Sheet: S13") && fourteenText.contains("[2 more sheets not read: S13, S14.]"), "spreadsheet text", "12 sheets, the rest named")
+        check(!fourteenText.contains("[Text cut at"), "spreadsheet text", "more than 12 sheets is not a 100,000 character cut: \(fourteenText.suffix(80))")
 
         // A zip bomb stops at the cap: a sheet past 16 MB is "could not be read", shared strings past 8 MB read as empty, and both are quick.
         let started = Date()
@@ -1998,14 +2001,56 @@ extension WorkCardFilesChecks {
         var at = 0, patched = 0
         while at + 28 < lying.count {
             if lying[at] == 0x50 && lying[at + 1] == 0x4b && lying[at + 2] == 0x01 && lying[at + 3] == 0x02 {
-                for k in 24..<28 { lying[at + k] = k == 24 ? 1 : 0 }
-                patched += 1; at += 46
+                let nameLength = Int(lying[at + 28]) | Int(lying[at + 29]) << 8
+                if String(decoding: lying[(at + 46)..<(at + 46 + nameLength)], as: UTF8.self) == "xl/worksheets/sheet1.xml" {
+                    for k in 24..<28 { lying[at + k] = k == 24 ? 1 : 0 }
+                    patched += 1
+                }
+                at += 46
             } else { at += 1 }
         }
         let lyingURL = dir.appendingPathComponent("Lying.xlsx"); try lying.write(to: lyingURL)
         let lyingText = WorkCardFiles.spreadsheetText(at: lyingURL) ?? ""
-        check(patched >= 4 && lyingText.contains("Sheet: Big\n[This sheet could not be read.]") && !lyingText.contains("Sheet: Big\nok"), "spreadsheet text bomb",
+        check(patched == 1 && lyingText.contains("Sheet: Big\n[This sheet could not be read.]") && !lyingText.contains("Sheet: Big\nok"), "spreadsheet text bomb",
               "a part that lies about its size is still capped: \(patched) \(lyingText.prefix(120))")
+
+        // Work bounds. A single value of 8 million characters is read in one pass and shown at 200; the total inflated across a workbook
+        // is capped at 48 MB; the clock is read as the scanner advances; a workbook over 10 MB says so in its own words.
+        let hugeValue = try xlsx(dir, "Huge.xlsx", sheets: [SheetFixture(name: "H", rows: #"<row r="1"><c r="A1"><v>"# + String(repeating: "7", count: 8_000_000) + "</v></c></row>")])
+        let hugeStarted = Date()
+        let hugeText = WorkCardFiles.spreadsheetText(at: hugeValue) ?? ""
+        check(hugeText == "Sheet: H\n" + String(repeating: "7", count: 200), "spreadsheet text work", "a huge value is cut at 200 characters: \(hugeText.prefix(40))")
+        check(Date().timeIntervalSince(hugeStarted) < 5, "spreadsheet text work", "a huge value took \(Date().timeIntervalSince(hugeStarted)) s")
+        let filler = String(repeating: " ", count: 13_000_000)
+        let heavy = try xlsx(dir, "Heavy.xlsx", sheets: (1...4).map { SheetFixture(name: "P\($0)", rows: #"<row r="1"><c r="A1"><v>1</v></c></row>"# + filler) })
+        check(WorkCardFiles.spreadsheetRead(at: heavy) == .tooComplex, "spreadsheet text work", "4 parts of 13 MB pass the 48 MB total")
+        let light = try xlsx(dir, "Light.xlsx", sheets: (1...3).map { SheetFixture(name: "P\($0)", rows: #"<row r="1"><c r="A1"><v>1</v></c></row>"# + filler) })
+        if case .text = WorkCardFiles.spreadsheetRead(at: light) {} else { check(false, "spreadsheet text work", "3 parts of 13 MB are under the total") }
+        check(WorkCardFiles.spreadsheetRead(at: book, workSeconds: -1, checkEvery: 1) == .tooComplex, "spreadsheet text work", "a read past its deadline is refused")
+        if case .text = WorkCardFiles.spreadsheetRead(at: book, workSeconds: 60, checkEvery: 1) {} else { check(false, "spreadsheet text work", "inside the deadline") }
+        let tooBig = dir.appendingPathComponent("TooBig.xlsx")
+        try (Data([0x50, 0x4b, 0x03, 0x04]) + Data("xl/".utf8) + Data(repeating: 0, count: 10_000_001)).write(to: tooBig)
+        check(WorkCardFiles.spreadsheetRead(at: tooBig) == .tooLarge && WorkCardFiles.spreadsheetText(at: tooBig) == nil, "spreadsheet text work", "over 10 MB is too large")
+        check(WorkCardFiles.spreadsheetRead(at: notZipFixture(dir)) == .unreadable, "spreadsheet text work", "text is unreadable, not too large")
+
+        // The buffer is sized by the declared size too: a part that inflates past what it declared is refused even well under the cap.
+        let mid = try xlsx(dir, "Mid.xlsx", sheets: [SheetFixture(name: "Mid", rows: #"<row r="1"><c r="A1"><v>5</v></c></row>"# + String(repeating: " ", count: 2_000_000))])
+        check(WorkCardFiles.spreadsheetText(at: mid) == "Sheet: Mid\n5", "spreadsheet text bomb", "the unpatched 2 MB sheet reads")
+        var midLie = try Data(contentsOf: mid)
+        var midAt = 0, midPatched = 0
+        while midAt + 28 < midLie.count {
+            if midLie[midAt] == 0x50 && midLie[midAt + 1] == 0x4b && midLie[midAt + 2] == 0x01 && midLie[midAt + 3] == 0x02 {
+                let nameLength = Int(midLie[midAt + 28]) | Int(midLie[midAt + 29]) << 8
+                if String(decoding: midLie[(midAt + 46)..<(midAt + 46 + nameLength)], as: UTF8.self) == "xl/worksheets/sheet1.xml" {
+                    midLie[midAt + 24] = 0xE8; midLie[midAt + 25] = 0x03; midLie[midAt + 26] = 0; midLie[midAt + 27] = 0   // declares 1,000 bytes
+                    midPatched += 1
+                }
+                midAt += 46
+            } else { midAt += 1 }
+        }
+        let midLieURL = dir.appendingPathComponent("MidLie.xlsx"); try midLie.write(to: midLieURL)
+        check(midPatched == 1 && (WorkCardFiles.spreadsheetText(at: midLieURL) ?? "").contains("Sheet: Mid\n[This sheet could not be read.]"), "spreadsheet text bomb",
+              "a part larger than it declared is refused under the cap: \(midPatched) \(WorkCardFiles.spreadsheetText(at: midLieURL) ?? "nil")")
 
         // Not a workbook: text, a zip with no workbook part, an encrypted entry, a file past 10 MB.
         let notZip = dir.appendingPathComponent("Plain.xlsx"); try Data("a,b,c\n1,2,3\n".utf8).write(to: notZip)
@@ -2045,6 +2090,13 @@ extension WorkCardFilesChecks {
         await meetings.waitForCompanions()
         let broken = meetings.files(for: id).first { $0.display == "Locked.xlsx" }
         check(broken == nil || broken?.companions.first?.state == "failed", "meeting spreadsheet", "\(String(describing: broken?.companions))")
+        // An over-10 MB workbook fails its copy in its own words, and the row says so.
+        await meetings.intakeMeeting(urls: [tooBig], key: meetingKey, info: meetingInfo)
+        await meetings.waitForCompanions()
+        let large = meetings.files(for: id).first { $0.display == "TooBig.xlsx" }
+        let largeCopy = large?.companions.first { $0.kind == "text" }
+        check(largeCopy?.state == "failed" && largeCopy?.failure == WorkCardFiles.sheetTooLargeFailure && largeCopy.flatMap(WorkCardFiles.companionNote) == "Too large to read (over 10 MB).",
+              "meeting spreadsheet", "\(String(describing: large?.sniffed)) \(String(describing: largeCopy))")
         // A card's workbook has no text copy (a card's files go as paths).
         let work = WorkCardFileStore(root: home.appendingPathComponent("cos-data/work-context-sheets", isDirectory: true))
         await work.intake(urls: [book], source: WorkSource(id: workID, title: "", revision: "r", project: "", context: ""))

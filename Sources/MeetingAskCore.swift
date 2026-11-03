@@ -1459,8 +1459,14 @@ final class LiveCuesStore: ObservableObject {
     private var limitsFlush: Task<Void, Never>?
     var limitsDebounce = LiveCues.limitsDebounce
 
-    /// What a limit control shows: the change waiting, else the server's value.
-    func limitValue(_ key: LiveCuesLimits.Key) -> Double? { pendingLimits[key] ?? settings?.limits?.values[key]?.value }
+    /// The values a save is carrying to the server right now (0.5.365). A move is compared with these first: stepping back to the
+    /// value the server still shows while a different one is on its way is a change the person wants, not "no change".
+    private var inFlightLimits: [LiveCuesLimits.Key: Double] = [:]
+    /// How the store waits (the debounce, and a save finishing first). Checks replace it with a clock they drive by hand.
+    var limitsSleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+
+    /// What a limit control shows: the change waiting, else the one on its way, else the server's value.
+    func limitValue(_ key: LiveCuesLimits.Key) -> Double? { pendingLimits[key] ?? inFlightLimits[key] ?? settings?.limits?.values[key]?.value }
 
     /// A person moved a limit. Nothing is sent until they stop for `limitsDebounce`; then every waiting change goes in
     /// one call. A locked (env) limit, or one the server did not report, never moves.
@@ -1471,16 +1477,17 @@ final class LiveCuesStore: ObservableObject {
     /// sends, so a later move can only cancel a wait, never a call; the newer value waits its own turn after that call.
     func propose(_ key: LiveCuesLimits.Key, _ value: Double, run: @escaping Run) {
         guard let limit = settings?.limits?.values[key], !limit.locked else { return }
-        if value == limit.value { pendingLimits[key] = nil } else { pendingLimits[key] = value }
+        // Against what is on its way, else against the server's value: back to the old value while another is out is a change.
+        if value == (inFlightLimits[key] ?? limit.value) { pendingLimits[key] = nil } else { pendingLimits[key] = value }
         limitsNote = nil
         limitsFlush?.cancel()
         limitsFlush = nil
         guard !pendingLimits.isEmpty else { return }
         let wait = limitsDebounce
         limitsFlush = Task { [weak self] in
-            try? await Task.sleep(for: wait)
+            try? await self?.limitsSleep(wait)
             // A call out (a save, a read) finishes first; a newer move during that restarts the wait instead of queueing a send.
-            while let store = self, store.busy, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(50)) }
+            while let store = self, store.busy, !Task.isCancelled { try? await store.limitsSleep(.milliseconds(50)) }
             guard !Task.isCancelled, let store = self else { return }
             // From here a newer move no longer cancels this task: it is the one awaiting the helper.
             store.limitsFlush = nil
@@ -1490,21 +1497,32 @@ final class LiveCuesStore: ObservableObject {
 
     /// Send the waiting changes now. The shown values change only from the server's answer (its echo of every limit),
     /// never ahead of it; a refusal says why and shows the server's values again. One call at a time with the switch.
-    /// A call that was cancelled (the helper stopped) is not a refusal: the server may have applied it, so the card reads
-    /// the server again and shows what it holds.
+    /// A save that throws (the helper timed out, exited non-zero, or was stopped) is not a refusal: the server may have applied
+    /// it before the helper gave up, so the card reads the server again and shows what it holds, with a note only when the
+    /// value did not land.
     func flushLimits(_ run: @escaping Run) async {
-        while busy { try? await Task.sleep(for: .milliseconds(50)) }
+        while busy { try? await limitsSleep(.milliseconds(50)) }
         guard let arguments = LiveCues.limitsArguments(pendingLimits) else { return }
         busy = true
         let asked = pendingLimits
+        inFlightLimits = asked
         var answer: HelperResponse?
-        var cancelled = false
-        do { answer = try await run(arguments, nil) } catch is CancellationError { cancelled = true } catch {}
+        var threw = false
+        do { answer = try await run(arguments, nil) } catch { threw = true }
+        // Read in a task of its own, so a cancelled caller cannot cancel the read as well.
+        let reread: LiveCues.State? = threw ? await Task { LiveCues.state(try? await run(["live-cues-settings"], nil).details) }.value : nil
+        inFlightLimits = [:]
         busy = false
         // A change made while this one was out stays waiting for its own call.
         for (key, value) in asked where pendingLimits[key] == value { pendingLimits[key] = nil }
-        if cancelled {
-            await rereadAfterCancel(run)
+        if threw {
+            if let reread, case .loaded(let held) = reread {
+                state = reread
+                let landed = asked.allSatisfy { key, value in held.limits?.values[key].map { abs($0.value - value) < 1e-6 } ?? false }
+                limitsNote = landed ? nil : LiveCues.limitsRefusal(nil)
+            } else {
+                limitsNote = LiveCues.limitsRefusal(nil)
+            }
             return
         }
         if let refusal = LiveCues.limitsRefusal(answer?.details) {
@@ -1515,15 +1533,6 @@ final class LiveCuesStore: ObservableObject {
         let before = settings
         state = LiveCues.state(answer?.details)
         await keepV3(before, run)
-    }
-
-    /// A cancelled save: read the settings once more, outside the cancelled task, and show what the server holds. No note.
-    private func rereadAfterCancel(_ run: @escaping Run) async {
-        guard !busy else { return }
-        busy = true
-        defer { busy = false }
-        let answer = await Task { try? await run(["live-cues-settings"], nil) }.value
-        if let read = answer.map({ LiveCues.state($0.details) }), case .loaded = read { state = read }
     }
 
     func set(_ enabled: Bool, run: Run) async {
