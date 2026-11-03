@@ -1,8 +1,18 @@
 {
-  "version": "0.5.364",
+  "version": "0.5.365",
   "whatsNew": {
-    "summary": "Live cues can now cite where they came from, and you choose the kind of cues you get. Settings, Meetings has Cue mode (Focused, General or All) and Grounded cues. Cue mode stays Focused and Grounded cues stay off until you change them. General cues add public context from the web on Mac meetings and need Public topics on: only a short public topic goes to web search, never the transcript. Cue sources open with a click, and Copy full context includes the meeting's cues. Plus everything in 0.5.363: with Today home on, ⌘K finds a session by what it was about once you say yes for your decision model (Jev or SubQ), and each search then sends your words, plus the titles and first prompts of recent sessions, to it.",
+    "summary": "Settings, Live cues now shows how many web lookups COS made today, and a limit change no longer says it failed after it saved. A spreadsheet (.xlsx) dropped on a meeting is read on your Mac, so the meeting assistant can use it. Plus everything in 0.5.364: Cue mode (Focused, General or All) and Grounded cues, both off until you change them, and cue sources that open with a click. Also in 0.5.363: with Today home on, ⌘K finds a session by meaning once you say yes for your decision model, and each search sends your words, plus the titles and first prompts of recent sessions, to it.",
     "sections": [
+      {
+        "title": "0.5.365",
+        "items": [
+          "Settings, Live cues has a new Web today line: every web search and page read COS made today, split into cues, the meeting assistant and fact checks, with pages that could not be read and lookups held back. It needs the newer COS server and shows nothing on an older one.",
+          "The general cues counter is now called Background topic checks today, because it counts only those background checks, not the meeting assistant's searches.",
+          "Fixed \"COS Control could not save the limit\" appearing after a limit had saved. A newer step no longer cancels a save in progress, and stepping back to the old value while a save is out is no longer lost.",
+          "A spreadsheet (.xlsx) dropped on a meeting is now read on your Mac, up to 12 sheets and 200 rows each, so the meeting assistant can use it. It works with any COS server. Spreadsheets dropped before this update need to be dropped again.",
+          "A workbook over 10 MB, or too heavy to read, now says so instead of reading as unsupported."
+        ]
+      },
       {
         "title": "0.5.364",
         "items": [
