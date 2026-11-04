@@ -324,7 +324,7 @@ Category descriptions are 90 characters or fewer counting only the text after th
 | SG-11d | `ProviderConnectViews.swift:484` | Update Server | keep | Kept for test churn: 25 test locations; not misleading | Tests/WorkIntakeChecks.swift:412, Tests/WorkIntakeChecks.swift:430, Tests/WorkIntakeChecks.swift:432, Tests/SetupAssistantChecks.swift:169 (+21 more) | docs/index.html:1037, docs/index.html:1674, docs/index.html:1863, docs/index.html:2235 (+9 more) | copy-pass |
 | SG-11e | `ProviderConnectViews.swift:489` | Show a new code | keep | Clear | Tests/ProviderConnectChecks.swift:1090, Tests/ProviderConnectChecks.swift:1108 | none | copy-pass |
 | SG-11f | `ProviderConnectViews.swift:502` | Pair another phone | keep | Clear | none | none | copy-pass |
-| SG-11g | `ProviderConnectViews.swift:511` | Hold your phone so the code fills the screen | keep | Clear | Tests/provider-connect-pins.py:124 | none | copy-pass |
+| SG-11g | `ProviderConnectModel.swift` GlassesRules.pairCaption | Open the COS Glasses app, then hold your phone so the code fills the screen. | changed 0.5.368 | The iPhone Camera cannot read this QR (Miles 2026-11-04) | Tests/provider-connect-pins.py, Tests/phone-signin-pins.py | none | copy-pass |
 | SG-11h | `ProviderConnectViews.swift:520` | Works once, until | keep | Clear | none | none | copy-pass |
 | SG-11i | `ProviderConnectViews.swift:548` | Allow only if this is your phone. It gets full access to COS on this Mac. | keep | The security fact, plainly | none | none | copy-pass |
 | SG-12 | `ProviderConnectViews.swift:530` | Allow pairing on this Wi-Fi (home only) | keep | Shared, kept: also shown in glasses pairing in the Welcome window | Tests/provider-connect-pins.py:124 | control/docs/index.html:500 | copy-pass |

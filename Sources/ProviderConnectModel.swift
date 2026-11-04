@@ -1641,6 +1641,10 @@ enum GlassesRules {
     static let allowedWait: TimeInterval = 180
     /// Names from Tailscale are shown at most this long, with control characters removed.
     static let nameLimit = 40
+    /// 0.5.368 (Miles 2026-11-04, 09:05): he pointed the iPhone Camera at this QR expecting a sign-in and got a web search.
+    /// The pairing QR is the COS Glasses app's code, so its row and caption say so; Open COS on your phone is the Camera's.
+    static let pairSubtitle = "Scan this inside the COS Glasses app. The iPhone Camera can't read it."
+    static let pairCaption = "Open the COS Glasses app, then hold your phone so the code fills the screen."
 
     enum Stage: Equatable, Sendable {
         case serverOff, updateServer, checking, failed(String), noHosts, code, pending, allowedWaiting, paired, madeElsewhere
@@ -1795,7 +1799,7 @@ enum GlassesRules {
 
     static func connectRow(_ facts: GlassesFacts) -> SetupRow {
         var row = SetupRow(id: .glassesPair, title: "Connect your glasses", status: "Checking…",
-                           unlocks: "Scan the code with the COS app on your phone. Nothing to type.", detail: nil, done: false)
+                           unlocks: GlassesRules.pairSubtitle, detail: nil, done: false)
         row.counted = false
         switch stage(facts) {
         case .serverOff: row.status = "After Get started"; row.afterSetup = true
@@ -2136,10 +2140,10 @@ struct PhoneSignInCode: Equatable, Sendable {
 enum PhoneSignInRules {
     /// The web page's login error points here by this exact name.
     static let title = "Open COS on your phone"
-    static let subtitle = "Scan with your iPhone camera. Safari opens COS already signed in."
+    static let subtitle = "Point your iPhone Camera here. Safari opens COS already signed in."
     static let qrNote = "Works once, for 2 minutes. Only on your tailnet."
-    /// Shown when the glasses pairing QR is drawn above, so the two are never mixed up.
-    static let notGlasses = "This QR is for Safari. The one in Connect your glasses is for the COS app."
+    /// Shown when the glasses pairing QR is drawn below (0.5.368: this row comes first), so the two are never mixed up.
+    static let notGlasses = "The QR below is for the COS Glasses app, not the Camera."
     static let codeNote = "Type this on the sign-in page. Works once, for 5 minutes."
     static let showCode = "Show a sign-in code"
     /// Once a code is up, the same button replaces it.

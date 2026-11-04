@@ -65,21 +65,45 @@ mutants = [
  ("V4 the row asks while its window is hidden", V, "windowHolder.onScreen(panelVisible: model.panelVisible) })", "true })", PINS, "[visible only]"),
  ("V5 search lands on the card, not the row", P, '            .settingsHubAnchor("UT-29")\n', "", PINS, "[search lands]"),
  ("V6 the row only on the glasses path", P,
-  '                hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }\n            }\n            // UT-29',
-  '                hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }\n            // UT-29', PINS, "[every path]"),
+  '            SettingsHubBlock { SetupDeviceChoice(guide: model.setupGuide) }\n            // UT-29',
+  '            SettingsHubBlock { SetupDeviceChoice(guide: model.setupGuide) }\n            if voiceGuide.devicePath == .glasses {\n            // UT-29', PINS, "[every path]"),
  ("V7 the row under Advanced (pins)", K, 'group: "glasses.devices",\n              advanced: false, mount: .group, keywords: ["phone"', 'group: "glasses.devices",\n              advanced: true, mount: .group, keywords: ["phone"', PINS, "[catalog row]"),
  ("V8 the row under Advanced (hub checks)", K, 'group: "glasses.devices",\n              advanced: false, mount: .group, keywords: ["phone"', 'group: "glasses.devices",\n              advanced: true, mount: .group, keywords: ["phone"', HUB, "Open COS on your phone is a Devices row, not Advanced"),
  ("V9 search misses Control Web", K, '"qr", "control web", "safari"', '"qr", "safari"', HUB, "search finds Open COS on your phone by Control Web"),
+# 0.5.368: the Camera's QR first, and both QRs say where they work (Miles 2026-11-04, 09:05).
+ ("Q1 the glasses rows come before the phone row", P,
+  '            SettingsHubBlock {\n                PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)\n            }\n            .settingsHubAnchor("UT-29")\n            if voiceGuide.devicePath == .glasses {\n                SettingsHubBlock {\n                    GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ = model.providerGuide.openURL($0) })\n                }\n                hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }\n            }\n',
+  '            if voiceGuide.devicePath == .glasses {\n                SettingsHubBlock {\n                    GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ = model.providerGuide.openURL($0) })\n                }\n                hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }\n            }\n            SettingsHubBlock {\n                PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)\n            }\n            .settingsHubAnchor("UT-29")\n',
+  PINS, "[qr order]"),
+ ("Q2 the render draws the old order", "Tests/PhoneSignInRender.swift",
+  '                SettingsHubBlock { PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: true, polls: false) }\n                SettingsHubBlock { GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ in }, polls: false) }\n',
+  '                SettingsHubBlock { GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ in }, polls: false) }\n                SettingsHubBlock { PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: true, polls: false) }\n',
+  PINS, "[qr order]"),
+ ("Q3 the phone subtitle says scan again (pins)", M, '"Point your iPhone Camera here. Safari opens COS already signed in."', '"Scan with your iPhone camera. Safari opens COS already signed in."', PINS, "[copy]"),
+ ("Q4 the phone subtitle says scan again (checks)", M, '"Point your iPhone Camera here. Safari opens COS already signed in."', '"Scan with your iPhone camera. Safari opens COS already signed in."', APP, "[phone copy]"),
+ ("Q5 the note still says the glasses QR is above", M, '"The QR below is for the COS Glasses app, not the Camera."', '"This QR is for Safari. The one in Connect your glasses is for the COS app."', PINS, "[copy]"),
+ ("Q6 the pairing caption loses the app (pins)", M, 'static let pairCaption = "Open the COS Glasses app, then hold your phone so the code fills the screen."', 'static let pairCaption = "Hold your phone so the code fills the screen"', PINS, "[glasses QR labeled]"),
+ ("Q7 the pairing caption loses the app (checks)", M, 'static let pairCaption = "Open the COS Glasses app, then hold your phone so the code fills the screen."', 'static let pairCaption = "Hold your phone so the code fills the screen"', APP, "[glasses qr copy]"),
+ ("Q8 the pairing row says COS app again", M, 'unlocks: GlassesRules.pairSubtitle,', 'unlocks: "Scan the code with the COS app on your phone. Nothing to type.",', APP, "[glasses qr copy]"),
+ ("Q9 the caption is a literal again", V, '            Text(GlassesRules.pairCaption)\n', '            Text("Hold your phone so the code fills the screen")\n', PINS, "[glasses QR labeled]"),
+ ("Q10 the pairing QR loses Show a new code", V, '''            HStack(spacing: 12) {
+                Button("Show a new code") { Task { await pairing.showNewCode() } }.buttonStyle(COSTextButtonStyle())
+                Spacer(minLength: 0)
+            }
+            lanToggle
+''', "            lanToggle\n", PINS, "[glasses QR labeled]"),
+ ("Q11 the catalog keeps the old subtitle", K, '"Point your iPhone Camera here. Safari opens COS already signed in.", old: ""', '"Scan with your iPhone camera. Safari opens COS already signed in.", old: ""', PINS, "[catalog row]"),
 ]
-# V6 also needs the closing brace after the row, so the glasses block encloses it: the mutant moves the brace below the row.
+# V6 (0.5.368 order: the row above the glasses block) opens the glasses block before the row and drops its own opening line, so
+# the block encloses the row and still compiles.
 fixed = []
 for m in mutants:
     if m[0].startswith("V6"):
         name, path, old, new, cmd, expect = m
         src = (root / path).read_text()
-        tail_old = '            .settingsHubAnchor("UT-29")\n        } advanced: {'
-        fixed.append((name, path, old + src.split(old, 1)[1].split(tail_old, 1)[0] + tail_old,
-                      new + src.split(old, 1)[1].split(tail_old, 1)[0] + '            .settingsHubAnchor("UT-29")\n            }\n        } advanced: {', cmd, expect) if src.count(old) == 1 and tail_old in src else m)
+        tail_old = '            .settingsHubAnchor("UT-29")\n            if voiceGuide.devicePath == .glasses {\n'
+        mid = src.split(old, 1)[1].split(tail_old, 1)[0] if src.count(old) == 1 and tail_old in src else None
+        fixed.append((name, path, old + mid + tail_old, new + mid + '            .settingsHubAnchor("UT-29")\n', cmd, expect) if mid is not None else m)
     else:
         fixed.append(m)
 mutants = fixed
@@ -92,7 +116,7 @@ for name, cmd in (("pure", PURE), ("app", APP), ("hub", HUB), ("pins", PINS), ("
     if code != 0: print(f"BASELINE RED ({name}):\n{out[-3000:]}"); sys.exit(1)
     print(f"baseline {name}: green ({out.strip().splitlines()[-1][:120]})", flush=True)
 results = []
-files = (C, H, M, V, P, K)
+files = (C, H, M, V, P, K, "Tests/PhoneSignInRender.swift")
 before = {f: (root / f).read_text() for f in files}
 for name, path, old, new, cmd, expect in mutants:
     p = root / path; src = p.read_text()

@@ -4173,18 +4173,19 @@ private extension ControlPanel {
     @ViewBuilder var hubGlasses: some View {
         hubCard("glasses.devices", advanced: hubAdvancedCount("glasses.devices")) {
             SettingsHubBlock { SetupDeviceChoice(guide: model.setupGuide) }
+            // UT-29 (0.5.367, server 6.99.3): Open COS on your phone, for every device path. The web page's sign-in error
+            // names this row. It is the phone's browser. 0.5.368: it comes right after the device choice, ABOVE the glasses
+            // rows, so the QR the iPhone Camera can read is the first one; Connect your glasses below is the COS Glasses app's.
+            SettingsHubBlock {
+                PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)
+            }
+            .settingsHubAnchor("UT-29")
             if voiceGuide.devicePath == .glasses {
                 SettingsHubBlock {
                     GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ = model.providerGuide.openURL($0) })
                 }
                 hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }
             }
-            // UT-29 (0.5.367, server 6.99.3): Open COS on your phone, for every device path. The web page's sign-in error
-            // names this row. It is the phone's browser; Connect your glasses above is the COS app.
-            SettingsHubBlock {
-                PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)
-            }
-            .settingsHubAnchor("UT-29")
         } advanced: {
             hubRow("UT-21") {
                 Button("Copy token") { model.perform("token") }.buttonStyle(TodayButtonStyle(small: true)).disabled(pairingTokenBlocked)

@@ -102,8 +102,8 @@ struct PhoneOnlyCard: View {
     }
 }
 
-/// The Devices card as ControlPanel.hubGlasses draws it on the glasses path: the device choice, the glasses rows, Get the app
-/// (SG-13), the phone row (UT-29), and Advanced closed.
+/// The Devices card as ControlPanel.hubGlasses draws it on the glasses path (0.5.368 order): the device choice, the phone row
+/// (UT-29), the glasses rows, Get the app (SG-13), and Advanced closed.
 struct DevicesCard: View {
     @ObservedObject var model: ControllerModel
     var body: some View {
@@ -112,9 +112,9 @@ struct DevicesCard: View {
         HubPage {
             SettingsHubCard(group: SettingsHubCatalog.group("glasses.devices")!, advancedCount: advanced, advancedOpen: .constant(false)) {
                 SettingsHubBlock { SetupDeviceChoice(guide: model.setupGuide) }
+                SettingsHubBlock { PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: true, polls: false) }
                 SettingsHubBlock { GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ in }, polls: false) }
                 SettingsHubRow(label: app.label, detail: app.detail) { Button("Get the app") {}.buttonStyle(TodayButtonStyle(small: true)) }
-                SettingsHubBlock { PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: true, polls: false) }
             } advanced: { EmptyView() }
         }
     }

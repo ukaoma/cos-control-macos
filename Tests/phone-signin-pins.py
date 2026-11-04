@@ -7,7 +7,7 @@ dispatched, behind Copy token's exact managed-server check, posting over loopbac
 WebSignInCore's answer; no link, ticket or code in a progress line, log or message; the app reaching them through the model's
 inert-in-checks helper (never model.perform, never the pasteboard); the QR image never cached; the row on screen only while its
 window is (the GlassesWindowHolder gate) and mounted once, for every device path, in Devices with its search anchor; the
-glasses pairing QR unchanged; the catalog row; the copy; the version touchpoints; the lanes wired. Comments are stripped first,
+glasses pairing QR labeled for the COS Glasses app and drawn below this row (0.5.368); the catalog row; the copy; the version touchpoints; the lanes wired. Comments are stripped first,
 so an explanatory comment can never satisfy a pin. Each failure names its behaviour as "phone pin FAILED [<behaviour>]" for the
 mutation pass. Prints "phone sign-in pins: N passed".
 """
@@ -109,8 +109,19 @@ make = body(views_file, "static func make(_ text: String, cached: Bool = true) -
 need("if cached, let hit = cache[text] { return hit }" in make and "guard cached else { return result }" in make
      and make.index("guard cached else { return result }") < make.index("cache[text] = result"), "qr not cached", "an uncached QR is never read from or put in the cache")
 need("QRImage.make(text, cached: cached)" in views_file, "qr not cached", "QRCodeView passes its switch")
-need('QRCodeView(text: qr, side: 228, label: "Pairing code \\(code.display)").frame(maxWidth: .infinity)' in views_file
-     and 'Text("Hold your phone so the code fills the screen")' in views_file, "glasses unchanged", "the glasses pairing QR and its words")
+# 0.5.368 (Miles 2026-11-04, 09:05: the iPhone Camera offered a web search for the glasses QR): the pairing QR, its code, host and
+# Show a new code are unchanged; its row and caption now say it is for the COS Glasses app and the Camera cannot read it.
+card = body(views_file, "@ViewBuilder private func codeCard(_ code: PairingCode) -> some View {")
+need('QRCodeView(text: qr, side: 228, label: "Pairing code \\(code.display)").frame(maxWidth: .infinity)' in card
+     and "Text(code.display)" in card and "Text(host.text)" in card and 'Button("Show a new code") { Task { await pairing.showNewCode() } }' in card,
+     "glasses QR labeled", "the glasses pairing QR, its code, host and Show a new code")
+need("Text(GlassesRules.pairCaption)" in card and "Hold your phone so the code fills the screen\"" not in views_file, "glasses QR labeled", "the caption under the pairing QR names the app")
+glasses_words = dict(re.findall(r'static let (\w+) = "([^"]*)"', body(model_file, "enum GlassesRules {")))
+need(glasses_words.get("pairSubtitle") == "Scan this inside the COS Glasses app. The iPhone Camera can't read it.", "glasses QR labeled", "the pairing row's subtitle")
+need(glasses_words.get("pairCaption") == "Open the COS Glasses app, then hold your phone so the code fills the screen.", "glasses QR labeled", "the pairing caption")
+need('title: "Connect your glasses", status: "Checking…",\n                           unlocks: GlassesRules.pairSubtitle,' in model_file, "glasses QR labeled", "Connect your glasses shows the subtitle")
+for name in ("pairSubtitle", "pairCaption"):
+    need(not re.search("[—–→]|->", glasses_words.get(name, "")), "glasses QR labeled", f"no em dash, en dash or arrow: {name}")
 need("await state.run(visible: { [model, windowHolder] in windowHolder.onScreen(panelVisible: model.panelVisible) })" in row
      and ".background(WindowProbe(holder: windowHolder))" in row and "guard polls else { return }" in row, "visible only",
      "the row asks only while its window is on screen")
@@ -130,7 +141,13 @@ need("PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: voic
 cond = body(devices, "if voiceGuide.devicePath == .glasses {")
 need("PhoneSignInRow(" not in cond, "every path", "the row is outside the glasses-only block")
 need('.settingsHubAnchor("UT-29")' in devices, "search lands", "search lands on the row")
-item = re.search(r'\.init\("UT-29", "Open COS on your phone", "Scan with your iPhone camera\. Safari opens COS already signed in\.", old: "", group: "glasses\.devices",\s*advanced: false, mount: \.group, keywords: \[([^\]]*)\]\)', catalog)
+# 0.5.368: the Camera's QR comes first: the phone row right after the device choice, above the glasses rows, in the card and in
+# the offscreen render that stands for it.
+need(devices.index("SetupDeviceChoice(") < devices.index("PhoneSignInRow(") < devices.index("if voiceGuide.devicePath == .glasses {")
+     < devices.index("GlassesSetupRows("), "qr order", "Open COS on your phone sits above the glasses rows")
+render = body(code("Tests/PhoneSignInRender.swift"), "struct DevicesCard: View {")
+need(render.index("SetupDeviceChoice(") < render.index("PhoneSignInRow(") < render.index("GlassesSetupRows("), "qr order", "the render draws the card's order")
+item = re.search(r'\.init\("UT-29", "Open COS on your phone", "Point your iPhone Camera here\. Safari opens COS already signed in\.", old: "", group: "glasses\.devices",\s*advanced: false, mount: \.group, keywords: \[([^\]]*)\]\)', catalog)
 need(item is not None, "catalog row", "UT-29 in Devices, not Advanced, with the row's words")
 keywords = set(re.findall(r'"([^"]+)"', item.group(1))) if item else set()
 need({"phone", "browser", "sign in", "web", "qr", "control web"} <= keywords, "catalog row", f"the keywords {sorted(keywords)}")
@@ -141,7 +158,8 @@ need(catalog.index('.init("UT-29"') > catalog.index("static let extras: [Setting
 rules = body(model_file, "enum PhoneSignInRules {")
 words = dict(re.findall(r'static let (\w+) = "([^"]*)"', rules))
 need(words.get("title") == "Open COS on your phone", "copy", "the title the web page names")
-need(words.get("subtitle") == "Scan with your iPhone camera. Safari opens COS already signed in.", "copy", "the subtitle")
+need(words.get("subtitle") == "Point your iPhone Camera here. Safari opens COS already signed in.", "copy", "the subtitle")
+need(words.get("notGlasses") == "The QR below is for the COS Glasses app, not the Camera.", "copy", "the note when the glasses rows follow")
 need(words.get("qrNote") == "Works once, for 2 minutes. Only on your tailnet.", "copy", "under the QR")
 need(words.get("codeNote") == "Type this on the sign-in page. Works once, for 5 minutes.", "copy", "under the code")
 need(words.get("showCode") == "Show a sign-in code" and words.get("newQR") == "Show a new QR", "copy", "the buttons")

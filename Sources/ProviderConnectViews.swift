@@ -525,7 +525,7 @@ struct GlassesSetupRows: View {
             if let qr = code.qr {
                 QRCodeView(text: qr, side: 228, label: "Pairing code \(code.display)").frame(maxWidth: .infinity)
             }
-            Text("Hold your phone so the code fills the screen")
+            Text(GlassesRules.pairCaption)
                 .font(COSType.body(11)).foregroundStyle(.secondary).frame(maxWidth: .infinity)
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(code.display).font(COSType.mono(17, weight: .bold)).textSelection(.enabled)
@@ -587,7 +587,7 @@ struct GlassesSetupRows: View {
 struct PhoneSignInRow: View {
     @ObservedObject var model: ControllerModel
     @ObservedObject var state: PhoneSignInState
-    /// The glasses pairing QR is drawn above: say which QR is which.
+    /// The glasses pairing QR is drawn below (0.5.368): say which QR is which.
     var besideGlasses = false
     /// Off in offscreen renders.
     var polls = true

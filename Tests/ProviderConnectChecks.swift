@@ -791,13 +791,21 @@ extension ProviderConnectChecks {
               "phone retry", "a failure waits 10 s")
         check(R.left(299.2) == "5:00 left" && R.left(61) == "1:01 left" && R.left(0.2) == "0:01 left" && R.left(-3) == "0:00 left", "phone left", R.left(299.2))
         // The copy, as the web page and the brief name it.
-        check(R.title == "Open COS on your phone" && R.subtitle == "Scan with your iPhone camera. Safari opens COS already signed in."
+        check(R.title == "Open COS on your phone" && R.subtitle == "Point your iPhone Camera here. Safari opens COS already signed in."
+              && R.notGlasses == "The QR below is for the COS Glasses app, not the Camera."
               && R.qrNote == "Works once, for 2 minutes. Only on your tailnet." && R.codeNote == "Type this on the sign-in page. Works once, for 5 minutes."
               && R.showCode == "Show a sign-in code" && R.newQR == "Show a new QR" && R.noTailnet == "Turn on Tailscale on this Mac."
               && R.needsUpdate == "Update the server to use this.", "phone copy", "the exact words")
         for text in [R.title, R.subtitle, R.qrNote, R.notGlasses, R.codeNote, R.showCode, R.newQR, R.making, R.noTailnet, R.needsUpdate, R.notReady,
                      R.noToken, R.unreachable, R.unreadable, R.tokenRefused, R.refused(500, code: true)] {
             check(!text.contains("—") && !text.contains("–") && !text.contains("→") && !text.contains("->"), "phone copy", "no dash or arrow: \(text)")
+        }
+        // 0.5.368: the glasses pairing QR says it is for the COS Glasses app; the row and the caption under the QR.
+        check(GlassesRules.pairSubtitle == "Scan this inside the COS Glasses app. The iPhone Camera can't read it."
+              && GlassesRules.pairCaption == "Open the COS Glasses app, then hold your phone so the code fills the screen."
+              && GlassesRules.connectRow(GlassesFacts()).unlocks == GlassesRules.pairSubtitle, "glasses qr copy", GlassesRules.connectRow(GlassesFacts()).unlocks)
+        for text in [GlassesRules.pairSubtitle, GlassesRules.pairCaption] {
+            check(!text.contains("—") && !text.contains("–") && !text.contains("→") && !text.contains("->"), "glasses qr copy", "no dash or arrow: \(text)")
         }
     }
 
