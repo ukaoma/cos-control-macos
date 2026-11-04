@@ -47,3 +47,6 @@ in light/dark appearances, alongside the existing merge/import render checks.
 These checks do not launch a live agent or change real meeting data. Semantic
 quality and each actual merge are verified by the cleanup run's audit, not by
 transport tests.
+
+Private candidate: 0.5.369 / build 423, based on the 0.5.368 release source.
+Publication and installation are separate from source/test completion.

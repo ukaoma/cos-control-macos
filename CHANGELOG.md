@@ -1,3 +1,10 @@
+## 0.5.369 (build 423), Meeting consolidation
+
+- Suggested merges gains an explicit agent-assisted Consolidate meetings action, using the durable Work handoff transport and duplicate-run fence.
+- Reviews G2, Mac and cloud matches, stale suggestions, and overrun captures. Requires supported transcript boundaries, retains originals, and reports unresolved items and audio/transcript distinctions.
+- Opus is the default; Codex Frontier is an explicit alternative. No model substitution or recurring cleanup.
+- Includes the changes from 0.5.368.
+
 ## 0.5.368 (build 422), Windu's strike cuts through the droid
 
 Built on 0.5.367 (build 421). Plus everything in 0.5.367. The ask: Miles approved Windu Motion V13 with the approved Session 3 V4 on 2026-11-04 at 11:01 CST, and asked to keep the previous versions backed up. This build ships V13.2, the alpha and coverage correction of it. V6 to V12 are not in this build.

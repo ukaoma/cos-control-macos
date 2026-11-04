@@ -1,8 +1,16 @@
 {
-  "version": "0.5.368",
+  "version": "0.5.369",
   "whatsNew": {
-    "summary": "The Miles Windu pet's strike now cuts through the droid; each half flies off its own way. Plus everything in 0.5.367: in Settings, Glasses and iPhone, scan the QR with your iPhone camera and Safari opens COS already signed in, or show a short sign-in code to type. It needs the newer COS server. Also in 0.5.363: with Today home on, ⌘K finds a session by meaning once you say yes for your decision model, and each search sends your words, plus the titles and first prompts of recent sessions, to it.",
+    "summary": "Suggested merges now has Consolidate meetings: start a tracked AI cleanup of matching G2, Mac and cloud recordings, including overrun captures. Original recordings are preserved; the report lists applied changes and anything still needing review.",
     "sections": [
+      {
+        "title": "0.5.369",
+        "items": [
+          "Consolidate meetings reviews the backlog and applies supported, verified merges. It uses Claude Opus by default, with Codex Frontier available as an explicit choice.",
+          "The cleanup also checks long and overrun recordings, trims derived transcript copies at supported conversation boundaries, and merges matching segments into existing meetings. Full originals are retained, and uncertain boundaries stay available for review.",
+          "A durable receipt prevents duplicate cleanup runs across app restarts. Check status and read the cleanup report in Suggested merges. Individual advise-mode answers still only save feedback."
+        ]
+      },
       {
         "title": "0.5.368",
         "items": [
@@ -17,7 +25,8 @@
         "items": [
           "Settings, Glasses and iPhone has a new row, Open COS on your phone. Scan its QR with your iPhone camera and Safari opens COS already signed in. The QR works once, for 2 minutes, and only on your tailnet.",
           "Show a sign-in code gives you a short code to type on the sign-in page instead. It works once, for 5 minutes.",
-          "COS makes the QR only while the row is on screen, and a new one about every 90 seconds. It needs the newer COS server: on an older one the row says to update it, and without Tailscale on this Mac it says to turn it on.", "The row sits first under Devices, and the glasses pairing QR now says it is for the COS Glasses app, not the iPhone Camera."
+          "COS makes the QR only while the row is on screen, and a new one about every 90 seconds. It needs the newer COS server: on an older one the row says to update it, and without Tailscale on this Mac it says to turn it on.",
+          "The row sits first under Devices, and the glasses pairing QR now says it is for the COS Glasses app, not the iPhone Camera."
         ]
       },
       {
