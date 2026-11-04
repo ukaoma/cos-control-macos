@@ -43,10 +43,12 @@ for pose,new in [('working','v13b'),('trio','v4')]:
  a,b=rows[pose],prior[pose]
  for key in set(a)-{'file','retina','rotation'}: assert a[key]==b[key],(pose,key)
  assert a['rotation']['handoffFrame']==b['rotation']['handoffFrame'] and a['rotation']['version']==b['rotation']['version']
- for x,y in zip(a['rotation']['variants'],b['rotation']['variants'],strict=True):
+ assert len(a['rotation']['variants'])==len(b['rotation']['variants']),(pose,'cast count')
+ for x,y in zip(a['rotation']['variants'],b['rotation']['variants']):
   c=x['id'][-1];assert x['id']==y['id'] and x['entryFile']==y['entryFile'],(pose,'entry casts are unchanged')
   assert x['file']==f'windu-motion-{new}-{pose}-{c}-full-1x.png' and x['bodyFile']==f'windu-motion-{new}-{pose}-{c}-body-1x.png'
- for x,y in zip(a['retina']['variants'],b['retina']['variants'],strict=True):
+ assert len(a['retina']['variants'])==len(b['retina']['variants']),(pose,'retina cast count')
+ for x,y in zip(a['retina']['variants'],b['retina']['variants']):
   c=x['id'][-1];assert x['id']==y['id'] and x['entryFile']==y['entryFile']
   if pose=='working':
    v=lambda kind:[f'windu-motion-v13b-working-{c}-{kind}-2x-s{i}.png' for i in range(1,5)]
