@@ -6,7 +6,7 @@ state=pack/'illustrated-v1-1-state-map.json'
 assert hashlib.sha256(state.read_bytes()).hexdigest() == "028ab2db6232c90764b1af6062fe820a717872c7b9ec703d2cca54ab9ebebb8b"
 approved=json.loads(state.read_text())['poses'];rows=json.loads((pack/'session-pet-states.json').read_text())['poses'];old=json.loads((root/'Resources/DefaultPet/session-pet-states.json').read_text())['poses']
 for pose in set(old)-{'working','duel','trio','swarm'}: assert approved[pose]==old[pose],pose
-for pose in set(rows)-{'idle','patrol','waiting','working'}: assert rows[pose]==approved[pose],pose
+for pose in set(rows)-{'idle','patrol','waiting','working','trio'}: assert rows[pose]==approved[pose],pose
 spec={'working':(184,4,145),'duel':(148,3,109),'trio':(172,3,121),'swarm':(256,3,217)}
 for pose,(frames,casts,handoff) in spec.items():
  row=rows[pose];r=row['rotation'];assert row['frames']==frames and row['interval']==.02 and r['handoffFrame']==handoff
@@ -23,18 +23,47 @@ for f,digest in ambient.items(): assert hashlib.sha256((pack/f).read_bytes()).he
 assert hashlib.sha256((pack/'ambient-v2-state-map.json').read_bytes()).hexdigest()=='2e020116b0c78da9346f07091c5514c92936c1f3b84af52a6a397fb2ef306500'
 motion=json.loads((root/'Tests/windu-motion-sha256.json').read_text());assert len(motion)==36
 for f,digest in motion.items(): assert hashlib.sha256((pack/f).read_bytes()).hexdigest()==digest,f
-assert hashlib.sha256((pack/'session-pet-states.json').read_bytes()).hexdigest()=='0292c01a15077ee7c28d61fb7d82b86b6959c2137fd55a30dc9375f18c7a2313'
+# 0.5.368: Windu Motion V13.2 working (the V13 choreography with the waist alpha and coverage corrected, files windu-motion-v13b-*)
+# and the approved Session 3 V4 trio. Only those two rows changed (pose patch 9aa599ed).
+assert hashlib.sha256((pack/'session-pet-states.json').read_bytes()).hexdigest()=='2893c451a44fee03a544804f81d5845dc3f633def64e8c3c1760da4eebb181d6'
+canon=lambda v:hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+assert canon(rows['working'])=='126b24408a99e530456a983182fd80c6961aeb915bc1e484c4e07149f155aa7f','working row'
+assert canon(rows['trio'])=='25488755229a0187979edb6377fc0e1d93ff4b3c4720279a9306c90507471c45','trio row'
+v13=json.loads((root/'Tests/windu-motion-v13-sha256.json').read_text());assert len(v13)==105
+for f,digest in v13.items(): assert hashlib.sha256((pack/f).read_bytes()).hexdigest()==digest,f
+def pngs(v): return set().union(*map(pngs,v.values())) if isinstance(v,dict) else set().union(*map(pngs,v)) if isinstance(v,list) else {v} if str(v).endswith('.png') else set()
+assert pngs(rows['working'])|pngs(rows['trio'])==set(v13),'the V13 manifest is every file the two rows reference'
+# Motion V2 (0.5.360 to 0.5.367) stays recognized as stock so those installs move to V13; its files stay for rollback.
+v2=[m for m in json.loads((pack/'stock-state-history.json').read_text())['maps'] if m['name']=='Windu Motion V2 \u00b7 Control 0.5.360']
+assert len(v2)==1 and v2[0]['retainedSource']=='bundled-character' and canon(v2[0]['state'])=='b652308e6cc05a078d5e8709ffd2eed3e1880ec03e2feb731a7204ab7802fdef'
+for f in pngs(v2[0]['state']): assert (pack/f).is_file(),f
 prior=json.loads((pack/'ambient-v2-state-map.json').read_text())['poses']
-for pose in set(rows)-{'working'}: assert rows[pose]==prior[pose],pose
-a,b=rows['working'],prior['working']
-for key in set(a)-{'file','retina','rotation'}: assert a[key]==b[key],key
-assert a['rotation']['handoffFrame']==b['rotation']['handoffFrame']
-for x,y in zip(a['rotation']['variants'],b['rotation']['variants']):
- c=x['id'][-1];assert x['id']==y['id'] and x['bodyFile']==f'windu-motion-v2-working-{c}-body-1x.png' and x['entryFile']==y['entryFile']
-for x,y in zip(a['retina']['variants'],b['retina']['variants']):
- # Motion V2 (2026-10-31): cells 106-183 (s3, s4) of the full and body strips are the fragment-free copies.
- c=x['id'][-1];v2=lambda kind:[f'windu-motion-v2-working-{c}-{kind}-2x-s3.png',f'windu-motion-v2-working-{c}-{kind}-2x-s4.png']
- assert x['id']==y['id'] and x['bodyFile']==y['bodyFile'][:2]+v2('body') and x['entryFile']==y['entryFile'] and x['file'][2:]==v2('full')
+for pose in set(rows)-{'working','trio'}: assert rows[pose]==prior[pose],pose
+for pose,new in [('working','v13b'),('trio','v4')]:
+ a,b=rows[pose],prior[pose]
+ for key in set(a)-{'file','retina','rotation'}: assert a[key]==b[key],(pose,key)
+ assert a['rotation']['handoffFrame']==b['rotation']['handoffFrame'] and a['rotation']['version']==b['rotation']['version']
+ assert len(a['rotation']['variants'])==len(b['rotation']['variants']),(pose,'cast count')
+ for x,y in zip(a['rotation']['variants'],b['rotation']['variants']):
+  c=x['id'][-1];assert x['id']==y['id'] and x['entryFile']==y['entryFile'],(pose,'entry casts are unchanged')
+  assert x['file']==f'windu-motion-{new}-{pose}-{c}-full-1x.png' and x['bodyFile']==f'windu-motion-{new}-{pose}-{c}-body-1x.png'
+ assert len(a['retina']['variants'])==len(b['retina']['variants']),(pose,'retina cast count')
+ for x,y in zip(a['retina']['variants'],b['retina']['variants']):
+  c=x['id'][-1];assert x['id']==y['id'] and x['entryFile']==y['entryFile']
+  if pose=='working':
+   v=lambda kind:[f'windu-motion-v13b-working-{c}-{kind}-2x-s{i}.png' for i in range(1,5)]
+   assert x['file']==v('full') and x['bodyFile']==v('body')
+  else:
+   # Session 3 V4 as approved: s1 full from motion V3, s3 full and body from motion V4, the rest the illustrated originals.
+   assert x['file']==[f'windu-motion-v3-trio-{c}-full-2x-s1.png',y['file'][1],f'windu-motion-v4-trio-{c}-full-2x-s3.png',y['file'][3]]
+   assert x['bodyFile']==[y['bodyFile'][0],y['bodyFile'][1],f'windu-motion-v4-trio-{c}-body-2x-s3.png',y['bodyFile'][3]]
+ # Retina geometry: every segment is 2x the 1x cell, 512 px tall, and under the texture limits; frames stay within 256.
+ cell=struct.unpack('>I',(pack/a['file']).read_bytes()[16:20])[0]//a['frames'];assert a['frames']<=256
+ for x in a['retina']['variants']:
+  total=0
+  for f in x['file']+x['bodyFile']+x['entryFile']:
+   w,h,depth,color=struct.unpack('>IIBB',(pack/f).read_bytes()[16:26]);assert h==512 and depth==8 and color==6 and w%(2*cell)==0 and w<=32760 and w*h<=16777216,f
+  for kind in ['file','bodyFile','entryFile']: assert sum(struct.unpack('>I',(pack/f).read_bytes()[16:20])[0] for f in x[kind])==a['frames']*2*cell,(pose,x['id'],kind)
 for pose,(count,interval,width) in {'idle':(82,.04,128),'waiting':(76,.04,160),'patrol':(8,.14,160)}.items():
  row=rows[pose];assert row['frames']==count and row['interval']==interval and row['renderScale']==1
  for filename,scale in [(row['file'],1),(row['retina']['file'][0],2)]:
@@ -42,4 +71,4 @@ for pose,(count,interval,width) in {'idle':(82,.04,128),'waiting':(76,.04,160),'
   w,h,depth,color=struct.unpack('>IIBB',(pack/filename).read_bytes()[16:26])
   assert (w,h,depth,color)==(count*width*scale,256*scale,8,6)
   assert w<=32760 and w*h<=16777216
-print('PASS: 204 preserved illustrated PNGs, 6 preserved ambient PNGs, 36 retimed PNGs, 13 casts, V15/348/349 rollback, exact ambient cadence/RGBA')
+print('PASS: 204 preserved illustrated PNGs, 6 preserved ambient PNGs, 36 retimed PNGs, 105 Motion V13/Session 3 V4 PNGs, 13 casts, V15/348/349/Motion V2 rollback, exact ambient cadence/RGBA, retina geometry')

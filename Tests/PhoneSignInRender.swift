@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 // Offscreen renders of 0.5.367's Open COS on your phone row (UT-29, PhoneSignInRow), light and dark, at the panel's width
-// (390 pt): the QR ready, a sign-in code with its countdown, Tailscale off, a server too old and a server not ready, then the
+// (390 pt): the QR ready, a sign-in code with its countdown, Tailscale off, a server too old (0.5.368: the row hidden) and a server not ready, then the
 // whole Devices card with the glasses rows above it, so the two QRs are seen together (also at 720 pt, the card's width in a
 // 1280 pt Settings window). The state comes from fixture helper answers (the shapes WebSignInCore.handoffAnswer and
 // deviceCodeAnswer map, HelperSources/PairingCore.swift), never the helper; no window is ordered in, nothing is opened, and
@@ -96,7 +96,7 @@ struct PhoneOnlyCard: View {
     var body: some View {
         HubPage {
             SettingsHubCard(group: SettingsHubCatalog.group("glasses.devices")!, advancedCount: 0, advancedOpen: .constant(false)) {
-                SettingsHubBlock { PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: false, polls: false) }
+                PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: false, polls: false)
             } advanced: { EmptyView() }
         }
     }
@@ -112,7 +112,7 @@ struct DevicesCard: View {
         HubPage {
             SettingsHubCard(group: SettingsHubCatalog.group("glasses.devices")!, advancedCount: advanced, advancedOpen: .constant(false)) {
                 SettingsHubBlock { SetupDeviceChoice(guide: model.setupGuide) }
-                SettingsHubBlock { PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: true, polls: false) }
+                PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: true, polls: false)
                 SettingsHubBlock { GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ in }, polls: false) }
                 SettingsHubRow(label: app.label, detail: app.detail) { Button("Get the app") {}.buttonStyle(TodayButtonStyle(small: true)) }
             } advanced: { EmptyView() }
@@ -145,6 +145,11 @@ struct DevicesCard: View {
         let model = await seeded(phone: phone, glasses: true)
         count += try render(DevicesCard(model: model), width: 390, name: "phone-6-devices-card-390", out: out)
         count += try render(DevicesCard(model: model), width: 720 + 32, name: "phone-6-devices-card-720", out: out)
+        // 0.5.368: a server before 6.99.3 (needs_update). The phone row and its glasses note are gone; the glasses rows stay.
+        let oldPhone = await phoneState(handoff: handoffTooOld)
+        precondition(oldPhone.serverTooOld, "the needs_update fixture must hide the row")
+        let oldModel = await seeded(phone: oldPhone, glasses: true)
+        count += try render(DevicesCard(model: oldModel), width: 390, name: "phone-7-devices-card-server-too-old-390", out: out)
 
         print("glasses pairing QR modules per side (with margin): \(QRImage.modules(glassesQR) ?? 0)")
         print("phone sign-in QR modules per side (with margin): \(QRImage.modules(phoneURL) ?? 0)")

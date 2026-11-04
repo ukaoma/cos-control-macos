@@ -102,6 +102,14 @@ need(re.findall(r"\blog\(([^)]*)\)", state) == ["stage"], "log stages only", f"t
 need('let stage = "\\(verb) \\(PhoneSignInRules.stage(result))"' in state, "log stages only", "a stage is the verb and the stage name")
 need("UserDefaults" not in state and "write(" not in state and "FileManager" not in state, "never saved", "nothing is saved")
 need('await ask("web-handoff", code: false)' in state and 'await ask("web-device-code", code: true)' in state, "helper path", "each verb once")
+# 0.5.368: an old server is asked once per appearance and never on the 90 s refresh; the verdict outlives hide().
+tick = body(state, "func tick() async {")
+need("if serverTooOld && askedThisAppearance { return }" in tick and tick.index("if serverTooOld && askedThisAppearance { return }") < tick.index("await mint()"),
+     "old server asked once", "the tick asks an old server nothing more once it asked this appearance")
+need("askedThisAppearance = true" in body(state, "func mint() async {") and "askedThisAppearance = false" in body(state, "func hide() {")
+     and "serverTooOld" not in body(state, "func hide() {"), "old server asked once", "each appearance asks once; hide() keeps the verdict")
+need(len(re.findall(r"serverTooOld = true", state)) == 1 and "if text == PhoneSignInRules.needsUpdate { serverTooOld = true }" in state, "old server hides",
+     "only needs_update (and a 404, which reads as it) hides the row")
 row = body(views_file, "struct PhoneSignInRow: View {")
 need('QRCodeView(text: handoff.url, side: 228, label: "Sign-in QR for Safari on your iPhone", cached: false)' in row, "qr not cached",
      "the phone QR skips the image cache, at the glasses QR's size")
@@ -134,19 +142,31 @@ for banned in (".tracking(", ".kerning(", ".textCase(", "uppercased()"):
 
 # ── Mounted once, in Devices, for every device path, with its search anchor.
 glasses = body(panel, "@ViewBuilder var hubGlasses: some View {")
-need(panel.count("PhoneSignInRow(") == 1 and glasses.count("PhoneSignInRow(") == 1, "mounted once", "the row is drawn once, on Glasses and iPhone")
+need(panel.count("PhoneSignInBlock(") == 1 and glasses.count("PhoneSignInBlock(") == 1 and "PhoneSignInRow(" not in panel, "mounted once",
+     "the row is drawn once, on Glasses and iPhone, through its block")
 devices = glasses.split("} advanced: {", 1)[0]
-need("PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)" in devices, "mounted once",
+need("PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)" in devices, "mounted once",
      "in Devices, not Advanced, and told when the glasses rows show")
 cond = body(devices, "if voiceGuide.devicePath == .glasses {")
-need("PhoneSignInRow(" not in cond, "every path", "the row is outside the glasses-only block")
+need("PhoneSignInBlock(" not in cond, "every path", "the row is outside the glasses-only block")
+# 0.5.368: on a server without the phone sign-in (before 6.99.3, or no route) the whole block hides, its glasses note with it.
+block = body(views_file, "struct PhoneSignInBlock: View {")
+need("let hidden = state.serverTooOld" in block
+     and "SettingsHubBlock { PhoneSignInRow(model: model, state: state, besideGlasses: besideGlasses, polls: polls) }" in block
+     and ".frame(height: hidden ? 0 : nil, alignment: .top)" in block and ".clipped()" in block and ".opacity(hidden ? 0 : 1)" in block
+     and ".allowsHitTesting(!hidden)" in block and ".accessibilityHidden(hidden)" in block, "old server hides",
+     "the block takes no space, draws nothing, takes no click and says nothing to VoiceOver when the server is too old")
+need(views_file.count("PhoneSignInRules.notGlasses") == 1 and "PhoneSignInRules.notGlasses" in body(views_file, "struct PhoneSignInRow: View {")
+     and "notGlasses" not in panel, "old server hides", "the glasses note lives only inside the row, so it hides with it")
+need("Text(line)" in body(views_file, "struct PhoneSignInRow: View {") and "PhoneSignInRules.needsUpdate" not in views_file + panel, "old server hides",
+     "the update line is never drawn by name")
 need('.settingsHubAnchor("UT-29")' in devices, "search lands", "search lands on the row")
 # 0.5.368: the Camera's QR comes first: the phone row right after the device choice, above the glasses rows, in the card and in
 # the offscreen render that stands for it.
-need(devices.index("SetupDeviceChoice(") < devices.index("PhoneSignInRow(") < devices.index("if voiceGuide.devicePath == .glasses {")
+need(devices.index("SetupDeviceChoice(") < devices.index("PhoneSignInBlock(") < devices.index("if voiceGuide.devicePath == .glasses {")
      < devices.index("GlassesSetupRows("), "qr order", "Open COS on your phone sits above the glasses rows")
 render = body(code("Tests/PhoneSignInRender.swift"), "struct DevicesCard: View {")
-need(render.index("SetupDeviceChoice(") < render.index("PhoneSignInRow(") < render.index("GlassesSetupRows("), "qr order", "the render draws the card's order")
+need(render.index("SetupDeviceChoice(") < render.index("PhoneSignInBlock(") < render.index("GlassesSetupRows("), "qr order", "the render draws the card's order")
 item = re.search(r'\.init\("UT-29", "Open COS on your phone", "Point your iPhone Camera here\. Safari opens COS already signed in\.", old: "", group: "glasses\.devices",\s*advanced: false, mount: \.group, keywords: \[([^\]]*)\]\)', catalog)
 need(item is not None, "catalog row", "UT-29 in Devices, not Advanced, with the row's words")
 keywords = set(re.findall(r'"([^"]+)"', item.group(1))) if item else set()
@@ -182,6 +202,9 @@ whats = json.loads((root / "Resources/WhatsNew.json").read_text())
 sec = [s for s in whats["whatsNew"]["sections"] if s["title"] == "0.5.367"]
 need(len(sec) == 1 and any("Open COS on your phone" in i for i in sec[0]["items"]), "version", "What's New keeps one 0.5.367 section naming the row")
 need("\n## 0.5.367 (build 421)" in "\n" + (root / "CHANGELOG.md").read_text(), "version", "the changelog keeps its 0.5.367 (build 421) entry")
+notes368 = [s for s in whats["whatsNew"]["sections"] if s["title"] == "0.5.368"]
+need("On a COS server before 6.99.3 the phone sign-in row is hidden." in (root / "CHANGELOG.md").read_text()
+     and len(notes368) == 1 and any("phone sign-in row is hidden" in i for i in notes368[0]["items"]), "version", "0.5.368 says the row hides on an older server")
 need('python3 "$ROOT/Tests/web-signin-helper-checks.py" "$TMP/cos-control-helper"' in run_sh and 'python3 "$ROOT/Tests/phone-signin-pins.py" "$ROOT"' in run_sh,
      "lanes wired", "Tests/run.sh runs the helper checks and these pins")
 

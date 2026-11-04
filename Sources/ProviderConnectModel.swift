@@ -2153,6 +2153,7 @@ enum PhoneSignInRules {
     static let tryAgain = "Try again"
     static let making = "Making a QR…"
     static let noTailnet = "Turn on Tailscale on this Mac."
+    /// Kept for the stage name and the checks; never drawn since 0.5.368, when the whole row hides instead (serverTooOld).
     static let needsUpdate = "Update the server to use this."
     static let notReady = "This works once the COS server is running and verified."
     static let noToken = "COS has no pairing token yet. Set up the server first."
@@ -2257,6 +2258,12 @@ final class PhoneSignInState: ObservableObject {
     private(set) var mintCount = 0
     private(set) var codeCount = 0
     private(set) var droppedReplies = 0
+    /// 0.5.368: the server has no phone sign-in (before 6.99.3, or no route at all), so the whole row hides: on the public
+    /// server it would only ever say "Update the server to use this.". Kept across hide() so the next appearance starts
+    /// hidden; it asks once per appearance (askedThisAppearance) and never again while it stays on screen. Cleared by any
+    /// answer that shows the route is there; a server that is down or not verified yet leaves it as it was.
+    @Published private(set) var serverTooOld = false
+    private var askedThisAppearance = false
     private var lastAttempt: Date?
     private var retryAfter: TimeInterval = 0
     /// Bumped by hide(): a reply that began before it is dropped, so nothing shows after the row went away.
@@ -2283,6 +2290,12 @@ final class PhoneSignInState: ObservableObject {
     private func note(_ verb: String, _ result: PhoneSignInRules.Result) {
         let stage = "\(verb) \(PhoneSignInRules.stage(result))"
         if stage != lastStage { log(stage); lastStage = stage }
+        switch result {
+        case .qr, .code: serverTooOld = false
+        case .line(let text, _):
+            if text == PhoneSignInRules.needsUpdate { serverTooOld = true }
+            else if ![PhoneSignInRules.unreachable, PhoneSignInRules.notReady, PhoneSignInRules.noToken, PhoneSignInRules.unreadable].contains(text) { serverTooOld = false }
+        }
     }
 
     /// A new phone link. A failure takes the QR down and shows its line: an old link is not left up when the server stopped,
@@ -2293,6 +2306,7 @@ final class PhoneSignInState: ObservableObject {
         defer { minting = false }
         let started = generation
         mintCount += 1
+        askedThisAppearance = true
         lastAttempt = now()
         let result = await ask("web-handoff", code: false)
         guard started == generation else { droppedReplies += 1; return }
@@ -2351,6 +2365,8 @@ final class PhoneSignInState: ObservableObject {
         if code != nil { clock = t }
         if let current = handoff, current.expiresAt <= t { handoff = nil }
         if let current = code, current.expiresAt <= t { code = nil }
+        // An old server is asked once per appearance, never on the 90 s refresh while the hidden row stays up.
+        if serverTooOld && askedThisAppearance { return }
         guard !minting, PhoneSignInRules.due(handoff: handoff, lastAttempt: lastAttempt, retryAfter: retryAfter, now: t) else { return }
         await mint()
     }
@@ -2365,6 +2381,7 @@ final class PhoneSignInState: ObservableObject {
         lastAttempt = nil
         retryAfter = 0
         lastStage = nil
+        askedThisAppearance = false
     }
 
     var holdsAnything: Bool { handoff != nil || line != nil || code != nil || codeLine != nil || lastAttempt != nil }

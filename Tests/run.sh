@@ -3493,8 +3493,8 @@ for bundled_id in legacy_story_ids:
 # character is chosen, so those users are already at the current value.
 gen = re.search(r"petDefaultArtGeneration = (\d+)", model)
 need(gen is not None, "the art-generation constant is gone")
-need(int(gen.group(1)) >= 28,
-     "Windu Motion V2 (0.5.360) requires art generation 28 for installs already at 27")
+need(int(gen.group(1)) >= 29,
+     "Windu Motion V13 (0.5.368) requires art generation 29 for installs already at 28")
 # The generation and the bundled state maps move together; the ledger pin fails when a map changes and the number does not.
 subprocess.run([sys.executable, str(root / "Tests/pet-art-generation-pins.py"), str(root)], check=True)
 need("refreshRecognizedBundledCharacter(" in model,

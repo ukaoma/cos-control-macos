@@ -1,3 +1,18 @@
+## 0.5.368 (build 422), Windu's strike cuts through the droid
+
+Built on 0.5.367 (build 421). Plus everything in 0.5.367. The ask: Miles approved Windu Motion V13 with the approved Session 3 V4 on 2026-11-04 at 11:01 CST, and asked to keep the previous versions backed up. This build ships V13.2, the alpha and coverage correction of it. V6 to V12 are not in this build.
+
+What is new by default: the stock Miles Windu pack's working and trio rows, and, on a server without the phone sign-in, no Open COS on your phone row. An install whose Windu pack is an exact recognized stock map (Motion V2 from 0.5.360 to 0.5.367, or any earlier recognized stock map) moves to them at launch, once, through art generation 29. A changed strip, a custom cast, interval or cadence, a chosen still image and every other character are left as they are.
+
+What this build adds, on top of 0.5.367:
+
+- On a COS server before 6.99.3 the phone sign-in row is hidden. Before, every server without the route (the public server today) showed Open COS on your phone with only "Update the server to use this.", a dead end. Now a `needs_update` answer, or a 404 (`transport: unsupported`) from either verb, hides the whole row with its "The QR below is for the COS Glasses app, not the Camera." note, and the glasses pairing row and its wording stay. It asks once each time the row comes on screen, never on the 90 second refresh while it stays up, and starts hidden on the next appearance; a server that is down or not verified yet leaves it as it was, and any answer from the route (a QR, a code, no tailnet, a refusal) shows the row again.
+- The Miles Windu pet's strike now cuts through the droid; each half flies off its own way. Working is Motion V13.2 (files `windu-motion-v13b-*`): Miles's approved V13 with the waist compositing and coverage corrected, after native QA found a see-through seam across the waist in V13; the V13 and V13.1 frames are not in this build. 184 frames at .02 s, four casts sharing the run-in, handoff 145, at 1x and through four Retina strips at 2x. Each half has its own launch, spin, bounce and settle, baked per cast, not random on each play.
+- Trio takes the approved Session 3 V4 strips: 172 frames at .02 s, three casts, handoff 121, byte-identical to the approved V4.
+- Only those two rows change. Idle, meditation, patrol, waiting, attention, done, error, duel and swarm, the other Jedi packs, the shuffle with no immediate repeat, the incoming cast binding and 256-frame support are unchanged.
+- Nothing is deleted. 55 strips are added; the Motion V2 strips stay in the app for rollback, and the shipped Motion V2 map joins the pack's stock history so those installs are recognized.
+- Checks: the V13 and V4 strips are pinned by hash (105 files), the map and both rows by hash, Retina geometry, the 1x and 2x decode of every cast, the tail body against the full frame, the Motion V2 to V13 upgrade (custom layers and cadence kept, a rerun changes nothing), and mutation passes for the pins and the native checks.
+
 ## 0.5.367 (build 421), open COS on your phone
 
 Built on 0.5.366 (build 420, private), which is not public. It pairs with server 6.99.3 (private) for the QR; the sign-in code works from server 6.99.1. The ask, 2026-11-04: Miles locked himself out of Control Web on his phone. The web sign-in page asks for a "Code from your Mac", and nothing on the Mac made one: only a browser that was already signed in could. The only code Control showed was the glasses pairing code, which the page refuses; the Glasses and iPhone QR is the COS app's `COS1/MAC/...` code, which the iPhone camera cannot use; and Copy token clears the clipboard after 60 seconds.

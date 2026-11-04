@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""0.5.360 mutation gate for Tests/pet-art-generation-pins.py: a bundled pack's state map and petDefaultArtGeneration
+"""0.5.360 (0.5.368: re-anchored on generation 29, Windu Motion V13) mutation gate for Tests/pet-art-generation-pins.py: a bundled pack's state map and petDefaultArtGeneration
 move together. 0.5.360 first shipped Windu Motion V2 with the generation left at 27 (installs already at 27 skip the
 upgrade block), and the only pin then ("generation >= 26") passed.
 
@@ -28,13 +28,16 @@ HISTORY = "Resources/BundledCharacters/jedi-miles-windu/stock-state-history.json
 FILES = [PIN, CONTROLLER, WINDU, NIA, DEFAULT, HISTORY,
          "Resources/BundledCharacters/jedi-elara-vale/session-pet-states.json",
          "Resources/BundledCharacters/jedi-rowan-vale/session-pet-states.json"]
+V13_HASH = "2893c451a44fee03a544804f81d5845dc3f633def64e8c3c1760da4eebb181d6"
 V2_HASH = "0292c01a15077ee7c28d61fb7d82b86b6959c2137fd55a30dc9375f18c7a2313"
 V1_HASH = "2ba8634a87ccbc0ec37bb10a383e4ffd76aba30122a31df120516f70513c39d1"
 ENTRY_28 = f'        (28, "{V2_HASH}"),  # Windu Motion V2, 0.5.360\n'
+ENTRY_29 = f'        (29, "{V13_HASH}"),  # Windu Motion V13 working, Session 3 V4 trio, 0.5.368\n'
 POSES = '"poses": {'
 STATE_EDIT = (POSES, POSES + '\n    "zz-mutant": {"file": "x.png", "frames": 1},')
 
 # (name, [(file, old, new)], text the pin's failure must contain)
+# 0.5.368: generation 29 (Windu Motion V13) is the newest entry, so the "latest" mutants anchor on it; 28 is now a replaced map.
 MUTANTS = [
     ("the Windu state map changes and the generation does not",
      [(WINDU, *STATE_EDIT)], "jedi-miles-windu: session-pet-states.json changed"),
@@ -42,35 +45,45 @@ MUTANTS = [
      [(NIA, *STATE_EDIT)], "jedi-nia-solari: session-pet-states.json changed"),
     ("the retained Miles default changes and the generation does not",
      [(DEFAULT, *STATE_EDIT)], "DefaultPet: session-pet-states.json changed"),
-    ("the Windu state map goes back to Motion V1 at generation 28",
-     [(PIN, ENTRY_28, f'        (28, "{V1_HASH}"),\n')], "jedi-miles-windu: session-pet-states.json changed"),
-    ("the constant goes back to 27 under the Motion V2 map",
-     [(CONTROLLER, "petDefaultArtGeneration = 28", "petDefaultArtGeneration = 27")],
-     "the ledger reaches generation 28 but petDefaultArtGeneration is 27"),
-    ("a map change gets its ledger entry at 29 and the constant stays 28",
-     [(WINDU, *STATE_EDIT),
-      (PIN, ENTRY_28, ENTRY_28 + '        (29, "{SHA:' + WINDU + '}"),\n')],
+    ("the Windu state map goes back to Motion V2 at generation 29",
+     [(PIN, ENTRY_29, f'        (29, "{V2_HASH}"),\n')], "jedi-miles-windu: session-pet-states.json changed"),
+    ("the Motion V13 map ships with no generation 29 entry",
+     [(PIN, ENTRY_29, "")], "jedi-miles-windu: session-pet-states.json changed"),
+    ("the constant goes back to 28 under the Motion V13 map",
+     [(CONTROLLER, "petDefaultArtGeneration = 29", "petDefaultArtGeneration = 28")],
      "the ledger reaches generation 29 but petDefaultArtGeneration is 28"),
+    ("a map change gets its ledger entry at 30 and the constant stays 29",
+     [(WINDU, *STATE_EDIT),
+      (PIN, ENTRY_29, ENTRY_29 + '        (30, "{SHA:' + WINDU + '}"),\n')],
+     "the ledger reaches generation 30 but petDefaultArtGeneration is 29"),
     ("two ledger entries claim the same generation",
-     [(PIN, ENTRY_28, ENTRY_28 + ENTRY_28)], "ledger generations must strictly increase"),
+     [(PIN, ENTRY_29, ENTRY_29 + ENTRY_29)], "ledger generations must strictly increase"),
 ]
 MUTANTS += [
     ("the Motion V1 map leaves the Windu history",
-     [(HISTORY, '"windu-motion-v1-working-b-full-2x-s2.png"', '"windu-motion-v1-working-b-full-2x-s2.png.edited"')], "is not in stock-state-history.json"),
+     [(HISTORY, '"name": "Windu Motion V1 \u00b7 Control 0.5.350",\n      "retainedSource": "bundled-character",\n      "state": {\n        "poses": {',
+       '"name": "Windu Motion V1 \u00b7 Control 0.5.350",\n      "retainedSource": "bundled-character",\n      "state": {\n        "poses": {\n          "zz-mutant": {"file": "x.png", "frames": 1},')],
+     "generation 27 is not in stock-state-history.json"),
+    ("the Motion V2 map leaves the Windu history",
+     [(HISTORY, '"name": "Windu Motion V2 \u00b7 Control 0.5.360",\n      "retainedSource": "bundled-character",\n      "state": {\n        "poses": {',
+       '"name": "Windu Motion V2 \u00b7 Control 0.5.360",\n      "retainedSource": "bundled-character",\n      "state": {\n        "poses": {\n          "zz-mutant": {"file": "x.png", "frames": 1},')],
+     "generation 28 is not in stock-state-history.json"),
     ("a pack folder is not in the ledger",
      [("NEWPACK", "", "{}")], "is not in the ledger"),
     ("a replaced map has no recorded hash",
      [(PIN, '    ("BundledCharacters/jedi-miles-windu", 27): "07db3f086b1595b779694c20f70e2e1de63822de71ec131eaa22758a0a51f7bf",\n', "")],
      "was replaced by a later map"),
+    ("the replaced Motion V2 map has no recorded hash",
+     [(PIN, '    ("BundledCharacters/jedi-miles-windu", 28): "b652308e6cc05a078d5e8709ffd2eed3e1880ec03e2feb731a7204ab7802fdef",\n', "")],
+     "generation 28 was replaced by a later map"),
 ]
-# The one the local checks cannot see: the shipped 0.5.358 entry is rewritten to match a changed map and the number
-# stays at 27. Disk, ledger and constant agree with each other; only the released tag disagrees.
-TAG_MUTANT = ("a released entry is rewritten to match a changed map and the generation stays 27",
-              [(PIN, ENTRY_28, ""),
-               (PIN, f'(27, "{V1_HASH}")', f'(27, "{V2_HASH}")'),
-               (CONTROLLER, "petDefaultArtGeneration = 28", "petDefaultArtGeneration = 27")],
-              "control-v0.5.358 shipped BundledCharacters/jedi-miles-windu at generation 27")
-
+# The one the local checks cannot see: the shipped 0.5.361/0.5.363 entry (generation 28) is rewritten to match a changed map
+# and the number stays at 28. Disk, ledger and constant agree with each other; only the released tags disagree.
+TAG_MUTANT = ("a released entry is rewritten to match a changed map and the generation stays 28",
+              [(PIN, ENTRY_29, ""),
+               (PIN, ENTRY_28, f'        (28, "{V13_HASH}"),\n'),
+               (CONTROLLER, "petDefaultArtGeneration = 29", "petDefaultArtGeneration = 28")],
+              "shipped BundledCharacters/jedi-miles-windu at generation 28")
 
 def run_pin(work: pathlib.Path):
     env = dict(os.environ, COS_PIN_GIT_ROOT=str(root))

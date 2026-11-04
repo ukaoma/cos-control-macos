@@ -20,9 +20,26 @@ MUTANTS = [
     ("edge allowlist ignored", C, "        let allowed = Set(fixture.edgeFrames[label] ?? []).union(known?.edgeFrames ?? [])",
      "        let allowed = Set(known?.edgeFrames ?? [])"),
     ("speck floor removed", C, "    static let speckMaxPixels = 15\n", "    static let speckMaxPixels = 0\n"),
-    ("smear exception dropped from the fixture", F, '"frames": [29, 30, 31]', '"frames": []'),
+    # 0.5.368: the fixture is written with indent 2, so the list spans lines (the one-line target had stopped landing).
+    ("smear exception dropped from the fixture", F, '"strip": "DefaultPet/duel",\n      "frames": [\n        29,\n        30,\n        31\n      ],',
+     '"strip": "DefaultPet/duel",\n      "frames": [],'),
     ("pre-existing ceilings ignored", C, "        let holesCap = known?.holesCeiling ?? maxHolesPercent",
      "        let holesCap = maxHolesPercent"),
+    # 0.5.368: the pinned per-frame evidence for Windu V13.2's plasma frames (working, frames 96-121).
+    ("per-frame evidence hash ignored", C, "                  let data = try? Data(contentsOf: root.appendingPathComponent(pin.file)), sha256(data) == pin.sha256,",
+     "                  let data = try? Data(contentsOf: root.appendingPathComponent(pin.file)),"),
+    ("per-frame evidence need not match the strip", C, "                  let image = NSImage(data: data), let cg = PetSpriteStrip.raster(image), plane(cg).alpha == cell.alpha,",
+     "                  let image = NSImage(data: data), let cg = PetSpriteStrip.raster(image),"),
+    ("a holed hero is accepted", C, "              heroMeasure.gatedHolesPercent <= maxHolesPercent, heroMeasure.slivers.isEmpty,",
+     "              heroMeasure.slivers.isEmpty,"),
+    ("a hero at an unlisted edge is accepted", C, "              heroMeasure.edgeFrames.allSatisfy({ listed.contains(covered[$0 - 1]) })\n",
+     "              true\n"),
+    ("covered frames need not be consecutive", C, "first >= 1, last <= frames, covered == Array(first...last),", "first >= 1, last <= frames,"),
+    ("the character may lose opacity under evidence", C, "                    guard Int(full.alpha[i]) + 2 >= Int(source.alpha[i]) else { return nil }\n", ""),
+    ("the evidence entry dropped from the fixture", F, '"strip": "jedi-miles-windu/working",\n      "sourceFile": "windu-v13b-hero-frames96-121-1x.png"',
+     '"strip": "jedi-miles-windu/working-unused",\n      "sourceFile": "windu-v13b-hero-frames96-121-1x.png"'),
+    ("the strip's evidence hash changed in the fixture", F, '"sourceSHA256": "6afd3f89176526a0249b5f0f270e647ad6c05a7fdf7ebf46b59fd161f432dd0e"',
+     '"sourceSHA256": "22ee0471aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"'),
 ]
 work = pathlib.Path(tempfile.mkdtemp(prefix="cos-sprite-mutants-", dir="/private/tmp"))
 # Lanes compile against shared builds of Sources (Tests/kit-compile.py): keep them for every mutant of this run.

@@ -4176,10 +4176,9 @@ private extension ControlPanel {
             // UT-29 (0.5.367, server 6.99.3): Open COS on your phone, for every device path. The web page's sign-in error
             // names this row. It is the phone's browser. 0.5.368: it comes right after the device choice, ABOVE the glasses
             // rows, so the QR the iPhone Camera can read is the first one; Connect your glasses below is the COS Glasses app's.
-            SettingsHubBlock {
-                PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)
-            }
-            .settingsHubAnchor("UT-29")
+            // 0.5.368: on a server before 6.99.3 the whole block hides (PhoneSignInBlock), its glasses note with it.
+            PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)
+                .settingsHubAnchor("UT-29")
             if voiceGuide.devicePath == .glasses {
                 SettingsHubBlock {
                     GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ = model.providerGuide.openURL($0) })

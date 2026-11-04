@@ -855,14 +855,50 @@ extension ProviderConnectChecks {
         clock = clock.addingTimeInterval(90)
         await state.tick()
         check(state.handoff == nil && state.line == PhoneSignInRules.needsUpdate, "phone failure clears", "\(String(describing: state.handoff))")
+        // 0.5.368: a server without the phone sign-in hides the whole row, and is not asked again while the row stays up.
+        check(state.serverTooOld, "phone old server hides", "needs_update hides the row")
         let asked = fake.count("web-handoff")
-        clock = clock.addingTimeInterval(60)
+        for later in [60.0, 90, 200, 1000] {
+            clock = clock.addingTimeInterval(later)
+            await state.tick()
+        }
+        check(fake.count("web-handoff") == asked && state.serverTooOld, "phone old server hides", "no ask while the hidden row stays on screen: \(fake.calls)")
+        // The next appearance starts hidden and asks once; an old server keeps it hidden and is not asked again.
+        state.hide()
+        check(state.serverTooOld, "phone old server hides", "hide() keeps the verdict, so the row never flashes back on")
+        fake.answers["web-handoff"] = #"{"transport":"unsupported","httpStatus":404}"#
         await state.tick()
-        check(fake.count("web-handoff") == asked, "phone old server", "an old server is asked again only after 90 s")
+        clock = clock.addingTimeInterval(100)
+        await state.tick()
+        check(fake.count("web-handoff") == asked + 1 && state.serverTooOld, "phone old server hides", "one ask per appearance, a 404 hides too: \(fake.calls)")
+        // Not knowing is not an answer: a server that is down or not verified leaves the row as it was.
+        state.hide()
+        fake.throwsFor = ["web-handoff"]
+        await state.tick()
+        fake.throwsFor = []
+        check(fake.count("web-handoff") == asked + 2 && state.serverTooOld && state.line == PhoneSignInRules.unreachable, "phone old server hides", "unreachable keeps it hidden")
+        state.hide()
+        fake.answers["web-handoff"] = #"{"transport":"not_ready"}"#
+        await state.tick()
+        check(state.serverTooOld, "phone old server hides", "not ready keeps it hidden")
+        // An updated server shows the row again on its next appearance.
+        state.hide()
+        fake.answers["web-handoff"] = handoffDetails(expires: clock, phone: "no_tailnet")
+        await state.tick()
+        check(!state.serverTooOld && state.line == PhoneSignInRules.noTailnet, "phone old server hides", "a server with the route shows the row again")
+        fake.answers["web-handoff"] = handoffDetails(expires: clock, phone: "needs_update")
+        state.hide()
+        await state.tick()
+        check(state.serverTooOld, "phone old server hides", "hidden again")
+        state.hide()
+        fake.answers["web-handoff"] = handoffDetails(expires: clock.addingTimeInterval(120))
+        await state.tick()
+        check(!state.serverTooOld && state.handoff != nil, "phone old server hides", "a QR shows the row")
+        let askedAll = fake.count("web-handoff")
         // Show a new QR: at once, whatever the wait.
         fake.answers["web-handoff"] = handoffDetails(expires: clock.addingTimeInterval(120))
         await state.showNewQR()
-        check(fake.count("web-handoff") == asked + 1 && state.handoff != nil, "phone new qr", "\(fake.calls)")
+        check(fake.count("web-handoff") == askedAll + 1 && state.handoff != nil, "phone new qr", "\(fake.calls)")
         // The code: shown with its countdown, gone at its end.
         fake.answers["web-device-code"] = deviceCodeDetails(expires: clock.addingTimeInterval(300))
         await state.showCode()
@@ -876,6 +912,7 @@ extension ProviderConnectChecks {
         fake.answers["web-device-code"] = #"{"transport":"unsupported","httpStatus":404}"#
         await state.showCode()
         check(state.code == nil && state.codeLine == PhoneSignInRules.needsUpdate, "phone code", "a server before 6.99.1")
+        check(state.serverTooOld, "phone old server hides", "a code route that is missing hides the row too")
         // Hidden: everything goes, and a reply that was in flight is dropped.
         fake.answers["web-device-code"] = deviceCodeDetails(expires: clock.addingTimeInterval(300))
         await state.showCode()
