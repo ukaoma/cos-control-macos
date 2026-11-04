@@ -74,11 +74,12 @@ struct MergeUIContract {
         ])
     }
 
-    static func main() throws {
+    static func main() async throws {
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
         let output = URL(fileURLWithPath: CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "/tmp/cos-merge-ui")
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        try await MeetingConsolidationContract.checks(output: output)
 
         let model = ControllerModel(startBackgroundWork: false)
         precondition(!model.backgroundWorkEnabled)

@@ -1486,20 +1486,131 @@ struct MeetingEngineStatusRow: View {
 /// SCROLLS IN PLACE inside a flexible frame with a floor. The server holds
 /// suggestions until they are answered, so the row count is unbounded by design
 /// and a card that grows with it carries the header off the window (0.5.222).
+/// Deliberately separate from individual suggestion answers: this starts an
+/// agent run that reads the evidence and can perform bounded file writes.
+struct MeetingConsolidationControls: View {
+    @ObservedObject var store: WorkHandoffStore
+    var autoLoads = true
+    var didFinish: () async -> Void
+    @AppStorage("cos.meetingConsolidationModel") private var modelID = "opus"
+    @State private var starting = false
+    @State private var failure: String?
+    @State private var showReport = false
+
+    private var rows: [WorkHandoffReceipt] { store.receipts(for: MeetingConsolidation.source.id) }
+    private var latest: WorkHandoffReceipt? { rows.first }
+    private var active: Bool { rows.contains(where: \.blocksNewHandoff) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) { runButton; modelPicker; Spacer(minLength: 0) }
+                VStack(alignment: .leading, spacing: 7) { runButton; modelPicker }
+            }
+            Text("Reviews G2, Mac and cloud recordings, merges matching conversations, and trims overrun copies into the right meetings. Keeps originals and reports uncertain matches.")
+                .font(COSType.body(11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let failure {
+                Text(failure).font(COSType.body(11)).foregroundStyle(COSPalette.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let row = latest {
+                HStack {
+                    Text(row.status == "completed" ? "Run finished — review the report" : "Cleanup: \(row.status)")
+                        .font(COSType.body(11, weight: .medium))
+                    Spacer(minLength: 0)
+                    Button("Check status") {
+                        Task {
+                            await store.refreshReceipts(asked: true)
+                            failure = store.error
+                            await didFinish()
+                        }
+                    }
+                    .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+                    .disabled(store.busy || starting)
+                }
+                Text(row.progress?.evidence ?? row.detail)
+                    .font(COSType.body(10.5)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let report = row.result, !report.isEmpty {
+                    DisclosureGroup("Cleanup report", isExpanded: $showReport) {
+                        ScrollView {
+                            Text(report).font(COSType.body(11)).textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxHeight: 150)
+                    }
+                    .font(COSType.body(11))
+                }
+                if let label = WorkHandoffStore.appOpenButton(row) {
+                    Button(label) { Task { await store.reopenInApp(receiptID: row.id); failure = store.error } }
+                        .buttonStyle(COSTextButtonStyle()).controlSize(.small)
+                }
+            }
+        }
+        .padding(.horizontal, 22).padding(.vertical, 12)
+        .task {
+            guard autoLoads else { return }
+            await store.refresh()
+            await store.refreshReceipts()
+            failure = store.error
+        }
+        .onChange(of: latest?.status) { _, status in
+            if let status, WorkHandoffReceipt.terminalStatuses.contains(status) {
+                Task { await didFinish() }
+            }
+        }
+    }
+
+    private var runButton: some View {
+        Button(starting ? "Starting cleanup…" : active ? "Cleanup in progress" : "Consolidate meetings") {
+            guard !starting && !active else { return }
+            starting = true
+            failure = nil
+            Task {
+                await MeetingConsolidation.start(store: store, modelID: modelID)
+                failure = store.error
+                starting = false
+            }
+        }
+        .buttonStyle(COSQuietButtonStyle())
+        .controlSize(.small)
+        .disabled(starting || active || store.busy)
+        .help("Start a tracked cleanup that can update meeting files. Original recordings are preserved.")
+    }
+
+    private var modelPicker: some View {
+        Picker("Cleanup model", selection: $modelID) {
+            Text("Claude Opus").tag("opus")
+            Text("Codex Frontier").tag("codex-frontier")
+        }
+        .labelsHidden().pickerStyle(.menu).frame(width: 145)
+        .disabled(starting || active || store.busy)
+    }
+}
+
 struct MeetingSuggestionsPane: View {
     @ObservedObject var model: ControllerModel
     /// Fixture renders set this false, for the same reason `MeetingImportPane` does.
     var autoLoads = true
+    var consolidationStore: WorkHandoffStore? = nil
 
     /// Fixture-only: the real view, with its loading task off.
-    static func canary(model: ControllerModel) -> MeetingSuggestionsPane {
-        MeetingSuggestionsPane(model: model, autoLoads: false)
+    static func canary(model: ControllerModel, consolidationStore: WorkHandoffStore? = nil) -> MeetingSuggestionsPane {
+        MeetingSuggestionsPane(model: model, autoLoads: false, consolidationStore: consolidationStore)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
+            if let store = consolidationStore ?? model.workHandoffStore {
+                MeetingConsolidationControls(store: store, autoLoads: autoLoads) {
+                    await model.loadMeetingSuggestions()
+                }
+                Divider()
+            }
             content
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
@@ -1544,11 +1655,11 @@ struct MeetingSuggestionsPane: View {
                         .controlSize(.small)
                         .disabled(model.meetingEngineBusy)
                 }
-            } else if model.meetingEngineStatus.modeKnown, model.meetingEngineStatus.mode != .imports {
+            } else if model.meetingEngineStatus.modeKnown, model.meetingEngineStatus.mode == .advise {
                 // ADVISE MODE SAYS SO, IN THE HEADER. An answer that changes
                 // nothing must not look like one that did. "in advise mode", not
                 // "in this version": the version is not what decides it.
-                Text("COS does not change your pipeline's files in advise mode. Your answers are saved.")
+                Text("Individual answers are saved in advise mode. Consolidate meetings runs a separate cleanup that can update your files.")
                     .font(COSType.body(11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
