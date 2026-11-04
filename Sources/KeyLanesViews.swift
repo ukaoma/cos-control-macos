@@ -125,6 +125,9 @@ struct KeyLanesSetupPanel: View {
     @State private var removingAll = false
     @State private var exportLedger = true
     @State private var capEdits: [String: String] = [:]
+    /// Settings Release A: keys whose "Other amount" is open, and the same for the cap of the key being added.
+    @State private var capOtherOpen: Set<String> = []
+    @State private var newCapOtherOpen = false
 
     private var kinds: [String] {
         let cli = installed(model)
@@ -205,16 +208,8 @@ struct KeyLanesSetupPanel: View {
                                                                   set: { on in Task { await store.setProfileEnabled(profile, on, run: keyLanesRun(model)) } }))
                     .toggleStyle(COSSwitchStyle()).font(COSType.body(11)).disabled(store.busy)
             }
+            capControls(key)
             HStack(spacing: 8) {
-                TextField(KeyLanes.capLabel, text: Binding(get: { capEdits[key.ref] ?? KeyLanes.capArgument(key.capUsd) },
-                                                         set: { capEdits[key.ref] = $0 }))
-                    .textFieldStyle(.plain).cosField()
-                    .frame(width: 80)
-                Button("Set cap") {
-                    guard let cap = KeyLanes.parseCap(capEdits[key.ref] ?? "") else { store.line = "A daily cap is between $0.01 and $1000."; return }
-                    Task { await store.setCap(cap, keyRef: key.ref, run: keyLanesRun(model)); capEdits[key.ref] = nil }
-                }
-                .buttonStyle(COSQuietButtonStyle()).disabled(store.busy || capEdits[key.ref] == nil)
                 Spacer(minLength: 8)
                 Button(KeyLanes.removeLabel) { removing = key.ref }
                     .buttonStyle(COSQuietButtonStyle(tone: .destructive)).disabled(store.busy)
@@ -231,10 +226,65 @@ struct KeyLanesSetupPanel: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line, lineWidth: 1))
     }
 
+    /// The daily cap (Settings Release A): a few common amounts, the saved cap when it is not one of them, and Other amount for
+    /// an exact one. Picking sets a draft; Set cap sends it, so a raise in spend is never one stray click. Never a blank face.
+    private func capControls(_ key: KeyLanesKey) -> some View {
+        let draft = capEdits[key.ref]
+        let face = DailyCap.face(draft: draft, saved: key.capUsd, otherOpen: capOtherOpen.contains(key.ref), parse: KeyLanes.parseCap)
+        let open = capOtherOpen.contains(key.ref)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                COSDropdown(KeyLanes.capLabel, selection: Binding(get: { face }, set: { choice in
+                    if let amount = DailyCap.amount(ofChoice: choice) {
+                        capEdits[key.ref] = KeyLanes.capArgument(amount); capOtherOpen.remove(key.ref)
+                    } else if choice == DailyCap.other {
+                        capOtherOpen.insert(key.ref); capEdits[key.ref] = capEdits[key.ref] ?? KeyLanes.capArgument(key.capUsd)
+                    } else {
+                        capEdits[key.ref] = nil; capOtherOpen.remove(key.ref)
+                    }
+                }), options: DailyCap.choices(saved: key.capUsd).map { COSDropdownOption($0.id, $0.title) })
+                Button("Set cap") {
+                    guard let cap = KeyLanes.parseCap(capEdits[key.ref] ?? "") else { store.line = "A daily cap is between $0.01 and $1000."; return }
+                    Task { await store.setCap(cap, keyRef: key.ref, run: keyLanesRun(model)); capEdits[key.ref] = nil; capOtherOpen.remove(key.ref) }
+                }
+                .buttonStyle(COSQuietButtonStyle())
+                .disabled(store.busy || !DailyCap.canSet(draft: draft, saved: key.capUsd, parse: KeyLanes.parseCap))
+            }
+            if open {
+                HStack(spacing: 6) {
+                    Text("$").font(COSType.body(11)).foregroundStyle(.secondary)
+                    TextField("Amount", text: Binding(get: { capEdits[key.ref] ?? "" }, set: { capEdits[key.ref] = $0 }))
+                        .textFieldStyle(.plain).cosField().frame(width: 80)
+                        .accessibilityLabel("Other daily cap amount")
+                    Text("a day, $0.01 to $1000").font(COSType.body(11)).foregroundStyle(.secondary)
+                }
+                if let text = capEdits[key.ref], !text.isEmpty, KeyLanes.parseCap(text) == nil {
+                    Text("A daily cap is between $0.01 and $1000.").font(COSType.body(11)).foregroundStyle(COSPalette.amber)
+                }
+            }
+        }
+    }
+
+    /// The cap for the key being added: the same choices; $1, the default, is picked until it is changed.
+    private var newKeyCap: some View {
+        let face = DailyCap.face(draft: capText, saved: nil, otherOpen: newCapOtherOpen, parse: KeyLanes.parseCap)
+        return HStack(spacing: 6) {
+            COSDropdown(KeyLanes.capLabel, selection: Binding(get: { face }, set: { choice in
+                if let amount = DailyCap.amount(ofChoice: choice) { capText = KeyLanes.capArgument(amount); newCapOtherOpen = false }
+                else { newCapOtherOpen = true }
+            }), options: DailyCap.choices(saved: nil).map { COSDropdownOption($0.id, $0.title) })
+            if newCapOtherOpen {
+                Text("$").font(COSType.body(11)).foregroundStyle(.secondary)
+                TextField(KeyLanes.capLabel, text: $capText).textFieldStyle(.plain).cosField().frame(width: 64)
+            }
+        }
+    }
+
     private var addKey: some View {
         VStack(alignment: .leading, spacing: 6) {
             COSDropdown("Key from", selection: Binding(get: { kind }, set: { chosenKind = $0 }),
                         options: kinds.map { COSDropdownOption($0, KeyLanes.kindTitles[$0] ?? $0) })
+            newKeyCap
             HStack(spacing: 8) {
                 Button(KeyLanes.pasteLabel) {
                     let board = NSPasteboard.general
@@ -245,8 +295,6 @@ struct KeyLanesSetupPanel: View {
                     if board.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) == text { board.clearContents() }
                 }
                 .buttonStyle(COSQuietButtonStyle())
-                Text("Cap $").font(COSType.body(11)).foregroundStyle(.secondary)
-                TextField(KeyLanes.capLabel, text: $capText).textFieldStyle(.plain).cosField().frame(width: 64)
                 Button(KeyLanes.saveLabel) {
                     guard let secret = pending else { return }
                     guard let cap = KeyLanes.parseCap(capText) else { store.line = "A daily cap is between $0.01 and $1000."; return }

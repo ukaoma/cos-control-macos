@@ -1405,18 +1405,32 @@ struct COSStepper: View {
     /// What sits between the buttons; nil hides it (the value shows elsewhere).
     var valueText: String?
     var showsLabel: Bool = true
+    /// Settings Release A: set, the value between the buttons is a field you can also type into. Return, or leaving the field,
+    /// sends the text here; the field then shows `valueText` again, so what it holds is always what the caller accepted. Esc
+    /// puts the shown value back and sends nothing.
+    var onTypedValue: ((String) -> Void)?
 
     @Environment(\.font) private var environmentFont
     @Environment(\.isEnabled) private var isEnabled
+    @State private var draft = ""
+    @FocusState private var typing: Bool
 
     init(_ label: String, value: Binding<Int>, in range: ClosedRange<Int>, step: Int = 1,
-         valueText: String?, showsLabel: Bool = true) {
+         valueText: String?, showsLabel: Bool = true, onTypedValue: ((String) -> Void)? = nil) {
         self.label = label
         self._value = value
         self.range = range
         self.step = step
         self.valueText = valueText
         self.showsLabel = showsLabel
+        self.onTypedValue = onTypedValue
+    }
+
+    private func commitTyped() {
+        let text = draft.trimmingCharacters(in: .whitespaces)
+        typing = false
+        if text != (valueText ?? "") { onTypedValue?(text) }
+        draft = valueText ?? ""
     }
 
     /// `current` moved by `delta`, kept inside `range`.
@@ -1434,13 +1448,27 @@ struct COSStepper: View {
                 .buttonStyle(COSIconButtonStyle(size: 20))
                 .disabled(value <= range.lowerBound)
             if let valueText {
-                Text(valueText).font(COSType.mono(11.5)).monospacedDigit().lineLimit(1).frame(minWidth: 34)
+                if onTypedValue != nil {
+                    TextField("", text: $draft)
+                        .textFieldStyle(.plain).cosField()
+                        .font(COSType.mono(11.5)).monospacedDigit().multilineTextAlignment(.center)
+                        .frame(width: 52)
+                        .focused($typing)
+                        .onSubmit { commitTyped() }
+                        .onExitCommand { draft = valueText; typing = false }
+                        .onChange(of: typing) { _, now in if !now { commitTyped() } }
+                        .onChange(of: valueText, initial: true) { _, text in if !typing { draft = text } }
+                        .accessibilityLabel(label)
+                } else {
+                    Text(valueText).font(COSType.mono(11.5)).monospacedDigit().lineLimit(1).frame(minWidth: 34)
+                }
             }
             Button { value = Self.stepped(value, by: step, in: range) } label: { Image(systemName: "plus") }
                 .buttonStyle(COSIconButtonStyle(size: 20))
                 .disabled(value >= range.upperBound)
         }
-        .accessibilityElement(children: .ignore)
+        // A typed stepper keeps its field reachable for VoiceOver (the buttons and the field are separate stops).
+        .accessibilityElement(children: onTypedValue == nil ? .ignore : .contain)
         .accessibilityLabel(label)
         .accessibilityValue(valueText ?? "\(value)")
         .accessibilityAdjustableAction { direction in
