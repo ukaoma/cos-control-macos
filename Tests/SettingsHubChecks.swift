@@ -16,6 +16,7 @@ import Foundation
     static func main() {
         catalog()
         routes()
+        gates()
         search()
         layout()
         spy()
@@ -77,6 +78,39 @@ import Foundation
               "the cue mode row says General and All search the web and need Public topics")
         check(SettingsHubCatalog.items(inGroup: "meetings.cues").filter { $0.id.hasPrefix("HUB-") }.count == cueRows.count && SettingsHubCatalog.items(inGroup: "meetings.cues").contains { $0.id == "MA-06" },
               "Live cues holds the nine new rows beside the inventory's")
+    }
+
+    // Settings Release A: options drawn only while their switch is on, and Up/Down in the sidebar.
+    static func gates() {
+        for (child, gate) in SettingsHubCatalog.gatedBy {
+            let a = SettingsHubCatalog.item(child), b = SettingsHubCatalog.item(gate.parent)
+            check(a != nil && b != nil && a?.group == b?.group, "\(child) and its parent \(gate.parent) are rows of one group, so a result lands in the right card")
+            check(a?.mount == .group && b?.mount == .group, "\(child) and \(gate.parent) are both drawn in the card")
+            check(!gate.line.contains("—") && !gate.line.contains("→") && gate.line.hasSuffix("to change this."), "\(child)'s sentence is plain")
+        }
+        let off: (String) -> Bool = { ["WK-07", "WK-08", "DI-24", "DI-25"].contains($0) }
+        check(SettingsHubCatalog.landing("WK-07", hidden: off) == "WK-06", "a hidden Quiet hours opens the Today home switch")
+        check(SettingsHubCatalog.landing("WK-08", hidden: off) == "WK-06", "a hidden Work runs from Today opens the Today home switch")
+        check(SettingsHubCatalog.landing("DI-25", hidden: off) == "DI-23", "Wait for held keys, with AI polish off, climbs past Paste then polish to AI polish")
+        check(SettingsHubCatalog.landing("DI-25", hidden: { $0 == "DI-25" }) == "DI-24", "Wait for held keys, with only paste-then-polish off, opens Paste then polish")
+        check(SettingsHubCatalog.landing("WK-07", hidden: { _ in false }) == "WK-07", "a drawn row opens itself")
+        check(SettingsHubCatalog.landing("G-01", hidden: { _ in true }) == "G-01", "a row with no gate opens itself even when asked as hidden")
+        check(SettingsHubCatalog.landing("WK-06", hidden: { _ in true }) == "WK-06", "a parent never climbs further")
+        check(SettingsHubCatalog.gateLine("WK-07", hidden: off) == "Turn on Today home to change this." && SettingsHubCatalog.gateLine("WK-07", hidden: { _ in false }) == nil
+              && SettingsHubCatalog.gateLine("G-01", hidden: { _ in true }) == nil, "search says what to turn on, only for a hidden gated row")
+        // A hidden child is still a result: the page's itemShown test is for rows with no parent to open.
+        check(ids("quiet hours").contains("WK-07") && ids("wait for held keys").contains("DI-25") && ids("paste then polish").contains("DI-24"),
+              "the hidden options are still found by search")
+        let order = SettingsHubCategory.allCases
+        check(SettingsHubSidebarKeys.next(from: .general, .down) == order[1] && SettingsHubSidebarKeys.next(from: order[1], .up) == .general, "Down and Up move one category")
+        check(SettingsHubSidebarKeys.next(from: .general, .up) == .general, "Up stops at the first category")
+        check(SettingsHubSidebarKeys.next(from: order.last, .down) == order.last, "Down stops at the last category")
+        check(SettingsHubSidebarKeys.next(from: nil, .down) == order.first && SettingsHubSidebarKeys.next(from: nil, .up) == order.last,
+              "with a search showing (no category), Down goes to the first and Up to the last")
+        for (index, category) in order.enumerated().dropFirst().dropLast() {
+            check(SettingsHubSidebarKeys.next(from: category, .down) == order[index + 1] && SettingsHubSidebarKeys.next(from: category, .up) == order[index - 1],
+                  "\(category.title) moves to its neighbours")
+        }
     }
 
     static func routes() {
@@ -146,6 +180,20 @@ import Foundation
         }
         check(SettingsHubCatalog.item("UT-08")?.formerLabel == nil, "inventory notation is never shown as a former label")
         check(SettingsHubCatalog.item("UT-01")?.formerLabel == "Run Doctor", "Run checks was Run Doctor")
+        // Settings Release A: the renames. Search finds each by the new name and by the old one, and the catalog names what the page draws.
+        check(SettingsHubCatalog.item("DM-01")?.label == "Task folders" && SettingsHubCatalog.group("work.domains")?.title == "Task folders",
+              "Domains is Task folders, the row and its group")
+        check(ids("domains").contains("DM-01") && ids("Task folders").first == "DM-01", "Task folders is found by its new name and by Domains")
+        check(ids("save domains").contains("DM-03"), "Save task folders is found by Save domains")
+        check(SettingsHubCatalog.item("TR-03")?.label == "Saved meetings", "HQ model is Saved meetings, as the page draws it")
+        check(ids("HQ model").contains("TR-03") && ids("Final model").contains("TR-03") && SettingsHubSearch.results("Saved meetings").first(where: { $0.category == .voice })?.items.first?.id == "TR-03",
+              "Saved meetings is found by its new name, HQ model and Final model")
+        check(SettingsHubCatalog.item("TR-03")?.formerLabel == "HQ model", "Saved meetings was HQ model")
+        check(SettingsHubCatalog.item("TR-06")?.label == "Refine with second opinion", "search names the row the page draws: Refine with second opinion")
+        check(SettingsHubCategory.pet.title == "Pet" && SettingsHubCatalog.item("PT-01") != nil, "Pet and appearance is Pet")
+        check(ids("appearance").contains("PT-01"), "the old category name Pet and appearance still finds the pet rows")
+        check(SettingsHubCatalog.item("DI-03")?.label == "Check again" && ids("refresh microphones").contains("DI-03"), "Refresh microphones is Check again, found by both names")
+        check(SettingsHubCatalog.item("DI-03")?.formerLabel == "Refresh microphones", "Check again was Refresh microphones")
         // A match only a keyword can make.
         check(ids("byok") == ["KL-01"], "only the keyword finds byok (Your own key)")
         // The rows outside Settings are not searchable at all, not only left out of the sections.

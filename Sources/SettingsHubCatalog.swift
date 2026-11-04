@@ -36,7 +36,7 @@ enum SettingsHubCategory: String, CaseIterable, Identifiable, Sendable {
         case .voice: "Transcription and voice"
         case .work: "Work and agents"
         case .privacy: "Privacy and permissions"
-        case .pet: "Pet and appearance"
+        case .pet: "Pet"
         case .system: "System and updates"
         }
     }
@@ -135,7 +135,7 @@ enum SettingsHubCatalog {
         .init(id: "work.background", category: .work, title: "Background", blurb: "Replies that keep running after the phone app closes."),
         .init(id: "work.folders", category: .work, title: "Folders and notes", blurb: "Where your AI apps work and where COS reads notes."),
         .init(id: "work.brief", category: .work, title: "Morning brief", blurb: "A daily brief in your inbox."),
-        .init(id: "work.domains", category: .work, title: "Domains", blurb: "The areas your tasks are grouped by."),
+        .init(id: "work.domains", category: .work, title: "Task folders", blurb: "The areas your tasks are grouped by."),
         .init(id: "work.fences", category: .work, title: "Paused threads", blurb: "Threads COS stopped writing to. Shows only when one exists."),
         .init(id: "privacy.permissions", category: .privacy, title: "Permissions", blurb: "What COS can use on this Mac. Each permission turns on one feature."),
         .init(id: "pet.pet", category: .pet, title: "Session pet", blurb: "Turn the pet on, and its size and motion."),
@@ -275,7 +275,7 @@ enum SettingsHubCatalog {
         .init("SG-06", "Test engines", "Dictate a 30-second sample with each engine and compare.", old: "Dictation engine row: Dictation engine (Automatic / Parakeet Ultra / Whisper), Test on this Mac / Test again / Test, Parakeet progress and Cancel", group: "dictation.dictation", advanced: false, mount: .group),
         .init("DI-35", "Dictation tab", "Your dictionary and history are in the Dictation tab.", old: "Dictation settings pane: title + Close; openers \"Settings\" and \"Turn it on in Dictation settings\" in the Dictation tab", group: "dictation.history", advanced: false, mount: .group),
         .init("DI-02", "Microphone", "The microphone dictation uses.", old: "Microphone (System default / devices / \"Selected microphone disconnected\")", group: "dictation.microphone", advanced: false, mount: .group),
-        .init("DI-03", "Refresh microphones", "Look for newly connected microphones.", old: "Refresh microphones", group: "dictation.microphone", advanced: false, mount: .group),
+        .init("DI-03", "Check again", "Look for microphones the list missed. The list also updates on its own.", old: "Refresh microphones", group: "dictation.microphone", advanced: false, mount: .group, keywords: ["refresh microphones", "rescan"]),
         .init("DI-04", "Microphone fallback", "If the microphone fails, use one that worked before.", old: "If the microphone fails, try another one; note; \"Last time …\"", group: "dictation.microphone", advanced: false, mount: .group),
         .init("DI-05", "Push to talk", "Hold the shortcut to dictate.", old: "Push to talk · Change / Cancel · Off", group: "dictation.shortcuts", advanced: false, mount: .group),
         .init("DI-06", "Start and stop", "Press once to start and again to stop.", old: "Start / stop · Change / Cancel · Off", group: "dictation.shortcuts", advanced: false, mount: .group),
@@ -316,9 +316,9 @@ enum SettingsHubCatalog {
         .init("UT-02", "Guided setup", "Run voice setup in Terminal, Balanced or Max.", old: "Guided Setup; confirm \"Choose transcription setup\" Balanced (Recommended) / Max", group: "voice.setup", advanced: true, mount: .group),
         .init("ST-13", "Model status", "The tier and the models for preview, live and save.", old: "Transcription tier; Preview, while dictating; Commit, live meeting; Polish, on save; degraded reason; \"Add names and specialist terms in the setup wizard to…", group: "voice.setup", advanced: true, mount: .group),
         .init("TR-02", "Preview model", "The model for the fast live preview.", old: "Preview model, plus its line", group: "voice.models", advanced: false, mount: .group),
-        .init("TR-03", "Final model", "The model for the saved meeting transcript.", old: "HQ model, plus its line", group: "voice.models", advanced: false, mount: .group),
+        .init("TR-03", "Saved meetings", "The model for the saved meeting transcript.", old: "HQ model, plus its line", group: "voice.models", advanced: false, mount: .group, keywords: ["hq model", "final model", "high quality"]),
         .init("TR-04", "Second opinion", "A second model that checks the first.", old: "Second opinion, plus its line", group: "voice.models", advanced: false, mount: .group),
-        .init("TR-06", "Refine with second", "Let the second opinion correct the transcript.", old: "Refine with second opinion, plus inactive line", group: "voice.models", advanced: false, mount: .group),
+        .init("TR-06", "Refine with second opinion", "Let the second opinion correct the transcript.", old: "Refine with second opinion, plus inactive line", group: "voice.models", advanced: false, mount: .group),
         .init("TR-05", "When changes apply", "When a model change takes effect.", old: "When-it-applies line; server refusal", group: "voice.models", advanced: false, mount: .group),
         .init("TR-08", "Front end", "How audio is prepared before transcription.", old: "Advanced · Front end", group: "voice.models", advanced: true, mount: .group),
         .init("TR-09", "Quiet detection", "How COS skips silence.", old: "Advanced · Quiet detection", group: "voice.models", advanced: true, mount: .group),
@@ -355,9 +355,9 @@ enum SettingsHubCatalog {
         .init("MB-08", "Run now", "Runs the brief right away and drops it in the inbox. Five a day.", old: "Run Now", group: "work.brief", advanced: false, mount: .group),
         .init("MB-09", "Last brief", "How the last brief went.", old: "Last brief line; Retry; Loading the schedule…", group: "work.brief", advanced: false, mount: .group),
         .init("MB-06", "Source options", "Settings for each source.", old: "Per-source options (boolean checkbox, integer stepper, text field)", group: "work.brief", advanced: false, mount: .group),
-        .init("DM-01", "Domains", "The areas your tasks are grouped by.", old: "Domains: one \"domain\" field per name; empty-state line", group: "work.domains", advanced: false, mount: .group),
-        .init("DM-02", "Order and remove", "Reorder or unlist a domain. Its folder stays.", old: "Move up, Remove (per row)", group: "work.domains", advanced: false, mount: .group),
-        .init("DM-03", "Save domains", "Add, save or reset the list.", old: "Add, Save, Reset", group: "work.domains", advanced: false, mount: .group),
+        .init("DM-01", "Task folders", "The areas your tasks are grouped by.", old: "Domains: one \"domain\" field per name; empty-state line", group: "work.domains", advanced: false, mount: .group, keywords: ["domains", "domain"]),
+        .init("DM-02", "Order and remove", "Reorder or unlist a task folder. Its folder stays.", old: "Move up, Remove (per row)", group: "work.domains", advanced: false, mount: .group),
+        .init("DM-03", "Save task folders", "Add, save or reset the list.", old: "Add, Save, Reset", group: "work.domains", advanced: false, mount: .group, keywords: ["save domains"]),
         .init("FN-01", "Paused threads", "Threads COS stopped writing to after a reply went missing.", old: "Fenced threads · N, explanation, degraded warning, Refresh", group: "work.fences", advanced: false, mount: .group),
         .init("FN-02", "Release thread", "Let COS write to this thread again. Check the thread first.", old: "Release (per fence); confirm \"Release this fence?\" / Release", group: "work.fences", advanced: false, mount: .group),
         .init("PM-01", "Permissions", "What COS can use on this Mac, with one click to allow each.", old: "Permissions · {summary}; card \"Each one switches on a feature. COS works without any of them.\" + Done", group: "privacy.permissions", advanced: false, mount: .group),
@@ -368,7 +368,7 @@ enum SettingsHubCatalog {
         .init("PM-06", "Automation", "Lets COS control Claude, Cursor and Terminal.", old: "Automation: Claude / Cursor / Terminal (Test)", group: "privacy.permissions", advanced: false, mount: .group),
         .init("PM-07", "Calendar", "Lets COS read your calendar.", old: "Calendar (CalendarFetch) (Fix)", group: "privacy.permissions", advanced: false, mount: .group),
         .init("PM-08", "Old test builds", "Remove permission entries left by old COS builds.", old: "Clean up old COS test builds; per build Reset", group: "privacy.permissions", advanced: true, mount: .group),
-        .init("PT-01", "Session pet", "A small character that shows what your AI sessions are doing.", old: "Session pet disclosure (On · size · % size · % speed · motion / Off) + Session pet switch", group: "pet.pet", advanced: false, mount: .group, keywords: ["session pet", "sprite", "character"]),
+        .init("PT-01", "Session pet", "A small character that shows what your AI sessions are doing.", old: "Session pet disclosure (On · size · % size · % speed · motion / Off) + Session pet switch", group: "pet.pet", advanced: false, mount: .group, keywords: ["session pet", "sprite", "character", "appearance"]),
         .init("PT-02", "Jump access", "Clicking the pet to jump to a session needs Accessibility.", old: "Jump to session needs Accessibility; Grant; Reset and add again", group: "pet.pet", advanced: false, mount: .group),
         .init("PT-03", "Pet size", "Small, medium, large or a custom size.", old: "Pet size (presets incl. Custom)", group: "pet.pet", advanced: false, mount: .group),
         .init("PT-04", "Custom size", "The pet's size in pixels.", old: "Custom pixels field + stepper (px)", group: "pet.pet", advanced: false, mount: .group),
@@ -464,6 +464,9 @@ enum SettingsHubCatalog {
         "ST-08": "Meeting preview",
         "DI-17": "Restore my clipboard after pasting",
         "DI-22": "Capitalize the start of a sentence",
+        "DI-03": "Refresh microphones",
+        "DM-01": "Domains",
+        "TR-03": "HQ model",
         "UT-03": "Transcription",
         "UT-11": "Idle Metal HQ",
         "ST-11": "Idle Metal HQ",
@@ -485,6 +488,37 @@ enum SettingsHubCatalog {
         "UT-27": "Reconcile Change",
         "UT-28": "Setup Guide",
     ]
+
+    /// Rows the page draws only while a switch above them is on (Settings Release A, Miles 2026-11-03): the child, the row
+    /// that holds its switch, and the sentence search shows beside it. The child stays in the catalog and in search: a result
+    /// for a child that is not drawn opens its parent (SettingsHubCatalog.landing), so search never lands on nothing.
+    struct Gate: Equatable, Sendable {
+        let parent: String
+        let line: String
+    }
+    static let gatedBy: [String: Gate] = [
+        "WK-07": Gate(parent: "WK-06", line: "Turn on Today home to change this."),
+        "WK-08": Gate(parent: "WK-06", line: "Turn on Today home to change this."),
+        "DI-24": Gate(parent: "DI-23", line: "Choose an AI polish model to change this."),
+        "DI-25": Gate(parent: "DI-24", line: "Turn on Paste then polish to change this."),
+    ]
+    /// Where a result opens: the row itself, or when it is not drawn, the nearest row above it that is. A chain (Wait for
+    /// held keys under Paste then polish under AI polish) climbs until a drawn row; a cycle or a missing parent stops at the
+    /// last known id, never loops.
+    static func landing(_ id: String, hidden: (String) -> Bool) -> String {
+        var current = id
+        var steps = 0
+        while hidden(current), let gate = gatedBy[current], steps < 8 {
+            current = gate.parent
+            steps += 1
+        }
+        return current
+    }
+    /// The sentence that explains a hidden row in search, or nil when it is drawn.
+    static func gateLine(_ id: String, hidden: (String) -> Bool) -> String? {
+        guard hidden(id) else { return nil }
+        return gatedBy[id]?.line
+    }
 
     /// Built once: views look rows up by id on every render (QA 2026-10-28), so lookups are dictionary reads.
     static let all: [SettingsHubItem] = items + extras
@@ -581,6 +615,19 @@ enum SettingsHubSearch {
             let rows = ranked.filter { SettingsHubCatalog.category(of: $0.0) == category }
                 .sorted { $0.1 != $1.1 ? $0.1 < $1.1 : $0.2 < $1.2 }.map(\.0)
             return rows.isEmpty ? nil : Section(category: category, items: rows)
+        }
+    }
+}
+
+/// Up and Down in the sidebar (Settings Release A): the next category, held at the first and the last.
+enum SettingsHubSidebarKeys {
+    enum Direction: Sendable { case up, down }
+    static func next(from current: SettingsHubCategory?, _ direction: Direction) -> SettingsHubCategory {
+        let all = SettingsHubCategory.allCases
+        guard let current, let index = all.firstIndex(of: current) else { return direction == .down ? all[0] : all[all.count - 1] }
+        switch direction {
+        case .up: return all[max(0, index - 1)]
+        case .down: return all[min(all.count - 1, index + 1)]
         }
     }
 }
