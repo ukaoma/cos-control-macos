@@ -3011,6 +3011,7 @@ final class TitleSteerStore: ObservableObject {
         initialDraft = TitleSteer.prefill(steer: current, shown: shown)
         basis = Basis(session: session, steer: current, shown: TitleSteer.clean(shown), snapshot: nil)
         messageToken += 1; message = nil; messageSession = nil
+        fieldGone = false
         editing = session
         reading?.cancel()
         reading = Task { [weak self] in
@@ -3022,9 +3023,19 @@ final class TitleSteerStore: ObservableObject {
 
     /// Escape: closes the field and says it was taken. Nothing to take when no field is open, so the window's own Escape runs.
     func escape() -> Bool {
-        guard editing != nil else { return false }
+        // A field the pane no longer shows is not Escape's to close: the window's own Escape runs.
+        guard editing != nil, !fieldGone else { return false }
         cancel()
         return true
+    }
+
+    /// Whether the pane that drew the field has gone (it left the screen while a rename was out). Set by the field itself.
+    private var fieldGone = false
+    func fieldAppeared() { fieldGone = false }
+    /// The field left the screen: with nothing out it closes; with a rename out it closes when that finishes.
+    func fieldDisappeared() {
+        fieldGone = true
+        if editing != nil, !busy { close(); messageToken += 1; message = nil; messageSession = nil }
     }
 
     func cancel() {
@@ -3053,17 +3064,15 @@ final class TitleSteerStore: ObservableObject {
         case .clear: text = ""
         }
         busy = true
-        defer { busy = false }
+        // A field the pane no longer shows (it was left while this was out) must not stay open: nothing could close it.
+        defer { busy = false; if fieldGone, editing != nil { close() } }
         messageToken += 1; message = nil; messageSession = nil
         var snapshot = started.snapshot
         if snapshot == nil { await reading?.value; snapshot = basis?.snapshot }
         if snapshot == nil { snapshot = await read(session, run: run) }
         guard let snapshot else { show(TitleSteer.failedLine, session: session); return }
-        // The server's name differs from the one this edit began on: someone renamed it since. Take theirs and say so.
-        guard snapshot.title == started.steer else {
-            apply(session, snapshot.title)
-            show(TitleSteer.changedLine, session: session); close(); return
-        }
+        // No check of the server's name against the one on screen: the feed lags the server by a poll, and a real race is the
+        // revision's 409 below.
         guard let call = TitleSteer.writeCall(session: session, title: text, expectedRevision: snapshot.revision) else {
             show(TitleSteer.failedLine, session: session); return
         }
@@ -3072,7 +3081,8 @@ final class TitleSteerStore: ObservableObject {
         case .saved(let now): apply(session, now.title); close()
         case .changed(let current):
             if let current { apply(session, current.title) }
-            show(TitleSteer.changedLine, session: session); close()
+            // The name it now holds is the one being saved (a write that timed out after it landed, tried again): that is a save.
+            if let current, current.title == (text.isEmpty ? nil : text) { close() } else { show(TitleSteer.changedLine, session: session); close() }
         case .saving: show(TitleSteer.savingLine, session: session)
         case .ended: show(TitleSteer.endedLine, session: session); close()
         case .failed: show(TitleSteer.failedLine, session: session)

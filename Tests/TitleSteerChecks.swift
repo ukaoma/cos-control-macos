@@ -335,13 +335,35 @@ struct StandDown: Error {}
         try? await Task.sleep(for: .milliseconds(400))
         check(store.message == nil && store.messageSession == nil, "the line goes by itself")
 
-        // The edit began on a name the server no longer holds: no write at all.
+        // The feed lags the server: a name that moved since the edit began is no reason to drop what was typed. The write goes
+        // with the revision just read, and a real race is the server's 409.
         let moved = Stand()
         moved.read = HelperResponse(ok: true, message: "x", details: answered(200, view("Renamed on the phone", 4)))
+        moved.write = HelperResponse(ok: true, message: "x", details: answered(200, view("Polling and weighting", 5)))
         store = fresh(moved, steer: "Polling accuracy chat")
         let movedApplied = Applied()
         await store.save(draft: "Polling and weighting", run: moved.run, apply: movedApplied.put)
-        check(moved.writes == 0 && movedApplied.rows.last?.1 == "Renamed on the phone" && store.message == "Renamed on another device.", "a name that moved since the edit began is adopted without a write")
+        check(moved.writes == 1 && moved.log.last?.args == ["meeting-title-steer", "--session", session, "--revision", "4", "--title-stdin"] && movedApplied.rows.last?.1 == "Polling and weighting"
+              && store.message == nil && store.editing == nil, "a stale feed is not a conflict: the write goes with the revision read, and no false line")
+
+        // A write that timed out after it landed, tried again: the server's 409 carries our own name. That is a save.
+        let again = Stand()
+        again.write = HelperResponse(ok: true, message: "x", details: answered(409, #""error":"title_changed","current":{"#.appending(view("Polling accuracy chat", 2)).appending("}")))
+        store = fresh(again)
+        let againApplied = Applied()
+        await store.save(draft: "Polling accuracy chat", run: again.run, apply: againApplied.put)
+        check(againApplied.rows.last?.1 == "Polling accuracy chat" && store.message == nil && store.editing == nil, "a 409 that carries the name being saved is a save, with no line")
+        let cleared = Stand()
+        cleared.read = HelperResponse(ok: true, message: "x", details: answered(200, view("Old name", 3)))
+        cleared.write = HelperResponse(ok: true, message: "x", details: answered(409, #""error":"title_changed","current":{"#.appending(view(nil, 4)).appending("}")))
+        store = fresh(cleared, steer: "Old name")
+        await store.save(draft: "", run: cleared.run, apply: Applied().put)
+        check(store.message == nil && store.editing == nil, "a 409 whose name is none, saving a clear, is a save")
+        let other = Stand()
+        other.write = HelperResponse(ok: true, message: "x", details: answered(409, #""error":"title_changed","current":{"#.appending(view("Someone else", 6)).appending("}")))
+        store = fresh(other)
+        await store.save(draft: "Polling accuracy chat", run: other.run, apply: Applied().put)
+        check(store.message == "Renamed on another device." && store.editing == nil, "a 409 with another name is still the conflict line")
 
         // The recording is saving (409 save_in_progress): the field stays, with the line.
         let saving = Stand()
@@ -441,6 +463,33 @@ struct StandDown: Error {}
         await first.value
         await second.value
         check(!store.busy && store.editing == nil && applied.rows.count == 1 && applied.rows[0].0 == session, "the rename that was out lands in its own recording, once")
+
+        // The pane is left while a rename is out and the rename then fails: nothing is left open to swallow the next Escape.
+        let gone = Stand()
+        gone.hold = true
+        gone.write = HelperResponse(ok: true, message: "x", details: details(#"{"transport":"unavailable"}"#))
+        let goneStore = TitleSteerStore()
+        goneStore.begin(session: session, steer: nil, shown: "Mac recording 9:05 PM", run: gone.run)
+        goneStore.fieldAppeared()
+        let leaving = Task { await goneStore.save(draft: "Polling accuracy chat", run: gone.run, apply: Applied().put) }
+        while gone.writes == 0 { try? await Task.sleep(for: .milliseconds(5)) }
+        goneStore.fieldDisappeared()
+        check(goneStore.editing == session && goneStore.busy && !goneStore.escape(), "the field left while a rename is out: it stays until that finishes, and Escape is not taken")
+        gone.released = true
+        await leaving.value
+        check(goneStore.editing == nil && !goneStore.busy && !goneStore.escape(), "the rename failed with no field on screen: nothing stays open")
+        let idle = TitleSteerStore()
+        idle.begin(session: session, steer: nil, shown: "x", run: gone.run)
+        idle.fieldDisappeared()
+        check(idle.editing == nil && !idle.escape(), "the field leaving with nothing out closes it")
+        idle.begin(session: session, steer: nil, shown: "x", run: gone.run)
+        idle.fieldDisappeared()
+        idle.begin(session: session, steer: nil, shown: "x", run: gone.run)
+        check(idle.editing == session && idle.escape(), "a new field is Escape's to close, though the last one left the screen")
+        idle.begin(session: session, steer: nil, shown: "x", run: gone.run)
+        idle.fieldDisappeared(); idle.fieldAppeared()
+        idle.begin(session: session, steer: nil, shown: "x", run: gone.run)
+        check(idle.editing == session && idle.escape(), "a field that shows again is Escape's to close")
 
         // The revision read is still out when Save is pressed: Save waits for it, and uses it.
         let slow = Stand()

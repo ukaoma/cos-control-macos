@@ -65,7 +65,7 @@ if [[ "$LANE" == "all" || "$LANE" == "pins" ]]; then
   OUT="$(/usr/bin/python3 "$ROOT/Tests/title-steer-pins.py" "$ROOT")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*pins: }%% passed*}"
-  (( COUNT >= 73 )) || { print -u2 "title steer pins ran only $COUNT (expected at least 73)"; exit 1; }
+  (( COUNT >= 82 )) || { print -u2 "title steer pins ran only $COUNT (expected at least 82)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
@@ -76,7 +76,7 @@ if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
   print -r -- "$OUT"
   # A floor on the count: a check that silently stops running must fail this.
   COUNT="${${OUT##*checks: }%% passed*}"
-  (( COUNT >= 146 )) || { print -u2 "title steer checks ran only $COUNT (expected at least 146)"; exit 1; }
+  (( COUNT >= 154 )) || { print -u2 "title steer checks ran only $COUNT (expected at least 154)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "wiring" ]]; then
@@ -87,7 +87,7 @@ if [[ "$LANE" == "all" || "$LANE" == "wiring" ]]; then
   print -r -- "$OUT"
   [[ "$OUT" == *"PASS: title steer wiring checks complete" ]] || { print -u2 "the title steer wiring checks did not finish"; exit 1; }
   COUNT="${${OUT##*wiring checks: }%% passed*}"
-  (( COUNT >= 30 )) || { print -u2 "title steer wiring checks ran only $COUNT (expected at least 30)"; exit 1; }
+  (( COUNT >= 32 )) || { print -u2 "title steer wiring checks ran only $COUNT (expected at least 32)"; exit 1; }
 fi
 
 # By hand and for the mutation gate only (Tests/run.sh already builds the helper and runs both): the helper's self-test, which

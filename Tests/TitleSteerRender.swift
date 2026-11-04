@@ -206,6 +206,17 @@ import SwiftUI
         expect(newer.titleSteer.editing == mac && newer.titleSteer.escape() && newer.titleSteer.editing == nil, "Escape closes the open field and is taken")
         expect(!newer.titleSteer.escape(), "Escape with no field open is the window's own")
 
+        // The recording stops with the field open: Save is refused at the click, the field closes, and nothing is written.
+        newer.beginTitleSteer(glasses)
+        expect(newer.titleSteer.editing == glasses, "fixture: the field is open on the glasses meeting")
+        stand.clearLogs()
+        newer.glassesMeetingStop = G2MeetingStopProgress(sessionId: glasses, phase: .stopping)
+        newer.saveTitleSteer(draft: "Too late")
+        await sleep(0.2)
+        expect(newer.titleSteer.editing == nil && !stand.read("args.log").contains("--title-stdin"), "Save after the recording stopped writes nothing and closes the field", stand.read("args.log"))
+        newer.glassesMeetingStop = nil
+        answers(stand)
+
         // Locked once the recording stops: a glasses stop in progress, and a file that is gone.
         newer.glassesMeetingStop = G2MeetingStopProgress(sessionId: glasses, phase: .stopping)
         expect(newer.titleSteerAvailability(glasses) == .locked && newer.titleSteerAvailability(mac) == .open, "a glasses stop in progress locks that meeting's Rename and no other")
