@@ -1943,12 +1943,21 @@ final class ControllerModel: ObservableObject {
         }
     }
 
+    /// Settings Release A: the last Apply of the nine server-restart rows that failed, and why. Set after the helper's answer and
+    /// the status re-read, cleared by the next command. Settings reads it to put the row back on the server's value and say so.
+    struct RestartApplyFailure: Equatable {
+        let command: String
+        let message: String
+    }
+    @Published var restartApplyFailure: RestartApplyFailure?   // set by perform; the render fixtures set it too
+
     func perform(_ command: String, arguments: [String] = []) {
         guard !busy else { return }
         busy = true
         operationProgress = "Starting \(command.replacingOccurrences(of: "-", with: " "))…"
         notice = nil
         error = nil
+        restartApplyFailure = nil
         // Doctor and Copy Report name this build. Injected here, not at the call
         // sites, so a new caller cannot ship a report that omits its version.
         let identity = ["doctor", "report"].contains(command)
@@ -1989,6 +1998,10 @@ final class ControllerModel: ObservableObject {
                 }
                 KeyLanesStore.shared.noteInstallRefusal(error.localizedDescription, command: command, arguments: arguments)
                 await refresh(quiet: true)
+                // After the re-read, so a row that reseeds from the status shows the server's value, not the refused one.
+                if RestartApply.row(forCommand: command) != nil {
+                    self.restartApplyFailure = RestartApplyFailure(command: command, message: error.localizedDescription)
+                }
             }
         }
     }
@@ -6267,7 +6280,7 @@ final class ControllerModel: ObservableObject {
     }
 
     /// One sentence for every place a stale Accessibility grant shows up.
-    // "Session pet" is the classic section and the hub's card (in Pet and appearance), so it is right in both layouts.
+    // "Session pet" is the classic section and the hub's card (in Pet), so it is right in both layouts.
     nonisolated static let accessibilityRepairHint = "Already on? Use Reset and add again in Settings, Session pet."
 
     /// 0.5.267: the repair for a grant that reads ON in System Settings while this build is untrusted. Removes COS

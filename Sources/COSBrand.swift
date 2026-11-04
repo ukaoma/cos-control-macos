@@ -1395,6 +1395,25 @@ struct COSSpinner: View {
     }
 }
 
+/// What Escape closes first inside Settings (Settings Release A review). Activity catches Escape before a focused field or an open
+/// dialog can, and used to leave Settings over a half-typed number or an open confirm. A typed field registers while it has focus
+/// and a confirm while it is on screen; Settings asks here first, and only when nothing is open does Escape leave. Most recent first.
+@MainActor enum COSEscape {
+    private static var entries: [(id: UUID, close: () -> Void)] = []
+    static var openCount: Int { entries.count }
+    static func register(_ id: UUID, _ close: @escaping () -> Void) {
+        unregister(id)
+        entries.append((id, close))
+    }
+    static func unregister(_ id: UUID) { entries.removeAll { $0.id == id } }
+    /// Closes the most recently opened one. True when there was one (Escape is used up).
+    static func closeTop() -> Bool {
+        guard let top = entries.popLast() else { return false }
+        top.close()
+        return true
+    }
+}
+
 /// A stepper: the words, then the value between two icon buttons (minus, plus). The
 /// value stays inside `range`; VoiceOver adjusts it as one control.
 struct COSStepper: View {
@@ -1405,18 +1424,42 @@ struct COSStepper: View {
     /// What sits between the buttons; nil hides it (the value shows elsewhere).
     var valueText: String?
     var showsLabel: Bool = true
+    /// Settings Release A: set, the value between the buttons is a field you can also type into. Return, or leaving the field,
+    /// sends the text here; the field then shows `valueText` again, so what it holds is always what the caller accepted. Esc
+    /// puts the shown value back and sends nothing.
+    var onTypedValue: ((String) -> Void)?
 
     @Environment(\.font) private var environmentFont
     @Environment(\.isEnabled) private var isEnabled
+    @State private var draft = ""
+    @State private var escaped = false
+    @State private var escapeID = UUID()
+    @FocusState private var typing: Bool
 
     init(_ label: String, value: Binding<Int>, in range: ClosedRange<Int>, step: Int = 1,
-         valueText: String?, showsLabel: Bool = true) {
+         valueText: String?, showsLabel: Bool = true, onTypedValue: ((String) -> Void)? = nil) {
         self.label = label
         self._value = value
         self.range = range
         self.step = step
         self.valueText = valueText
         self.showsLabel = showsLabel
+        self.onTypedValue = onTypedValue
+    }
+
+    /// Escape: the shown value comes back and nothing is sent, however focus leaves.
+    private func cancelTyping() {
+        guard typing else { return }
+        escaped = true
+        typing = false
+    }
+
+    private func commitTyped() {
+        if escaped { escaped = false; draft = valueText ?? ""; return }
+        let text = draft.trimmingCharacters(in: .whitespaces)
+        typing = false
+        if text != (valueText ?? "") { onTypedValue?(text) }
+        draft = valueText ?? ""
     }
 
     /// `current` moved by `delta`, kept inside `range`.
@@ -1434,13 +1477,30 @@ struct COSStepper: View {
                 .buttonStyle(COSIconButtonStyle(size: 20))
                 .disabled(value <= range.lowerBound)
             if let valueText {
-                Text(valueText).font(COSType.mono(11.5)).monospacedDigit().lineLimit(1).frame(minWidth: 34)
+                if onTypedValue != nil {
+                    TextField("", text: $draft)
+                        .textFieldStyle(.plain).cosField()
+                        .font(COSType.mono(11.5)).monospacedDigit().multilineTextAlignment(.center)
+                        .frame(width: 52)
+                        .focused($typing)
+                        .onSubmit { commitTyped() }
+                        .onExitCommand { cancelTyping() }
+                        .onChange(of: typing) { _, now in
+                            if now { COSEscape.register(escapeID) { cancelTyping() } } else { COSEscape.unregister(escapeID); commitTyped() }
+                        }
+                        .onDisappear { COSEscape.unregister(escapeID) }
+                        .onChange(of: valueText, initial: true) { _, text in if !typing { draft = text } }
+                        .accessibilityLabel(label)
+                } else {
+                    Text(valueText).font(COSType.mono(11.5)).monospacedDigit().lineLimit(1).frame(minWidth: 34)
+                }
             }
             Button { value = Self.stepped(value, by: step, in: range) } label: { Image(systemName: "plus") }
                 .buttonStyle(COSIconButtonStyle(size: 20))
                 .disabled(value >= range.upperBound)
         }
-        .accessibilityElement(children: .ignore)
+        // A typed stepper keeps its field reachable for VoiceOver (the buttons and the field are separate stops).
+        .accessibilityElement(children: onTypedValue == nil ? .ignore : .contain)
         .accessibilityLabel(label)
         .accessibilityValue(valueText ?? "\(value)")
         .accessibilityAdjustableAction { direction in

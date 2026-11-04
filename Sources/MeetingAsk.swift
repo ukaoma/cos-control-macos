@@ -910,6 +910,8 @@ struct LiveCuesLimitsRows: View {
     let limits: LiveCuesLimits
     let run: LiveCuesStore.Run
     @Environment(\.settingsHubHosted) private var hosted
+    /// Why a typed count was held or refused, per limit; cleared by the next move.
+    @State private var typedNote: [LiveCuesLimits.Key: String] = [:]
 
     var body: some View {
         if hosted { hubBody } else { panelBody }
@@ -998,17 +1000,44 @@ struct LiveCuesLimitsRows: View {
         }
     }
 
+    /// The right control for each value (Settings Release A, Miles 2026-11-03). Cues per meeting is a count you tune: a stepper
+    /// you can also type into. The gap and the daily writer calls are ladders of stops: a menu. Both are built from the
+    /// server's own bounds, the saved value is always on the menu (never a blank face), and a move goes through the store,
+    /// which sends it after the person stops and shows the server's answer.
     @ViewBuilder
     private func stepper(_ key: LiveCuesLimits.Key, _ limit: LiveCuesLimit) -> some View {
         let shown = Int((store.limitValue(key) ?? limit.value).rounded())
         if limit.locked {
             locked(title(key), LiveCues.countText(key, Int(limit.value.rounded())))
+        } else if key == .maxCuesPerMeeting {
+            let bounds = LiveCues.range(key, limit)
+            let low = Int(bounds.lowerBound.rounded(.up)), high = max(low, Int(bounds.upperBound.rounded(.down)))
+            VStack(alignment: .leading, spacing: 2) {
+                COSStepper(title(key), value: Binding(get: { shown }, set: { move(key, $0) }), in: low...high,
+                           valueText: LiveCues.countText(key, shown), onTypedValue: { typed(key, $0, low: low, high: high) })
+                if let note = typedNote[key] {
+                    Text(note).font(COSType.body(11)).foregroundStyle(COSPalette.amber)
+                }
+            }
         } else {
-            let ladder = LiveCues.ladder(key, limit)
-            let index = ladder.firstIndex(of: shown) ?? ladder.lastIndex { $0 <= shown } ?? 0
-            COSStepper(title(key), value: Binding(get: { index }, set: { store.propose(key, Double(ladder[$0]), run: run) }),
-                       in: 0...max(0, ladder.count - 1), valueText: LiveCues.countText(key, shown))
+            let choices = ValueMenu.choices(stops: LiveCues.ladder(key, limit), current: shown, title: { LiveCues.countText(key, $0) })
+            COSDropdown(title(key), selection: Binding(get: { shown }, set: { move(key, $0) }),
+                        options: choices.map { COSDropdownOption($0.value, $0.title) })
         }
+    }
+
+    /// The one place a count or menu move reaches the store.
+    private func move(_ key: LiveCuesLimits.Key, _ value: Int) {
+        typedNote[key] = nil
+        store.propose(key, Double(value), run: run)
+    }
+
+    /// A typed count: held inside the server's bounds, with the sentence when it had to be; words go back unchanged.
+    private func typed(_ key: LiveCuesLimits.Key, _ text: String, low: Int, high: Int) {
+        let result = TypedCount.parse(text, low: low, high: high)
+        guard let value = result.accepted else { typedNote[key] = "Use a whole number from \(low) to \(high)."; return }
+        move(key, value)
+        if case .clamped(_, let note) = result { typedNote[key] = note }
     }
 }
 
@@ -1039,7 +1068,7 @@ struct TranscriptionSettingsCard: View {
     @ViewBuilder private func hubCard(_ settings: SttSettings) -> some View {
         let recording = model.recordingCount > 0
         SettingsHubRow(label: "Preview model", detail: Transcription.previewLine(settings) ?? "") { hubPicker(.preview, settings.preview) }
-        SettingsHubRow(label: "HQ model", detail: Transcription.effectiveLine(settings.hq) ?? "") { hubPicker(.hq, settings.hq) }
+        SettingsHubRow(label: "Saved meetings", detail: Transcription.effectiveLine(settings.hq) ?? "") { hubPicker(.hq, settings.hq) }
         SettingsHubRow(label: "Second opinion", detail: Transcription.effectiveLine(settings.secondOpinion) ?? "") { hubPicker(.secondOpinion, settings.secondOpinion) }
         SettingsHubRow(label: "Refine with second opinion", detail: Transcription.resolverInactiveLine(settings) ?? "") {
             SettingsHubSwitch(label: "Refine with second opinion", isOn: Binding(
@@ -1093,7 +1122,7 @@ struct TranscriptionSettingsCard: View {
             dictationPicker(settings)
             picker("Preview model", .preview, settings.preview)
             quiet(Transcription.previewLine(settings))
-            picker("HQ model", .hq, settings.hq)
+            picker("Saved meetings", .hq, settings.hq)
             quiet(Transcription.effectiveLine(settings.hq))
             picker("Second opinion", .secondOpinion, settings.secondOpinion)
             quiet(Transcription.effectiveLine(settings.secondOpinion))

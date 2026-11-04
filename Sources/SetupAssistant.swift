@@ -1116,11 +1116,11 @@ enum SetupAssistant {
             SettingsGroup(id: "work.background", title: "Background", parent: "Work and agents"),
             SettingsGroup(id: "work.folders", title: "Folders and notes", parent: "Work and agents"),
             SettingsGroup(id: "work.brief", title: "Morning brief", parent: "Work and agents"),
-            SettingsGroup(id: "work.domains", title: "Domains", parent: "Work and agents"),
+            SettingsGroup(id: "work.domains", title: "Task folders", parent: "Work and agents"),
             SettingsGroup(id: "work.fences", title: "Paused threads", parent: "Work and agents"),
             SettingsGroup(id: "privacy.permissions", title: "Permissions", parent: "Privacy and permissions"),
-            SettingsGroup(id: "pet.pet", title: "Session pet", parent: "Pet and appearance"),
-            SettingsGroup(id: "pet.characters", title: "Characters", parent: "Pet and appearance"),
+            SettingsGroup(id: "pet.pet", title: "Session pet", parent: "Pet"),
+            SettingsGroup(id: "pet.characters", title: "Characters", parent: "Pet"),
             SettingsGroup(id: "system.server", title: "Server", parent: "System and updates"),
             SettingsGroup(id: "system.updates", title: "App updates", parent: "System and updates"),
             SettingsGroup(id: "system.troubleshooting", title: "Troubleshooting", parent: "System and updates"),
@@ -1128,6 +1128,9 @@ enum SetupAssistant {
 
         /// Settings rows shown at once. The panel's place list is capped too; Settings has the most names, so a one-word search stays readable.
         static let settingsCap = 3
+
+        /// What a renamed group used to be called, so typing the old name still lands on it.
+        private static let formerSettingsNames: [String: [String]] = ["work.domains": ["Domains"]]
 
         /// Each group's names, normalized once: the title, "<title> settings" and "settings <title>", less any that is already another place's,
         /// command's or noun list's exact name ("sessions", "history", "dictation settings" belong to them).
@@ -1138,8 +1141,9 @@ enum SetupAssistant {
             for noun in nounForms.keys { taken.insert(noun) }
             var out: [String: [String]] = [:]
             for group in settingsGroups {
-                let title = plain(group.title)
-                let names = [title, title + " settings", "settings " + title].filter { name in
+                // Settings Release A: a renamed group is still reached by the name people remember (Task folders, once Domains).
+                let titles = ([group.title] + (formerSettingsNames[group.id] ?? [])).map(plain)
+                let names = titles.flatMap { [$0, $0 + " settings", "settings " + $0] }.filter { name in
                     ["open ", "go to ", "show "].allSatisfy { !taken.contains($0 + name) } && !taken.contains(name)
                 }
                 out[group.id] = names

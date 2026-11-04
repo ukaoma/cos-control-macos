@@ -194,6 +194,8 @@ struct SettingsHubSidebar: View {
     let selected: SettingsHubCategory?
     let status: (SettingsHubCategory) -> (text: String, tone: SettingsHubStatus.Tone)
     let select: (SettingsHubCategory) -> Void
+    /// Settings Release A: choosing a category puts the keyboard in the sidebar, so Up and Down go on from there.
+    @FocusState private var sidebarFocused: Bool
 
     var body: some View {
         let full = mode != .narrow
@@ -233,6 +235,11 @@ struct SettingsHubSidebar: View {
             }
             .padding(EdgeInsets(top: 22, leading: full ? 14 : 10, bottom: 28, trailing: full ? 14 : 10))
         }
+        .focusable()
+        .focusEffectDisabled()
+        .focused($sidebarFocused)
+        .onKeyPress(.upArrow) { select(SettingsHubSidebarKeys.next(from: selected, .up)); return .handled }
+        .onKeyPress(.downArrow) { select(SettingsHubSidebarKeys.next(from: selected, .down)); return .handled }
         .frame(width: SettingsHubLayout.sidebar(mode))
         .frame(maxHeight: .infinity, alignment: .top)
         .background(TodayInk.rail)
@@ -245,7 +252,7 @@ struct SettingsHubSidebar: View {
         let active = selected == category
         let line = status(category)
         let tone: Color = line.tone == .hot ? TodayInk.hot : line.tone == .good ? TodayInk.ok : TodayInk.sub
-        return Button { select(category) } label: {
+        return Button { select(category); sidebarFocused = true } label: {
             Group {
                 if full {
                     HStack(alignment: .top, spacing: 12) {
@@ -346,6 +353,8 @@ struct SettingsHubSearchResults: View {
     let query: String
     let sections: [SettingsHubSearch.Section]
     let open: (SettingsHubItem) -> Void
+    /// Settings Release A: for a result whose row is not drawn (its switch is off), what to turn on first. Nil: drawn.
+    var gateLine: (SettingsHubItem) -> String? = { _ in nil }
     var body: some View {
         VStack(alignment: .leading, spacing: 26) {
             let count = sections.reduce(0) { $0 + $1.items.count }
@@ -380,6 +389,9 @@ struct SettingsHubSearchResults: View {
                 // Only a real former label, and only when the old name is what matched.
                 if let former = item.formerLabel, let rank = SettingsHubSearch.rank(item, query: query), rank == 2 {
                     Text("Was: " + former).font(COSType.body(12)).foregroundStyle(TodayInk.grey).lineLimit(1)
+                }
+                if let gate = gateLine(item) {
+                    Text(gate).font(COSType.body(12)).foregroundStyle(TodayInk.grey).lineLimit(2)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -553,7 +565,6 @@ enum SettingsHubCopy {
     /// What set-workdir, set-operations-dir and set-context-dir do: restart through the drain, which waits for running
     /// work (a stopped server takes the folder when it starts; an older server shows the pending line instead).
     static let chooseRestarts = "Changing it restarts the server when no work is running."
-    static let todayFirst = "Turn on Today home to use this."
     static let waitsForWork = "Apply is off until running work finishes."
     /// The folder pickers' line while work runs (their change restarts the server through the same drain).
     static let chooseWaitsForWork = "Choose is off until running work finishes."

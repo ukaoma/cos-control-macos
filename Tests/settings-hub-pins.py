@@ -174,7 +174,8 @@ settings_view = body(dictation, "struct MacDictationSettings: View {", "private 
 for section in ("dictation", "microphone", "shortcuts", "sounds", "text", "polish", "history"):
     pin(f"if shows(.{section}) {{" in settings_view, f"MacDictationSettings draws its {section} group on its own")
     pin(f'"dictation.{section}"' in catalog, f"the catalog has the dictation.{section} group")
-pin('.onAppear { if shows(.microphone) { store.refreshMicrophones() } }' in settings_view, "microphones are read once per page: by the Microphone group")
+pin(re.search(r"\.onAppear \{\s*if shows\(\.microphone\) \{\s*store\.refreshMicrophones\(\)\s*micWatcher\.start \{ \[store\] in store\.refreshMicrophonesOffMain\(\) \}\s*\}\s*\}", settings_view) is not None,
+    "microphones are read once per page: by the Microphone group (Settings Release A: which then follows the Mac)")
 pin("refreshMicrophones" not in loaders, "the hub's root does not read microphones a second time")
 pin(hub.count("MacDictationSettings(store: model.dictation, activityShortcut: model.activityHotKey, section: section)") == 1, "the hub draws each group as a section")
 ask_card = body(ask, "struct MeetingAskSettings: View {", "struct HomeCitySettings: View {")

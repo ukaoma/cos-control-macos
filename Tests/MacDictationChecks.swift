@@ -316,6 +316,15 @@ final class FakeDictationBoard: DictationPasteboardAccess {
         expect(DictationHistory.adding(aged(0), to: capped, retention: .forever, now: now).count == DictationHistory.cap, "adding past the cap drops the oldest")
         expect(DictationRetention.default == .month && DictationRetention.month.rawValue == "30" && !DictationRetention.none.writesToDisk
                && DictationRetention.allCases.filter(\.writesToDisk).count == 4, "30 days by default; Don't keep never writes")
+        // Settings Release A: shortening what is kept says how many it deletes before it does.
+        expect(DictationHistory.deleted(ages, retention: .week, now: now) == 6 && DictationHistory.deleted(ages, retention: .month, now: now) == 4
+               && DictationHistory.deleted(ages, retention: .quarter, now: now) == 2 && DictationHistory.deleted(ages, retention: .forever, now: now) == 0,
+               "the count a shorter time would delete: 6 for 7 days, 4 for 30, 2 for 90, none for forever")
+        expect(DictationHistory.deleted([], retention: .week, now: now) == 0, "an empty history deletes nothing")
+        expect(DictationHistory.deleted(capped, retention: .forever, now: now) == 0 && DictationHistory.deleted(many, retention: .forever, now: now) == 7,
+               "the 5,000 cap counts as a deletion too")
+        expect(DictationHistory.deleted(many, retention: .none, now: now) == many.count - DictationHistory.sessionOnly,
+               "Don't keep holds this run's last few, so it counts the rest (its own confirm says so)")
         let dontKeep = (0..<15).reduce([DictationRecord]()) { list, n in DictationHistory.adding(aged(Double(n) / 1000), to: list, retention: .none, now: now) }
         expect(dontKeep.count == DictationHistory.sessionOnly, "Don't keep holds only this run's last few, in memory")
         expect(DictationHistory.search(ages, "AGED 8.0").map(\.text) == ["aged 8.0"] && DictationHistory.search(ages, "  ").count == 8

@@ -110,7 +110,7 @@ MUTANTS = [
     ("loaders: Live cues loads again in the hub", M, "{ if !hosted { await store.load(Self.run(model)) } }", "{ await store.load(Self.run(model)) }",
      "Live cues loads only in the panel"),
     ("loaders: every dictation group reads microphones", "Sources/MacDictation.swift",
-     ".onAppear { if shows(.microphone) { store.refreshMicrophones() } }", ".onAppear { store.refreshMicrophones() }", "microphones are read once per page"),
+     ".onAppear {\n            if shows(.microphone) {\n                store.refreshMicrophones()", ".onAppear {\n            if true {\n                store.refreshMicrophones()", "microphones are read once per page"),
     ("loaders: the engine step loads Transcription again", "Sources/ProviderConnectViews.swift",
      ".task { if !hosted { await store.load(TranscriptionSettingsCard.run(model)) } }", ".task { await store.load(TranscriptionSettingsCard.run(model)) }",
      "the engine step does not load Transcription again"),
