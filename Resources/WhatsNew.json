@@ -1,14 +1,17 @@
 {
   "version": "0.5.366",
   "whatsNew": {
-    "summary": "You can rename a recording while it is still recording. In the live meeting view, click the title or Rename, type a name and press Return. It needs the newer COS server and shows nothing on an older one. COS keeps your words and may sharpen them when it saves the meeting. Plus everything in 0.5.365: a Web today line in Settings, Live cues, a limit change that no longer says it failed after it saved, and spreadsheets (.xlsx) dropped on a meeting read on your Mac.",
+    "summary": "You can rename a recording while it is still recording. In the live meeting view, click the title or Rename, type a name and press Return. It needs the newer COS server and shows nothing on an older one. COS keeps your words and may sharpen them when it saves the meeting. Settings is also safer: Return never confirms a delete, Stop and Repair ask first, and settings that restart the server wait for running work. Plus everything in 0.5.365: a Web today line in Settings, Live cues, a limit change that no longer says it failed after it saved, and spreadsheets (.xlsx) dropped on a meeting read on your Mac.",
     "sections": [
       {
         "title": "0.5.366",
         "items": [
           "Rename a live Mac recording or glasses meeting from the live meeting view: click the title or Rename, type a name, press Return to save or Escape to cancel. Your title shows at once, in the switcher too. It needs the newer COS server and shows nothing on an older one.",
           "When it saves the meeting, COS keeps your names, companies and topic and may sharpen the wording, so the saved title can differ a little from what you typed. A Mac recording saves under your title.",
-          "Clearing the field and saving goes back to the automatic title. If another device renamed it first, its name is kept and the live view says so. Rename is off while the recording is being saved."
+          "Clearing the field and saving goes back to the automatic title. If another device renamed it first, its name is kept and the live view says so. Rename is off while the recording is being saved.",
+          "Settings: Return never confirms a delete or a stop. Stop, Roll back, Repair, and Quit during a Mac recording ask first, and Escape closes the dialog.",
+          "Settings that restart the server apply only when changed and wait for running work. Cues per meeting takes a typed number, and limit menus always show your saved value.",
+          "The microphone list updates itself. Options hide until their switch is on, and search still finds them. Domains is now Task folders, HQ model is Saved meetings, and Pet and appearance is Pet."
         ]
       },
       {

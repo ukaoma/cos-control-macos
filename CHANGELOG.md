@@ -1,4 +1,4 @@
-## 0.5.366 (build 420), rename a live recording
+## 0.5.366 (build 420), rename a live recording, safer Settings
 
 Built on 0.5.365 (build 419, private), which is not public. It pairs with server 6.99.0 (private); on an older server nothing new shows. The ask, 2026-11-03: a live Mac recording is listed as "Mac recording 9:05 PM" until the title model names it at save, so Miles wanted to name it while it records. His choice was Steer: the name shows everywhere at once, and at save the title model receives it as a strong hint (it keeps the names, companies and topic and may sharpen the wording). The mock was approved the same night.
 
@@ -13,6 +13,15 @@ What this build adds, on top of 0.5.365:
 - Refusals in plain words: another device renamed it first (its name is adopted, "Renamed on another device."), the recording is already saving ("Saving now. Rename it after it's saved."), it has ended ("This recording has ended."), anything else ("Could not rename. Try again."). Rename is disabled once the recording has stopped.
 - The helper has a new `meeting-title-steer` verb. The title goes on stdin, never in the arguments, and is never logged; only the contract's keys come back. The helper also passes the live session file's `titleSteer` through (cleaned, 120 code points at most).
 - Not built: the saved meeting's "Named from your title" line. The saved meeting detail does not carry the sidecar's `titleSteer`, and reading it back out of the meeting markdown would be a guess.
+
+Settings fixes in this build (from the review of Anand's Settings redesign, 2026-11-03). Default-on and visible changes: Return no longer confirms any destructive action; Stop, Roll back, Repair and Quit during a Mac recording ask first; Stop and the nine server-restart Apply rows are off while work runs (Mac recording, dictation, uploads, jobs); Apply is off when nothing changed; shortening dictation history asks first; Quiet hours, Work runs from Today, Paste then polish and Wait for held keys hide until their switch is on; the microphone list updates itself; renames below.
+
+- Confirms: Return never confirms a delete, a stop or a reset. Stop, Roll back, Repair and Quit while a Mac recording runs now ask first. Escape closes the dialog and stays in Settings. Shortening dictation history says how many dictations it deletes before it does.
+- The nine settings that restart the server apply only when changed and only when no work is running. They say "Not applied yet." (and "Waits for running work." when it is), name an open video upload and point to Clear stuck uploads, and go back to the server's value with an amber line if Apply fails. Stop's help says "Stuck? Use Repair in Troubleshooting."
+- Cues per meeting takes a typed number (1 to 50 on server 6.99.0); Escape in the field undoes the typing. The gap between cues and daily writer calls are menus built from the server's limits that always show your saved value. A key's daily cap has preset amounts plus Other amount, and says "Not set yet. Press Set cap." until you press it.
+- The microphone list updates itself when a device is plugged in or removed; Check again stays.
+- Options hide until their switch is on, and Settings search still finds them and says which switch to turn on.
+- Renames: Domains is Task folders, HQ model is Saved meetings, Pet and appearance is Pet. Old names still search. Search names match the page. Up and Down move through Settings. The Versions line no longer says "npm latest" and says "not running" only when the server is not running.
 
 ## 0.5.365 (build 419), honest web line, steady limit steppers, spreadsheets in meetings
 
