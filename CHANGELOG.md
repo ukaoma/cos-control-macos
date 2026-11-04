@@ -1,3 +1,17 @@
+## 0.5.368 (build 422), Windu's strike cuts through the droid
+
+Built on 0.5.367 (build 421). Plus everything in 0.5.367. The ask: Miles approved Windu Motion V13 with the approved Session 3 V4 on 2026-11-04 at 11:01 CST, and asked to keep the previous versions backed up. V6 to V12 are not in this build.
+
+What is new by default: the stock Miles Windu pack's working and trio rows. An install whose Windu pack is an exact recognized stock map (Motion V2 from 0.5.360 to 0.5.367, or any earlier recognized stock map) moves to them at launch, once, through art generation 29. A changed strip, a custom cast, interval or cadence, a chosen still image and every other character are left as they are.
+
+What this build adds, on top of 0.5.367:
+
+- The Miles Windu pet's strike now cuts through the droid; each half flies off its own way. Working is Motion V13: 184 frames at .02 s, four casts sharing the run-in, handoff 145, at 1x and through four Retina strips at 2x. Each half has its own launch, spin, bounce and settle, baked per cast, not random on each play.
+- Trio takes the approved Session 3 V4 strips: 172 frames at .02 s, three casts, handoff 121, byte-identical to the approved V4.
+- Only those two rows change. Idle, meditation, patrol, waiting, attention, done, error, duel and swarm, the other Jedi packs, the shuffle with no immediate repeat, the incoming cast binding and 256-frame support are unchanged.
+- Nothing is deleted. 55 strips are added; the Motion V2 strips stay in the app for rollback, and the shipped Motion V2 map joins the pack's stock history so those installs are recognized.
+- Checks: the V13 and V4 strips are pinned by hash (105 files), the map and both rows by hash, Retina geometry, the 1x and 2x decode of every cast, the tail body against the full frame, the Motion V2 to V13 upgrade (custom layers and cadence kept, a rerun changes nothing), and mutation passes for the pins and the native checks.
+
 ## 0.5.367 (build 421), open COS on your phone
 
 Built on 0.5.366 (build 420, private), which is not public. It pairs with server 6.99.3 (private) for the QR; the sign-in code works from server 6.99.1. The ask, 2026-11-04: Miles locked himself out of Control Web on his phone. The web sign-in page asks for a "Code from your Mac", and nothing on the Mac made one: only a browser that was already signed in could. The only code Control showed was the glasses pairing code, which the page refuses; the Glasses and iPhone QR is the COS app's `COS1/MAC/...` code, which the iPhone camera cannot use; and Copy token clears the clipboard after 60 seconds.
