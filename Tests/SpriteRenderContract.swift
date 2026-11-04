@@ -98,6 +98,16 @@ enum SpriteRenderContract {
         let sourceFile: String
         let sourceSHA256: String
         let expectedSHA256: String
+        /// 0.5.368 (Windu V13.2 plasma): evidence for SOME frames only, one-based and consecutive. The source strip then
+        /// holds exactly these cells, each also pinned as its own file in `frameFiles` (same order, same alpha as the cell).
+        /// Every other frame is judged on the full composite, unprotected. Without `frames` the source covers every frame.
+        var frames: [Int]? = nil
+        var frameFiles: [FramePin]? = nil
+    }
+
+    struct FramePin: Decodable {
+        let file: String
+        let sha256: String
     }
 
     struct Fixture: Decodable {
@@ -184,6 +194,50 @@ enum SpriteRenderContract {
         return Set((0..<p.height).filter { y in columns.contains { p.a($0, y) > 40 } })
     }
 
+    static func sha256(_ data: Data) -> String { SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() }
+
+    /// The pinned pre-effect evidence for `label`, one entry per strip cell (nil where a frame has none), or nil when the
+    /// evidence is missing, mismatched or itself fails the gates: the caller then fails closed. `root` holds the evidence.
+    static func evidenceCells(for evidence: EffectLayer, strip actual: Data, frames: Int, label: String, fixture: Fixture,
+                              root: URL) -> [Plane?]? {
+        let covered = evidence.frames ?? Array(1...max(frames, 1))
+        guard evidence.sourceFile == URL(fileURLWithPath: evidence.sourceFile).lastPathComponent,
+              let first = covered.first, let last = covered.last, first >= 1, last <= frames, covered == Array(first...last),
+              let original = try? Data(contentsOf: root.appendingPathComponent(evidence.sourceFile)),
+              sha256(actual) == evidence.expectedSHA256, sha256(original) == evidence.sourceSHA256,
+              let source = NSImage(data: original)
+        else { return nil }
+        let sourceCells = PetSpriteStrip.slice(source, frames: covered.count).compactMap { PetSpriteStrip.raster($0) }.map(plane)
+        guard sourceCells.count == covered.count else { return nil }
+        if evidence.frames == nil {
+            guard let sourceMeasure = measure(image: source, frames: frames, label: label,
+                      fixture: Fixture(edgeFrames: [:], smear: [], preExisting: [:])),
+                  sourceMeasure.gatedHolesPercent <= maxHolesPercent,
+                  sourceMeasure.minMargin >= minEdgeMargin, sourceMeasure.slivers.isEmpty
+            else { return nil }
+            return sourceCells
+        }
+        // Partial evidence: every frame pinned on its own, and equal (alpha, which is all the gate reads) to the strip's cell.
+        guard let pins = evidence.frameFiles, pins.count == covered.count else { return nil }
+        for (pin, cell) in zip(pins, sourceCells) {
+            guard pin.file == URL(fileURLWithPath: pin.file).lastPathComponent,
+                  let data = try? Data(contentsOf: root.appendingPathComponent(pin.file)), sha256(data) == pin.sha256,
+                  let image = NSImage(data: data), let cg = PetSpriteStrip.raster(image), plane(cg).alpha == cell.alpha,
+                  cg.width == cell.width, cg.height == cell.height
+            else { return nil }
+        }
+        // The hero alone passes the same gates: the 1.0% hole cap, no slivers, and an edge only where the strip lists one.
+        let listed = Set(fixture.edgeFrames[label] ?? [])
+        guard let heroMeasure = measure(image: source, frames: covered.count, label: label,
+                  fixture: Fixture(edgeFrames: [:], smear: [], preExisting: [:])),
+              heroMeasure.gatedHolesPercent <= maxHolesPercent, heroMeasure.slivers.isEmpty,
+              heroMeasure.edgeFrames.allSatisfy({ listed.contains(covered[$0 - 1]) })
+        else { return nil }
+        var out = [Plane?](repeating: nil, count: frames)
+        for (i, frame) in covered.enumerated() { out[frame - 1] = sourceCells[i] }
+        return out
+    }
+
     static func measure(strip url: URL, frames: Int, label: String, fixture: Fixture) -> Measure? {
         if let expected = fixture.smear.first(where: { $0.strip == label })?.expectedSHA256 {
             guard let data = try? Data(contentsOf: url),
@@ -191,26 +245,18 @@ enum SpriteRenderContract {
             else { return nil } // Authored-region evidence applies only to the reviewed bytes.
         }
         guard let image = NSImage(contentsOf: url) else { return nil }
-        var protectedCells: [Plane]? = nil
+        var protectedCells: [Plane?]? = nil
         if let evidence = fixture.effectLayers?.first(where: { $0.strip == label }) {
-            let sourceURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-                .appendingPathComponent("Tests/fixtures/sprite-render").appendingPathComponent(evidence.sourceFile)
-            guard evidence.sourceFile == URL(fileURLWithPath: evidence.sourceFile).lastPathComponent,
-                  let actual = try? Data(contentsOf: url), let original = try? Data(contentsOf: sourceURL),
-                  SHA256.hash(data: actual).map({ String(format: "%02x", $0) }).joined() == evidence.expectedSHA256,
-                  SHA256.hash(data: original).map({ String(format: "%02x", $0) }).joined() == evidence.sourceSHA256,
-                  let source = NSImage(data: original),
-                  let sourceMeasure = measure(image: source, frames: frames, label: label,
-                      fixture: Fixture(edgeFrames: [:], smear: [], preExisting: [:])),
-                  sourceMeasure.gatedHolesPercent <= maxHolesPercent,
-                  sourceMeasure.minMargin >= minEdgeMargin, sourceMeasure.slivers.isEmpty
+            let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Tests/fixtures/sprite-render")
+            guard let actual = try? Data(contentsOf: url),
+                  let cells = evidenceCells(for: evidence, strip: actual, frames: frames, label: label, fixture: fixture, root: root)
             else { return nil }
-            protectedCells = PetSpriteStrip.slice(source, frames: frames).compactMap { PetSpriteStrip.raster($0) }.map(plane)
+            protectedCells = cells
         }
         return measure(image: image, frames: frames, label: label, fixture: fixture, protectedCells: protectedCells)
     }
 
-    static func measure(image: NSImage, frames: Int, label: String, fixture: Fixture, protectedCells: [Plane]? = nil) -> Measure? {
+    static func measure(image: NSImage, frames: Int, label: String, fixture: Fixture, protectedCells: [Plane?]? = nil) -> Measure? {
         let cells = PetSpriteStrip.slice(image, frames: frames).compactMap { PetSpriteStrip.raster($0) }.map(plane)
         guard !cells.isEmpty, protectedCells == nil || protectedCells?.count == cells.count else { return nil }
         let smear = fixture.smear.first { $0.strip == label }
@@ -240,7 +286,7 @@ enum SpriteRenderContract {
             }
 
             let p: Plane
-            if let source = protectedCells?[index] {
+            if let source = protectedCells?[index] ?? nil {
                 guard source.width == w, source.height == h else { return nil }
                 // Fail closed even for a fully punched-out pixel (which the
                 // semi-transparent-hole statistic alone cannot detect).
@@ -468,6 +514,9 @@ enum SpriteRenderContract {
         }
         expect(measure(image: aura, frames: 2, label: "synthetic/aura", fixture: none, protectedCells: []) == nil,
                "mismatched aura source evidence fails closed")
+        // 0.5.368: evidence for SOME frames (Windu V13.2 plasma, frames 96-121), each frame pinned on its own. It protects only
+        // its frames, the hero alone must pass the same 1.0% cap, and any mismatched pin fails closed.
+        failures += partialEvidenceSelfCheck()
         // A small patch eaten at ONE alpha inside the garment (under fadeMinHoles): still a hole, not a fade.
         let patch = strip(cells: 2, width: W, height: H) { ctx in
             for cell in 0..<2 {
@@ -533,6 +582,98 @@ enum SpriteRenderContract {
                "an 8 px stray at a cut is a reported speck, not a sliver: \(streakM.slivers) \(streakM.specks)")
         return failures
     }
+
+    static func png(_ image: NSImage) -> Data {
+        NSBitmapImageRep(cgImage: PetSpriteStrip.raster(image)!).representation(using: .png, properties: [:])!
+    }
+
+    static func partialEvidenceSelfCheck() -> [String] {
+        var failures: [String] = []
+        func expect(_ ok: Bool, _ what: String) { if !ok { failures.append("self-check: \(what)") } }
+        let W = 64, H = 64, label = "synthetic/partial"
+        let none = Fixture(edgeFrames: [:], smear: [], preExisting: [:])
+        // Four frames of one figure; a nonuniform translucent effect behind it in `effectFrames` (one-based).
+        func composite(effectFrames: Set<Int>, damage: Int? = nil) -> NSImage {
+            strip(cells: 4, width: W, height: H) { ctx in
+                for cell in 0..<4 {
+                    if effectFrames.contains(cell + 1) {
+                        for x in 6..<58 { fill(ctx, height: H, x: cell*W+x, y: 6, w: 1, h: 52, alpha: CGFloat(50+x)/255) }
+                    }
+                    fill(ctx, height: H, x: cell*W+18, y: 18, w: 24, h: 24, alpha: 1, copy: true)
+                    if damage == cell + 1 { fill(ctx, height: H, x: cell*W+22, y: 22, w: 6, h: 6, alpha: 0.5, copy: true) }
+                }
+            }
+        }
+        func hero(cells: Int, damaged: Bool = false) -> NSImage {
+            strip(cells: cells, width: W, height: H) { ctx in
+                for cell in 0..<cells {
+                    fill(ctx, height: H, x: cell*W+18, y: 18, w: 24, h: 24, alpha: 1)
+                    // 6 x 6, under fadeMinHoles: an eaten patch, not a uniform fade.
+                    if damaged && cell == 0 { fill(ctx, height: H, x: cell*W+22, y: 22, w: 6, h: 6, alpha: 0.5, copy: true) }
+                }
+            }
+        }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("cos-sprite-partial-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        func write(_ name: String, _ data: Data) -> String { try? data.write(to: dir.appendingPathComponent(name)); return sha256(data) }
+        let effect = composite(effectFrames: [2, 3]), effectData = png(effect)
+        let heroSHA = write("hero.png", png(hero(cells: 2)))
+        let frameOne = hero(cells: 1), frameSHA = write("hero-2.png", png(frameOne)), frameSHA3 = write("hero-3.png", png(frameOne))
+        func layer(source: String = "hero.png", sourceSHA: String? = nil, expected: String? = nil, frames: [Int]? = [2, 3],
+                   pins: [FramePin]? = nil) -> EffectLayer {
+            EffectLayer(strip: label, sourceFile: source, sourceSHA256: sourceSHA ?? heroSHA, expectedSHA256: expected ?? sha256(effectData),
+                        frames: frames, frameFiles: pins ?? [FramePin(file: "hero-2.png", sha256: frameSHA), FramePin(file: "hero-3.png", sha256: frameSHA3)])
+        }
+        func cells(_ l: EffectLayer) -> [Plane?]? {
+            evidenceCells(for: l, strip: effectData, frames: 4, label: label, fixture: none, root: dir)
+        }
+        // Without evidence the effect breaches the cap; with it, only frames 2 and 3 are protected and the strip passes.
+        let bare = measure(image: effect, frames: 4, label: label, fixture: none)!
+        expect(bare.gatedHolesPercent > maxHolesPercent, "the synthetic effect must breach the cap on its own (\(bare.gatedHolesPercent))")
+        let good = cells(layer())
+        expect(good?.count == 4 && good?[0] == nil && good?[1] != nil && good?[2] != nil && good?[3] == nil, "partial evidence covers exactly its frames")
+        if let good {
+            let m = measure(image: effect, frames: 4, label: label, fixture: none, protectedCells: good)
+            expect(m != nil && violations(m!, label: label, fixture: none).isEmpty, "pinned evidence clears the effect in its frames")
+            // The same evidence cannot excuse the effect in frame 4, outside its range.
+            let om = measure(image: composite(effectFrames: [2, 3, 4]), frames: 4, label: label, fixture: none, protectedCells: good)
+            expect(om != nil && !violations(om!, label: label, fixture: none).isEmpty, "evidence never protects a frame it does not cover")
+            // A hole in the character in a covered frame (composite damaged where the hero is opaque) fails closed.
+            let dm = measure(image: composite(effectFrames: [2, 3], damage: 2), frames: 4, label: label, fixture: none, protectedCells: good)
+            expect(dm == nil || !violations(dm!, label: label, fixture: none).isEmpty, "a real hole in the character under pinned evidence still fails")
+        }
+        // A hero frame with a real hole of its own: the hero fails the same 1.0% cap, so the evidence is refused.
+        let holedSHA = write("hero-holed.png", png(hero(cells: 2, damaged: true)))
+        let holedFrame = write("hero-holed-2.png", png(hero(cells: 1, damaged: true)))
+        expect(cells(layer(source: "hero-holed.png", sourceSHA: holedSHA,
+                           pins: [FramePin(file: "hero-holed-2.png", sha256: holedFrame), FramePin(file: "hero-3.png", sha256: frameSHA3)])) == nil,
+               "a hero frame with a real hole fails the gate itself")
+        // Every mismatched pin fails closed.
+        expect(cells(layer(sourceSHA: String(repeating: "0", count: 64))) == nil, "a mismatched evidence strip hash fails")
+        expect(cells(layer(expected: String(repeating: "0", count: 64))) == nil, "evidence for other composite bytes fails")
+        expect(cells(layer(pins: [FramePin(file: "hero-2.png", sha256: String(repeating: "0", count: 64)), FramePin(file: "hero-3.png", sha256: frameSHA3)])) == nil,
+               "a mismatched per-frame hash fails")
+        let otherSHA = write("other-2.png", png(strip(cells: 1, width: W, height: H) { ctx in fill(ctx, height: H, x: 10, y: 10, w: 30, h: 30, alpha: 1) }))
+        expect(cells(layer(pins: [FramePin(file: "other-2.png", sha256: otherSHA), FramePin(file: "hero-3.png", sha256: frameSHA3)])) == nil,
+               "a per-frame file that is not the strip's cell fails")
+        expect(cells(layer(pins: [FramePin(file: "hero-2.png", sha256: frameSHA)])) == nil, "one pin per covered frame")
+        expect(cells(EffectLayer(strip: label, sourceFile: "hero.png", sourceSHA256: heroSHA, expectedSHA256: sha256(effectData), frames: [2, 3], frameFiles: nil)) == nil,
+               "partial evidence without per-frame pins fails")
+        expect(cells(layer(frames: [2, 4])) == nil && cells(layer(frames: [4, 5])) == nil, "covered frames are consecutive and inside the strip")
+        // The hero at a cell edge in a covered frame passes only where the strip lists that frame.
+        let edgeHero = strip(cells: 2, width: W, height: H) { ctx in for cell in 0..<2 { fill(ctx, height: H, x: cell*W, y: 18, w: 24, h: 24, alpha: 1) } }
+        let edgeSHA = write("hero-edge.png", png(edgeHero))
+        let edgeOne = strip(cells: 1, width: W, height: H) { ctx in fill(ctx, height: H, x: 0, y: 18, w: 24, h: 24, alpha: 1) }
+        let edgeFrame = write("hero-edge-1.png", png(edgeOne))
+        let edgeLayer = layer(source: "hero-edge.png", sourceSHA: edgeSHA,
+                              pins: [FramePin(file: "hero-edge-1.png", sha256: edgeFrame), FramePin(file: "hero-edge-1.png", sha256: edgeFrame)])
+        let listedEdges = Fixture(edgeFrames: [label: [2, 3]], smear: [], preExisting: [:])
+        expect(cells(edgeLayer) == nil
+               && evidenceCells(for: edgeLayer, strip: effectData, frames: 4, label: label, fixture: listedEdges, root: dir) != nil,
+               "a hero at the cell edge passes only in listed frames")
+        return failures
+    }
 }
 
 @main
@@ -552,7 +693,7 @@ struct SpriteRenderMain {
             for f in failures { print("  - \(f)") }
             exit(1)
         }
-        print("self-check: fade exempt, eaten garment and small eaten patch caught, listed edge only, entering pair owned, spill caught, 8 px stray reported as a speck")
+        print("self-check: fade exempt, eaten garment and small eaten patch caught, listed edge only, entering pair owned, spill caught, 8 px stray reported as a speck, partial evidence pinned per frame and fail-closed")
         var checked = 0
 
         func check(_ url: URL, frames: Int, label: String) {

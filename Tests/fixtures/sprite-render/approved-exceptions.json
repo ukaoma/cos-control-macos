@@ -1,5 +1,5 @@
 {
-  "README": "Read by Tests/SpriteRenderContract.swift and Tests/ModelsContract.swift (0.5.316). edgeFrames: 1-based frames of the approved Miles Windu pack (V12.6, and from 0.5.325 V14 timing-v2, whose V13 strips keep the same list plus trio 25, the strike's spark burst at 5 px) that may come within 6 px of a cell edge because a droid, wreck, jump or saber arc enters or leaves off canvas (independent check motion-v12/reviews/v12-6-holes-and-cuts-check.json). smear: the one documented translucency that is not a uniform fade. preExisting: strips that exceeded a gate before 0.5.316, at their measured ceiling, so they cannot get worse; they are not approvals. 0.5.324: edgeFades document only the 22 px smoothstep entrance mask during each rotation handoff. No Jedi interior-opacity ceiling exemptions remain. 0.5.328 (Version 15): each DefaultPet session pose now points at its first cast's full 1x strip, so the casts are gated here for the first time. edgeFrames for trio and swarm are the flyers and wrecks within 6 px of the top or side, the same frames V14's casts had (measured, installation-v1-5/qa); working and duel have none. preExisting holds V15's measured hole ceilings: the duel, trio and swarm casts fade a heavy-droid wreck under Windu at one alpha per frame, as V14's casts did. The first V1.5 bake's done-saber crop and violet wreck tint are fixed in V15 (installation-v1-5/compare/CLAIMS.md). 0.5.341: Jedi 360 V2 applies the 5%-wide (22 px at 1x) horizontal canvas feather on EVERY combat frame, including initial entrances, not only the previous 0.5.324 tail frames. Updated edgeFades match that exact renderer; no Jedi interior-opacity ceiling is relaxed. edgeFrames enumerate V2 opponent entrances, wrecks and saber/electrical trails within 6 px of the feathered canvas edge. Reviewed V2 bytes are pinned by approved-jedi360-v2.json in each pack and the release contract. Hero source atlases are separately checked for ground baseline, transparent borders and body/blaster collision in jedi-360-v2/qa.json. Illustrated V1.1: evidence in docs/qa/illustrated-appearance/. Windu combat has the same authored 22px horizontal feather; only measured affected frames are listed. Edge-frame annotations are individually reviewed flyer entrances/exits, disintegration particles, and complete round saber tips whose glow enters the margin. Duel101\u2013104 contains a fading wreck under the airborne hero, bounded x29..167/y166..241 at median alpha<=155 and locked to its reviewed strip hash. No opacity ceiling changed; the generic gate remains1.0%. Windu motion V1: Session1 entrance feather annotations follow the exact full-composition frame remap in Tests/windu-motion-retime.json; no width, opacity, or margin threshold changes.",
+  "README": "Read by Tests/SpriteRenderContract.swift and Tests/ModelsContract.swift (0.5.316). edgeFrames: 1-based frames of the approved Miles Windu pack (V12.6, and from 0.5.325 V14 timing-v2, whose V13 strips keep the same list plus trio 25, the strike's spark burst at 5 px) that may come within 6 px of a cell edge because a droid, wreck, jump or saber arc enters or leaves off canvas (independent check motion-v12/reviews/v12-6-holes-and-cuts-check.json). smear: the one documented translucency that is not a uniform fade. preExisting: strips that exceeded a gate before 0.5.316, at their measured ceiling, so they cannot get worse; they are not approvals. 0.5.324: edgeFades document only the 22 px smoothstep entrance mask during each rotation handoff. No Jedi interior-opacity ceiling exemptions remain. 0.5.328 (Version 15): each DefaultPet session pose now points at its first cast's full 1x strip, so the casts are gated here for the first time. edgeFrames for trio and swarm are the flyers and wrecks within 6 px of the top or side, the same frames V14's casts had (measured, installation-v1-5/qa); working and duel have none. preExisting holds V15's measured hole ceilings: the duel, trio and swarm casts fade a heavy-droid wreck under Windu at one alpha per frame, as V14's casts did. The first V1.5 bake's done-saber crop and violet wreck tint are fixed in V15 (installation-v1-5/compare/CLAIMS.md). 0.5.341: Jedi 360 V2 applies the 5%-wide (22 px at 1x) horizontal canvas feather on EVERY combat frame, including initial entrances, not only the previous 0.5.324 tail frames. Updated edgeFades match that exact renderer; no Jedi interior-opacity ceiling is relaxed. edgeFrames enumerate V2 opponent entrances, wrecks and saber/electrical trails within 6 px of the feathered canvas edge. Reviewed V2 bytes are pinned by approved-jedi360-v2.json in each pack and the release contract. Hero source atlases are separately checked for ground baseline, transparent borders and body/blaster collision in jedi-360-v2/qa.json. Illustrated V1.1: evidence in docs/qa/illustrated-appearance/. Windu combat has the same authored 22px horizontal feather; only measured affected frames are listed. Edge-frame annotations are individually reviewed flyer entrances/exits, disintegration particles, and complete round saber tips whose glow enters the margin. Duel101\u2013104 contains a fading wreck under the airborne hero, bounded x29..167/y166..241 at median alpha<=155 and locked to its reviewed strip hash. No opacity ceiling changed; the generic gate remains1.0%. Windu motion V1: Session1 entrance feather annotations follow the exact full-composition frame remap in Tests/windu-motion-retime.json; no width, opacity, or margin threshold changes. 0.5.368 (Windu Motion V13.2, files windu-motion-v13b-*): Session 1 working cast a's edge list is the saber tip only, frames 99-103 (bottom, 3 px) and 136-144 (left, 0-4 px), measured on the V13.2 strip, geometry unchanged from V13.1; the Motion V2 frames it replaces are gone. Its effectLayers entry covers frames 96-121 ONLY: the hero rendered before every enemy and plasma layer (strip 6afd3f89 plus one pinned file per frame, release windu-motion-v15/evidence/hero-layer-manifest.json), so the intentional plasma there is judged on the character beneath it. Every opaque hero pixel must stay opaque in the composite, the hero alone meets the same 1.0% cap, and every other frame is judged on the full composite. No cap, region or global exemption changed.",
   "edgeFrames": {
     "DefaultPet/working": [],
     "DefaultPet/duel": [],
@@ -263,21 +263,20 @@
       58
     ],
     "jedi-miles-windu/working": [
-      109,
-      110,
-      111,
-      112,
-      113,
-      114,
-      129,
-      130,
-      131,
-      132,
-      133,
-      134,
-      135,
+      99,
+      100,
+      101,
+      102,
+      103,
       136,
-      160
+      137,
+      138,
+      139,
+      140,
+      141,
+      142,
+      143,
+      144
     ],
     "jedi-miles-windu/duel": [],
     "jedi-miles-windu/trio": [
@@ -1456,6 +1455,146 @@
       "sourceFile": "windu-ambient-v2-waiting-body-1x.png",
       "sourceSHA256": "d08c0d8f3269e602d69634c23116e67c05c14bdead133bb5881642b1fb0cfa00",
       "expectedSHA256": "b59af3b10460bf45ad3436b41771c65fce1977d1693bb5ea20da549def20f8d4"
+    },
+    {
+      "strip": "jedi-miles-windu/working",
+      "sourceFile": "windu-v13b-hero-frames96-121-1x.png",
+      "sourceSHA256": "6afd3f89176526a0249b5f0f270e647ad6c05a7fdf7ebf46b59fd161f432dd0e",
+      "expectedSHA256": "90172c72b7ac6ef72e296eb2d723aa894759a86b259ad561ec59b827b8c63b64",
+      "frames": [
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102,
+        103,
+        104,
+        105,
+        106,
+        107,
+        108,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+        117,
+        118,
+        119,
+        120,
+        121
+      ],
+      "frameFiles": [
+        {
+          "file": "windu-v13b-hero-frame-96-1x.png",
+          "sha256": "a223312d6533b0ed4728a830faaad684ce08514c6e8b0ebe25aef7e9421cb644"
+        },
+        {
+          "file": "windu-v13b-hero-frame-97-1x.png",
+          "sha256": "62597ae1a3f706c06c46b5aa4fbf87acca6ef1962c9c8e8fcf4f150bab2c83a9"
+        },
+        {
+          "file": "windu-v13b-hero-frame-98-1x.png",
+          "sha256": "80b21523c234b5c343bcdff3b3005e25dbaaf9e8a7160abea3eb535a17113c8e"
+        },
+        {
+          "file": "windu-v13b-hero-frame-99-1x.png",
+          "sha256": "cafe06fe717801699a349f9973fa599f0544561222e363fe03092a92b8007bf2"
+        },
+        {
+          "file": "windu-v13b-hero-frame-100-1x.png",
+          "sha256": "cafe06fe717801699a349f9973fa599f0544561222e363fe03092a92b8007bf2"
+        },
+        {
+          "file": "windu-v13b-hero-frame-101-1x.png",
+          "sha256": "cafe06fe717801699a349f9973fa599f0544561222e363fe03092a92b8007bf2"
+        },
+        {
+          "file": "windu-v13b-hero-frame-102-1x.png",
+          "sha256": "cafe06fe717801699a349f9973fa599f0544561222e363fe03092a92b8007bf2"
+        },
+        {
+          "file": "windu-v13b-hero-frame-103-1x.png",
+          "sha256": "cafe06fe717801699a349f9973fa599f0544561222e363fe03092a92b8007bf2"
+        },
+        {
+          "file": "windu-v13b-hero-frame-104-1x.png",
+          "sha256": "c852965112d0f7b8959a1f92139f6a33349194617b8baf1043fcbf3b830c7ac0"
+        },
+        {
+          "file": "windu-v13b-hero-frame-105-1x.png",
+          "sha256": "635adf25903d57e074ceb0fc081094bb72ce7341adaab902547f82f7343cb249"
+        },
+        {
+          "file": "windu-v13b-hero-frame-106-1x.png",
+          "sha256": "da335fbe8185720dc6e31954408e0c9a41d91d871357fda33dff01c50d0e3866"
+        },
+        {
+          "file": "windu-v13b-hero-frame-107-1x.png",
+          "sha256": "fd498a2cc037282a6cab6821f0fbf3babfe51028d4848339fab499d349e4493d"
+        },
+        {
+          "file": "windu-v13b-hero-frame-108-1x.png",
+          "sha256": "8314351b7ad57ba68489e2b05c7a37b9a61baf8347ec36550969054d2fcf9b7f"
+        },
+        {
+          "file": "windu-v13b-hero-frame-109-1x.png",
+          "sha256": "91611c20e27b77bcdc82cd4503f58a641d38b8c289ed024791ab1bb5dfbf8cdc"
+        },
+        {
+          "file": "windu-v13b-hero-frame-110-1x.png",
+          "sha256": "3b1a0b31c22d2447bcabd14c345d19a74ca9adc1a2dfbd5504f51493a5c22ad4"
+        },
+        {
+          "file": "windu-v13b-hero-frame-111-1x.png",
+          "sha256": "1f70546f07c685598f0f7c25caab14bc9549a8c2bd6199032cb791fd92db4675"
+        },
+        {
+          "file": "windu-v13b-hero-frame-112-1x.png",
+          "sha256": "a8df6935c0edcbc2f34d30ba5db68829bf28d92840e42144f86fd8fe4410710d"
+        },
+        {
+          "file": "windu-v13b-hero-frame-113-1x.png",
+          "sha256": "c654902e1ad3eb3ec9b09ee4dffb469002ebc44c373b58568edd0659a2727400"
+        },
+        {
+          "file": "windu-v13b-hero-frame-114-1x.png",
+          "sha256": "6b952ed4feb1725b69cc479f187f48b82e7f66b788d97608ed4b23f219ca30c0"
+        },
+        {
+          "file": "windu-v13b-hero-frame-115-1x.png",
+          "sha256": "35453b101189ca773b5857920a2bb81b0cfcca3db584651eab0bc8f43341d5fa"
+        },
+        {
+          "file": "windu-v13b-hero-frame-116-1x.png",
+          "sha256": "2e8c6caa9f0b9a14a7bf64c53eadfef87a0c6108dfc72d1bb961c565ee7d16ec"
+        },
+        {
+          "file": "windu-v13b-hero-frame-117-1x.png",
+          "sha256": "5c4f155b183f6a9f9f6f475d323975c2346c89d79de105f2f50451c808e8b2cf"
+        },
+        {
+          "file": "windu-v13b-hero-frame-118-1x.png",
+          "sha256": "3daf00284cd534e4e0343d060dbb1dd3d4a8670119349d068931406f5ca0eae4"
+        },
+        {
+          "file": "windu-v13b-hero-frame-119-1x.png",
+          "sha256": "8bcdae4cbf9c0b92d505b020d27795a9afa70511b953156829d894a9b105b371"
+        },
+        {
+          "file": "windu-v13b-hero-frame-120-1x.png",
+          "sha256": "3273313c8d8d2acc378b819399f3e761ec9ea3c55169ab6df323abe032d88074"
+        },
+        {
+          "file": "windu-v13b-hero-frame-121-1x.png",
+          "sha256": "dbb24bce268d35aa9f7f19cd21a9de61164b05452c7996b1d248891a78b58aab"
+        }
+      ]
     }
   ]
 }
