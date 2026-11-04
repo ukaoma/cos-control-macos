@@ -85,6 +85,7 @@ pin("if COSEscape.closeTop() { return true }" in hub_escape and hub_escape.index
 pin("COSEscape.register(escapeID) { isPresented = false }" in confirm and "COSEscape.unregister(escapeID)" in confirm and confirm.count("COSEscape.") == 3,
     "every confirm, whichever view owns it, registers while it is on screen and forgets when it goes")
 pin("COSEscape.register(escapeID) { cancelTyping() }" in brand and ".onExitCommand { cancelTyping() }" in brand and ".onDisappear { COSEscape.unregister(escapeID) }" in brand
+    and "if escaped { escaped = false; draft = valueText ?? \"\"; return }" in brand
     and brand.index("if escaped { escaped = false; draft = valueText ?? \"\"; return }") < brand.index("if text != (valueText ?? \"\") { onTypedValue?(text) }"),
     "a typed stepper in focus is closed by Escape, which puts the value back and sends nothing, even though losing focus commits")
 settings = body(dictation, "struct MacDictationSettings: View {", "private struct DictationQuietSettings: View {")
