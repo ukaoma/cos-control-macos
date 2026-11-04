@@ -3608,7 +3608,7 @@ struct ControlPanel: View {
         }.font(COSType.mono(10)).foregroundStyle(.secondary)
     }
 
-    /// Controller build from Info.plist; server version from live status. Never "(npm latest)": Control does not know the newest
+    /// Controller build from Info.plist; server version from live status. Never claims the server is the newest npm release: Control does not know the newest
     /// published server, so it does not claim the one running is it (Settings Release A; VersionsLine).
     private var footerLabel: String {
         VersionsLine.text(controller: ControllerModel.currentVersion, version: model.status.version, installed: model.status.installedVersion,
