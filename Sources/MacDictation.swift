@@ -2169,6 +2169,14 @@ enum DictationSpareBuild: Sendable {
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/COS Control/dictation-history.json")
     }
     func refreshMicrophones() { microphones = DictationAudioDevices.inputs() }
+    /// A plug or unplug (Settings Release A review): the list is read off the main actor, as the press does (0.5.327), because a
+    /// Bluetooth device can stall the enumeration and the main thread must not wait for it.
+    func refreshMicrophonesOffMain() {
+        Task { [weak self] in
+            let list = await DictationAudioDevices.inputsOffMain()
+            self?.microphones = list
+        }
+    }
     /// The cached list as UID to device id, for DictationStart.resolve.
     private var microphoneIDs: [String: AudioDeviceID] { Dictionary(microphones.map { ($0.id, $0.deviceID) }, uniquingKeysWith: { first, _ in first }) }
     /// 0.5.327: builds the next dictation's engine a moment after the microphone closes (or dictation turns on), so the
@@ -4271,7 +4279,7 @@ struct MacDictationSettings: View {
         .onAppear {
             if shows(.microphone) {
                 store.refreshMicrophones()
-                micWatcher.start { [store] in store.refreshMicrophones() }
+                micWatcher.start { [store] in store.refreshMicrophonesOffMain() }
             }
         }
         .onDisappear { micWatcher.stop() }

@@ -250,6 +250,10 @@ struct KeyLanesSetupPanel: View {
                 .buttonStyle(COSQuietButtonStyle())
                 .disabled(store.busy || !DailyCap.canSet(draft: draft, saved: key.capUsd, parse: KeyLanes.parseCap))
             }
+            // The face shows the choice; the server still holds the saved cap until Set cap.
+            if let note = DailyCap.note(draft: draft, saved: key.capUsd, parse: KeyLanes.parseCap) {
+                Text(note).font(COSType.body(11)).foregroundStyle(.secondary)
+            }
             if open {
                 HStack(spacing: 6) {
                     Text("$").font(COSType.body(11)).foregroundStyle(.secondary)

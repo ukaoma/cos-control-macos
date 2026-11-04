@@ -56,18 +56,24 @@ enum RestartApply {
 
     static let notApplied = "Not applied yet."
     static let waitsForWork = "Waits for running work."
+    /// Added when a video upload is part of what is running: one that stopped sending holds every row until it is cleared.
+    static let uploadOpen = "A video upload is open. If it stopped sending, use Clear stuck uploads."
     static let appliesRestart = "Applying restarts the server."
 
     /// The line under a row: "Not applied yet." while the selection differs, with what it waits for when work runs.
-    static func note(differs: Bool, work: Work) -> String? {
+    /// `held`: a click on this row found running work the row had not drawn yet; the row says it waits at once.
+    static func note(differs: Bool, work: Work, held: Bool = false) -> String? {
         guard differs else { return nil }
-        return work.active ? notApplied + " " + waitsForWork : notApplied
+        guard work.active || held else { return notApplied }
+        return notApplied + " " + waitsForWork + (work.uploads > 0 ? " " + uploadOpen : "")
     }
 
     /// A failed Apply, in words, on the row it came from.
-    static func failureNote(_ reason: String) -> String {
+    /// `othersReset`: other rows held choices that were not applied yet, and they went back to the server's values too.
+    static func failureNote(_ reason: String, othersReset: Bool = false) -> String {
         let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? "It did not apply. Showing the server's setting." : "It did not apply: " + trimmed + " Showing the server's setting."
+        let base = trimmed.isEmpty ? "It did not apply. Showing the server's setting." : "It did not apply: " + trimmed + " Showing the server's setting."
+        return othersReset ? base + " Other choices not applied yet were reset too." : base
     }
 
     /// What a switch shows after a failed Apply: the server's value, never the one that was refused. A server that
@@ -93,6 +99,7 @@ enum SettingsConfirmCopy {
     }
     static func message(_ confirm: ServerConfirm, workRunning: Bool, serverVersion: String?) -> String {
         let busy = " Work is running now. This waits up to 90 seconds for it, then fails and leaves the server closed until you run Repair."
+        let repairBusy = " Work is running now. Repair waits up to 90 seconds for it. If it fails, run Repair again once the work has finished."
         switch confirm {
         case .stop:
             return "Glasses, the phone and Work cannot reach COS until you press Start. Your meetings and settings stay as they are."
@@ -100,7 +107,7 @@ enum SettingsConfirmCopy {
             let name = serverVersion.map { "server " + $0 } ?? "this server"
             return "COS Control stops \(name) and starts the version it kept. You can update again later." + (workRunning ? busy : "")
         case .repair:
-            return "Repair rebuilds the server's runtime and restarts it. Use it when the server is not working." + (workRunning ? busy : "")
+            return "Repair rebuilds the server's runtime and restarts it. Use it when the server is not working." + (workRunning ? repairBusy : "")
         case .quit:
             return "A Mac recording is running. Quitting stops it and saves what was recorded. The server keeps running."
         }
@@ -216,6 +223,11 @@ enum DailyCap {
     static func amount(ofChoice id: String) -> Double? {
         presets.first { presetID($0) == id }
     }
+    /// While a choice waits for Set cap, the face shows an amount the server does not hold yet.
+    static let notSet = "Not set yet. Press Set cap."
+    static func note(draft: String?, saved: Double?, parse: (String) -> Double?) -> String? {
+        canSet(draft: draft, saved: saved, parse: parse) ? notSet : nil
+    }
     /// Set cap is live for an amount that parses and differs from the saved cap.
     static func canSet(draft: String?, saved: Double?, parse: (String) -> Double?) -> Bool {
         guard let draft, let value = parse(draft) else { return false }
@@ -229,9 +241,12 @@ enum DailyCap {
 enum VersionsLine {
     /// "Controller 0.5.366  •  Server 6.99.0". It never says "(npm latest)": Control does not know the newest published
     /// server, so it never claims the one running is it. A server that is installed but not running says so.
-    static func text(controller: String, running: String?, installed: String?, selfManaged: Bool) -> String {
-        if let running, !running.isEmpty { return "Controller \(controller)  •  Server \(running)" }
-        if let installed, !installed.isEmpty { return "Controller \(controller)  •  Server \(installed) (not running)" }
+    /// `running` is whether the server answered, not whether a version came back: a stopped server keeps its installed version.
+    static func text(controller: String, version: String?, installed: String?, running: Bool, selfManaged: Bool) -> String {
+        let shown = [version, installed].compactMap { $0 }.first { !$0.isEmpty }
+        if let shown {
+            return running ? "Controller \(controller)  •  Server \(shown)" : "Controller \(controller)  •  Server \(shown) (not running)"
+        }
         if selfManaged { return "Controller \(controller)  •  Server self-managed" }
         return "Controller \(controller)  •  Server not installed"
     }

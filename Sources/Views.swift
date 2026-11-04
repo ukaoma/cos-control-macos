@@ -553,6 +553,9 @@ struct ControlPanel: View {
     @State private var confirmHubRollback = false
     /// Settings Release A: Stop, Roll back (the panel's), Repair and Quit during a Mac recording ask first. One at a time.
     @State private var serverConfirm: ServerConfirm?
+    /// The restart row whose click found running work (it is drawn again), and whether other unapplied choices were reset by a failure.
+    @State private var restartHeldRow: String?
+    @State private var restartOthersReset = false
     /// The scroll-spy, held but not observed (only the rail observes it), so scrolling never redraws this view.
     @State private var hubSpy = SettingsHubSpyModel()
     /// Work chat's per-Mac planner and effort defaults (OUT-05, OUT-06), the same keys as its footer.
@@ -714,7 +717,14 @@ struct ControlPanel: View {
         // Settings Release A: a failed Apply puts every restart row back on what the server holds, even when that value did
         // not change (the onChange handlers above never fire for an unchanged value, so the refused choice stayed on screen).
         .onChange(of: model.restartApplyFailure) { _, failure in
-            if failure != nil { reseedRestartDrafts() }
+            if failure != nil {
+                restartOthersReset = restartRowsUnapplied(except: failure?.command) > 0
+                reseedRestartDrafts()
+            }
+        }
+        // The held note goes when the work does.
+        .onChange(of: restartWork.active) { _, active in
+            if !active { restartHeldRow = nil }
         }
     }
 
@@ -2143,7 +2153,7 @@ struct ControlPanel: View {
                 Button("Stop", systemImage: "stop.fill", role: .destructive) { serverConfirm = .stop }
                     .buttonStyle(COSQuietButtonStyle(tone: .destructive))
                     .disabled(serverRestartHeld || (model.status.runtimeState == "managedInPlace" && !model.status.safeToRestart))
-                    .help(serverRestartHeld ? "Stop is off until running work finishes." : "Stop the server. Start brings it back.")
+                    .help(serverRestartHeld ? "Stop is off until running work finishes. Stuck? Use Repair in Troubleshooting." : "Stop the server. Start brings it back.")
             } else if model.status.runtimeState == "stopped" {
                 Button("Start", systemImage: "play.fill") { model.perform("start") }.buttonStyle(COSPrimaryButtonStyle())
             }
@@ -3254,14 +3264,20 @@ struct ControlPanel: View {
         let work = restartWork
         let differs = RestartApply.differs(selected: selected, server: server)
         if let failure = model.restartApplyFailure, RestartApply.row(forCommand: failure.command) == id, !differs {
-            return RestartRowState(enabled: false, note: RestartApply.failureNote(failure.message), failed: true)
+            return RestartRowState(enabled: false, note: RestartApply.failureNote(failure.message, othersReset: restartOthersReset), failed: true)
         }
         return RestartRowState(enabled: RestartApply.applyEnabled(selected: selected, server: server, locked: serverSettingsLocked, work: work),
-                               note: RestartApply.note(differs: differs, work: work), failed: false)
+                               note: RestartApply.note(differs: differs, work: work, held: restartHeldRow == id), failed: false)
     }
     /// The click: checked again against the work running now, so a meeting that started since the row drew is never restarted over.
+    /// When the re-check finds work the row had not drawn (the panel does not observe the dictation store), the row is drawn again
+    /// now, so it shows Not applied yet and what it waits for instead of looking live and doing nothing.
     private func restartApply<Value: Equatable>(_ id: String, selected: Value, server: Value?, _ apply: () -> Void) {
-        guard RestartApply.applyEnabled(selected: selected, server: server, locked: serverSettingsLocked, work: restartWork) else { return }
+        guard RestartApply.applyEnabled(selected: selected, server: server, locked: serverSettingsLocked, work: restartWork) else {
+            restartHeldRow = id
+            return
+        }
+        restartHeldRow = nil
         apply()
     }
     /// The line under a panel row: amber for a failure, plain for "Not applied yet."
@@ -3273,7 +3289,28 @@ struct ControlPanel: View {
     }
     /// A hub row's description with the restart line and the state line after it.
     private func restartDetail(_ id: String, _ base: String, _ state: RestartRowState) -> String {
-        base + " " + SettingsHubCopy.appliesRestart + (state.note.map { " " + $0 } ?? "")
+        base + " " + SettingsHubCopy.appliesRestart + (state.failed ? "" : state.note.map { " " + $0 } ?? "")
+    }
+    /// A failed Apply in the hub: its own amber line under the row, as the panel draws it.
+    @ViewBuilder private func hubFailureNote(_ state: RestartRowState) -> some View {
+        if state.failed, let note = state.note { SettingsHubNote(text: note, tone: .warning) }
+    }
+    /// How many of the nine, other than the one that failed, hold a choice that was not applied yet and a server value to compare.
+    private func restartRowsUnapplied(except command: String?) -> Int {
+        let failed = command.flatMap(RestartApply.row(forCommand:))
+        let s = model.status
+        let rows: [(String, Bool)] = [
+            ("UT-03", s.transcriptionRequestedTier.map { $0 != selectedTranscriptionTier } ?? false),
+            ("UT-04", s.backgroundJobsEnabled.map { $0 != selectedBackgroundJobs } ?? false),
+            ("UT-05", s.meetingPreviewEnabled.map { $0 != selectedMeetingPreview } ?? false),
+            ("UT-06", s.claudeSessionsEnabled.map { $0 != selectedClaudeSessions } ?? false),
+            ("UT-07", s.threadAttachEnabled.map { $0 != selectedThreadAttach } ?? false),
+            ("UT-08", (s.ollamaConfiguredModel ?? "") != selectedOllamaModel),
+            ("UT-09", s.videoUploadV2Enabled.map { $0 != selectedVideoUploadV2 } ?? false),
+            ("UT-11", s.idleMetalHqEnabled.map { $0 != selectedIdleMetalHq } ?? false),
+            ("UT-12", s.adaptiveAudioCleanupEnabled.map { $0 != selectedAdaptiveAudioCleanup } ?? false),
+        ]
+        return rows.filter { $0.0 != failed && $0.1 }.count
     }
     /// After a failed Apply every one of the nine shows what the server holds (the helper re-read it), not the choice it refused.
     private func reseedRestartDrafts() {
@@ -3304,6 +3341,7 @@ struct ControlPanel: View {
                         .accessibilityLabel("Apply " + hubLabel(id))
                 }
             }
+            hubFailureNote(state)
         } else {
             HStack(spacing: 8) {
                 Toggle(panel, isOn: isOn)
@@ -3334,6 +3372,7 @@ struct ControlPanel: View {
                             .accessibilityLabel("Apply " + hubLabel("UT-03"))
                     }
                 }
+                hubFailureNote(state)
             } else {
                 HStack(spacing: 8) {
                     COSViewSwitch("Quality tier", selection: $selectedTranscriptionTier,
@@ -3416,6 +3455,7 @@ struct ControlPanel: View {
                             .accessibilityLabel("Apply " + hubLabel("UT-08"))
                     }
                 }
+                hubFailureNote(state)
             } else {
                 HStack(spacing: 8) {
                     COSDropdown("Local model", selection: $selectedOllamaModel, options: ollamaModelOptions)
@@ -3447,6 +3487,7 @@ struct ControlPanel: View {
                             .accessibilityLabel("Apply " + hubLabel("UT-09"))
                     }
                 }
+                hubFailureNote(state)
             } else {
                 HStack(spacing: 8) {
                     Toggle("Reliable video uploads", isOn: $selectedVideoUploadV2)
@@ -3570,8 +3611,8 @@ struct ControlPanel: View {
     /// Controller build from Info.plist; server version from live status. Never "(npm latest)": Control does not know the newest
     /// published server, so it does not claim the one running is it (Settings Release A; VersionsLine).
     private var footerLabel: String {
-        VersionsLine.text(controller: ControllerModel.currentVersion, running: model.status.version,
-                          installed: model.status.installedVersion, selfManaged: model.status.runtimeState == "managedInPlace")
+        VersionsLine.text(controller: ControllerModel.currentVersion, version: model.status.version, installed: model.status.installedVersion,
+                          running: model.status.running, selfManaged: model.status.runtimeState == "managedInPlace")
     }
 
     /// Compact per-CLI state: "Claude ✓ · Codex ✓ · Cursor ✓". A CLI whose
@@ -3807,12 +3848,13 @@ private extension ControlPanel {
     /// Escape in the hub: a search is cleared first, then an open inline confirm closes; only then does Activity leave
     /// Settings (ActivityWindow.handleActivityEscape asks here first).
     func hubEscape() -> Bool {
+        // Settings Release A review: an open dialog (any view's cosConfirm) or a focused typed field closes first. Activity catches
+        // Escape before either can, and used to leave Settings over a half-typed number or an open confirm.
+        if COSEscape.closeTop() { return true }
         // A query of spaces is no search (hubSearching trims), so Escape clears it on the way and goes on.
         if hubSearching { hubQuery = ""; hubSearchFocused = false; return true }
         hubQuery = ""
         if confirmHubRollback { confirmHubRollback = false; return true }
-        // Settings Release A: Escape on the Stop, Roll back, Repair or Quit dialog closes it and stays in Settings.
-        if serverConfirm != nil { serverConfirm = nil; return true }
         return false
     }
 

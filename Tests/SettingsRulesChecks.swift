@@ -58,12 +58,19 @@ import Foundation
         check(RestartApply.note(differs: true, work: idle) == "Not applied yet.", "a changed row says Not applied yet")
         check(RestartApply.note(differs: true, work: .init(jobs: 2)) == "Not applied yet. Waits for running work.", "a changed row says it waits when work runs")
         check(RestartApply.note(differs: false, work: .init(jobs: 2)) == nil, "an unchanged row says nothing while work runs")
+        check(RestartApply.note(differs: true, work: idle, held: true) == "Not applied yet. Waits for running work.", "a click that found work says the row waits, before the work is drawn")
+        check(RestartApply.note(differs: false, work: idle, held: true) == nil, "a held row with no change still says nothing")
+        check(RestartApply.note(differs: true, work: .init(uploads: 1))?.contains("Clear stuck uploads") == true, "an open upload is named, with the way to clear a stopped one")
+        check(RestartApply.note(differs: true, work: .init(jobs: 1))?.contains("upload") == false, "other work does not mention uploads")
+        check(RestartApply.note(differs: true, work: idle, held: true)?.contains("upload") == false, "a held row with no upload does not mention uploads")
 
         check(RestartApply.reseeded(current: true, server: false) == false, "after a failed Apply the switch shows the server's value")
         check(RestartApply.reseeded(current: "max", server: "balanced") == "balanced", "after a failed Apply the tier shows the server's value")
         check(RestartApply.reseeded(current: true, server: nil as Bool?) == true, "a server that reports nothing leaves the choice")
         check(RestartApply.failureNote("Timed out.").hasPrefix("It did not apply: Timed out."), "a failed Apply says why")
         check(RestartApply.failureNote("  ").contains("Showing the server's setting"), "a failed Apply with no reason still says it did not apply")
+        check(RestartApply.failureNote("Timed out.", othersReset: true).hasSuffix("Other choices not applied yet were reset too."), "a failure says other unapplied choices were reset")
+        check(!RestartApply.failureNote("Timed out.").contains("reset too"), "a failure that reset nothing else says nothing about it")
         for line in [RestartApply.notApplied, RestartApply.waitsForWork, RestartApply.failureNote("x")] {
             check(!line.contains("—") && !line.contains("→"), "restart copy has no em dash or arrow: \(line)")
         }
@@ -79,7 +86,9 @@ import Foundation
         check(SettingsConfirmCopy.message(.rollback, workRunning: true, serverVersion: nil).contains("Work is running now"), "rolling back while work runs says what happens")
         check(!SettingsConfirmCopy.message(.rollback, workRunning: false, serverVersion: nil).contains("Work is running now"), "rolling back with nothing running does not warn")
         check(SettingsConfirmCopy.message(.rollback, workRunning: false, serverVersion: "6.99.0").contains("server 6.99.0"), "rolling back names the server version")
-        check(SettingsConfirmCopy.message(.repair, workRunning: true, serverVersion: nil).contains("leaves the server closed until you run Repair"), "repair while work runs says what a timeout leaves")
+        check(SettingsConfirmCopy.message(.repair, workRunning: true, serverVersion: nil).contains("If it fails, run Repair again"), "repair while work runs says what to do if it fails")
+        check(!SettingsConfirmCopy.message(.repair, workRunning: true, serverVersion: nil).contains("until you run Repair"), "the Repair dialog never sends you to Repair")
+        check(SettingsConfirmCopy.message(.rollback, workRunning: true, serverVersion: nil).contains("until you run Repair"), "a rollback that times out points to Repair")
         check(SettingsConfirmCopy.message(.quit, workRunning: false, serverVersion: nil).contains("stops it and saves"), "quit during a Mac recording says it stops and saves")
         check(SettingsConfirmCopy.quitNeedsConfirm(macRecordingActive: true), "quit asks while a Mac recording runs")
         check(!SettingsConfirmCopy.quitNeedsConfirm(macRecordingActive: false), "quit does not ask when nothing is recording")
@@ -157,16 +166,20 @@ import Foundation
         check(!DailyCap.canSet(draft: "5", saved: 5, parse: parse), "Set cap is off for the saved amount")
         check(!DailyCap.canSet(draft: "x", saved: 5, parse: parse) && !DailyCap.canSet(draft: nil, saved: 5, parse: parse), "Set cap is off for an unreadable or empty amount")
         check(DailyCap.canSet(draft: "5", saved: nil, parse: parse), "Set cap is live when no cap is saved")
+        check(DailyCap.note(draft: "10", saved: 5, parse: parse) == "Not set yet. Press Set cap.", "a picked amount says it is not set yet")
+        check(DailyCap.note(draft: "5", saved: 5, parse: parse) == nil && DailyCap.note(draft: nil, saved: 5, parse: parse) == nil, "no note while the face is the saved cap")
     }
 
     // ── The Versions line.
     static func versions() {
-        check(VersionsLine.text(controller: "0.5.366", running: "6.99.0", installed: "6.99.0", selfManaged: false) == "Controller 0.5.366  •  Server 6.99.0", "a running server's version, with no claim about npm")
-        check(!VersionsLine.text(controller: "0.5.366", running: "6.99.0", installed: nil, selfManaged: false).contains("npm"), "the line never says npm latest")
-        check(VersionsLine.text(controller: "1", running: nil, installed: "6.98.0", selfManaged: false).hasSuffix("Server 6.98.0 (not running)"), "an installed server that is not running says so")
-        check(VersionsLine.text(controller: "1", running: "", installed: "6.98.0", selfManaged: false).hasSuffix("(not running)"), "an empty running version is not running")
-        check(VersionsLine.text(controller: "1", running: nil, installed: nil, selfManaged: true).hasSuffix("Server self-managed"), "a self-managed server")
-        check(VersionsLine.text(controller: "1", running: nil, installed: nil, selfManaged: false).hasSuffix("Server not installed"), "no server")
+        check(VersionsLine.text(controller: "0.5.366", version: "6.99.0", installed: "6.99.0", running: true, selfManaged: false) == "Controller 0.5.366  •  Server 6.99.0", "a running server's version, with no claim about npm")
+        check(!VersionsLine.text(controller: "0.5.366", version: "6.99.0", installed: nil, running: true, selfManaged: false).contains("npm"), "the line never says npm latest")
+        check(VersionsLine.text(controller: "1", version: nil, installed: "6.98.0", running: false, selfManaged: false).hasSuffix("Server 6.98.0 (not running)"), "an installed server that is not running says so")
+        check(VersionsLine.text(controller: "1", version: "6.98.0", installed: "6.98.0", running: false, selfManaged: false).hasSuffix("(not running)"), "a stopped server that still reports a version says it is not running")
+        check(!VersionsLine.text(controller: "1", version: nil, installed: "6.98.0", running: true, selfManaged: false).contains("(not running)"), "a running server whose version has not come back is not called stopped")
+        check(VersionsLine.text(controller: "1", version: "", installed: "6.98.0", running: true, selfManaged: false).hasSuffix("Server 6.98.0"), "an empty version falls back to the installed one")
+        check(VersionsLine.text(controller: "1", version: nil, installed: nil, running: false, selfManaged: true).hasSuffix("Server self-managed"), "a self-managed server")
+        check(VersionsLine.text(controller: "1", version: nil, installed: nil, running: false, selfManaged: false).hasSuffix("Server not installed"), "no server")
     }
 
     // ── The microphone listener.

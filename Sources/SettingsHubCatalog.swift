@@ -514,10 +514,19 @@ enum SettingsHubCatalog {
         }
         return current
     }
-    /// The sentence that explains a hidden row in search, or nil when it is drawn.
+    /// The sentence that explains a hidden row in search, or nil when it is drawn. It names the first step still missing: the
+    /// highest hidden row on the way up, so Wait for held keys with AI polish off says to choose a polish model, not Paste then polish.
     static func gateLine(_ id: String, hidden: (String) -> Bool) -> String? {
         guard hidden(id) else { return nil }
-        return gatedBy[id]?.line
+        var current = id
+        var first = gatedBy[id]
+        var steps = 0
+        while hidden(current), let gate = gatedBy[current], steps < 8 {
+            first = gate
+            current = gate.parent
+            steps += 1
+        }
+        return first?.line
     }
 
     /// Built once: views look rows up by id on every render (QA 2026-10-28), so lookups are dictionary reads.

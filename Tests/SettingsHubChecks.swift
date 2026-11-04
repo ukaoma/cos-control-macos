@@ -96,6 +96,9 @@ import Foundation
         check(SettingsHubCatalog.landing("WK-07", hidden: { _ in false }) == "WK-07", "a drawn row opens itself")
         check(SettingsHubCatalog.landing("G-01", hidden: { _ in true }) == "G-01", "a row with no gate opens itself even when asked as hidden")
         check(SettingsHubCatalog.landing("WK-06", hidden: { _ in true }) == "WK-06", "a parent never climbs further")
+        check(SettingsHubCatalog.gateLine("DI-25", hidden: off) == "Choose an AI polish model to change this.", "Wait for held keys with AI polish off names the first missing step")
+        check(SettingsHubCatalog.gateLine("DI-25", hidden: { $0 == "DI-25" }) == "Turn on Paste then polish to change this.", "with only Paste then polish off, it names that")
+        check(SettingsHubCatalog.gateLine("DI-24", hidden: off) == "Choose an AI polish model to change this.", "Paste then polish names the model")
         check(SettingsHubCatalog.gateLine("WK-07", hidden: off) == "Turn on Today home to change this." && SettingsHubCatalog.gateLine("WK-07", hidden: { _ in false }) == nil
               && SettingsHubCatalog.gateLine("G-01", hidden: { _ in true }) == nil, "search says what to turn on, only for a hidden gated row")
         // A hidden child is still a result: the page's itemShown test is for rows with no parent to open.

@@ -76,11 +76,17 @@ pin(views.count("serverConfirm = .stop") == 1 and views.count("serverConfirm = .
     "the Stop button, both Repair buttons and the panel's Roll back open the confirm")
 pin(views.count("AppQuit.request()") == 2 and views.count("requestQuit()") == 3, "both Quit buttons go through requestQuit; AppQuit.request has the confirm and the unconfirmed quit")
 pin("SettingsConfirmCopy.quitNeedsConfirm(macRecordingActive: model.macRecordingActive)" in views, "Quit asks while a Mac recording runs")
+pin("Stop is off until running work finishes. Stuck? Use Repair in Troubleshooting." in views, "Stop says how to get unstuck while it waits")
 pin(".disabled(serverRestartHeld || (model.status.runtimeState == \"managedInPlace\" && !model.status.safeToRestart))" in views
     and views.count(".disabled(serverRestartHeld)") == 1, "Stop waits for running work like Restart")
 hub_escape = body(views, "    func hubEscape() -> Bool {", "\n    }\n")
-pin("if serverConfirm != nil { serverConfirm = nil; return true }" in hub_escape and hub_escape.index("confirmHubRollback") < hub_escape.index("serverConfirm"),
-    "Escape closes the server confirm before it leaves Settings")
+pin("if COSEscape.closeTop() { return true }" in hub_escape and hub_escape.index("COSEscape.closeTop()") < hub_escape.index("hubSearching") and "serverConfirm" not in hub_escape,
+    "Escape closes an open dialog or a typed field first, before a search, and only then leaves Settings")
+pin("COSEscape.register(escapeID) { isPresented = false }" in confirm and "COSEscape.unregister(escapeID)" in confirm and confirm.count("COSEscape.") == 3,
+    "every confirm, whichever view owns it, registers while it is on screen and forgets when it goes")
+pin("COSEscape.register(escapeID) { cancelTyping() }" in brand and ".onExitCommand { cancelTyping() }" in brand and ".onDisappear { COSEscape.unregister(escapeID) }" in brand
+    and brand.index("if escaped { escaped = false; draft = valueText ?? \"\"; return }") < brand.index("if text != (valueText ?? \"\") { onTypedValue?(text) }"),
+    "a typed stepper in focus is closed by Escape, which puts the value back and sends nothing, even though losing focus commits")
 settings = body(dictation, "struct MacDictationSettings: View {", "private struct DictationQuietSettings: View {")
 pin("DictationHistory.deleted(store.recent, retention: next, now: Date())" in settings and "shorteningTo = next" in settings
     and ".destructive(SettingsConfirmCopy.shortenAction(count: shortenCount, days: target.days)) { store.setRetention(target) }" in settings,
@@ -95,13 +101,17 @@ for rid in ("UT-03", "UT-08", "UT-09"):
 pin("waitsForWork" not in section and "applyBlocked" not in section, "no row keeps its own gate: all nine use RestartApply")
 pin(section.count(".disabled(!state.enabled)") == 8 and section.count("Button(\"Apply\"") == 8, "every Apply is disabled by RestartApply (eight sites draw the nine rows)")
 pin(section.count("Apply \" +") + section.count('accessibilityLabel("Apply ') >= 8, "every Apply says which setting it applies, for VoiceOver")
-pin("RestartApply.applyEnabled(selected: selected, server: server, locked: serverSettingsLocked, work: restartWork) else { return }" in section,
+pin("RestartApply.applyEnabled(selected: selected, server: server, locked: serverSettingsLocked, work: restartWork) else {" in section,
     "the click checks the work running now, not the work when the row drew")
 work = body(section, "    private var restartWork: RestartApply.Work {", "    private struct RestartRowState {")
 for field in ("model.status.activeJobs", "model.status.activeTranscriptionSessions", "model.recordingCount", "model.dictation.busy", "videoUploadV2Receiving",
               "videoUploadV2Finalizing", "meetingWorkBlockingRestart", "transactionPending"):
     pin(field in work, f"restart work counts {field}")
-pin(".onChange(of: model.restartApplyFailure) { _, failure in\n            if failure != nil { reseedRestartDrafts() }" in views, "a failed Apply reseeds the choices")
+pin("restartOthersReset = restartRowsUnapplied(except: failure?.command) > 0\n                reseedRestartDrafts()" in views, "a failed Apply counts other unapplied choices, then reseeds them")
+pin("restartHeldRow = id\n            return" in views and "held: restartHeldRow == id" in views and "if !active { restartHeldRow = nil }" in views,
+    "a click that finds running work draws the row again with its note, and the note goes with the work")
+pin(views.count("hubFailureNote(state)") == 4 and "state.failed ? \"\" : state.note" in views and "SettingsHubNote(text: note, tone: .warning)" in views,
+    "a failed Apply is its own amber line in the hub, under each of the four hub row shapes")
 perform = body(model, "    func perform(_ command: String, arguments: [String] = []) {", "    func installCurrentRelease()")
 pin("restartApplyFailure = nil" in perform.split("Task {")[0] and perform.rindex("await refresh(quiet: true)") < perform.index("self.restartApplyFailure = RestartApplyFailure"),
     "a failure is recorded after the status re-read, and cleared when the next command starts")
@@ -114,9 +124,10 @@ pin("LiveCues.range(key, limit)" in limits and "TypedCount.parse(text, low: low,
 pin("ValueMenu.choices(stops: LiveCues.ladder(key, limit), current: shown" in limits and "COSDropdown(title(key)" in limits,
     "the gap and the daily writer calls are menus from the server's bounds, with the saved value on them")
 pin(limits.count("store.propose(") == 2, "the bar and one move function are the only ways to a limit")
-pin("var onTypedValue: ((String) -> Void)?" in brand and ".onExitCommand { draft = valueText; typing = false }" in brand
+pin("var onTypedValue: ((String) -> Void)?" in brand and ".onExitCommand { cancelTyping() }" in brand
     and "if text != (valueText ?? \"\") { onTypedValue?(text) }" in brand, "the typed stepper sends on Return or blur, and Esc puts the value back")
 key_row = body(lanes, "    private func keyRow(_ key: KeyLanesKey) -> some View {", "    private func capControls(_ key: KeyLanesKey) -> some View {")
+pin("DailyCap.note(draft: draft, saved: key.capUsd, parse: KeyLanes.parseCap)" in lanes, "a picked cap says it is not set yet")
 pin("capControls(key)" in key_row and "TextField(KeyLanes.capLabel" not in key_row, "a key's cap is the preset menu, not a bare field")
 caps = body(lanes, "    private func capControls(_ key: KeyLanesKey) -> some View {", "    private var addKey: some View {")
 pin("DailyCap.choices(saved: key.capUsd)" in caps and "DailyCap.face(draft: draft, saved: key.capUsd" in caps and "DailyCap.canSet(draft: draft, saved: key.capUsd, parse: KeyLanes.parseCap)" in caps
@@ -124,7 +135,9 @@ pin("DailyCap.choices(saved: key.capUsd)" in caps and "DailyCap.face(draft: draf
 pin("newKeyCap" in lanes and 'Text("Cap $")' not in lanes, "the new key's cap is the same menu")
 
 # 4. Microphones.
-pin("micWatcher.start { [store] in store.refreshMicrophones() }" in dictation and ".onDisappear { micWatcher.stop() }" in dictation
+pin("micWatcher.start { [store] in store.refreshMicrophonesOffMain() }" in dictation and "await DictationAudioDevices.inputsOffMain()" in dictation.split("func refreshMicrophonesOffMain()")[1].split("\n    }\n")[0],
+    "a plug or unplug lists devices off the main actor")
+pin("micWatcher.start { [store] in store.refreshMicrophonesOffMain() }" in dictation and ".onDisappear { micWatcher.stop() }" in dictation
     and dictation.count("Button(\"Check again\") { store.refreshMicrophones() }") == 2 and "Refresh microphones\") {" not in dictation,
     "the microphone list follows the Mac and keeps Check again")
 
@@ -157,6 +170,7 @@ pin('"work.domains": ["Domains"]' in setup, "typing Domains in the Setup assista
 pin('"DI-03", "Check again"' in catalog, "the catalog names Check again")
 
 # 7. The Versions line.
+pin("running: model.status.running, selfManaged:" in views, "the Versions line takes running from the server's status, not from a missing version")
 pin("VersionsLine.text(controller: ControllerModel.currentVersion" in views and "npm latest" not in views, "the Versions line never says npm latest")
 
 # 8. Sidebar keys.
