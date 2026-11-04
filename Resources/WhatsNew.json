@@ -1,7 +1,7 @@
 {
   "version": "0.5.366",
   "whatsNew": {
-    "summary": "You can rename a recording while it is still recording. In the live meeting view, click the title or Rename, type a name and press Return. It needs the newer COS server and shows nothing on an older one. COS keeps your words and may sharpen them when it saves the meeting. Settings is also safer: Return never confirms a delete, Stop and Repair ask first, and settings that restart the server wait for running work. Plus everything in 0.5.365: a Web today line in Settings, Live cues, a limit change that no longer says it failed after it saved, and spreadsheets (.xlsx) dropped on a meeting read on your Mac.",
+    "summary": "Rename a recording while it records: click the title or Rename in the live meeting view, type a name and press Return. COS keeps your words and may sharpen them when it saves. It needs the newer COS server. Settings is safer: Return never confirms a delete, Stop and Repair ask first, and settings that restart the server wait for running work. Plus everything in 0.5.365: a Web today line in Live cues and spreadsheets read on your Mac. Also in 0.5.363: with Today home on, ⌘K finds a session by meaning once you say yes for your decision model, and each search sends your words, plus the titles and first prompts of recent sessions, to it.",
     "sections": [
       {
         "title": "0.5.366",

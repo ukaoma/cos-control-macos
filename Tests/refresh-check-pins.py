@@ -105,6 +105,10 @@ pin("VStack" not in header[:lockup_at], "stamp placement", "the lockup stands al
 
 # The footer still names the Control version.
 footer = code(body(views, "    private var footerLabel: String {", "\n    }\n"))
-pin("ControllerModel.currentVersion" in footer and '"Controller \\(controller)' in footer, "footer version",
+# 0.5.366 (Settings Release A): the words moved into VersionsLine.text (SettingsRules.swift); the footer passes the version.
+rules = (root / "Sources/SettingsRules.swift").read_text(encoding="utf-8")
+versions_line = code(body(rules, "enum VersionsLine {", "\n}\n"))
+pin("ControllerModel.currentVersion" in footer and "VersionsLine.text(controller:" in footer
+    and '"Controller \\(controller)' in versions_line, "footer version",
     "the footer label still names the Control version")
 print("PASS: refresh-check pins")
