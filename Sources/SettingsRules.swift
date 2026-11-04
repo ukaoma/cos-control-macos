@@ -151,7 +151,7 @@ enum TypedCount {
     }
     static func parse(_ text: String, low: Int, high: Int) -> Result {
         let trimmed = text.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty, trimmed.allSatisfy({ $0.isASCII && $0.isNumber }), let number = Int(trimmed) else { return .invalid }
+        guard !trimmed.isEmpty, trimmed.allSatisfy({ $0.isNumber }), let number = Int(trimmed) else { return .invalid }
         if number < low { return .clamped(low, note: "The least is \(low).") }
         if number > high { return .clamped(high, note: "The most is \(high).") }
         return .value(number)
@@ -284,7 +284,7 @@ enum VersionsLine {
         pending = Task { [weak self] in
             guard let self else { return }
             if self.debounce > .zero { try? await Task.sleep(for: self.debounce) }
-            guard !Task.isCancelled, self.watching else { return }
+            guard !Task.isCancelled else { return }
             self.refresh?()
         }
     }

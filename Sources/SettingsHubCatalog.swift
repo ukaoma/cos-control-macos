@@ -355,7 +355,7 @@ enum SettingsHubCatalog {
         .init("MB-08", "Run now", "Runs the brief right away and drops it in the inbox. Five a day.", old: "Run Now", group: "work.brief", advanced: false, mount: .group),
         .init("MB-09", "Last brief", "How the last brief went.", old: "Last brief line; Retry; Loading the schedule…", group: "work.brief", advanced: false, mount: .group),
         .init("MB-06", "Source options", "Settings for each source.", old: "Per-source options (boolean checkbox, integer stepper, text field)", group: "work.brief", advanced: false, mount: .group),
-        .init("DM-01", "Task folders", "The areas your tasks are grouped by.", old: "Domains: one \"domain\" field per name; empty-state line", group: "work.domains", advanced: false, mount: .group, keywords: ["domains", "domain"]),
+        .init("DM-01", "Task folders", "The areas your tasks are grouped by.", old: "Domains: one \"domain\" field per name; empty-state line", group: "work.domains", advanced: false, mount: .group),
         .init("DM-02", "Order and remove", "Reorder or unlist a task folder. Its folder stays.", old: "Move up, Remove (per row)", group: "work.domains", advanced: false, mount: .group),
         .init("DM-03", "Save task folders", "Add, save or reset the list.", old: "Add, Save, Reset", group: "work.domains", advanced: false, mount: .group, keywords: ["save domains"]),
         .init("FN-01", "Paused threads", "Threads COS stopped writing to after a reply went missing.", old: "Fenced threads · N, explanation, degraded warning, Refresh", group: "work.fences", advanced: false, mount: .group),

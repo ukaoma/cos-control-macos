@@ -89,7 +89,7 @@ pin("DictationHistory.deleted(store.recent, retention: next, now: Date())" in se
 # 2. The nine restart rows.
 section = body(views, "    private var serverSettingsLocked: Bool {", "    @ViewBuilder private var noticeBanner: some View {")
 for rid in ("UT-04", "UT-05", "UT-06", "UT-07", "UT-11", "UT-12"):
-    pin(re.search(rf'applySwitch\(hub, id: "{rid}",.*?server: model\.status\.\w+\)', section, re.S) is not None, f"{rid} compares with the server's value")
+    pin(re.search(rf'applySwitch\(hub, id: "{rid}",[^{{]*?server: model\.status\.\w+\) \{{', section) is not None, f"{rid} compares with the server's value")
 for rid in ("UT-03", "UT-08", "UT-09"):
     pin(f'restartState("{rid}", selected:' in section and f'restartApply("{rid}", selected:' in section, f"{rid} compares with the server's value and checks again at the click")
 pin("waitsForWork" not in section and "applyBlocked" not in section, "no row keeps its own gate: all nine use RestartApply")
@@ -132,10 +132,12 @@ pin("micWatcher.start { [store] in store.refreshMicrophones() }" in dictation an
 hub_home = body(views, '        hubCard("general.home") {', '        hubCard("general.guide")')
 pin(re.search(r'if todayHomeEnabled \{\s*hubSwitch\("WK-07", isOn: \$todayQuietHours\)\s*hubSwitch\("WK-08", isOn: \$todayWorkRuns\)\s*\}', hub_home) is not None,
     "Quiet hours and Work runs are drawn only while Today home is on")
-polish = body(dictation, '                .settingsHubRow().settingsHubAnchor("DI-23")', '                DictationPolishInstructionsCard(')
+polish = body(dictation, '                .settingsHubRow().settingsHubAnchor("DI-23")', 'DictationPolishInstructionsCard(store:')
 pin("if store.polishModel != .off {" in polish and "if store.pasteThenPolish {" in polish and polish.index("if store.polishModel != .off {") < polish.index("DI-24") < polish.index("if store.pasteThenPolish {") < polish.index("DI-25"),
     "Paste then polish needs a model; Wait for held keys needs Paste then polish")
-pin("DictationPolishInstructionsCard(" in dictation and "DictationStyleCard(" in dictation and "if store.polishModel != .off {" not in dictation.split("DictationPolishInstructionsCard(")[1].split("DictationStyleCard(")[0],
+card_lines = [l for l in dictation.split("\n") if "DictationPolishInstructionsCard(store:" in l]
+pin(len(card_lines) == 1 and card_lines[0].strip().startswith("DictationPolishInstructionsCard(") and "DictationStyleCard(" in dictation
+    and "if store.polishModel != .off {" not in dictation.split("DictationPolishInstructionsCard(")[1].split("DictationStyleCard(")[0],
     "Your polish instructions and Your style stay drawn: the glasses use them with AI polish off")
 pin('"WK-07": Gate(parent: "WK-06"' in catalog and '"DI-25": Gate(parent: "DI-24"' in catalog, "every hidden option names the switch that holds it")
 hidden_fn = body(views, "    func hubOptionHidden(_ id: String) -> Bool {", "\n    }\n")
