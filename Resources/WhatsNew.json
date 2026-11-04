@@ -8,7 +8,7 @@
         "items": [
           "Settings, Glasses and iPhone has a new row, Open COS on your phone. Scan its QR with your iPhone camera and Safari opens COS already signed in. The QR works once, for 2 minutes, and only on your tailnet.",
           "Show a sign-in code gives you a short code to type on the sign-in page instead. It works once, for 5 minutes.",
-          "COS makes the QR only while the row is on screen, and a new one about every 90 seconds. It needs the newer COS server: on an older one the row says to update it, and without Tailscale on this Mac it says to turn it on."
+          "COS makes the QR only while the row is on screen, and a new one about every 90 seconds. It needs the newer COS server: on an older one the row says to update it, and without Tailscale on this Mac it says to turn it on.", "The row sits first under Devices, and the glasses pairing QR now says it is for the COS Glasses app, not the iPhone Camera."
         ]
       },
       {
