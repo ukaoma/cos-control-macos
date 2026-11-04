@@ -142,7 +142,9 @@ try:
     mutant = compile_upgrade("upgrade-mutant")
     models.write_text(source)
     code, out = run(mutant, str(work))
-    wanted = "a custom motion-v2 layer must survive: windu-illustrated-v1-trio-b-body-2x-s3.png"
+    # Rotation variants are lists as well as Retina strips, so the first check this reaches is the V15 one, a customized
+    # rotation body layer (Tests/IllustratedPetUpgrade.swift, "custom body layer must survive"); measured 2026-11-04.
+    wanted = "custom body layer must survive"
     verdict = "SURVIVED" if code == 0 else ("KILLED" if wanted in out else "CRASHED")
     results.append((verdict, "stock recognition ignores Retina lists"))
     print(f"{verdict:9} {results[-1][1]}" + ("" if verdict == "KILLED" else f"\n{out[-1200:]}"), flush=True)
