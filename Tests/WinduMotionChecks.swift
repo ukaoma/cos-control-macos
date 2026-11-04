@@ -68,7 +68,7 @@ import CryptoKit
   // and before it the body strip is empty, so the tail can only ever show the hero who finished the strike.
   for scale in [CGFloat(1),2] { autoreleasepool {
    let actual=PetSpriteStore.loadRotations(in:pack,displayScale:scale,only:[.working])[.working]!
-   precondition(actual.variants.count==4 && actual.frames==184 && actual.manifest.handoffFrame==145 && actual.manifest.variants.allSatisfy{$0.file.hasPrefix("windu-motion-v13-working-")},"the bundled working row is Motion V13")
+   precondition(actual.variants.count==4 && actual.frames==184 && actual.manifest.handoffFrame==145 && actual.manifest.variants.allSatisfy{$0.file.hasPrefix("windu-motion-v13a-working-")},"the bundled working row is Motion V13")
    let width=PetSpriteStrip.raster(actual.variants[0].full[0])!.width
    precondition(width==Int(scale)*PetSpriteStrip.raster(PetSpriteStore.loadRotations(in:pack,only:[.working])[.working]!.variants[0].full[0])!.width,"\(scale)x must decode the \(scale)x strips")
    let castA=actual.variants[0].full.map(digest)

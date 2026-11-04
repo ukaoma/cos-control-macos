@@ -89,9 +89,9 @@ def retina_variant(data, index):
 
 
 ROTATION = [
-    ("a cast's tail body is another cast's body", lambda d: working_variant(d, 1).update(bodyFile="windu-motion-v13-working-c-body-1x.png"),
+    ("a cast's tail body is another cast's body", lambda d: working_variant(d, 1).update(bodyFile="windu-motion-v13a-working-c-body-1x.png"),
      "the tail body is not the full frame at 1/144, 1.0x"),
-    ("the body strip draws before the handoff", lambda d: working_variant(d, 0).update(bodyFile="windu-motion-v13-working-a-full-1x.png"),
+    ("the body strip draws before the handoff", lambda d: working_variant(d, 0).update(bodyFile="windu-motion-v13a-working-a-full-1x.png"),
      "the body strip draws before the handoff at 0/0, 1.0x"),
     ("the fourth cast at 2x is the first cast", lambda d: retina_variant(d, 3).update(file=list(retina_variant(d, 0)["file"])),
      "cast 3 shares the run-in and is its own strike after it at 2.0x"),

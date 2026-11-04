@@ -75,17 +75,17 @@ def drop_v2(data):
 
 
 def manifest_drop(data):
-    data.pop("windu-motion-v13-working-d-body-1x.png")
+    data.pop("windu-motion-v13a-working-d-body-1x.png")
 
 
 MUTANTS = [
-    ("a V13 strip changes by one byte", png_edit("windu-motion-v13-working-b-full-2x-s3.png"), "windu-motion-v13-working-b-full-2x-s3.png"),
+    ("a V13 strip changes by one byte", png_edit("windu-motion-v13a-working-b-full-2x-s3.png"), "windu-motion-v13a-working-b-full-2x-s3.png"),
     ("a retained Session 3 dependency changes", png_edit("windu-illustrated-v1-trio-c-full-2x-s4.png"), "windu-illustrated-v1-trio-c-full-2x-s4.png"),
     # Killed first by the spec line (trio 172 frames, 3 casts, handoff 121), before the map hash: the gate that names it.
     ("the trio handoff moves", json_edit(MAP, set_trio_handoff), "r['handoffFrame']==handoff"),
     ("the map is re-pinned but a cast's entry is swapped",
      lambda work: (json_edit(MAP, entry_swap)(work),
-                   text_edit("Tests/illustrated-pack-pins.py", "838f747305f3690cc3a6b787a3e75188677795bc27d7c9308fb5bad72369bba3",
+                   text_edit("Tests/illustrated-pack-pins.py", "be30092cdffca5347f4ed1cc4cf01909778a64aeaf09583e673ef629047cc320",
                              __import__("hashlib").sha256((work / MAP).read_bytes()).hexdigest())(work)),
      "working row"),
     ("the Motion V2 map leaves the stock history", json_edit(HISTORY, drop_v2), "assert len(v2)==1"),
@@ -134,7 +134,7 @@ try:
             print(output[-800:])
         shutil.rmtree(work)
     untouched = all(not (root / PACK / f).read_bytes().endswith(b"\0") for f in
-                    ["windu-motion-v13-working-b-full-2x-s3.png", "windu-illustrated-v1-trio-c-full-2x-s4.png"])
+                    ["windu-motion-v13a-working-b-full-2x-s3.png", "windu-illustrated-v1-trio-c-full-2x-s4.png"])
     print("repository pack untouched:", untouched and (root / PACK / "windu-motion-v2-working-c-body-1x.png").is_file())
     if survivors or not untouched:
         sys.exit(f"{len(survivors)} mutant(s) not killed by the check that names them: {survivors}")

@@ -37,7 +37,7 @@ LEDGER = {
     "BundledCharacters/jedi-miles-windu": [
         (27, "2ba8634a87ccbc0ec37bb10a383e4ffd76aba30122a31df120516f70513c39d1"),  # Windu Motion V1, 0.5.350 to 0.5.358
         (28, "0292c01a15077ee7c28d61fb7d82b86b6959c2137fd55a30dc9375f18c7a2313"),  # Windu Motion V2, 0.5.360
-        (29, "838f747305f3690cc3a6b787a3e75188677795bc27d7c9308fb5bad72369bba3"),  # Windu Motion V13 working, Session 3 V4 trio, 0.5.368
+        (29, "be30092cdffca5347f4ed1cc4cf01909778a64aeaf09583e673ef629047cc320"),  # Windu Motion V13 working, Session 3 V4 trio, 0.5.368
     ],
     "DefaultPet": [(27, "af4fc61df77344d955633563cef7b0c55fd7dc39a02753c443d26d9f16f4d134")],
 }
