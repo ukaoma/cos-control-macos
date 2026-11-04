@@ -41,7 +41,9 @@ model = code((root / "Sources/ControllerModel.swift").read_text(encoding="utf-8"
 install = model[model.index("func installAppUpdate()"):model.index("private func watchAppUpdateApply")]
 if "AppQuit.request()" not in install: fail("update quits", "installAppUpdate must quit with AppQuit.request()")
 views = code((root / "Sources/Views.swift").read_text(encoding="utf-8"))
-if 'Button("Quit", systemImage: "power") { AppQuit.request() }' not in views: fail("quit button", "the menu's Quit uses AppQuit.request()")
+# Settings Release A: the Quit buttons ask first while a Mac recording runs (requestQuit), and quit through AppQuit.request() either way.
+if 'Button("Quit", systemImage: "power") { requestQuit() }' not in views or views.count("AppQuit.request()") != 2 or "serverConfirm = .quit } else { AppQuit.request() }" not in views:
+    fail("quit button", "the menu's Quit goes through requestQuit, which uses AppQuit.request()")
 rec = code((root / "Sources/MacRecording.swift").read_text(encoding="utf-8"))
 handler = rec[rec.index("func applicationShouldTerminate"):rec.index("return .terminateLater\n    }")]
 if "MacRecordingTermination.pending || MacRecordingTermination.needsPrepare?() ?? true else { return .terminateNow }" not in handler:

@@ -116,16 +116,18 @@ enum SettingsConfirmCopy {
     /// Quit asks only when something live would be cut short. Nothing live: it quits at once, as it always did.
     static func quitNeedsConfirm(macRecordingActive: Bool) -> Bool { macRecordingActive }
 
-    /// Choosing a shorter time to keep dictations deletes the older ones at once; the dialog says how many.
-    static func shortenTitle(count: Int, days: Int) -> String {
+    /// Choosing a shorter time to keep dictations deletes the older ones at once; the dialog says how many. `days` is nil for
+    /// Forever, which can only delete through the 5,000 cap.
+    static func shortenTitle(count: Int, days: Int?) -> String {
         "Delete \(count) older \(count == 1 ? "dictation" : "dictations")?"
     }
-    static func shortenMessage(count: Int, days: Int) -> String {
-        "Keeping dictations for \(days) days deletes \(count) \(count == 1 ? "dictation" : "dictations") older than that from this Mac. "
-            + "This cannot be undone."
+    static func shortenMessage(count: Int, days: Int?) -> String {
+        let noun = count == 1 ? "dictation" : "dictations"
+        guard let days else { return "COS keeps at most 5,000 dictations, so this deletes the \(count) oldest. This cannot be undone." }
+        return "Keeping dictations for \(days) days deletes \(count) \(noun) older than that from this Mac. This cannot be undone."
     }
-    static func shortenAction(count: Int, days: Int) -> String {
-        "Delete \(count) and keep \(days) days"
+    static func shortenAction(count: Int, days: Int?) -> String {
+        days.map { "Delete \(count) and keep \($0) days" } ?? "Delete \(count)"
     }
 }
 
@@ -200,8 +202,9 @@ enum DailyCap {
         return out
     }
     /// Which choice the face shows. `draft` is what is in the amount field (nil: nothing typed), `saved` the server's cap,
-    /// `otherOpen` that Other amount was picked. Always one of `choices(saved:)`: never blank.
-    static func face(draft: String?, saved: Double?, otherOpen: Bool) -> String {
+    /// `otherOpen` that Other amount was picked, `parse` the one rule for an amount (KeyLanes.parseCap: $0.01 to $1000, cents).
+    /// Always one of `choices(saved:)`: never blank.
+    static func face(draft: String?, saved: Double?, otherOpen: Bool, parse: (String) -> Double?) -> String {
         if otherOpen { return other }
         let value = draft.flatMap(parse) ?? saved
         guard let value else { return other }
@@ -209,19 +212,12 @@ enum DailyCap {
         if let saved, abs(saved - value) < 0.005 { return current }
         return other
     }
-    /// The amount field's text: one to four dollar digits, then optional cents, inside $0.01 to $1000 (the server's range).
-    static func parse(_ text: String) -> Double? {
-        let trimmed = text.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "$", with: "")
-        guard trimmed.range(of: "\\A[0-9]{1,4}(\\.[0-9]{1,2})?\\z", options: .regularExpression) != nil,
-              let value = Double(trimmed), value >= 0.01, value <= 1000 else { return nil }
-        return value
-    }
     /// A preset's id back to its amount; nil for the saved-cap line and Other amount.
     static func amount(ofChoice id: String) -> Double? {
         presets.first { presetID($0) == id }
     }
     /// Set cap is live for an amount that parses and differs from the saved cap.
-    static func canSet(draft: String?, saved: Double?) -> Bool {
+    static func canSet(draft: String?, saved: Double?, parse: (String) -> Double?) -> Bool {
         guard let draft, let value = parse(draft) else { return false }
         guard let saved else { return true }
         return abs(value - saved) >= 0.005

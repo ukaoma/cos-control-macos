@@ -551,6 +551,8 @@ struct ControlPanel: View {
     @State private var hubAdvanced: Set<String> = []
     /// On this page: the group in view, from the scroll-spy.
     @State private var confirmHubRollback = false
+    /// Settings Release A: Stop, Roll back (the panel's), Repair and Quit during a Mac recording ask first. One at a time.
+    @State private var serverConfirm: ServerConfirm?
     /// The scroll-spy, held but not observed (only the rail observes it), so scrolling never redraws this view.
     @State private var hubSpy = SettingsHubSpyModel()
     /// Work chat's per-Mac planner and effort defaults (OUT-05, OUT-06), the same keys as its footer.
@@ -709,6 +711,11 @@ struct ControlPanel: View {
         .onChange(of: model.status.ollamaConfiguredModel) { _, pinned in
             selectedOllamaModel = pinned ?? ""
         }
+        // Settings Release A: a failed Apply puts every restart row back on what the server holds, even when that value did
+        // not change (the onChange handlers above never fire for an unchanged value, so the refused choice stayed on screen).
+        .onChange(of: model.restartApplyFailure) { _, failure in
+            if failure != nil { reseedRestartDrafts() }
+        }
     }
 
     /// The hub when Activity hosts it with the classic switch off; the one-page panel everywhere else.
@@ -847,8 +854,42 @@ struct ControlPanel: View {
         )
     }
 
-    var body: some View {
+    /// Settings Release A. A fourth stage on purpose: the third already holds as many confirms as the type-checker will solve
+    /// (see panelWithPrimaryConfirms). One confirm for all four actions, so they can never stack.
+    private var panelWithServerConfirm: some View {
         panelWithSecondaryConfirms
+        .cosConfirm(
+            serverConfirm.map { SettingsConfirmCopy.title($0) } ?? "Are you sure?",
+            isPresented: Binding(get: { serverConfirm != nil }, set: { if !$0 { serverConfirm = nil } }),
+            message: serverConfirm.map { SettingsConfirmCopy.message($0, workRunning: restartWork.active, serverVersion: model.status.version) } ?? "",
+            actions: serverConfirmActions
+        )
+    }
+
+    /// Built while the confirm is on screen: the dialog dismisses before it runs an action, so what the action needs is
+    /// captured here (as fenceConfirmActions does). Only a click runs it; Return never does.
+    private var serverConfirmActions: [COSConfirmAction] {
+        guard let pending = serverConfirm else { return [.cancel()] }
+        return [
+            .destructive(SettingsConfirmCopy.action(pending)) {
+                switch pending {
+                case .stop: model.perform("stop")
+                case .rollback: model.perform("rollback")
+                case .repair: model.perform("repair")
+                case .quit: AppQuit.request()
+                }
+            },
+            .cancel(),
+        ]
+    }
+
+    /// Quit asks only while a Mac recording would be cut short; otherwise it quits at once, as before.
+    private func requestQuit() {
+        if SettingsConfirmCopy.quitNeedsConfirm(macRecordingActive: model.macRecordingActive) { serverConfirm = .quit } else { AppQuit.request() }
+    }
+
+    var body: some View {
+        panelWithServerConfirm
         .cosConfirm(
             pendingOpenPetsRow.map { "Use \($0.displayName) as the session pet figure?" }
                 ?? "Use this figure as the session pet figure?",
@@ -2078,6 +2119,13 @@ struct ControlPanel: View {
         }
     }
 
+    /// Restart and Stop wait for jobs, transcription sessions, a change in progress and the server's own meeting-work block.
+    private var serverRestartHeld: Bool {
+        (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0
+            || model.status.transactionPending
+            || model.status.meetingWorkBlockingRestart
+    }
+
     /// C-01 to C-05, disabled while busy.
     private var serverControlButtons: some View {
         HStack {
@@ -2089,12 +2137,13 @@ struct ControlPanel: View {
                         model.perform("restart")
                     }
                 }
-                    .disabled((model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0
-                              || model.status.transactionPending
-                              || model.status.meetingWorkBlockingRestart)
-                Button("Stop", systemImage: "stop.fill", role: .destructive) { model.perform("stop") }
+                    .disabled(serverRestartHeld)
+                // Settings Release A: Stop asks first, and waits for running work like Restart (it drains the same way, then
+                // leaves the server closed for Repair when a meeting does not finish).
+                Button("Stop", systemImage: "stop.fill", role: .destructive) { serverConfirm = .stop }
                     .buttonStyle(COSQuietButtonStyle(tone: .destructive))
-                    .disabled(model.status.runtimeState == "managedInPlace" && !model.status.safeToRestart)
+                    .disabled(serverRestartHeld || (model.status.runtimeState == "managedInPlace" && !model.status.safeToRestart))
+                    .help(serverRestartHeld ? "Stop is off until running work finishes." : "Stop the server. Start brings it back.")
             } else if model.status.runtimeState == "stopped" {
                 Button("Start", systemImage: "play.fill") { model.perform("start") }.buttonStyle(COSPrimaryButtonStyle())
             }
@@ -2642,18 +2691,18 @@ struct ControlPanel: View {
     private var domainsContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                // The hub's card already says Domains.
-                if !hubOn { Text("Domains").font(.headline) }
+                // The hub's card already says Task folders.
+                if !hubOn { Text("Task folders").font(.headline) }
                 Spacer()
                 if domainsBusy { ProgressView().controlSize(.small) }
             }
             if model.domainOptions.isEmpty {
-                Text("No domains yet. COS uses the folders under operations/ that hold a tasks.md.")
+                Text("No task folders yet. COS uses the folders under operations/ that hold a tasks.md.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             ForEach(Array(domainsDraft.enumerated()), id: \.offset) { index, _ in
                 HStack(spacing: 6) {
-                    TextField("domain", text: Binding(
+                    TextField("task folder", text: Binding(
                         get: { index < domainsDraft.count ? domainsDraft[index] : "" },
                         set: { if index < domainsDraft.count { domainsDraft[index] = $0 } }
                     ))
@@ -3014,7 +3063,7 @@ struct ControlPanel: View {
             toolIdleMetal(hub: false)
             toolAudioCleanup(hub: false)
             HStack {
-                Button("Repair server", systemImage: "wrench.and.screwdriver") { model.perform("repair") }
+                Button("Repair server", systemImage: "wrench.and.screwdriver") { serverConfirm = .repair }
                     .disabled(repairRuntimeBlocked)
                 if repairWhisperOffered {
                     Button("Repair Whisper", systemImage: "waveform.badge.exclamationmark") { model.perform("restart-whisper") }
@@ -3119,7 +3168,7 @@ struct ControlPanel: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 HStack {
-                    Button("Roll back server") { model.perform("rollback") }
+                    Button("Roll back server") { serverConfirm = .rollback }
                     Button("Finish server change") { model.perform("reconcile") }
                     Button("Online help") { model.openSetupGuide() }
                 }.padding(.top, 6)
@@ -3172,7 +3221,11 @@ struct ControlPanel: View {
     //
     // Each piece is one setting: its gate, its draft, its Apply and what blocks it are written once. `hub` picks only the
     // frame: the panel's switch with its words and the caption under it, or a hub row with the catalog's label and
-    // description. Every one of these restarts the server when applied.
+    // description. Every one of these restarts the server when applied, through a drain that waits up to 90 seconds for
+    // running work and, in a live meeting, times out and leaves the gate closed for Repair. So (Settings Release A, Miles
+    // 2026-11-03) all nine follow one rule, RestartApply: Apply is live only when the choice differs from what the server
+    // holds, never while anything runs (a job, a meeting, a Mac recording, a dictation, an upload), it says "Not applied
+    // yet" while it differs, and a failed Apply puts the choice back on the server's value and says why.
 
     /// Apply waits for an installed (or self-managed) server and for the panel not to be busy.
     private var serverSettingsLocked: Bool {
@@ -3182,32 +3235,87 @@ struct ControlPanel: View {
     private var serverWorkActive: Bool {
         (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0
     }
+    /// Everything a restart would interrupt or has to wait for, read when the row draws and again at the click.
+    private var restartWork: RestartApply.Work {
+        RestartApply.Work(jobs: model.status.activeJobs, transcriptionSessions: model.status.activeTranscriptionSessions,
+                          macRecordings: model.recordingCount, dictating: model.dictation.busy,
+                          uploads: model.status.videoUploadV2Receiving + model.status.videoUploadV2Finalizing,
+                          meetingBlocksRestart: model.status.meetingWorkBlockingRestart, transactionPending: model.status.transactionPending)
+    }
 
-    /// A draft switch and its Apply. Panel: the switch with its own words, then the caption. Hub: the catalog row for
-    /// `id`, its description ending with the restart line.
+    /// One restart row's state: whether Apply is live, and the line under it ("Not applied yet.", what it waits for, or why
+    /// the last Apply failed).
+    private struct RestartRowState {
+        let enabled: Bool
+        let note: String?
+        let failed: Bool
+    }
+    private func restartState<Value: Equatable>(_ id: String, selected: Value, server: Value?) -> RestartRowState {
+        let work = restartWork
+        let differs = RestartApply.differs(selected: selected, server: server)
+        if let failure = model.restartApplyFailure, RestartApply.row(forCommand: failure.command) == id, !differs {
+            return RestartRowState(enabled: false, note: RestartApply.failureNote(failure.message), failed: true)
+        }
+        return RestartRowState(enabled: RestartApply.applyEnabled(selected: selected, server: server, locked: serverSettingsLocked, work: work),
+                               note: RestartApply.note(differs: differs, work: work), failed: false)
+    }
+    /// The click: checked again against the work running now, so a meeting that started since the row drew is never restarted over.
+    private func restartApply<Value: Equatable>(_ id: String, selected: Value, server: Value?, _ apply: () -> Void) {
+        guard RestartApply.applyEnabled(selected: selected, server: server, locked: serverSettingsLocked, work: restartWork) else { return }
+        apply()
+    }
+    /// The line under a panel row: amber for a failure, plain for "Not applied yet."
+    @ViewBuilder private func restartNote(_ state: RestartRowState) -> some View {
+        if let note = state.note {
+            Text(note).font(.caption2).foregroundStyle(state.failed ? AnyShapeStyle(COSPalette.amber) : AnyShapeStyle(.secondary))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+    /// A hub row's description with the restart line and the state line after it.
+    private func restartDetail(_ id: String, _ base: String, _ state: RestartRowState) -> String {
+        base + " " + SettingsHubCopy.appliesRestart + (state.note.map { " " + $0 } ?? "")
+    }
+    /// After a failed Apply every one of the nine shows what the server holds (the helper re-read it), not the choice it refused.
+    private func reseedRestartDrafts() {
+        if let tier = model.status.transcriptionRequestedTier, tier == "max" || tier == "balanced" { selectedTranscriptionTier = tier }
+        selectedBackgroundJobs = RestartApply.reseeded(current: selectedBackgroundJobs, server: model.status.backgroundJobsEnabled)
+        selectedMeetingPreview = RestartApply.reseeded(current: selectedMeetingPreview, server: model.status.meetingPreviewEnabled)
+        selectedClaudeSessions = RestartApply.reseeded(current: selectedClaudeSessions, server: model.status.claudeSessionsEnabled)
+        selectedThreadAttach = RestartApply.reseeded(current: selectedThreadAttach, server: model.status.threadAttachEnabled)
+        selectedOllamaModel = model.status.ollamaConfiguredModel ?? ""
+        selectedVideoUploadV2 = RestartApply.reseeded(current: selectedVideoUploadV2, server: model.status.videoUploadV2Enabled)
+        selectedIdleMetalHq = RestartApply.reseeded(current: selectedIdleMetalHq, server: model.status.idleMetalHqEnabled)
+        selectedAdaptiveAudioCleanup = RestartApply.reseeded(current: selectedAdaptiveAudioCleanup, server: model.status.adaptiveAudioCleanupEnabled)
+    }
+
+    /// A draft switch and its Apply. Panel: the switch with its own words, then the caption and the state line. Hub: the
+    /// catalog row for `id`, its description ending with the restart line and the state line.
     @ViewBuilder private func applySwitch(_ hub: Bool, id: String, panel: String, caption: String, isOn: Binding<Bool>,
-                                          applyBlocked: Bool, waitsForWork: Bool = false, apply: @escaping () -> Void) -> some View {
+                                          server: Bool?, apply: @escaping () -> Void) -> some View {
+        let state = restartState(id, selected: isOn.wrappedValue, server: server)
+        let run = { restartApply(id, selected: isOn.wrappedValue, server: server, apply) }
         if hub {
-            // HUB-08: while running work holds Apply, the row says so.
-            hubRow(id, detail: hubDetail(id) + " " + SettingsHubCopy.appliesRestart
-                   + (waitsForWork && serverWorkActive ? " " + SettingsHubCopy.waitsForWork : "")) {
+            hubRow(id, detail: restartDetail(id, hubDetail(id), state)) {
                 HStack(spacing: 10) {
                     Toggle(isOn: isOn) { EmptyView() }
                         .toggleStyle(COSSwitchStyle())
                         .accessibilityLabel(hubLabel(id))
-                    Button("Apply", action: apply).buttonStyle(TodayButtonStyle(small: true)).disabled(applyBlocked)
+                    Button("Apply", action: run).buttonStyle(TodayButtonStyle(small: true)).disabled(!state.enabled)
+                        .accessibilityLabel("Apply " + hubLabel(id))
                 }
             }
         } else {
             HStack(spacing: 8) {
                 Toggle(panel, isOn: isOn)
                     .toggleStyle(COSSwitchStyle())
-                Button("Apply", action: apply)
-                    .disabled(applyBlocked)
+                Button("Apply", action: run)
+                    .disabled(!state.enabled)
+                    .accessibilityLabel("Apply " + panel)
             }
             Text(caption)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+            restartNote(state)
         }
     }
 
@@ -3215,12 +3323,15 @@ struct ControlPanel: View {
     @ViewBuilder private func toolTranscriptionTier(hub: Bool) -> some View {
         if model.status.transcriptionRequestedTier != nil {
             let options = [COSViewOption("balanced", "Balanced"), COSViewOption("max", "Max")]
-            let apply = { model.setTranscriptionTier(selectedTranscriptionTier) }
+            let server = model.status.transcriptionRequestedTier
+            let state = restartState("UT-03", selected: selectedTranscriptionTier, server: server)
+            let apply = { restartApply("UT-03", selected: selectedTranscriptionTier, server: server) { model.setTranscriptionTier(selectedTranscriptionTier) } }
             if hub {
-                hubRow("UT-03", detail: hubDetail("UT-03") + " " + SettingsHubCopy.appliesRestart) {
+                hubRow("UT-03", detail: restartDetail("UT-03", hubDetail("UT-03"), state)) {
                     HStack(spacing: 10) {
                         COSViewSwitch(hubLabel("UT-03"), selection: $selectedTranscriptionTier, options: options, showsLabel: false)
-                        Button("Apply", action: apply).buttonStyle(TodayButtonStyle(small: true)).disabled(serverSettingsLocked)
+                        Button("Apply", action: apply).buttonStyle(TodayButtonStyle(small: true)).disabled(!state.enabled)
+                            .accessibilityLabel("Apply " + hubLabel("UT-03"))
                     }
                 }
             } else {
@@ -3229,11 +3340,13 @@ struct ControlPanel: View {
                                   options: options, showsLabel: true)
                     Spacer(minLength: 0)
                     Button("Apply", action: apply)
-                        .disabled(serverSettingsLocked)
+                        .disabled(!state.enabled)
+                        .accessibilityLabel("Apply Quality tier")
                 }
                 Text("Balanced suits most Macs. Max uses much more memory. Applying restarts the server.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                restartNote(state)
             }
         } else if model.status.installed || model.status.runtimeState == "managedInPlace" {
             let line = Label("Update the server to 6.21.0 or newer to change the tier.", systemImage: "arrow.down.circle")
@@ -3248,7 +3361,7 @@ struct ControlPanel: View {
         if model.status.backgroundJobsSupported {
             applySwitch(hub, id: "UT-04", panel: "Background jobs",
                         caption: "Replies keep running when the phone app closes. Applying restarts the server.",
-                        isOn: $selectedBackgroundJobs, applyBlocked: serverSettingsLocked || serverWorkActive, waitsForWork: true) {
+                        isOn: $selectedBackgroundJobs, server: model.status.backgroundJobsEnabled) {
                 model.setBackgroundJobsEnabled(selectedBackgroundJobs)
             }
         }
@@ -3259,7 +3372,7 @@ struct ControlPanel: View {
         if model.status.meetingPreviewSupported {
             applySwitch(hub, id: "UT-05", panel: "Fast preview",
                         caption: "Quick meeting text first, then the final transcript. Applying restarts the server.",
-                        isOn: $selectedMeetingPreview, applyBlocked: serverSettingsLocked || serverWorkActive, waitsForWork: true) {
+                        isOn: $selectedMeetingPreview, server: model.status.meetingPreviewEnabled) {
                 model.setMeetingPreviewEnabled(selectedMeetingPreview)
             }
         }
@@ -3269,7 +3382,7 @@ struct ControlPanel: View {
     @ViewBuilder private func toolClaudeSessions(hub: Bool) -> some View {
         applySwitch(hub, id: "UT-06", panel: "Show AI sessions",
                     caption: "Shares session names, folders and times on your local network. Off on untrusted Wi-Fi. Applying restarts the server.",
-                    isOn: $selectedClaudeSessions, applyBlocked: serverSettingsLocked) {
+                    isOn: $selectedClaudeSessions, server: model.status.claudeSessionsEnabled) {
             model.setClaudeSessionsEnabled(selectedClaudeSessions)
         }
     }
@@ -3279,7 +3392,7 @@ struct ControlPanel: View {
         if model.status.threadAttachSupported {
             applySwitch(hub, id: "UT-07", panel: "Continue sessions",
                         caption: "Replies go into your real Claude or Codex session. Applying restarts the server.",
-                        isOn: $selectedThreadAttach, applyBlocked: serverSettingsLocked || serverWorkActive, waitsForWork: true) {
+                        isOn: $selectedThreadAttach, server: model.status.threadAttachEnabled) {
                 model.setThreadAttachEnabled(selectedThreadAttach)
             }
         }
@@ -3288,28 +3401,32 @@ struct ControlPanel: View {
     /// UT-08: Automatic or a pinned Ollama tag, then Apply.
     @ViewBuilder private func toolOllamaModel(hub: Bool) -> some View {
         if model.status.ollamaReady == true || model.status.ollamaConfiguredModel != nil || !model.ollamaTags.isEmpty {
-            let blocked = serverSettingsLocked || selectedOllamaModel == (model.status.ollamaConfiguredModel ?? "")
-            let apply = { model.setOllamaModel(selectedOllamaModel.isEmpty ? nil : selectedOllamaModel) }
+            let server = model.status.ollamaConfiguredModel ?? ""
+            let state = restartState("UT-08", selected: selectedOllamaModel, server: server)
+            let apply = { restartApply("UT-08", selected: selectedOllamaModel, server: server) { model.setOllamaModel(selectedOllamaModel.isEmpty ? nil : selectedOllamaModel) } }
             let note = model.ollamaTagsState == "daemon_down"
                  ? "Ollama is not running, so this list is out of date. A chosen model applies when it starts."
                  : "Newest changes when you pull a model. Pick one to keep it. Applying restarts the server."
             if hub {
-                hubRow("UT-08", detail: (model.ollamaTagsState == "daemon_down" ? note : hubDetail("UT-08")) + " " + SettingsHubCopy.appliesRestart) {
+                hubRow("UT-08", detail: restartDetail("UT-08", model.ollamaTagsState == "daemon_down" ? note : hubDetail("UT-08"), state)) {
                     HStack(spacing: 10) {
                         COSDropdown("Local model", selection: $selectedOllamaModel, options: ollamaModelOptions, showsLabel: false)
                             .frame(maxWidth: 240)
-                        Button("Apply", action: apply).buttonStyle(TodayButtonStyle(small: true)).disabled(blocked)
+                        Button("Apply", action: apply).buttonStyle(TodayButtonStyle(small: true)).disabled(!state.enabled)
+                            .accessibilityLabel("Apply " + hubLabel("UT-08"))
                     }
                 }
             } else {
                 HStack(spacing: 8) {
                     COSDropdown("Local model", selection: $selectedOllamaModel, options: ollamaModelOptions)
                     Button("Apply", action: apply)
-                        .disabled(blocked)
+                        .disabled(!state.enabled)
+                        .accessibilityLabel("Apply Local model")
                 }
                 Text(note)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                restartNote(state)
             }
         }
     }
@@ -3317,15 +3434,17 @@ struct ControlPanel: View {
     /// UT-09 and UT-10: Apply waits while an upload is in flight; Clear stranded appears while a draft is receiving.
     @ViewBuilder private func toolVideoUploads(hub: Bool) -> some View {
         if model.status.videoUploadV2Supported {
-            let blocked = serverSettingsLocked || model.status.videoUploadV2Receiving + model.status.videoUploadV2Finalizing > 0
-            let apply = { model.setVideoUploadV2Enabled(selectedVideoUploadV2) }
+            let server = model.status.videoUploadV2Enabled
+            let state = restartState("UT-09", selected: selectedVideoUploadV2, server: server)
+            let apply = { restartApply("UT-09", selected: selectedVideoUploadV2, server: server) { model.setVideoUploadV2Enabled(selectedVideoUploadV2) } }
             if hub {
-                hubRow("UT-09", detail: hubDetail("UT-09") + " " + SettingsHubCopy.appliesRestart) {
+                hubRow("UT-09", detail: restartDetail("UT-09", hubDetail("UT-09"), state)) {
                     HStack(spacing: 10) {
                         Toggle(isOn: $selectedVideoUploadV2) { EmptyView() }
                             .toggleStyle(COSSwitchStyle())
                             .accessibilityLabel(hubLabel("UT-09"))
-                        Button("Apply", action: apply).buttonStyle(TodayButtonStyle(small: true)).disabled(blocked)
+                        Button("Apply", action: apply).buttonStyle(TodayButtonStyle(small: true)).disabled(!state.enabled)
+                            .accessibilityLabel("Apply " + hubLabel("UT-09"))
                     }
                 }
             } else {
@@ -3333,7 +3452,8 @@ struct ControlPanel: View {
                     Toggle("Reliable video uploads", isOn: $selectedVideoUploadV2)
                         .toggleStyle(COSSwitchStyle())
                     Button("Apply", action: apply)
-                        .disabled(blocked)
+                        .disabled(!state.enabled)
+                        .accessibilityLabel("Apply Reliable video uploads")
                     if model.status.videoUploadV2Receiving > 0 {
                         Button("Clear stuck uploads") { confirmClearStrandedVideoUploads = true }
                             .disabled(model.busy)
@@ -3342,6 +3462,7 @@ struct ControlPanel: View {
                 Text("Beta. Sends videos in chunks that resume after a restart. Applying restarts the server.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                restartNote(state)
             }
         }
     }
@@ -3351,7 +3472,7 @@ struct ControlPanel: View {
         if model.status.idleMetalHqSupported {
             applySwitch(hub, id: "UT-11", panel: "GPU when idle",
                         caption: "Powerful Macs only. Final transcripts use the GPU when idle. Applying restarts the server.",
-                        isOn: $selectedIdleMetalHq, applyBlocked: serverSettingsLocked || serverWorkActive, waitsForWork: true) {
+                        isOn: $selectedIdleMetalHq, server: model.status.idleMetalHqEnabled) {
                 model.setIdleMetalHqEnabled(selectedIdleMetalHq)
             }
         }
@@ -3362,7 +3483,7 @@ struct ControlPanel: View {
         if model.status.adaptiveAudioCleanupSupported {
             applySwitch(hub, id: "UT-12", panel: "Playback cleanup",
                         caption: "Cleans audio when you press Play. The original stays as is. Applying restarts the server.",
-                        isOn: $selectedAdaptiveAudioCleanup, applyBlocked: serverSettingsLocked || serverWorkActive, waitsForWork: true) {
+                        isOn: $selectedAdaptiveAudioCleanup, server: model.status.adaptiveAudioCleanupEnabled) {
                 model.setAdaptiveAudioCleanupEnabled(selectedAdaptiveAudioCleanup)
             }
         }
@@ -3440,24 +3561,17 @@ struct ControlPanel: View {
                 // and every 6 hours, so a long-running Control can sit two builds
                 // behind with no banner and no way to ask (2026-08-24): the ask
                 // still exists, at the top of the panel, not here.
-                Button("Quit", systemImage: "power") { AppQuit.request() }
+                Button("Quit", systemImage: "power") { requestQuit() }
                     .buttonStyle(COSQuietButtonStyle())
             }
         }.font(COSType.mono(10)).foregroundStyle(.secondary)
     }
 
-    /// Controller build from Info.plist; server version from live status (never a
-    /// compile-time "verified" pin that drifts behind npm / Update Server).
+    /// Controller build from Info.plist; server version from live status. Never "(npm latest)": Control does not know the newest
+    /// published server, so it does not claim the one running is it (Settings Release A; VersionsLine).
     private var footerLabel: String {
-        let controller = ControllerModel.currentVersion
-        let live = model.status.version ?? model.status.installedVersion
-        if let live, !live.isEmpty {
-            return "Controller \(controller)  •  Server \(live) (npm latest)"
-        }
-        if model.status.runtimeState == "managedInPlace" {
-            return "Controller \(controller)  •  Server self-managed"
-        }
-        return "Controller \(controller)  •  Server not installed"
+        VersionsLine.text(controller: ControllerModel.currentVersion, running: model.status.version,
+                          installed: model.status.installedVersion, selfManaged: model.status.runtimeState == "managedInPlace")
     }
 
     /// Compact per-CLI state: "Claude ✓ · Codex ✓ · Cursor ✓". A CLI whose
@@ -3697,6 +3811,8 @@ private extension ControlPanel {
         if hubSearching { hubQuery = ""; hubSearchFocused = false; return true }
         hubQuery = ""
         if confirmHubRollback { confirmHubRollback = false; return true }
+        // Settings Release A: Escape on the Stop, Roll back, Repair or Quit dialog closes it and stays in Settings.
+        if serverConfirm != nil { serverConfirm = nil; return true }
         return false
     }
 
@@ -3739,7 +3855,9 @@ private extension ControlPanel {
                         VStack(alignment: .leading, spacing: 26) {
                             hubTopStrip(reader)
                             if hubSearching {
-                                SettingsHubSearchResults(query: hubQuery, sections: SettingsHubSearch.results(hubQuery, shown: hubGroupShown, itemShown: { $0 != "JV-13" || meaningSearchShown })) { hubOpen($0, reader) }
+                                SettingsHubSearchResults(query: hubQuery, sections: SettingsHubSearch.results(hubQuery, shown: hubGroupShown, itemShown: { $0 != "JV-13" || meaningSearchShown }),
+                                                         open: { hubOpen($0, reader) },
+                                                         gateLine: { SettingsHubCatalog.gateLine($0.id, hidden: hubOptionHidden) })
                             } else {
                                 SettingsHubPageHeader(title: hubCategory.title, line: hubCategory.blurb, busy: model.busy)
                                 hubCategoryContent(hubCategory)
@@ -3811,9 +3929,22 @@ private extension ControlPanel {
         hubSearchFocused = false
         hubCategory = destination.category
         if destination.opensAdvanced { hubAdvanced.insert(destination.group) }
+        // A row that is not drawn (its switch is off) opens the row that holds the switch (Settings Release A).
+        let landing = SettingsHubCatalog.landing(item.id, hidden: hubOptionHidden)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
             reader.scrollTo(destination.anchor, anchor: .top)
-            reader.scrollTo("item." + item.id, anchor: .center)
+            reader.scrollTo("item." + landing, anchor: .center)
+        }
+    }
+
+    /// Rows the page leaves out while the switch above them is off (SettingsHubCatalog.gatedBy). One test, read by the page's
+    /// search results and by the result that opens: they can never disagree about what is drawn.
+    func hubOptionHidden(_ id: String) -> Bool {
+        switch id {
+        case "WK-07", "WK-08": return !todayHomeEnabled
+        case "DI-24": return model.dictation.polishModel == .off
+        case "DI-25": return model.dictation.polishModel == .off || !model.dictation.pasteThenPolish
+        default: return false
         }
     }
 
@@ -3940,11 +4071,12 @@ private extension ControlPanel {
         hubCard("general.home") {
             Group {
                 hubSwitch("WK-06", isOn: $todayHomeEnabled)
-                // O-11: shown while Today is off, locked, with the reason (the panel hides them).
-                hubSwitch("WK-07", isOn: $todayQuietHours, detail: todayHomeEnabled ? nil : hubDetail("WK-07") + " " + SettingsHubCopy.todayFirst)
-                    .disabled(!todayHomeEnabled)
-                hubSwitch("WK-08", isOn: $todayWorkRuns, detail: todayHomeEnabled ? nil : hubDetail("WK-08") + " " + SettingsHubCopy.todayFirst)
-                    .disabled(!todayHomeEnabled)
+                // Settings Release A: drawn only while Today home is on, as the panel always did. Search still finds them and lands
+                // on the Today home switch (SettingsHubCatalog.gatedBy).
+                if todayHomeEnabled {
+                    hubSwitch("WK-07", isOn: $todayQuietHours)
+                    hubSwitch("WK-08", isOn: $todayWorkRuns)
+                }
             }
             .disabled(model.busy)
         }
@@ -4315,7 +4447,7 @@ private extension ControlPanel {
         }
     }
 
-    // MARK: Pet and appearance
+    // MARK: Pet
 
     @ViewBuilder var hubPet: some View {
         // The pet's settings came from Tools, which is off while busy.
@@ -4348,7 +4480,7 @@ private extension ControlPanel {
             if (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0 || model.status.transactionPending {
                 SettingsHubBlock { statusActiveWorkLine; statusTransactionLine }
             }
-            hubRow("C-01", label: "Restart and update", detail: "Restart, stop or start the server, or install the newest one. Restart is off while work is running.") {
+            hubRow("C-01", label: "Restart and update", detail: "Restart, stop or start the server, or install the newest one. Restart and Stop are off while work is running.") {
                 serverControlButtons
             }
             if model.status.runtimeState == "legacyForeground" || model.notice != nil {
@@ -4405,7 +4537,7 @@ private extension ControlPanel {
                 hubButton("UT-01", "Run checks") { model.perform("doctor") }
                 if !model.doctorChecks.isEmpty { SettingsHubBlock { doctorResults } }
                 hubRow("UT-13") {
-                    Button("Repair") { model.perform("repair") }.buttonStyle(TodayButtonStyle(small: true)).disabled(repairRuntimeBlocked)
+                    Button("Repair") { serverConfirm = .repair }.buttonStyle(TodayButtonStyle(small: true)).disabled(repairRuntimeBlocked)
                 }
                 hubRow("UT-22") {
                     HStack(spacing: 8) {
@@ -4416,7 +4548,7 @@ private extension ControlPanel {
                 hubButton("UT-28", "Open") { model.openSetupGuide() }
             }
             .disabled(model.busy)
-            hubButton("G-04", "Quit") { AppQuit.request() }
+            hubButton("G-04", "Quit") { requestQuit() }
         }
     }
 
@@ -6767,13 +6899,15 @@ private struct PetSizeControls: View {
 extension ControlPanel {
     /// Settings hub offscreen fixture (Tests/SettingsHubRender.swift): Activity's hub opened on a category, or on a search.
     static func hubFixture(model: ControllerModel, category: SettingsHubCategory, query: String = "",
-                           advanced: Set<String> = []) -> ControlPanel {
+                           advanced: Set<String> = [], serverConfirm: ServerConfirm? = nil) -> ControlPanel {
         precondition(!model.backgroundWorkEnabled)
         var panel = ControlPanel(model: model, openActivity: { _ in }, hostedInWindow: true, hostedInActivity: true,
                                  hub: SettingsHubHost(backTitle: "Today", back: {}))
         panel._hubCategory = State(initialValue: category)
         panel._hubQuery = State(initialValue: query)
         panel._hubAdvanced = State(initialValue: advanced)
+        // Settings Release A: the Stop, Roll back, Repair or Quit dialog open, for the renders.
+        panel._serverConfirm = State(initialValue: serverConfirm)
         return panel
     }
 }

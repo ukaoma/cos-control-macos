@@ -88,6 +88,8 @@ import Foundation
         check(SettingsConfirmCopy.shortenMessage(count: 212, days: 7).contains("212 dictations older than that"), "the message says how many and for how long")
         check(SettingsConfirmCopy.shortenMessage(count: 1, days: 30).contains("1 dictation older"), "the message is singular for one")
         check(SettingsConfirmCopy.shortenAction(count: 212, days: 7) == "Delete 212 and keep 7 days", "the action names the count and the period")
+        check(SettingsConfirmCopy.shortenMessage(count: 3, days: nil).contains("5,000") && SettingsConfirmCopy.shortenAction(count: 3, days: nil) == "Delete 3",
+              "Forever can only delete through the 5,000 cap, and says so")
     }
 
     // ── Typing into a stepper.
@@ -120,8 +122,13 @@ import Foundation
         check(Set(ValueMenu.choices(stops: [20, 30], current: 900, title: text).map(\.value)).contains(900), "a value above every stop still has a choice")
     }
 
-    // ── The daily cap.
+    // ── The daily cap. The amount rule is KeyLanes.parseCap (its own checks); a plain reader stands in for it here.
     static func dailyCap() {
+        let parse: (String) -> Double? = { text in
+            let t = text.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "$", with: "")
+            guard let value = Double(t), value >= 0.01, value <= 1000 else { return nil }
+            return value
+        }
         check(DailyCap.choices(saved: 5).map(\.title) == ["$1 a day", "$2 a day", "$5 a day", "$10 a day", "$25 a day", "$50 a day", "$100 a day", "Other amount"],
               "presets, then Other amount")
         let odd = DailyCap.choices(saved: 3.5)
@@ -134,25 +141,22 @@ import Foundation
         for saved in [Optional(0.01), 1, 3.5, 5, 99.99, 1000, nil] {
             for draft in [nil, "", "5", "12", "abc", "3.50", "2000"] {
                 for open in [false, true] {
-                    let face = DailyCap.face(draft: draft, saved: saved, otherOpen: open)
+                    let face = DailyCap.face(draft: draft, saved: saved, otherOpen: open, parse: parse)
                     check(DailyCap.choices(saved: saved).contains { $0.id == face }, "the face is a real choice (saved \(String(describing: saved)), draft \(String(describing: draft)), open \(open))")
                 }
             }
         }
-        check(DailyCap.face(draft: nil, saved: 25, otherOpen: false) == DailyCap.presetID(25), "a preset cap shows as that preset")
-        check(DailyCap.face(draft: nil, saved: 3.5, otherOpen: false) == DailyCap.current, "an off-list cap shows as your cap")
-        check(DailyCap.face(draft: "10", saved: 3.5, otherOpen: false) == DailyCap.presetID(10), "a picked preset shows as itself")
-        check(DailyCap.face(draft: "12", saved: 3.5, otherOpen: false) == DailyCap.other, "a typed amount shows as Other amount")
-        check(DailyCap.face(draft: nil, saved: 25, otherOpen: true) == DailyCap.other, "Other amount stays picked while it is open")
-        check(DailyCap.parse("$5") == 5 && DailyCap.parse("0.01") == 0.01 && DailyCap.parse("1000") == 1000, "amounts inside $0.01 to $1000 parse")
-        check(DailyCap.parse("1000.01") == nil && DailyCap.parse("0") == nil && DailyCap.parse("0.001") == nil && DailyCap.parse("") == nil, "amounts outside the range do not")
-        check(DailyCap.parse("5e2") == nil && DailyCap.parse("-5") == nil, "only digits and cents parse")
+        check(DailyCap.face(draft: nil, saved: 25, otherOpen: false, parse: parse) == DailyCap.presetID(25), "a preset cap shows as that preset")
+        check(DailyCap.face(draft: nil, saved: 3.5, otherOpen: false, parse: parse) == DailyCap.current, "an off-list cap shows as your cap")
+        check(DailyCap.face(draft: "10", saved: 3.5, otherOpen: false, parse: parse) == DailyCap.presetID(10), "a picked preset shows as itself")
+        check(DailyCap.face(draft: "12", saved: 3.5, otherOpen: false, parse: parse) == DailyCap.other, "a typed amount shows as Other amount")
+        check(DailyCap.face(draft: nil, saved: 25, otherOpen: true, parse: parse) == DailyCap.other, "Other amount stays picked while it is open")
         check(DailyCap.amount(ofChoice: DailyCap.presetID(25)) == 25, "a preset id gives its amount")
         check(DailyCap.amount(ofChoice: DailyCap.other) == nil && DailyCap.amount(ofChoice: DailyCap.current) == nil, "Other amount and your cap give no preset amount")
-        check(DailyCap.canSet(draft: "10", saved: 5), "Set cap is live for a different amount")
-        check(!DailyCap.canSet(draft: "5", saved: 5), "Set cap is off for the saved amount")
-        check(!DailyCap.canSet(draft: "x", saved: 5) && !DailyCap.canSet(draft: nil, saved: 5), "Set cap is off for an unreadable or empty amount")
-        check(DailyCap.canSet(draft: "5", saved: nil), "Set cap is live when no cap is saved")
+        check(DailyCap.canSet(draft: "10", saved: 5, parse: parse), "Set cap is live for a different amount")
+        check(!DailyCap.canSet(draft: "5", saved: 5, parse: parse), "Set cap is off for the saved amount")
+        check(!DailyCap.canSet(draft: "x", saved: 5, parse: parse) && !DailyCap.canSet(draft: nil, saved: 5, parse: parse), "Set cap is off for an unreadable or empty amount")
+        check(DailyCap.canSet(draft: "5", saved: nil, parse: parse), "Set cap is live when no cap is saved")
     }
 
     // ── The Versions line.
