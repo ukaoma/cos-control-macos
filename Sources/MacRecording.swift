@@ -124,6 +124,9 @@ final class MacRecordingStore: ObservableObject {
     var previewWanted: (@MainActor (String) -> Bool)?
     /// Where a preview answer goes (ControllerModel.liveProvisional, memory only).
     var previewDelivered: (@MainActor (String, LiveProvisionalLine) -> Void)?
+    /// 0.5.366 (server 6.99.0): the name the person gave this capture while it recorded (ControllerModel: the live feed's
+    /// titleSteer), or nil. A save sends it as the title; none, and the recording's own title goes as before.
+    var steerTitle: (@MainActor (String) -> String?)?
     private var previewTask: Task<Void, Never>?
     /// The title the fail-fast capture had, for Try again.
     private var cannotHearTitle: String?
@@ -888,7 +891,7 @@ final class MacRecordingStore: ObservableObject {
                         continue
                     }
                     if current.stopped, !current.chunks.isEmpty, !current.saved {
-                        let saved = try await self.deliveryCall("save", captureId: id, ["captureId": .string(id), "serverInstanceId": .string(current.serverInstanceId), "title": .string(current.title), "expectedChunkCount": .number(Double(current.chunks.count))])
+                        let saved = try await self.deliveryCall("save", captureId: id, ["captureId": .string(id), "serverInstanceId": .string(current.serverInstanceId), "title": .string(MacRecordingNotice.saveTitle(recording: current.title, steer: self.steerTitle?(id))), "expectedChunkCount": .number(Double(current.chunks.count))])
                         guard saved["saved"]?.bool == true, saved["receiptVersion"]?.int == 1,
                               saved["serverInstanceId"]?.string == current.serverInstanceId,
                               saved["sessionId"]?.string == id, saved["captureId"]?.string == id,

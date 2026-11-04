@@ -1323,6 +1323,8 @@ struct ActivityWindow: View {
             showingSettings = false
             return true
         }
+        // 0.5.366: an open title field on the live recording takes Escape first: it closes the field, not the live pane.
+        if model.titleSteer.escape() { return true }
         // 0.5.244: Work's Start work overlay sits above everything in Work; Escape closes it first (not mid-send).
         if workWorkspaceState.startItemID != nil {
             if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }

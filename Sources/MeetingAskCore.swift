@@ -2817,3 +2817,283 @@ final class TranscriptionSettingsStore: ObservableObject {
         }
     }
 }
+
+// MARK: Title steer (server 6.99.0)
+//
+// 0.5.366 (Miles, 2026-11-03: "go on the title mock"): rename a LIVE recording from the Meetings recorder, so the list does not
+// read "Mac recording 9:05 PM". The name is a STEER, not the final title: it shows everywhere at once, and at save the server
+// hands it to the title model as a strong hint (and a Mac save sends it as the title itself, Sources/MacRecording.swift). The
+// server keeps the name (GET and PUT /api/meeting/title-steer, through the helper's `meeting-title-steer`) and writes it into
+// the live session's file, which Control already reads, so a rename made on another device arrives the way every live field
+// does. This store holds only the edit in progress; the words and the rules are TitleSteer's.
+//
+// SECRET BOUNDARY. A title carries names and companies. It goes from the field to the helper's stdin (never argv), and back
+// in the answer to the live feed and the header. It reaches no Logger, print, NSLog, notice or error: a failure is one of five
+// fixed lines.
+enum TitleSteer {
+    /// The server's TITLE_STEER_MAX_CHARS, in code points (`unicodeScalars`). A Character count would let an emoji sequence
+    /// through that the server refuses.
+    static let maxScalars = 120
+    static let renameLabel = "Rename"
+    static let hint = "COS keeps your words and may sharpen them when it saves the meeting."
+    static let note = "Your title. COS may sharpen it when it saves."
+    static let savingLine = "Saving now. Rename it after it's saved."
+    static let changedLine = "Renamed on another device."
+    static let endedLine = "This recording has ended."
+    static let failedLine = "Could not rename. Try again."
+
+    /// The server's session grammar (SESSION_ID in lib/meeting-title-steer.ts).
+    static func validSession(_ id: String) -> Bool { id.range(of: "\\A[A-Za-z0-9:_-]{3,96}\\z", options: .regularExpression) != nil }
+
+    static func clean(_ raw: String) -> String { LiveTranscript.cleanTitle(raw) }
+    /// What the server will count: the cleaned text in code points.
+    static func count(_ raw: String) -> Int { clean(raw).unicodeScalars.count }
+    static func counter(_ raw: String) -> String { "\(count(raw))/\(maxScalars)" }
+    static func overLimit(_ raw: String) -> Bool { count(raw) > maxScalars }
+
+    /// The cleaned text, cut on a code point to the cap: for a title that came FROM the server, which already holds the cap.
+    static func capped(_ raw: String) -> String {
+        var scalars = String.UnicodeScalarView()
+        scalars.append(contentsOf: clean(raw).unicodeScalars.prefix(maxScalars))
+        return String(scalars).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Whether Rename shows at all, and whether it can be used now. Hidden: the server does not advertise the route, the
+    /// recording is an iPhone microphone one (anonymous, never renamed here), or no read of it has landed yet. Locked: the
+    /// recording has stopped (a save is out, or its file is gone), so the server would refuse (409 save_in_progress, 404).
+    enum Availability: Equatable, Sendable { case hidden, locked, open }
+    static func availability(capable: Bool, sessionId: String, hasFeed: Bool, ended: Bool, saving: Bool) -> Availability {
+        guard capable, hasFeed, validSession(sessionId), !PhoneMeetingCapture.protected(sessionId) else { return .hidden }
+        return ended || saving ? .locked : .open
+    }
+
+    /// What Save does with the field. Unchanged text sends nothing (the title it began with, whether a steer or the
+    /// automatic one, is not a new name), an emptied field clears an existing steer, and anything else sets it.
+    enum Change: Equatable, Sendable { case none, set(String), clear }
+    static func change(draft: String, steer: String?, shown: String) -> Change {
+        let text = clean(draft)
+        let current = steer.map(clean).flatMap { $0.isEmpty ? nil : $0 }
+        if text.isEmpty { return current == nil ? .none : .clear }
+        if text == current { return .none }
+        if current == nil, text == clean(shown) { return .none }
+        return .set(text)
+    }
+
+    /// The field's first text: the steer if there is one, else the title on screen (so a calendar title can be nudged).
+    static func prefill(steer: String?, shown: String) -> String {
+        if let steer = steer.map(clean), !steer.isEmpty { return steer }
+        return clean(shown)
+    }
+
+    /// The header's title and the switcher's label take the steer over everything else; nothing else changes.
+    static func displayTitle(steer: String?, otherwise: String) -> String {
+        if let steer = steer.map(clean), !steer.isEmpty { return steer }
+        return otherwise
+    }
+
+    /// "9:05 PM" or "21:05", the way the subtitle shows a start.
+    static func startedClock(_ start: Date, clock: ClockStyle, timeZone: TimeZone = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.timeZone = timeZone
+        formatter.dateFormat = clock == .twentyFourHour ? "HH:mm" : "h:mm a"
+        return formatter.string(from: start)
+    }
+
+    // The helper's `meeting-title-steer` (HelperSources/main.swift).
+
+    static func readCall(session: String) -> [String]? {
+        validSession(session) ? ["meeting-title-steer", "--session", session] : nil
+    }
+
+    /// The title goes on stdin as {"title": "..."}, never in the arguments, where any process on the Mac could read it. An empty
+    /// title clears the steer.
+    static func writeCall(session: String, title: String, expectedRevision: Int) -> (arguments: [String], stdin: Data)? {
+        guard validSession(session), expectedRevision >= 0, let data = try? JSONSerialization.data(withJSONObject: ["title": title]) else { return nil }
+        return (["meeting-title-steer", "--session", session, "--revision", String(expectedRevision), "--title-stdin"], data)
+    }
+
+    /// The server's view of one recording's steer: the title (nil = none), the revision to send back, when it changed.
+    struct Snapshot: Equatable, Sendable {
+        var title: String?
+        var revision: Int
+        var updatedAt: String?
+    }
+
+    static func snapshot(_ details: [String: JSONValue]?) -> Snapshot? {
+        guard let details, let revision = details["revision"]?.int, revision >= 0 else { return nil }
+        switch details["title"] {
+        case .some(.string(let text)): let title = capped(text); return Snapshot(title: title.isEmpty ? nil : title, revision: revision, updatedAt: details["updatedAt"]?.string)
+        case .some(.null): return Snapshot(title: nil, revision: revision, updatedAt: details["updatedAt"]?.string)
+        default: return nil
+        }
+    }
+
+    /// The read's answer: a 200 in the contract, else nil.
+    static func readSnapshot(_ details: [String: JSONValue]?) -> Snapshot? {
+        guard let details, details["transport"]?.string == "answered", details["httpStatus"]?.int == 200 else { return nil }
+        return snapshot(details)
+    }
+
+    enum Outcome: Equatable, Sendable {
+        case saved(Snapshot)
+        /// 409 title_changed: another device renamed it first. The server's `current` view comes with it.
+        case changed(Snapshot?)
+        /// 409 save_in_progress.
+        case saving
+        /// 404 session_not_live.
+        case ended
+        case failed
+    }
+
+    /// The server's code decides; the status only where there is none. Anything unknown, a body that is not the contract, an
+    /// older server (a 404 with no code) and every transport failure are `failed`.
+    static func writeOutcome(_ details: [String: JSONValue]?) -> Outcome {
+        guard let details, details["transport"]?.string == "answered", let status = details["httpStatus"]?.int else { return .failed }
+        let code = details["error"]?.string
+        switch status {
+        case 200: return snapshot(details).map(Outcome.saved) ?? .failed
+        case 409:
+            switch code {
+            case "title_changed": return .changed(snapshot(details["current"]?.object))
+            case "save_in_progress": return .saving
+            default: return .failed
+            }
+        case 404: return code == "session_not_live" ? .ended : .failed
+        default: return .failed
+        }
+    }
+
+    /// Why a rename did not go, or nil when it did.
+    static func line(_ outcome: Outcome) -> String? {
+        switch outcome {
+        case .saved: nil
+        case .changed: changedLine
+        case .saving: savingLine
+        case .ended: endedLine
+        case .failed: failedLine
+        }
+    }
+}
+
+@MainActor
+final class TitleSteerStore: ObservableObject {
+    typealias Run = @MainActor ([String], Data?) async throws -> HelperResponse
+
+    /// The recording whose title is being edited, or nil. Published so the header swaps the title for the field; the text in
+    /// the field is the field's own state, so a keystroke redraws the field and not the pane.
+    @Published private(set) var editing: String?
+    /// A rename is out. Rename, Save and Cancel wait, and Escape is taken and ignored.
+    @Published private(set) var busy = false
+    /// The line under the header: why a rename did not go, or "Renamed on another device.". Cleared by the next edit.
+    @Published private(set) var message: String?
+    @Published private(set) var messageSession: String?
+    /// The field's first text, set by `begin`.
+    private(set) var initialDraft = ""
+    /// How long a line under the header stays by itself.
+    var messageSeconds = 8.0
+
+    private struct Basis {
+        var session: String
+        /// The steer on screen when the edit began, and the title on screen.
+        var steer: String?
+        var shown: String
+        /// The server's view, read as the edit began (or just before Save if that read had not landed).
+        var snapshot: TitleSteer.Snapshot?
+    }
+    private var basis: Basis?
+    private var reading: Task<Void, Never>?
+    private var messageToken = 0
+
+    /// Open the field on a recording. The server's revision is read in the background; Save waits for it.
+    func begin(session: String, steer: String?, shown: String, run: @escaping Run) {
+        guard !busy, TitleSteer.validSession(session) else { return }
+        let current = steer.map(TitleSteer.clean).flatMap { $0.isEmpty ? nil : $0 }
+        initialDraft = TitleSteer.prefill(steer: current, shown: shown)
+        basis = Basis(session: session, steer: current, shown: TitleSteer.clean(shown), snapshot: nil)
+        messageToken += 1; message = nil; messageSession = nil
+        editing = session
+        reading?.cancel()
+        reading = Task { [weak self] in
+            let snapshot = await self?.read(session, run: run)
+            guard let self, !Task.isCancelled, self.basis?.session == session, let snapshot else { return }
+            self.basis?.snapshot = snapshot
+        }
+    }
+
+    /// Escape: closes the field and says it was taken. Nothing to take when no field is open, so the window's own Escape runs.
+    func escape() -> Bool {
+        guard editing != nil else { return false }
+        cancel()
+        return true
+    }
+
+    func cancel() {
+        guard !busy else { return }
+        close()
+        messageToken += 1; message = nil; messageSession = nil
+    }
+
+    /// The pane moved to another recording (or closed): an open field closes, a rename already out finishes where it began.
+    func sessionChanged(to session: String?) {
+        if editing != nil, editing != session { cancel() }
+    }
+
+    private func read(_ session: String, run: Run) async -> TitleSteer.Snapshot? {
+        guard let call = TitleSteer.readCall(session: session) else { return nil }
+        return TitleSteer.readSnapshot(try? await run(call, nil).details)
+    }
+
+    /// Save the field. `apply(session, steer)` puts the server's answer into the live feed (nil clears it). One rename at a time.
+    func save(draft: String, run: Run, apply: (String, String?) -> Void) async {
+        guard let session = editing, !busy, let started = basis, started.session == session, !TitleSteer.overLimit(draft) else { return }
+        let text: String
+        switch TitleSteer.change(draft: draft, steer: started.steer, shown: started.shown) {
+        case .none: close(); return
+        case .set(let title): text = title
+        case .clear: text = ""
+        }
+        busy = true
+        defer { busy = false }
+        messageToken += 1; message = nil; messageSession = nil
+        var snapshot = started.snapshot
+        if snapshot == nil { await reading?.value; snapshot = basis?.snapshot }
+        if snapshot == nil { snapshot = await read(session, run: run) }
+        guard let snapshot else { show(TitleSteer.failedLine, session: session); return }
+        // The server's name differs from the one this edit began on: someone renamed it since. Take theirs and say so.
+        guard snapshot.title == started.steer else {
+            apply(session, snapshot.title)
+            show(TitleSteer.changedLine, session: session); close(); return
+        }
+        guard let call = TitleSteer.writeCall(session: session, title: text, expectedRevision: snapshot.revision) else {
+            show(TitleSteer.failedLine, session: session); return
+        }
+        let outcome = TitleSteer.writeOutcome(try? await run(call.arguments, call.stdin).details)
+        switch outcome {
+        case .saved(let now): apply(session, now.title); close()
+        case .changed(let current):
+            if let current { apply(session, current.title) }
+            show(TitleSteer.changedLine, session: session); close()
+        case .saving: show(TitleSteer.savingLine, session: session)
+        case .ended: show(TitleSteer.endedLine, session: session); close()
+        case .failed: show(TitleSteer.failedLine, session: session)
+        }
+    }
+
+    private func close() {
+        reading?.cancel(); reading = nil
+        basis = nil; initialDraft = ""
+        if editing != nil { editing = nil }
+    }
+
+    private func show(_ line: String, session: String) {
+        messageToken += 1
+        let token = messageToken
+        message = line; messageSession = session
+        let seconds = messageSeconds
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard let self, self.messageToken == token else { return }
+            self.message = nil; self.messageSession = nil
+        }
+    }
+}

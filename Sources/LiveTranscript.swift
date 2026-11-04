@@ -54,6 +54,9 @@ struct LiveTranscriptRead: Codable, Equatable, Sendable {
     var sourceType: String? = nil
     var speakerPolicy: String? = nil
     var levels: [LiveChunkLevel]? = nil
+    /// 0.5.366 (server 6.99.0): the name typed while it recorded, from the file's `titleSteer` (the helper cleans it). nil when
+    /// the file has none, which on a full read means no steer, and on an older server always.
+    var titleSteer: String? = nil
 }
 
 /// 0.5.339 (server 6.87.0): one live chunk's rough level, as the server's quiet gate measured it: `level` 0 to 1 (its RMS
@@ -124,6 +127,9 @@ struct LiveTranscriptFeed: Equatable, Sendable {
     /// (`missing`, `closed`, or a terminal state this build does not know, `unknown`) or saved it. The file is a leftover (a late chunk can rewrite a finished session's file and
     /// nothing deletes it), so the feed is ended as if the file were gone and takes the normal hand-off.
     var leftover = false
+    /// 0.5.366 (server 6.99.0): the name the person typed for this recording while it ran (Rename in the live header), or nil.
+    /// A full read sets it from the file, so a rename on another device and a clear both arrive; an `unchanged` read keeps it.
+    var titleSteer: String? = nil
 
     init(sessionId: String) { self.sessionId = sessionId }
 
@@ -155,6 +161,8 @@ struct LiveTranscriptFeed: Equatable, Sendable {
         }
         guard !read.unchanged else { return changed }
         stamp = read.stamp ?? stamp
+        let steer = read.titleSteer.map(LiveTranscript.cleanTitle).flatMap { $0.isEmpty ? nil : $0 }
+        if steer != titleSteer { titleSteer = steer; changed = true }
         if let start = read.startTime.map({ Date(timeIntervalSince1970: $0 / 1000) }), start != startTime { startTime = start; changed = true }
         if let last = read.lastActivityAt.map({ Date(timeIntervalSince1970: $0 / 1000) }), last != lastActivityAt { lastActivityAt = last; changed = true }
         if let settled = read.settledThrough { cursor = max(cursor, settled) }
@@ -357,6 +365,27 @@ enum LiveTranscript {
     static let header = "Live transcript · preliminary · may change when saved"
 
     static func rowID(_ sessionId: String) -> String { "live:" + sessionId }
+
+    /// 0.5.366 (server 6.99.0): a title as the server keeps it (lib/meeting-title-steer.ts normalizeTitleSteer, minus the cap):
+    /// NFKC, control characters to spaces, invisible direction and zero-width marks dropped, whitespace collapsed, trimmed.
+    /// The cap is counted in code points (`unicodeScalars`), as the server counts, never in Characters.
+    static func cleanTitle(_ raw: String) -> String {
+        var scalars = String.UnicodeScalarView()
+        for scalar in raw.precomposedStringWithCompatibilityMapping.unicodeScalars {
+            switch scalar.value {
+            case 0x00...0x1f, 0x7f...0x9f: scalars.append(" ")
+            case 0x200b...0x200f, 0x202a...0x202e, 0x2060...0x2069, 0xfeff: continue
+            default: scalars.append(scalar)
+            }
+        }
+        return String(scalars).split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
+    }
+
+    /// 0.5.366: the switcher's label for a live source: the name the person gave it, else `sourceLabel`.
+    static func switcherLabel(_ sessionId: String, start: Date?, steer: String?, timeZone: TimeZone = .current) -> String {
+        if let steer = steer.map(cleanTitle), !steer.isEmpty { return steer }
+        return sourceLabel(sessionId, start: start, timeZone: timeZone)
+    }
 
     /// 0.5.313: names a live source in the switcher: "Mac recording 10:39 PM" or "Glasses meeting 10:10 PM".
     static func sourceLabel(_ sessionId: String, start: Date?, timeZone: TimeZone = .current) -> String {
@@ -1031,17 +1060,19 @@ enum LiveMeeting {
 
     /// The line under the title. Live: "Recording on this Mac · 2 decisions and 1 promise so far". Ended: the counts
     /// alone, or nil. `kinds` is nil when the server does not list its kinds: then no counts at all.
-    static func statusLine(sessionId: String, ended: Bool, kinds: [String]?) -> String? {
-        guard PhoneMeetingCapture.protected(sessionId) else { return statusLine(mac: sessionId.hasPrefix("mac_"), ended: ended, kinds: kinds) }
+    /// 0.5.366: with a steer the title no longer carries the start time, so `started` ("9:05 PM") joins the source:
+    /// "Recording on this Mac · started 9:05 PM · 2 decisions and 1 promise so far". nil: the line is as it was.
+    static func statusLine(sessionId: String, ended: Bool, kinds: [String]?, started: String? = nil) -> String? {
+        guard PhoneMeetingCapture.protected(sessionId) else { return statusLine(mac: sessionId.hasPrefix("mac_"), ended: ended, kinds: kinds, started: started) }
         let counts = kinds.flatMap(countsPhrase)
         if ended { return counts.map { "iPhone microphone · " + $0 } ?? "iPhone microphone recording ended" }
         return counts.map { "Recording on iPhone microphone · " + $0 + " so far" } ?? "Recording on iPhone microphone"
     }
 
-    static func statusLine(mac: Bool, ended: Bool, kinds: [String]?) -> String? {
+    static func statusLine(mac: Bool, ended: Bool, kinds: [String]?, started: String? = nil) -> String? {
         let counts = kinds.flatMap(countsPhrase)
         if ended { return counts }
-        let source = mac ? "Recording on this Mac" : "Recording on the glasses"
+        let source = (mac ? "Recording on this Mac" : "Recording on the glasses") + (started.map { " · started " + $0 } ?? "")
         return counts.map { source + " · " + $0 + " so far" } ?? source
     }
 

@@ -1,8 +1,16 @@
 {
-  "version": "0.5.365",
+  "version": "0.5.366",
   "whatsNew": {
-    "summary": "Settings, Live cues now shows how many web lookups COS made today, and a limit change no longer says it failed after it saved. A spreadsheet (.xlsx) dropped on a meeting is read on your Mac, so the meeting assistant can use it. Plus everything in 0.5.364: Cue mode (Focused, General or All) and Grounded cues, both off until you change them, and cue sources that open with a click. Also in 0.5.363: with Today home on, ⌘K finds a session by meaning once you say yes for your decision model, and each search sends your words, plus the titles and first prompts of recent sessions, to it.",
+    "summary": "You can rename a recording while it is still recording. In the live meeting view, click the title or Rename, type a name and press Return. It needs the newer COS server and shows nothing on an older one. COS keeps your words and may sharpen them when it saves the meeting. Plus everything in 0.5.365: a Web today line in Settings, Live cues, a limit change that no longer says it failed after it saved, and spreadsheets (.xlsx) dropped on a meeting read on your Mac.",
     "sections": [
+      {
+        "title": "0.5.366",
+        "items": [
+          "Rename a live Mac recording or glasses meeting from the live meeting view: click the title or Rename, type a name, press Return to save or Escape to cancel. Your title shows at once, in the switcher too. It needs the newer COS server and shows nothing on an older one.",
+          "When it saves the meeting, COS keeps your names, companies and topic and may sharpen the wording, so the saved title can differ a little from what you typed. A Mac recording saves under your title.",
+          "Clearing the field and saving goes back to the automatic title. If another device renamed it first, its name is kept and the live view says so. Rename is off while the recording is being saved."
+        ]
+      },
       {
         "title": "0.5.365",
         "items": [

@@ -129,6 +129,8 @@ struct LiveMeetingCapability: Equatable, Sendable {
     var liveCuesOn = false
     /// 0.5.339: `capabilities.liveMeeting.chunkLevels` (server 6.87.0): the session file keeps each chunk's level.
     var chunkLevels = false
+    /// 0.5.366 (server 6.99.0): `capabilities.titleSteer` is 1 (GET and PUT /api/meeting/title-steer). Rename shows only then.
+    var titleSteer = false
 
     /// The 6.86.0 live meeting surface exists.
     var available: Bool { protocolVersion == 1 }
@@ -154,7 +156,8 @@ extension LiveMeetingCapability {
                   provisional: details["liveMeetingProvisional"]?.bool == true,
                   cueKinds: (details["liveCueKinds"]?.array ?? []).compactMap(\.string),
                   liveCuesOn: details["liveCuesOn"]?.bool == true,
-                  chunkLevels: details["liveMeetingChunkLevels"]?.bool == true)
+                  chunkLevels: details["liveMeetingChunkLevels"]?.bool == true,
+                  titleSteer: details["meetingTitleSteer"]?.bool == true)
     }
 }
 

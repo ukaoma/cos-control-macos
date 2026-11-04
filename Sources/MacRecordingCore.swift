@@ -1076,6 +1076,12 @@ enum MacRecordingNotice {
     static func footnote(permissionGranted: Bool) -> String? { permissionGranted ? nil : permissionFootnote }
     /// The panel's notice shows only while asked for, not yet acknowledged (here or on the pet), and nothing records.
     static func panelShowsNotice(requested: Bool, acknowledged: Bool, occupied: Bool) -> Bool { requested && !acknowledged && !occupied }
+    /// 0.5.366 (server 6.99.0): what a save sends as the title. The name the person gave the recording while it ran (already
+    /// cleaned by the live feed) when there is one, else the recording's own title, exactly as before.
+    static func saveTitle(recording: String, steer: String?) -> String {
+        guard let steer = steer?.trimmingCharacters(in: .whitespacesAndNewlines), !steer.isEmpty else { return recording }
+        return steer
+    }
     /// "Zoom meeting 2:05 PM" while a meeting app is detected, else "Mac recording 2:05 PM".
     static func autoTitle(meetingApp: String?, at date: Date, calendar: Calendar = .current) -> String {
         let f = DateFormatter(); f.calendar = calendar; f.timeZone = calendar.timeZone

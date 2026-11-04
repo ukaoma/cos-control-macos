@@ -2222,8 +2222,10 @@ struct LiveDot: View {
 enum LiveTranscriptText {
     /// "Started 7:27 AM · 12 min", or "Starting" before the first read.
     /// The duration stops when the recording ended.
-    static func subtitle(start: Date?, now: Date, clock: ClockStyle, endedAt: Date? = nil) -> String {
+    /// 0.5.366: `showsStart` false (a name was given, so the source line carries "started 9:05 PM") keeps the length alone.
+    static func subtitle(start: Date?, now: Date, clock: ClockStyle, endedAt: Date? = nil, showsStart: Bool = true) -> String {
         guard let start else { return "Starting" }
+        if !showsStart { return LiveTranscript.durationLabel(start: start, now: now, endedAt: endedAt) ?? "Starting" }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = clock == .twentyFourHour ? "HH:mm" : "h:mm a"
@@ -2260,10 +2262,13 @@ struct LiveTranscriptPane: View {
     @State private var confirmGlassesStop = false
     /// 0.5.336: the cue history, observed so the inline cues and the header's counts redraw when it is read again.
     @ObservedObject private var cueStore: CueVerdictsStore
+    /// 0.5.366: the title field's state (open, busy, the line under the header). The text itself is the field's own.
+    @ObservedObject private var steerStore: TitleSteerStore
 
     init(model: ControllerModel) {
         _model = ObservedObject(wrappedValue: model)
         _cueStore = ObservedObject(wrappedValue: model.meetingAsk.cueVerdicts)
+        _steerStore = ObservedObject(wrappedValue: model.titleSteer)
     }
 
     var body: some View {
@@ -2295,7 +2300,8 @@ struct LiveTranscriptPane: View {
                 }
             }
         }
-        .onChange(of: model.liveTranscriptOpenID) { _, _ in askJumpID = nil; confirmGlassesStop = false }
+        .onChange(of: model.liveTranscriptOpenID) { _, id in askJumpID = nil; confirmGlassesStop = false; steerStore.sessionChanged(to: id) }
+        .onDisappear { steerStore.cancel() }
         .cosConfirm(G2MeetingStop.confirmTitle, isPresented: $confirmGlassesStop, message: G2MeetingStop.confirmMessage, actions: [
             .destructive(G2MeetingStop.confirmAction) {
                 if let id = model.liveTranscriptOpenID { model.stopGlassesMeeting(id) }
@@ -2383,26 +2389,57 @@ struct LiveTranscriptPane: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .center, spacing: 10) {
                 LiveDot(live: feed?.ended != true, size: 10)
-                // 0.5.336: the meeting's real title (typed, or the calendar's), never a fixed "Live meeting".
-                Text(verbatim: model.liveTranscriptOpenID.map { model.liveMeetingTitle($0, start: feed?.startTime) } ?? "Live meeting")
-                    .font(COSType.display(22, weight: .medium))
-                    .lineLimit(1)
-                // 0.5.313 (Miles 2026-10-15): a G2 meeting and a Mac recording can be live together; switch between them
-                // here, without leaving the live view.
-                let liveRows = model.liveTranscriptRows.filter { $0.phase == .live }
-                if liveRows.count > 1, let current = model.liveTranscriptOpenID {
-                    COSDropdown("Showing", selection: Binding(get: { current }, set: { model.openLiveTranscript($0) }),
-                                options: liveRows.map { COSDropdownOption($0.sessionId, LiveTranscript.sourceLabel($0.sessionId, start: $0.startTime)) })
-                        .fixedSize()
+                if let id = model.liveTranscriptOpenID, steerStore.editing == id {
+                    // 0.5.366: the title is a field, in the title's own type; Return saves, Escape cancels.
+                    LiveTitleEditor(store: steerStore, save: { model.saveTitleSteer(draft: $0) }).id(id)
+                } else {
+                    // 0.5.336: the meeting's real title (typed, or the calendar's), never a fixed "Live meeting". 0.5.366: the name
+                    // the person gave it while it recorded comes first (ControllerModel.liveMeetingTitle).
+                    Text(verbatim: model.liveTranscriptOpenID.map { model.liveMeetingTitle($0, start: feed?.startTime) } ?? "Live meeting")
+                        .font(COSType.display(22, weight: .medium))
+                        .lineLimit(1)
+                        .contentShape(Rectangle())
+                        .onTapGesture { if let id = model.liveTranscriptOpenID { model.beginTitleSteer(id) } }
+                    // 0.5.366: a quiet Rename beside the title, only on a server that advertises it; disabled once the save is out.
+                    let rename = model.titleSteerAvailability(model.liveTranscriptOpenID)
+                    if rename != .hidden, let id = model.liveTranscriptOpenID {
+                        Button { model.beginTitleSteer(id) } label: { Label(TitleSteer.renameLabel, systemImage: "pencil") }
+                            .buttonStyle(COSTextButtonStyle())
+                            .disabled(rename != .open || steerStore.busy)
+                            .help(rename == .open ? "Rename this recording" : TitleSteer.savingLine)
+                            .accessibilityLabel("Rename this recording")
+                    }
+                    // 0.5.313 (Miles 2026-10-15): a G2 meeting and a Mac recording can be live together; switch between them
+                    // here, without leaving the live view.
+                    let liveRows = model.liveTranscriptRows.filter { $0.phase == .live }
+                    if liveRows.count > 1, let current = model.liveTranscriptOpenID {
+                        COSDropdown("Showing", selection: Binding(get: { current }, set: { model.openLiveTranscript($0) }),
+                                    options: liveRows.map { COSDropdownOption($0.sessionId, LiveTranscript.switcherLabel($0.sessionId, start: $0.startTime, steer: model.liveTranscriptFeeds[$0.sessionId]?.titleSteer)) })
+                            .fixedSize()
+                    }
+                    Spacer()
+                    Button(showAsk ? "Hide Ask" : "Live COS Ask") { showAsk.toggle() }
+                        .buttonStyle(COSQuietButtonStyle())
                 }
-                Spacer()
-                Button(showAsk ? "Hide Ask" : "Live COS Ask") { showAsk.toggle() }
-                    .buttonStyle(COSQuietButtonStyle())
             }
-            // 0.5.336: where it records and, on a server that lists its cue kinds, what the cues found so far.
+            // 0.5.366: under the title row: what Save does while the field is open, then what the name means once it is set, then
+            // why a rename did not go.
+            if let id = model.liveTranscriptOpenID {
+                if steerStore.editing == id {
+                    Text(TitleSteer.hint).font(COSType.body(12)).foregroundStyle(.secondary).padding(.leading, 20)
+                } else if let steer = feed?.titleSteer, !steer.isEmpty {
+                    Text(TitleSteer.note).font(COSType.body(12)).foregroundStyle(.secondary).padding(.leading, 20)
+                }
+                if let line = steerStore.message, steerStore.messageSession == id {
+                    Text(line).font(COSType.body(11.5, weight: .semibold)).foregroundStyle(COSPalette.amber).padding(.leading, 20)
+                }
+            }
+            // 0.5.336: where it records and, on a server that lists its cue kinds, what the cues found so far. 0.5.366: with a
+            // name given the title no longer holds the start time, so the source line does ("Recording on this Mac · started 9:05 PM").
             if let id = model.liveTranscriptOpenID,
                let status = LiveMeeting.statusLine(sessionId: id, ended: feed?.ended == true,
-                                                   kinds: model.liveMeetingCapability.counts ? inlineCues(id).map(\.kind) : nil) {
+                                                   kinds: model.liveMeetingCapability.counts ? inlineCues(id).map(\.kind) : nil,
+                                                   started: namedStart(feed)) {
                 Text(status).font(COSType.body(12.5, weight: .medium)).foregroundStyle(.primary)
             }
             if let arm = model.macRecording.manifest?.captureId == model.liveTranscriptOpenID ? model.macRecording.liveCuesArm : nil,
@@ -2437,7 +2474,8 @@ struct LiveTranscriptPane: View {
                 }
             }
             HStack(spacing: 0) {
-                Text(LiveTranscriptText.subtitle(start: feed?.startTime, now: now, clock: model.clockStyle, endedAt: feed?.endedAt))
+                Text(LiveTranscriptText.subtitle(start: feed?.startTime, now: now, clock: model.clockStyle, endedAt: feed?.endedAt,
+                                                 showsStart: namedStart(feed) == nil))
                     .foregroundStyle(.tertiary)
                 if feed?.ended != true, let quiet = LiveTranscript.quietLabel(lastActivity: feed?.lastActivityAt, now: now) {
                     Text(" · " + quiet).foregroundStyle(COSPalette.amber)
@@ -2466,6 +2504,12 @@ struct LiveTranscriptPane: View {
             addMenuOpen = false
             if let session = model.liveTranscriptOpenID, canAddFiles(session) { paneFocused = true }
         }
+    }
+
+    /// 0.5.366: the start ("9:05 PM") for the source line while a name is given, else nil (the title and the subtitle show it).
+    private func namedStart(_ feed: LiveTranscriptFeed?) -> String? {
+        guard let feed, let steer = feed.titleSteer, !steer.isEmpty, let start = feed.startTime, !PhoneMeetingCapture.protected(feed.sessionId) else { return nil }
+        return TitleSteer.startedClock(start, clock: model.clockStyle)
     }
 
     /// Files may be added to this live meeting: meeting files are on and its capture key names a meeting folder.
@@ -2671,6 +2715,59 @@ struct LiveTranscriptPane: View {
         .controlSize(.small)
         .padding(.horizontal, 24)
         .padding(.vertical, 12)
+    }
+}
+
+/// 0.5.366 (approved mock wk45 title-steer-mock): the title row while Rename is open. The field is in the title's own serif,
+/// prefilled, with the code point counter, Save and Cancel. Return saves and Escape cancels (the window hands Escape to
+/// TitleSteerStore.escape first, so it closes the field and not the live pane). The text is this view's own state: a keystroke
+/// redraws the field, not the pane.
+struct LiveTitleEditor: View {
+    @ObservedObject var store: TitleSteerStore
+    let save: (String) -> Void
+    @State private var draft: String
+    @FocusState private var focused: Bool
+
+    init(store: TitleSteerStore, save: @escaping (String) -> Void) {
+        self.store = store
+        self.save = save
+        _draft = State(initialValue: store.initialDraft)
+    }
+
+    var body: some View {
+        let over = TitleSteer.overLimit(draft)
+        HStack(alignment: .center, spacing: 10) {
+            TextField("Meeting title", text: $draft)
+                .textFieldStyle(.plain)
+                .font(COSType.display(22, weight: .medium))
+                .focused($focused)
+                .disabled(store.busy)
+                .onSubmit { if !over { save(draft) } }
+                .onExitCommand { _ = store.escape() }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 3)
+                .background(RoundedRectangle(cornerRadius: 8).fill(COSPalette.card))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(over ? COSPalette.danger : COSPalette.accent, lineWidth: 1.5))
+                .frame(maxWidth: 640)
+                .accessibilityLabel("Meeting title")
+            Text(TitleSteer.counter(draft))
+                .font(COSType.mono(11))
+                .foregroundStyle(over ? COSPalette.danger : Color.secondary)
+                .accessibilityLabel("\(TitleSteer.count(draft)) of \(TitleSteer.maxScalars) characters")
+            Button("Save") { save(draft) }
+                .buttonStyle(COSPrimaryButtonStyle())
+                .disabled(over || store.busy)
+            Button("Cancel") { store.cancel() }
+                .buttonStyle(COSQuietButtonStyle())
+                .disabled(store.busy)
+            Spacer(minLength: 0)
+        }
+        .task {
+            focused = true
+            // The title on screen is the field's first text: select it, so typing replaces it. Only a field editor is touched.
+            try? await Task.sleep(for: .milliseconds(80))
+            (NSApp.keyWindow?.firstResponder as? NSText)?.selectAll(nil)
+        }
     }
 }
 

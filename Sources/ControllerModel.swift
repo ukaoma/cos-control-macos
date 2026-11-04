@@ -626,6 +626,8 @@ final class ControllerModel: ObservableObject {
     }
 
     let meetingAsk = MeetingAskStore()
+    /// 0.5.366 (server 6.99.0): renaming a live recording (TitleSteerStore, Sources/MeetingAskCore.swift).
+    let titleSteer = TitleSteerStore()
     let macRecording = MacRecordingStore()
     let dictation = MacDictationStore.shared
     /// 0.5.309: the one COS dictionary (vocabulary and corrections) and what Fix a word taught it.
@@ -739,6 +741,8 @@ final class ControllerModel: ObservableObject {
         macRecording.liveCuesWanted = { [weak self] in self?.liveMeetingCapability.sendsMacLiveCues == true }
         macRecording.previewWanted = { [weak self] id in self?.liveMeetingPreviewWanted(id) == true }
         macRecording.previewDelivered = { [weak self] id, line in self?.liveProvisional.set(id, line) }
+        // 0.5.366: a renamed Mac recording saves under the name the person gave it.
+        macRecording.steerTitle = { [weak self] id in self?.liveTranscriptFeeds[id]?.titleSteer }
         // 0.5.334: a discard re-reads the stranded list, so a Save that could never work leaves with it.
         macRecording.discarded = { [weak self] _ in guard let self else { return }; Task { await self.loadOrphans(quiet: true) } }
         macRecording.activeChanged = { [weak self] active in
@@ -4244,6 +4248,9 @@ final class ControllerModel: ObservableObject {
 
     /// The live view's title for a session: a typed Mac title, else the calendar event near its start, else the automatic one.
     func liveMeetingTitle(_ sessionId: String, start: Date?) -> String {
+        // 0.5.366: the name the person gave the recording while it ran beats every other title, and is never kept: Rename can
+        // change or clear it, and the title underneath comes back.
+        if let steer = liveTranscriptFeeds[sessionId]?.titleSteer, !steer.isEmpty { return steer }
         // 0.5.337 (loop audit N10): a calendar title, once taken, stays for that meeting. The next event changes when this
         // one passes, so the title could flip mid-meeting.
         if let kept = liveMeetingTitlesKept[sessionId] { return kept }
@@ -4257,6 +4264,36 @@ final class ControllerModel: ObservableObject {
         return title
     }
     private var liveMeetingTitlesKept: [String: String] = [:]
+
+    /// 0.5.366 (server 6.99.0): Rename on the live header. Hidden on a server that does not advertise the route and on an iPhone
+    /// microphone recording; disabled once the recording has stopped (a Mac recording not recording any more, a glasses meeting
+    /// being stopped, or its file gone).
+    func titleSteerAvailability(_ sessionId: String?) -> TitleSteer.Availability {
+        guard let sessionId else { return .hidden }
+        let feed = liveTranscriptFeeds[sessionId]
+        let macStopped = macRecording.manifest?.captureId == sessionId && !macRecording.isRecording
+        return TitleSteer.availability(capable: liveMeetingCapability.titleSteer, sessionId: sessionId, hasFeed: feed != nil, ended: feed?.ended == true,
+                                       saving: macStopped || glassesMeetingStopping(sessionId))
+    }
+
+    private var titleSteerRun: TitleSteerStore.Run {
+        { [weak self] arguments, input in
+            guard let self else { throw HelperClientError.commandFailed("COS Control is closing.") }
+            return try await self.runHelper(arguments, timeout: 12, stdinData: input)
+        }
+    }
+
+    /// Open the title field on a live recording. The field's first text is the steer, else the title on screen.
+    func beginTitleSteer(_ sessionId: String) {
+        guard titleSteerAvailability(sessionId) == .open else { return }
+        let feed = liveTranscriptFeeds[sessionId]
+        titleSteer.begin(session: sessionId, steer: feed?.titleSteer, shown: liveMeetingTitle(sessionId, start: feed?.startTime), run: titleSteerRun)
+    }
+
+    /// Save the field. The server's answer goes into the live feed, so the header, the switcher and a Mac save use it at once.
+    func saveTitleSteer(draft: String) {
+        Task { await titleSteer.save(draft: draft, run: titleSteerRun) { [weak self] id, title in self?.liveTranscriptFeeds[id]?.titleSteer = title } }
+    }
     /// 0.5.337 (loop audit N11): files dropped on a live meeting are filed under its real title and day, not "Live meeting"
     /// with no date.
     func liveMeetingFileInfo(_ sessionId: String) -> WorkMeetingInfo {

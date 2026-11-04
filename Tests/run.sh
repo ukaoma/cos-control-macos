@@ -196,7 +196,7 @@ except ValueError:
 if not value.get("ok"):
     sys.exit("helper self-test FAILED: " + str(value.get("message") or value)[:2000])
 count = value.get("details", {}).get("tests", 0)
-if count < 1021:
+if count < 1037:
     sys.exit(f"helper self-test ran only {count} checks; expected at least 1021 (1021 at 0.5.362: the cue mode, grounding and general limit grammar, the v 3 whitelist, source kinds and https addresses, the insight row and the status verb; 961 at 0.5.336: the live meeting status keys, live-provisional, the Mac preview and the cue kind grammar; 950 with the Activity Today question text; 945 at 0.5.329: the live cue limits grammar, v 2 and refusal whitelist; 924 at 0.5.327: live-cues-history and live-cues-rate grammar, whitelists, unsupported and the stdin note; 856 at 0.5.322: live-cues-settings grammar and whitelist; 836 at 0.5.321; 820 at 0.5.278: the live transcript path grammar, fixture parse, --since and stamp; 784 at 0.5.268: Codex inside the ChatGPT app; 774 at 0.5.250: the Work session name, transcript titles and named rows that are never warm-ups; 727 at 0.5.238)")
 ' "$SELF_TEST"
 # The Work contract self-test (the model catalog, admission, and from 0.5.249 the Cursor chat finder) is its own command,
@@ -270,6 +270,9 @@ python3 "$ROOT/Tests/live-cues-helper-checks.py" "$TMP/cos-control-helper"
 # 0.5.327 Cue verdicts (server 6.79.0): live-cues-history and live-cues-rate through the compiled helper against a loopback
 # fixture (the query and the body exactly, every status an answer, only the contract's keys, unreachable and no token).
 python3 "$ROOT/Tests/cue-verdicts-helper-checks.py" "$TMP/cos-control-helper"
+# 0.5.366 Title steer (server 6.99.0): meeting-title-steer through the compiled helper against a loopback fixture (the route, the
+# query and the body exactly, the title on stdin only, every status an answer, only the contract's keys, the file's titleSteer).
+python3 "$ROOT/Tests/title-steer-helper-checks.py" "$TMP/cos-control-helper"
 # 0.5.336 live meeting view (server 6.86.0): live-provisional through the compiled helper against a loopback fixture (the
 # route and session exactly, only the line's chunk, generation and newest 600 characters, every status an answer, no text
 # on stderr). The Mac preview and liveCues on the start are in mac-recording-helper-checks.py above.
@@ -371,6 +374,12 @@ zsh "$ROOT/Tests/run-live-cues.sh"
 # 0.5.327: rating live cues. The wiring pins (the route flag and its opener, keys only on the card, the note in the card,
 # Cues only after the history answered, the 15-second poll only while it shows), then the words, keys and store.
 zsh "$ROOT/Tests/run-cue-verdicts.sh"
+# 0.5.366: renaming a live recording (server 6.99.0). The wiring pins (gated on the capability, Escape first, the title on stdin only,
+# the steer first in the header and the Mac save), the words, decisions and store against a stand-in helper, then the model and pane
+# with the whole app compiled. The helper lane runs above with the suite's own helper.
+COS_TITLE_STEER_LANE=pins zsh "$ROOT/Tests/run-title-steer.sh"
+COS_TITLE_STEER_LANE=models zsh "$ROOT/Tests/run-title-steer.sh"
+COS_TITLE_STEER_LANE=wiring zsh "$ROOT/Tests/run-title-steer.sh"
 # 0.5.336: the live meeting view (server 6.86.0). The wiring pins (capability gating, the audiogram in its own object,
 # Reduce Motion, the one-second clock, Command-Shift-R once, live cues only on the Mac start, no grey text in any log),
 # then the pure rules (counts, anchoring, the strip, the title, the audiogram ring, the preview rate cap, the grey line).

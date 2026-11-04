@@ -1,3 +1,19 @@
+## 0.5.366 (build 420), rename a live recording
+
+Built on 0.5.365 (build 419, private), which is not public. It pairs with server 6.99.0 (private); on an older server nothing new shows. The ask, 2026-11-03: a live Mac recording is listed as "Mac recording 9:05 PM" until the title model names it at save, so Miles wanted to name it while it records. His choice was Steer: the name shows everywhere at once, and at save the title model receives it as a strong hint (it keeps the names, companies and topic and may sharpen the wording). The mock was approved the same night.
+
+What is new by default: nothing, on any server without `capabilities.titleSteer`. On server 6.99.0 a quiet Rename button (a pencil) appears beside the live meeting's title, and clicking the title does the same. That is the only default-on change, and it only appears; nothing is renamed until you type a name.
+
+What this build adds, on top of 0.5.365:
+
+- Live meeting view: Rename opens the title as a field in the title's own serif, with a count of code points out of 120, Save and Cancel. Return saves, Escape cancels (the window gives Escape to the field first, so it never also leaves the live pane). Under the field: "COS keeps your words and may sharpen them when it saves the meeting."
+- After a rename the title is your name, with "Your title. COS may sharpen it when it saves." under it, and the source line reads "Recording on this Mac, started 9:05 PM" (glasses: "Recording on the glasses"). The live switcher uses the name too, and so do files dropped on the meeting.
+- Works for a Mac recording and a glasses meeting. An iPhone microphone recording is not renamed here. Clearing the field and saving clears the name. Saving the same text sends nothing.
+- A Mac recording saves under your name when it has one (otherwise as before). The server also fills it in when the save carries only the automatic title.
+- Refusals in plain words: another device renamed it first (its name is adopted, "Renamed on another device."), the recording is already saving ("Saving now. Rename it after it's saved."), it has ended ("This recording has ended."), anything else ("Could not rename. Try again."). Rename is disabled once the recording has stopped.
+- The helper has a new `meeting-title-steer` verb. The title goes on stdin, never in the arguments, and is never logged; only the contract's keys come back. The helper also passes the live session file's `titleSteer` through (cleaned, 120 code points at most).
+- Not built: the saved meeting's "Named from your title" line. The saved meeting detail does not carry the sidecar's `titleSteer`, and reading it back out of the meeting markdown would be a guess.
+
 ## 0.5.365 (build 419), honest web line, steady limit steppers, spreadsheets in meetings
 
 Built on 0.5.364 (build 418, private), which is not public. It pairs with server 6.97.8 (private). Three fixes from Miles's live cues test on 2026-11-02, found while reading the day's cues: the Settings line read "Today: 0 topic checks, 0 web searches" while the meeting assistant had its own web path that nothing counted; a limit stepper showed "COS Control could not save the limit" after the value had saved; and two .xlsx files dropped on a meeting were refused as unsupported.

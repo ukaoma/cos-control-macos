@@ -702,6 +702,7 @@ final class COSControlHelper {
         case "live-cues-rate": try emitLiveCuesRate(args: args)
         case "live-cues-status": try emitLiveCuesStatus(args: args)
         case "live-provisional": try emitLiveProvisional(args: args)
+        case "meeting-title-steer": try emitMeetingTitleSteer(args: args)
         case "meeting-stranded-save-all": try emitMeetingStrandedSaveAll()
         case "clear-stranded-video-uploads": try clearStrandedVideoUploads()
         case "reset-message-era": try resetMessageEra()
@@ -16513,6 +16514,8 @@ final class COSControlHelper {
         if let speakerRevision { read["speakerRevision"] = speakerRevision; read["fullSnapshot"] = fullSnapshot }
         if sessionId.hasPrefix("phone_") { read["sourceType"] = "iphone_microphone"; read["speakerPolicy"] = "anonymous" }
         if let levels = liveTranscriptLevels(object["chunkLevels"]) { read["levels"] = levels }
+        // 0.5.366 (server 6.99.0): the name typed while it recorded; absent from the file when none is set.
+        if let steer = titleSteerText(object["titleSteer"]) { read["titleSteer"] = steer }
         return read
     }
 
@@ -18097,7 +18100,8 @@ final class COSControlHelper {
                 "liveMeetingProvisional": provisional,
                 "liveCueKinds": Array(kinds.prefix(16)),
                 "liveCuesOn": block?["liveCuesV2"] is [String: Any],
-                "liveMeetingChunkLevels": (meeting?["chunkLevels"] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue } ?? false]
+                "liveMeetingChunkLevels": (meeting?["chunkLevels"] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue } ?? false,
+                "meetingTitleSteer": Self.meetingTitleSteerAdvertised(block?["titleSteer"])]
     }
 
     /// The provisional answer the app may see: `live`, and the line's chunk, generation and text (the last 600
@@ -18129,6 +18133,119 @@ final class COSControlHelper {
         details["transport"] = Self.liveCuesTransport(status: response.status, body: response.body)
         details["httpStatus"] = response.status
         emit(ok: true, message: "Live provisional answered (\(response.status))", details: details)
+    }
+
+    // MARK: - Title steer (0.5.366, server 6.99.0)
+    //
+    // `meeting-title-steer --session ID` reads GET /api/meeting/title-steer; `meeting-title-steer --session ID --revision N
+    // --title-stdin` writes PUT /api/meeting/title-steer with {sessionId, title, expectedRevision}, the title read from stdin as
+    // {"title": "..."} (never argv, where any process on the Mac could read it; an empty title clears the steer). Like the live
+    // cues verbs, every answer is ok with `transport` and `httpStatus`, and only the contract's keys cross: the view
+    // ({title, revision, updatedAt}, the title cleaned and cut to 120 code points), a refusal's code from the server's fixed set,
+    // and for a 409 title_changed the server's `current` view. SECRET BOUNDARY: a title carries names and companies. It goes to
+    // stdout for the app and the server's request, and nowhere else: no progress line, log or message.
+    static let meetingTitleSteerRoute = "/api/meeting/title-steer"
+    /// The server's TITLE_STEER_MAX_CHARS, in code points.
+    static let meetingTitleSteerMax = 120
+    static let meetingTitleSteerCodes: Set<String> = ["invalid_title", "invalid_session_id", "invalid_revision", "title_changed", "session_not_live",
+                                                       "save_in_progress", "steer_persistence_failed"]
+
+    /// `capabilities.titleSteer` is the protocol version 1, as a number. A boolean, a string or another number does not open Rename.
+    static func meetingTitleSteerAdvertised(_ value: Any?) -> Bool {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return false }
+        return number.intValue == 1
+    }
+
+    /// A title as the server keeps it, before its cap: NFKC, control characters to spaces, invisible direction and zero-width
+    /// marks dropped, whitespace collapsed, trimmed.
+    static func titleSteerClean(_ raw: String) -> String {
+        var scalars = String.UnicodeScalarView()
+        for scalar in raw.precomposedStringWithCompatibilityMapping.unicodeScalars {
+            switch scalar.value {
+            case 0x00...0x1f, 0x7f...0x9f: scalars.append(" ")
+            case 0x200b...0x200f, 0x202a...0x202e, 0x2060...0x2069, 0xfeff: continue
+            default: scalars.append(scalar)
+            }
+        }
+        return String(scalars).split(whereSeparator: { $0.isWhitespace || $0.isNewline }).joined(separator: " ")
+    }
+
+    /// A steer the app may see: text only, cleaned, at most 120 code points (cut on one, never inside), nil when empty.
+    static func titleSteerText(_ value: Any?) -> String? {
+        guard let raw = value as? String else { return nil }
+        var capped = String.UnicodeScalarView()
+        capped.append(contentsOf: titleSteerClean(raw).unicodeScalars.prefix(Self.meetingTitleSteerMax))
+        let text = String(capped).trimmingCharacters(in: .whitespaces)
+        return text.isEmpty ? nil : text
+    }
+
+    /// The title from stdin: a JSON object whose only use is its `title` string. nil for anything else.
+    static func meetingTitleSteerStdin(_ data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let title = object["title"] as? String else { return nil }
+        return title
+    }
+
+    /// The PUT body, or nil for an argument outside the grammar: a session id in the server's grammar, a revision from 0, and a
+    /// title that is no more than 120 code points once cleaned. Refused, never cut: a name the person typed is not shortened here.
+    static func meetingTitleSteerBody(session: String, revision: Int, title: String) -> String? {
+        guard Self.liveCueSessionValid(session), (0...1_000_000_000).contains(revision) else { return nil }
+        let cleaned = Self.titleSteerClean(title)
+        guard cleaned.unicodeScalars.count <= Self.meetingTitleSteerMax else { return nil }
+        let body: [String: Any] = ["sessionId": session, "title": cleaned, "expectedRevision": revision]
+        guard let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// One view as the contract has it: a revision from 0, a title (text, or null for none) and when it changed. nil otherwise.
+    static func meetingTitleSteerView(_ value: Any?) -> [String: Any]? {
+        guard let raw = value as? [String: Any], let revision = Self.liveCueCount(raw["revision"]) else { return nil }
+        var out: [String: Any] = ["revision": revision]
+        if raw["title"] is NSNull { out["title"] = NSNull() }
+        else if let title = raw["title"] as? String { out["title"] = Self.titleSteerText(title).map { $0 as Any } ?? NSNull() }
+        else { return nil }
+        if let at = raw["updatedAt"] as? String, at.count <= 40 { out["updatedAt"] = at } else { out["updatedAt"] = NSNull() }
+        return out
+    }
+
+    /// The answer the app may see. A 200 is the view's keys. Anything else carries the server's code when it is in the fixed
+    /// set (never its text), and a 409 title_changed also the server's `current` view.
+    static func meetingTitleSteerAnswer(status: Int, body: [String: Any]?) -> [String: Any] {
+        if status == 200 { return Self.meetingTitleSteerView(body) ?? [:] }
+        var out: [String: Any] = [:]
+        guard let code = Self.liveCueErrorCode(body), Self.meetingTitleSteerCodes.contains(code) else { return out }
+        out["error"] = code
+        if status == 409, code == "title_changed", let current = Self.meetingTitleSteerView(body?["current"]) { out["current"] = current }
+        return out
+    }
+
+    private func emitMeetingTitleSteer(args: [String]) throws {
+        guard let session = option("--session", in: args), Self.liveCueSessionValid(session) else {
+            throw HelperError.message("Use --session and a meeting session id")
+        }
+        guard !session.hasPrefix("phone_") else { throw HelperError.message("iPhone microphone recordings are not renamed here.") }
+        var body: String?
+        if args.contains("--title-stdin") {
+            guard let revision = option("--revision", in: args).flatMap({ Int($0) }) else { throw HelperError.message("Use --revision with the revision the server holds") }
+            guard let title = Self.meetingTitleSteerStdin(try readBoundedStdin(4_096)) else { throw HelperError.message("The title on stdin must be {\"title\": \"...\"}") }
+            guard let checked = Self.meetingTitleSteerBody(session: session, revision: revision, title: title) else {
+                throw HelperError.message("The revision or the title is not valid (a title is at most \(Self.meetingTitleSteerMax) characters)")
+            }
+            body = checked
+        }
+        guard let token = try? readToken() else {
+            emit(ok: true, message: "No pairing token", details: ["transport": "no_token"])
+            return
+        }
+        let response = body.map { request(Self.meetingTitleSteerRoute, method: "PUT", token: token, body: $0, timeout: 10) }
+            ?? request(Self.meetingTitleSteerRoute + "?sessionId=" + session, token: token, timeout: 6)
+        guard let response else {
+            emit(ok: true, message: "COS server unreachable", details: ["transport": "unavailable"])
+            return
+        }
+        var details = Self.meetingTitleSteerAnswer(status: response.status, body: response.body)
+        details["transport"] = Self.liveCuesTransport(status: response.status, body: response.body)
+        details["httpStatus"] = response.status
+        emit(ok: true, message: "Title steer answered (\(response.status))", details: details)
     }
 
     private func emitLiveCuesHistory(args: [String]) throws {
@@ -24042,6 +24159,59 @@ final class COSControlHelper {
         try expect(Self.liveProvisionalAnswer(status: 200, body: ["live": false, "provisional": NSNull()])["provisional"] is NSNull
                    && Self.liveProvisionalAnswer(status: 200, body: ["live": 1]).isEmpty && Self.liveProvisionalAnswer(status: 500, body: ["live": true]).isEmpty,
                    "live-provisional: null stays null, a number is not live, a failure carries nothing")
+        // 0.5.366 (server 6.99.0): renaming a live recording.
+        let steerFlag = "\u{1F1FA}\u{1F1F8}"
+        try expect(Self.titleSteerText("  Polling \u{200B}accuracy\t chat \n") == "Polling accuracy chat" && Self.titleSteerText("   ") == nil && Self.titleSteerText(nil) == nil
+                   && Self.titleSteerText(7) == nil && Self.titleSteerText(NSNull()) == nil && Self.titleSteerText("a\u{07}b") == "a b",
+                   "title steer: a title from the file is cleaned, and anything but text is none")
+        try expect(Self.titleSteerText(String(repeating: "a", count: 130))?.unicodeScalars.count == 120 && Self.titleSteerText(String(repeating: steerFlag, count: 70))?.unicodeScalars.count == 120
+                   && Self.titleSteerText(String(repeating: steerFlag, count: 70))?.unicodeScalars.count != 70,
+                   "title steer: cut to 120 code points, never 120 Characters")
+        let steerBody = Self.meetingTitleSteerBody(session: "mac_43879e59-3039-4f2c-9cd2-4fcc59486d71", revision: 3, title: "  Polling   accuracy chat ")
+        try expect(steerBody == #"{"expectedRevision":3,"sessionId":"mac_43879e59-3039-4f2c-9cd2-4fcc59486d71","title":"Polling accuracy chat"}"#,
+                   "title steer: the PUT body is exactly the session, the cleaned title and the revision")
+        try expect(Self.meetingTitleSteerBody(session: "meeting_1", revision: 0, title: "")?.contains(#""title":"""#) == true, "title steer: an empty title is a clear, and is sent")
+        try expect(Self.meetingTitleSteerBody(session: "a b", revision: 0, title: "x") == nil && Self.meetingTitleSteerBody(session: "x&y", revision: 0, title: "x") == nil
+                   && Self.meetingTitleSteerBody(session: "meeting_1", revision: -1, title: "x") == nil && Self.meetingTitleSteerBody(session: "meeting_1", revision: 2_000_000_000, title: "x") == nil,
+                   "title steer: a session or a revision outside the grammar makes no body")
+        try expect(Self.meetingTitleSteerBody(session: "meeting_1", revision: 0, title: String(repeating: steerFlag, count: 60)) != nil
+                   && Self.meetingTitleSteerBody(session: "meeting_1", revision: 0, title: String(repeating: steerFlag, count: 61)) == nil
+                   && Self.meetingTitleSteerBody(session: "meeting_1", revision: 0, title: String(repeating: "a", count: 121)) == nil,
+                   "title steer: 120 code points go, 121 are refused and never cut")
+        try expect(Self.meetingTitleSteerStdin(Data(#"{"title":"Polling accuracy chat"}"#.utf8)) == "Polling accuracy chat" && Self.meetingTitleSteerStdin(Data(#"{"title":7}"#.utf8)) == nil
+                   && Self.meetingTitleSteerStdin(Data(#"{"note":"x"}"#.utf8)) == nil && Self.meetingTitleSteerStdin(Data("not json".utf8)) == nil,
+                   "title steer: stdin is {title} and nothing else")
+        let steerView = Self.meetingTitleSteerAnswer(status: 200, body: ["sessionId": "mac_x1", "title": "Polling accuracy chat", "revision": 4, "updatedAt": "2026-11-03T21:05:00.000Z",
+                                                                        "serverInstanceId": "SECRET", "token": "SECRET"])
+        try expect(steerView["title"] as? String == "Polling accuracy chat" && steerView["revision"] as? Int == 4 && steerView["updatedAt"] as? String == "2026-11-03T21:05:00.000Z"
+                   && steerView["sessionId"] == nil && steerView["serverInstanceId"] == nil && steerView["token"] == nil,
+                   "title steer: a 200 passes the title, the revision and the time, and nothing else")
+        try expect(Self.meetingTitleSteerAnswer(status: 200, body: ["title": NSNull(), "revision": 0, "updatedAt": NSNull()])["title"] is NSNull
+                   && Self.meetingTitleSteerAnswer(status: 200, body: ["title": 5, "revision": 1]).isEmpty && Self.meetingTitleSteerAnswer(status: 200, body: ["title": "x"]).isEmpty
+                   && Self.meetingTitleSteerAnswer(status: 200, body: ["title": "x", "revision": -1]).isEmpty && Self.meetingTitleSteerAnswer(status: 200, body: nil).isEmpty,
+                   "title steer: a null title is none; a title that is not text, or a view with no valid revision, carries nothing")
+        let changedAnswer = Self.meetingTitleSteerAnswer(status: 409, body: ["error": "title_changed", "reason": "title_changed", "message": "SECRET text",
+                                                                           "current": ["sessionId": "mac_x1", "title": "Renamed on the phone", "revision": 7, "updatedAt": NSNull(), "extra": "SECRET"]])
+        let changedCurrent = changedAnswer["current"] as? [String: Any]
+        try expect(changedAnswer["error"] as? String == "title_changed" && changedAnswer["message"] == nil && changedCurrent?["title"] as? String == "Renamed on the phone"
+                   && changedCurrent?["revision"] as? Int == 7 && changedCurrent?["extra"] == nil && changedCurrent?["sessionId"] == nil,
+                   "title steer: a 409 title_changed keeps its code and the server's current view, not its text")
+        try expect(Self.meetingTitleSteerAnswer(status: 409, body: ["error": "save_in_progress"]) as? [String: String] == ["error": "save_in_progress"]
+                   && Self.meetingTitleSteerAnswer(status: 404, body: ["error": "session_not_live"]) as? [String: String] == ["error": "session_not_live"]
+                   && Self.meetingTitleSteerAnswer(status: 400, body: ["error": "invalid_title"]) as? [String: String] == ["error": "invalid_title"],
+                   "title steer: each refusal keeps its code")
+        try expect(Self.meetingTitleSteerAnswer(status: 500, body: ["error": "SECRET stack"]).isEmpty && Self.meetingTitleSteerAnswer(status: 409, body: ["error": "something_new"]).isEmpty
+                   && Self.meetingTitleSteerAnswer(status: 404, body: nil).isEmpty && Self.meetingTitleSteerAnswer(status: 409, body: ["error": "save_in_progress", "current": ["title": "A", "revision": 1]])["current"] == nil,
+                   "title steer: a code outside the fixed set, a missing body, and a current view on any other refusal carry nothing")
+        try expect(Self.meetingTitleSteerAdvertised(NSNumber(value: 1)) && !Self.meetingTitleSteerAdvertised(NSNumber(value: true)) && !Self.meetingTitleSteerAdvertised(NSNumber(value: 2))
+                   && !Self.meetingTitleSteerAdvertised("1") && !Self.meetingTitleSteerAdvertised(nil) && Self.liveMeetingStatusFields(["titleSteer": 1])["meetingTitleSteer"] as? Bool == true
+                   && Self.liveMeetingStatusFields(["liveMeeting": ["protocol": 1]])["meetingTitleSteer"] as? Bool == false,
+                   "title steer: only the number 1 in capabilities.titleSteer opens Rename")
+        let steerRead = try Self.liveTranscriptParse(Data(#"{"sessionId":"meeting_1","chunksIndexed":[],"titleSteer":"  Polling   accuracy chat "}"#.utf8), sessionId: "meeting_1", since: -1, stamp: "1")
+        let steerlessRead = try Self.liveTranscriptParse(Data(#"{"sessionId":"meeting_1","chunksIndexed":[]}"#.utf8), sessionId: "meeting_1", since: -1, stamp: "1")
+        let oddSteerRead = try Self.liveTranscriptParse(Data(#"{"sessionId":"meeting_1","chunksIndexed":[],"titleSteer":42}"#.utf8), sessionId: "meeting_1", since: -1, stamp: "1")
+        try expect(steerRead["titleSteer"] as? String == "Polling accuracy chat" && steerlessRead["titleSteer"] == nil && oddSteerRead["titleSteer"] == nil,
+                   "title steer: a live-transcript read carries the file's titleSteer cleaned, and none from a file without one or with one that is not text")
         let previewAnswer = Self.macRecordingPreviewAnswer(status: 200, body: ["sessionId": "mac_x", "chunkIndex": 4, "previewGen": 2, "text": "hello there", "provisional": true,
                                                                              "model": "turbo", "backend": "metal", "serverInstanceId": "SECRET"], chunkIndex: 4, previewGen: 2)
         try expect(previewAnswer["text"] as? String == "hello there" && previewAnswer["chunkIndex"] as? Int == 4 && previewAnswer["previewGen"] as? Int == 2
