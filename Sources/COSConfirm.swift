@@ -48,12 +48,22 @@ struct COSConfirmAction: Identifiable {
         COSConfirmAction(label: label, kind: .normal, takesReturn: false, run: run)
     }
 
+    /// Settings Release A (Miles, 2026-11-03): Return never runs a destructive action. A confirm with only Delete and Cancel
+    /// used to run Delete on Return (it cleared dictation history that way), so a stray key press could delete or stop
+    /// something. Only a click runs it.
     static func destructive(_ label: String, _ run: @escaping @MainActor () -> Void) -> COSConfirmAction {
-        COSConfirmAction(label: label, kind: .destructive, run: run)
+        COSConfirmAction(label: label, kind: .destructive, takesReturn: false, run: run)
     }
 
     static func cancel(_ label: String = "Cancel", _ run: @escaping @MainActor () -> Void = {}) -> COSConfirmAction {
         COSConfirmAction(label: label, kind: .cancel, run: run)
+    }
+}
+
+extension COSConfirmAction {
+    /// The one action Return runs: the first normal action that takes Return. Never a destructive one, whatever its flag.
+    static func returnDefault(in actions: [COSConfirmAction]) -> COSConfirmAction? {
+        actions.first(where: { $0.kind == .normal && $0.takesReturn })
     }
 }
 
@@ -63,10 +73,7 @@ private struct COSConfirmModifier: ViewModifier {
     let message: String
     let actions: [COSConfirmAction]
 
-    private var defaultActionID: UUID? {
-        actions.first(where: { $0.kind == .normal && $0.takesReturn })?.id
-            ?? actions.first(where: { $0.kind == .destructive && $0.takesReturn })?.id
-    }
+    private var defaultActionID: UUID? { COSConfirmAction.returnDefault(in: actions)?.id }
 
     func body(content: Content) -> some View {
         content.disabled(isPresented).overlay {

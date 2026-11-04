@@ -3547,9 +3547,10 @@ need('.clickOnly("Use") {' in bundled_confirm and '.normal("Use")' not in bundle
 need('.onDisappear {\n            confirmBundledCharacter = false\n            pendingBundledCharacter = nil' in bundled_confirm,
      "a pending Use-a-character confirm must be withdrawn when the panel goes away")
 confirm_src = (root / "Sources/COSConfirm.swift").read_text()
-need('$0.kind == .normal && $0.takesReturn' in confirm_src and '$0.kind == .destructive && $0.takesReturn' in confirm_src
-     and 'COSConfirmAction(label: label, kind: .normal, takesReturn: false, run: run)' in confirm_src,
-     "a click-only action must never become the confirm's Return default")
+need('$0.kind == .normal && $0.takesReturn' in confirm_src and '$0.kind == .destructive && $0.takesReturn' not in confirm_src
+     and 'COSConfirmAction(label: label, kind: .normal, takesReturn: false, run: run)' in confirm_src
+     and 'COSConfirmAction(label: label, kind: .destructive, takesReturn: false, run: run)' in confirm_src,
+     "a click-only action must never become the confirm's Return default, and Return never runs a destructive one (Settings Release A)")
 load_fn = model.split("    func loadPetSprite() {", 1)[1].split("\n    }\n", 1)[0]
 need(not any(call in load_fn for call in ("removeAll(", "installBundledCharacter(", "installBundledDefault(", "installDefault(",
                                           "useBundledCharacter(", "replaceContents(", "resetPetSprite(")),
