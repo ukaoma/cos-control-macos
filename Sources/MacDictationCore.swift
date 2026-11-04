@@ -1218,6 +1218,11 @@ enum DictationHistory {
         let kept = retention.days.map { days in list.filter { now.timeIntervalSince($0.createdAt) <= Double(days) * 86_400 } } ?? list
         return Array(kept.prefix(cap))
     }
+    /// How many records choosing `retention` would delete now (Settings Release A): what `pruned` drops from the list that is
+    /// kept today. The Settings confirm says this number before a shorter time deletes anything.
+    static func deleted(_ list: [DictationRecord], retention: DictationRetention, now: Date) -> Int {
+        max(0, list.count - pruned(list, retention: retention, now: now).count)
+    }
     /// Local substring search over the text, case and diacritic insensitive. Empty finds everything.
     static func search(_ list: [DictationRecord], _ query: String) -> [DictationRecord] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)

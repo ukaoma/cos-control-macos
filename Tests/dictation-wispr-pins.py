@@ -206,9 +206,13 @@ settings = body(dictation, "struct MacDictationSettings: View {")
 need('Button("Clear dictation history") { confirmingClear = true }' in settings and "isPresented: $confirmingClear," in settings,
      "Settings → Clear dictation history asks first")
 need('COSDropdown("Keep dictations for", selection: retentionChoice,' in settings
-     and "if next.writesToDisk { store.setRetention(next) } else if store.retention.writesToDisk { confirmingDontKeep = true }" in settings
-     and "isPresented: $confirmingDontKeep," in settings,
-     "Keep dictations for: Don't keep goes through a confirm; the others apply at once")
+     and "if count > 0 { shortenCount = count; shorteningTo = next } else { store.setRetention(next) }" in settings
+     and "let count = DictationHistory.deleted(store.recent, retention: next, now: Date())" in settings
+     and "} else if store.retention.writesToDisk { confirmingDontKeep = true }" in settings
+     and "isPresented: $confirmingDontKeep," in settings
+     and "isPresented: Binding(get: { shorteningTo != nil }, set: { if !$0 { shorteningTo = nil } })," in settings
+     and settings.count("store.setRetention(") == 2 and "{ store.setRetention(target) }" in settings,
+     "Keep dictations for: Don't keep and a shorter time that deletes go through a confirm; the others apply at once (Settings Release A)")
 need('DictationRetention(rawValue: d.string(forKey: "dictation.history.retention") ?? "") ?? .default' in dictation
      and "static let `default` = DictationRetention.month" in core,
      "retention defaults to 30 days when nothing (or something unreadable) is stored")

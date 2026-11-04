@@ -4094,6 +4094,12 @@ struct MacDictationSettings: View {
     @ObservedObject var style = DictationStyleStore.shared
     @State private var confirmingDontKeep = false
     @State private var confirmingClear = false
+    /// Settings Release A: a shorter time to keep dictations, waiting on its confirm, and how many it would delete.
+    @State private var shorteningTo: DictationRetention?
+    @State private var shortenCount = 0
+    /// Settings Release A: the Microphone list follows the Mac (macOS reports a device plugged in or removed). One listener,
+    /// only while a page that shows the list is on screen.
+    @State private var micWatcher = DeviceListWatcher()
     /// Settings hub: one group of these (Dictation, Microphone, Shortcuts, Sounds and audio, Text, AI polish, History),
     /// each control still written once below. The panel and Activity's Dictation tab: `.all`, the whole view.
     var section: DictationSettingsSection = .all
@@ -4101,10 +4107,19 @@ struct MacDictationSettings: View {
     @Environment(\.settingsHubHosted) private var hosted
     private func shows(_ part: DictationSettingsSection) -> Bool { section == .all || section == part }
     /// "Don't keep" waits for a confirm, because choosing it deletes the history already on this Mac.
+    /// A shorter time deletes the older dictations at once, so it waits for a confirm that says how many (Settings Release A).
     private var retentionChoice: Binding<DictationRetention> {
         Binding(get: { store.retention }, set: { next in
-            if next.writesToDisk { store.setRetention(next) } else if store.retention.writesToDisk { confirmingDontKeep = true }
+            if next.writesToDisk {
+                let count = DictationHistory.deleted(store.recent, retention: next, now: Date())
+                if count > 0 { shortenCount = count; shorteningTo = next } else { store.setRetention(next) }
+            } else if store.retention.writesToDisk { confirmingDontKeep = true }
         })
+    }
+    /// Built while the confirm is on screen: the dialog dismisses before it runs an action.
+    private var shortenActions: [COSConfirmAction] {
+        guard let target = shorteningTo else { return [.cancel()] }
+        return [.destructive(SettingsConfirmCopy.shortenAction(count: shortenCount, days: target.days)) { store.setRetention(target) }, .cancel()]
     }
     private var microphoneOptions: [COSDropdownOption<String>] {
         var options = [COSDropdownOption("", "System default")]
@@ -4132,10 +4147,10 @@ struct MacDictationSettings: View {
                 if shows(.microphone) {
                 HStack(spacing: 10) {
                 COSDropdown("Microphone", selection: $store.microphoneUID, options: microphoneOptions).disabled(store.busy)
-                if hosted { Button("Refresh") { store.refreshMicrophones() }.controlSize(.small) }
+                if hosted { Button("Check again") { store.refreshMicrophones() }.controlSize(.small) }
                 }
                 .settingsHubRow()
-                if !hosted { Button("Refresh microphones") { store.refreshMicrophones() }.controlSize(.small) }
+                if !hosted { Button("Check again") { store.refreshMicrophones() }.controlSize(.small) }
                 // 0.5.345 (A-W1): with System default, a microphone that fails to start gives way to one that worked before.
                 Toggle(DictationMicFallback.settingTitle, isOn: $store.micFallback).toggleStyle(COSSwitchStyle())
                     .disabled(!store.microphoneUID.isEmpty)
@@ -4208,20 +4223,24 @@ struct MacDictationSettings: View {
                     Text(DictationPolishPause.settingLine(pause)).font(.caption2).foregroundStyle(COSPalette.amber)
                 }
                 }
-                .settingsHubRow()
+                .settingsHubRow().settingsHubAnchor("DI-23")
+                // Settings Release A: the two options under AI polish are drawn only while their switch above is on. Search still
+                // finds them and lands on the switch that holds them (SettingsHubCatalog.gatedBy).
+                if store.polishModel != .off {
                 // 0.5.331 paste first, polish in place: on by default; off is the order before 0.5.331.
                 Toggle("Paste then polish", isOn: $store.pasteThenPolish).toggleStyle(COSSwitchStyle())
-                    .disabled(store.polishModel == .off)
                     .settingsHubRow(hosted ? DictationPolishSwap.settingNote(store.polishModel) : nil).settingsHubAnchor("DI-24")
                 if !hosted {
                 Text(DictationPolishSwap.settingNote(store.polishModel))
                     .font(.caption2).foregroundStyle(.secondary)
                 }
+                if store.pasteThenPolish {
                 // 0.5.345 (A-W3b): a held ⌘ or ⌃ is waited for before the swap.
                 Toggle(DictationSwapWait.settingTitle, isOn: $store.swapWaitForKeys).toggleStyle(COSSwitchStyle())
-                    .disabled(store.polishModel == .off || !store.pasteThenPolish)
                     .settingsHubRow(hosted ? DictationSwapWait.settingNote : nil).settingsHubAnchor("DI-25")
                 if !hosted { Text(DictationSwapWait.settingNote).font(.caption2).foregroundStyle(.secondary) }
+                }
+                }
                 // 0.5.335 (server 6.85.0): Your polish instructions, after the built-in rules. Absent on an older server.
                 // The card puts the hub's block chrome on what it draws, so an older server leaves no empty row.
                 DictationPolishInstructionsCard(store: DictationPolishInstructionsStore.shared, polishOn: store.polishModel != .off, model: store.polishModel)
@@ -4249,7 +4268,13 @@ struct MacDictationSettings: View {
             }
         }
         // Microphones are listed when their group appears (the panel: every time it opens).
-        .onAppear { if shows(.microphone) { store.refreshMicrophones() } }
+        .onAppear {
+            if shows(.microphone) {
+                store.refreshMicrophones()
+                micWatcher.start { [store] in store.refreshMicrophones() }
+            }
+        }
+        .onDisappear { micWatcher.stop() }
         .cosConfirm(
             "Stop keeping dictations?",
             isPresented: $confirmingDontKeep,
@@ -4267,6 +4292,12 @@ struct MacDictationSettings: View {
                 .destructive("Clear history") { store.clearRecent() },
                 .cancel(),
             ]
+        )
+        .cosConfirm(
+            shorteningTo.map { SettingsConfirmCopy.shortenTitle(count: shortenCount, days: $0.days) } ?? "Delete older dictations?",
+            isPresented: Binding(get: { shorteningTo != nil }, set: { if !$0 { shorteningTo = nil } }),
+            message: shorteningTo.map { SettingsConfirmCopy.shortenMessage(count: shortenCount, days: $0.days) } ?? "",
+            actions: shortenActions
         )
     }
 }
