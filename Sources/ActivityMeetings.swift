@@ -2391,7 +2391,7 @@ struct LiveTranscriptPane: View {
                 LiveDot(live: feed?.ended != true, size: 10)
                 if let id = model.liveTranscriptOpenID, steerStore.editing == id {
                     // 0.5.366: the title is a field, in the title's own type; Return saves, Escape cancels.
-                    LiveTitleEditor(store: steerStore, save: { model.saveTitleSteer(draft: $0) }).id(id)
+                    LiveTitleEditor(store: steerStore, open: model.titleSteerAvailability(id) == .open, save: { model.saveTitleSteer(draft: $0) }).id(id)
                 } else {
                     // 0.5.336: the meeting's real title (typed, or the calendar's), never a fixed "Live meeting". 0.5.366: the name
                     // the person gave it while it recorded comes first (ControllerModel.liveMeetingTitle).
@@ -2724,12 +2724,15 @@ struct LiveTranscriptPane: View {
 /// redraws the field, not the pane.
 struct LiveTitleEditor: View {
     @ObservedObject var store: TitleSteerStore
+    /// The recording can still be renamed (TitleSteer.availability is .open). Once it stops the field closes and Save is off.
+    let open: Bool
     let save: (String) -> Void
     @State private var draft: String
     @FocusState private var focused: Bool
 
-    init(store: TitleSteerStore, save: @escaping (String) -> Void) {
+    init(store: TitleSteerStore, open: Bool, save: @escaping (String) -> Void) {
         self.store = store
+        self.open = open
         self.save = save
         _draft = State(initialValue: store.initialDraft)
     }
@@ -2742,7 +2745,7 @@ struct LiveTitleEditor: View {
                 .font(COSType.display(22, weight: .medium))
                 .focused($focused)
                 .disabled(store.busy)
-                .onSubmit { if !over { save(draft) } }
+                .onSubmit { if !over, open { save(draft) } }
                 .onExitCommand { _ = store.escape() }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 3)
@@ -2756,12 +2759,16 @@ struct LiveTitleEditor: View {
                 .accessibilityLabel("\(TitleSteer.count(draft)) of \(TitleSteer.maxScalars) characters")
             Button("Save") { save(draft) }
                 .buttonStyle(COSPrimaryButtonStyle())
-                .disabled(over || store.busy)
+                .disabled(over || store.busy || !open)
             Button("Cancel") { store.cancel() }
                 .buttonStyle(COSQuietButtonStyle())
                 .disabled(store.busy)
             Spacer(minLength: 0)
         }
+        .onChange(of: open) { _, now in if !now { store.cancel() } }
+        .onChange(of: store.busy) { _, busy in if !busy { focused = true } }
+        .onAppear { store.fieldAppeared() }
+        .onDisappear { store.fieldDisappeared() }
         .task {
             focused = true
             // The title on screen is the field's first text: select it, so typing replaces it. Only a field editor is touched.

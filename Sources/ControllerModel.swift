@@ -4291,7 +4291,10 @@ final class ControllerModel: ObservableObject {
     }
 
     /// Save the field. The server's answer goes into the live feed, so the header, the switcher and a Mac save use it at once.
-    func saveTitleSteer(draft: String) {
+    func saveTitleSteer(draft: String, session: String? = nil) {
+        // The recording may have stopped since the field opened: a Mac save may already have read the old name, so a late
+        // rename would be filed under it. The field closes instead.
+        guard let id = session ?? titleSteer.editing, titleSteerAvailability(id) == .open else { titleSteer.cancel(); return }
         Task { await titleSteer.save(draft: draft, run: titleSteerRun) { [weak self] id, title in self?.liveTranscriptFeeds[id]?.titleSteer = title } }
     }
     /// 0.5.337 (loop audit N11): files dropped on a live meeting are filed under its real title and day, not "Live meeting"
