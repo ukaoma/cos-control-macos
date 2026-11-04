@@ -1395,6 +1395,25 @@ struct COSSpinner: View {
     }
 }
 
+/// What Escape closes first inside Settings (Settings Release A review). Activity catches Escape before a focused field or an open
+/// dialog can, and used to leave Settings over a half-typed number or an open confirm. A typed field registers while it has focus
+/// and a confirm while it is on screen; Settings asks here first, and only when nothing is open does Escape leave. Most recent first.
+@MainActor enum COSEscape {
+    private static var entries: [(id: UUID, close: () -> Void)] = []
+    static var openCount: Int { entries.count }
+    static func register(_ id: UUID, _ close: @escaping () -> Void) {
+        unregister(id)
+        entries.append((id, close))
+    }
+    static func unregister(_ id: UUID) { entries.removeAll { $0.id == id } }
+    /// Closes the most recently opened one. True when there was one (Escape is used up).
+    static func closeTop() -> Bool {
+        guard let top = entries.popLast() else { return false }
+        top.close()
+        return true
+    }
+}
+
 /// A stepper: the words, then the value between two icon buttons (minus, plus). The
 /// value stays inside `range`; VoiceOver adjusts it as one control.
 struct COSStepper: View {
@@ -1413,6 +1432,8 @@ struct COSStepper: View {
     @Environment(\.font) private var environmentFont
     @Environment(\.isEnabled) private var isEnabled
     @State private var draft = ""
+    @State private var escaped = false
+    @State private var escapeID = UUID()
     @FocusState private var typing: Bool
 
     init(_ label: String, value: Binding<Int>, in range: ClosedRange<Int>, step: Int = 1,
@@ -1426,7 +1447,15 @@ struct COSStepper: View {
         self.onTypedValue = onTypedValue
     }
 
+    /// Escape: the shown value comes back and nothing is sent, however focus leaves.
+    private func cancelTyping() {
+        guard typing else { return }
+        escaped = true
+        typing = false
+    }
+
     private func commitTyped() {
+        if escaped { escaped = false; draft = valueText ?? ""; return }
         let text = draft.trimmingCharacters(in: .whitespaces)
         typing = false
         if text != (valueText ?? "") { onTypedValue?(text) }
@@ -1455,8 +1484,11 @@ struct COSStepper: View {
                         .frame(width: 52)
                         .focused($typing)
                         .onSubmit { commitTyped() }
-                        .onExitCommand { draft = valueText; typing = false }
-                        .onChange(of: typing) { _, now in if !now { commitTyped() } }
+                        .onExitCommand { cancelTyping() }
+                        .onChange(of: typing) { _, now in
+                            if now { COSEscape.register(escapeID) { cancelTyping() } } else { COSEscape.unregister(escapeID); commitTyped() }
+                        }
+                        .onDisappear { COSEscape.unregister(escapeID) }
                         .onChange(of: valueText, initial: true) { _, text in if !typing { draft = text } }
                         .accessibilityLabel(label)
                 } else {

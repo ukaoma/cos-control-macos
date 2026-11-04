@@ -28,6 +28,23 @@ import SwiftUI
         check(COSConfirmAction.returnDefault(in: [flagged, cancel]) == nil, "a destructive action with the flag set is still not the Return default")
         check(COSConfirmAction.returnDefault(in: []) == nil, "no actions, no default")
 
+        // Escape (Settings Release A review): the most recent open thing closes first, and only then does Escape go on.
+        var closed: [String] = []
+        let a = UUID(), b = UUID()
+        check(!COSEscape.closeTop() && COSEscape.openCount == 0, "nothing open: Escape is not used up")
+        COSEscape.register(a) { closed.append("dialog") }
+        COSEscape.register(b) { closed.append("field") }
+        check(COSEscape.openCount == 2, "two open things")
+        check(COSEscape.closeTop() && closed == ["field"], "the field opened last closes first")
+        check(COSEscape.closeTop() && closed == ["field", "dialog"], "then the dialog")
+        check(!COSEscape.closeTop() && closed.count == 2, "then Escape is free")
+        COSEscape.register(a) { closed.append("again") }
+        COSEscape.register(a) { closed.append("replaced") }
+        check(COSEscape.openCount == 1 && COSEscape.closeTop() && closed.last == "replaced", "registering twice keeps one, the newer")
+        COSEscape.register(b) { closed.append("gone") }
+        COSEscape.unregister(b)
+        check(COSEscape.openCount == 0 && !COSEscape.closeTop() && !closed.contains("gone"), "a thing that closed on its own is forgotten")
+
         print(failures == 0 ? "confirm return checks: \(passes) passed" : "confirm return checks: \(failures) FAILED of \(passes + failures)")
         exit(failures == 0 ? 0 : 1)
     }

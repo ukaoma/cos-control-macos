@@ -72,11 +72,18 @@ private struct COSConfirmModifier: ViewModifier {
     @Binding var isPresented: Bool
     let message: String
     let actions: [COSConfirmAction]
+    /// Escape closes an open confirm from Settings (COSEscape), whichever view owns it.
+    @State private var escapeID = UUID()
 
     private var defaultActionID: UUID? { COSConfirmAction.returnDefault(in: actions)?.id }
 
     func body(content: Content) -> some View {
-        content.disabled(isPresented).overlay {
+        content.disabled(isPresented)
+        .onChange(of: isPresented, initial: true) { _, now in
+            if now { COSEscape.register(escapeID) { isPresented = false } } else { COSEscape.unregister(escapeID) }
+        }
+        .onDisappear { COSEscape.unregister(escapeID) }
+        .overlay {
             if isPresented {
                 ZStack {
                     // Swallows clicks on the panel behind, so the confirmation is
