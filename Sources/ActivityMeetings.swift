@@ -1530,7 +1530,8 @@ struct MeetingConsolidationControls: View {
                     .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
                     .disabled(store.busy || starting)
                 }
-                Text(row.progress?.evidence ?? row.detail)
+                Text(row.progress?.evidence ?? (row.status == "completed"
+                    ? "Review the report for applied changes and anything left unresolved." : row.detail))
                     .font(COSType.body(10.5)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let report = row.result, !report.isEmpty {
@@ -1557,6 +1558,7 @@ struct MeetingConsolidationControls: View {
             failure = store.error
         }
         .onChange(of: latest?.status) { _, status in
+            guard autoLoads else { return }
             if let status, WorkHandoffReceipt.terminalStatuses.contains(status) {
                 Task { await didFinish() }
             }
