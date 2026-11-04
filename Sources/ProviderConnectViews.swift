@@ -625,10 +625,10 @@ struct PhoneSignInRow: View {
                 Text(codeLine).font(COSType.body(12)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 14) {
-                Button(PhoneSignInRules.showCode) { Task { await state.showCode() } }
+                Button(state.code == nil ? PhoneSignInRules.showCode : PhoneSignInRules.newCode) { Task { await state.showCode() } }
                     .buttonStyle(COSTextButtonStyle())
                     .disabled(state.codeBusy)
-                Button(PhoneSignInRules.newQR) { Task { await state.showNewQR() } }
+                Button(state.handoff == nil && state.line != nil ? PhoneSignInRules.tryAgain : PhoneSignInRules.newQR) { Task { await state.showNewQR() } }
                     .buttonStyle(COSTextButtonStyle())
                     .controlSize(.small)
                     .disabled(state.minting)

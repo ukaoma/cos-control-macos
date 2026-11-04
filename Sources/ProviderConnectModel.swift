@@ -2142,7 +2142,11 @@ enum PhoneSignInRules {
     static let notGlasses = "This QR is for Safari. The one in Connect your glasses is for the COS app."
     static let codeNote = "Type this on the sign-in page. Works once, for 5 minutes."
     static let showCode = "Show a sign-in code"
+    /// Once a code is up, the same button replaces it.
+    static let newCode = "Show a new code"
     static let newQR = "Show a new QR"
+    /// No QR could be made (the line above says why): the same button asks again.
+    static let tryAgain = "Try again"
     static let making = "Making a QR…"
     static let noTailnet = "Turn on Tailscale on this Mac."
     static let needsUpdate = "Update the server to use this."

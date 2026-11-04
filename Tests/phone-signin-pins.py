@@ -145,6 +145,10 @@ need(words.get("subtitle") == "Scan with your iPhone camera. Safari opens COS al
 need(words.get("qrNote") == "Works once, for 2 minutes. Only on your tailnet.", "copy", "under the QR")
 need(words.get("codeNote") == "Type this on the sign-in page. Works once, for 5 minutes.", "copy", "under the code")
 need(words.get("showCode") == "Show a sign-in code" and words.get("newQR") == "Show a new QR", "copy", "the buttons")
+need(words.get("newCode") == "Show a new code" and words.get("tryAgain") == "Try again", "copy", "the buttons once a code is up or no QR could be made")
+row = body(views_file, "struct PhoneSignInRow: View {")
+need("state.code == nil ? PhoneSignInRules.showCode : PhoneSignInRules.newCode" in row, "buttons", "the code button says new once a code is shown")
+need("state.handoff == nil && state.line != nil ? PhoneSignInRules.tryAgain : PhoneSignInRules.newQR" in row, "buttons", "the QR button says Try again only when no QR could be made")
 need(words.get("noTailnet") == "Turn on Tailscale on this Mac." and words.get("needsUpdate") == "Update the server to use this.", "copy", "the two lines instead of a QR")
 for name, text in words.items():
     need(not re.search("[—–→]|->", text), "copy", f"no em dash, en dash or arrow: {name}")

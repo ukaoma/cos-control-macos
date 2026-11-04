@@ -26091,21 +26091,32 @@ enum ProbeRunner {
         let done = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in done.signal() }
         let collected = ProbeOutput()
-        pipe.fileHandleForReading.readabilityHandler = { handle in collected.append(handle.availableData) }
+        // One reader owns the pipe until end of file, and the answer is read only after it finishes. A
+        // readabilityHandler still running after the child exited could append its chunk after the text was
+        // taken, so `status --json` intermittently came back empty and sameUser read false (2026-11-04).
+        let drained = DispatchSemaphore(value: 0)
+        let reader = pipe.fileHandleForReading
         lock.lock()
         guard !stopped else { lock.unlock(); return nil }
         do { try process.run() } catch { lock.unlock(); return nil }
         running[process.processIdentifier] = process
         lock.unlock()
+        DispatchQueue.global(qos: .utility).async {
+            while true {
+                let chunk = reader.availableData
+                if chunk.isEmpty { break }
+                collected.append(chunk)
+            }
+            drained.signal()
+        }
         defer { lock.lock(); running[process.processIdentifier] = nil; lock.unlock() }
         if done.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()
             if done.wait(timeout: .now() + 1) == .timedOut { kill(process.processIdentifier, SIGKILL); _ = done.wait(timeout: .now() + 1) }
-            pipe.fileHandleForReading.readabilityHandler = nil
             return nil
         }
-        pipe.fileHandleForReading.readabilityHandler = nil
-        collected.append((try? pipe.fileHandleForReading.readToEnd()) ?? Data())
+        // A grandchild holding the pipe open must not hang the helper: wait a bounded second for end of file.
+        _ = drained.wait(timeout: .now() + 1)
         return (process.terminationStatus, collected.text)
     }
 
