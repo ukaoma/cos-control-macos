@@ -58,6 +58,19 @@ mutants = [
  ("A13 the log carries the link (app)", M, "        if stage != lastStage { log(stage); lastStage = stage }", "        if stage != lastStage { log(stage + \" \" + (handoff?.url ?? \"\")); lastStage = stage }", APP, "[phone log]"),
  ("A14 the log carries the link (pins)", M, "        if stage != lastStage { log(stage); lastStage = stage }", "        if stage != lastStage { log(stage + \" \" + (handoff?.url ?? \"\")); lastStage = stage }", PINS, "[log stages only]"),
  ("A15 a no-tailnet answer reads unreadable", M, '        case "no_tailnet": return .line(noTailnet, retry: retryAfter)\n', "", APP, "[phone no tailnet]"),
+ # 0.5.368: a server without the phone sign-in hides the whole row, asked once per appearance.
+ ("H1 a hidden old server is asked on every refresh", M, "        if serverTooOld && askedThisAppearance { return }\n", "", APP, "[phone old server hides]"),
+ ("H2 hide() forgets the verdict, so the row flashes back", M, "        lastStage = nil\n        askedThisAppearance = false\n", "        lastStage = nil\n        askedThisAppearance = false\n        serverTooOld = false\n", APP, "[phone old server hides]"),
+ ("H3 needs_update does not hide", M, "            if text == PhoneSignInRules.needsUpdate { serverTooOld = true }", "            if text == PhoneSignInRules.needsUpdate { serverTooOld = false }", APP, "[phone old server hides]"),
+ ("H4 a server that is down shows the row", M, "![PhoneSignInRules.unreachable, PhoneSignInRules.notReady,", "![PhoneSignInRules.notReady,", APP, "[phone old server hides]"),
+ ("H5 a mint does not count as this appearance's ask", M, "        askedThisAppearance = true\n", "", APP, "[phone old server hides]"),
+ ("H6 a QR does not show the row again", M, "        case .qr, .code: serverTooOld = false\n", "        case .qr, .code: break\n", APP, "[phone old server hides]"),
+ ("H7 the hidden block keeps its height", V, ".frame(height: hidden ? 0 : nil, alignment: .top)", ".frame(height: nil, alignment: .top)", PINS, "[old server hides]"),
+ ("H8 VoiceOver still reads the hidden row", V, "            .accessibilityHidden(hidden)\n", "", PINS, "[old server hides]"),
+ ("H9 Devices mounts the bare row", P, "            PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)\n",
+  "            SettingsHubBlock { PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses) }\n", PINS, "[mounted once]"),
+ ("H10 the glasses note drawn outside the row", P, '                .settingsHubAnchor("UT-29")\n            if voiceGuide.devicePath == .glasses {\n',
+  '                .settingsHubAnchor("UT-29")\n            if voiceGuide.devicePath == .glasses {\n                Text(PhoneSignInRules.notGlasses)\n', PINS, "[old server hides]"),
  # The row, the QR image and the hub (pins and the hub's checks).
  ("V1 the phone QR is cached", V, 'label: "Sign-in QR for Safari on your iPhone", cached: false)', 'label: "Sign-in QR for Safari on your iPhone", cached: true)', PINS, "[qr not cached]"),
  ("V2 the image cache ignores its switch", V, "        if cached, let hit = cache[text] { return hit }\n", "        if let hit = cache[text] { return hit }\n", PINS, "[qr not cached]"),
@@ -72,12 +85,12 @@ mutants = [
  ("V9 search misses Control Web", K, '"qr", "control web", "safari"', '"qr", "safari"', HUB, "search finds Open COS on your phone by Control Web"),
 # 0.5.368: the Camera's QR first, and both QRs say where they work (Miles 2026-11-04, 09:05).
  ("Q1 the glasses rows come before the phone row", P,
-  '            SettingsHubBlock {\n                PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)\n            }\n            .settingsHubAnchor("UT-29")\n            if voiceGuide.devicePath == .glasses {\n                SettingsHubBlock {\n                    GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ = model.providerGuide.openURL($0) })\n                }\n                hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }\n            }\n',
-  '            if voiceGuide.devicePath == .glasses {\n                SettingsHubBlock {\n                    GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ = model.providerGuide.openURL($0) })\n                }\n                hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }\n            }\n            SettingsHubBlock {\n                PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)\n            }\n            .settingsHubAnchor("UT-29")\n',
+  '            PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)\n                .settingsHubAnchor("UT-29")\n            if voiceGuide.devicePath == .glasses {\n                SettingsHubBlock {\n                    GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ = model.providerGuide.openURL($0) })\n                }\n                hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }\n            }\n',
+  '            if voiceGuide.devicePath == .glasses {\n                SettingsHubBlock {\n                    GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ = model.providerGuide.openURL($0) })\n                }\n                hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }\n            }\n            PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)\n                .settingsHubAnchor("UT-29")\n',
   PINS, "[qr order]"),
  ("Q2 the render draws the old order", "Tests/PhoneSignInRender.swift",
-  '                SettingsHubBlock { PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: true, polls: false) }\n                SettingsHubBlock { GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ in }, polls: false) }\n',
-  '                SettingsHubBlock { GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ in }, polls: false) }\n                SettingsHubBlock { PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: true, polls: false) }\n',
+  '                PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: true, polls: false)\n                SettingsHubBlock { GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ in }, polls: false) }\n',
+  '                SettingsHubBlock { GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ in }, polls: false) }\n                PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: true, polls: false)\n',
   PINS, "[qr order]"),
  ("Q3 the phone subtitle says scan again (pins)", M, '"Point your iPhone Camera here. Safari opens COS already signed in."', '"Scan with your iPhone camera. Safari opens COS already signed in."', PINS, "[copy]"),
  ("Q4 the phone subtitle says scan again (checks)", M, '"Point your iPhone Camera here. Safari opens COS already signed in."', '"Scan with your iPhone camera. Safari opens COS already signed in."', APP, "[phone copy]"),
@@ -101,9 +114,9 @@ for m in mutants:
     if m[0].startswith("V6"):
         name, path, old, new, cmd, expect = m
         src = (root / path).read_text()
-        tail_old = '            .settingsHubAnchor("UT-29")\n            if voiceGuide.devicePath == .glasses {\n'
+        tail_old = '                .settingsHubAnchor("UT-29")\n            if voiceGuide.devicePath == .glasses {\n'
         mid = src.split(old, 1)[1].split(tail_old, 1)[0] if src.count(old) == 1 and tail_old in src else None
-        fixed.append((name, path, old + mid + tail_old, new + mid + '            .settingsHubAnchor("UT-29")\n', cmd, expect) if mid is not None else m)
+        fixed.append((name, path, old + mid + tail_old, new + mid + '                .settingsHubAnchor("UT-29")\n', cmd, expect) if mid is not None else m)
     else:
         fixed.append(m)
 mutants = fixed

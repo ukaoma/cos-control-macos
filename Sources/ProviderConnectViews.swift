@@ -644,6 +644,27 @@ struct PhoneSignInRow: View {
     }
 }
 
+/// 0.5.368: the row in its Settings block, as Devices mounts it. On a server without the phone sign-in (before 6.99.3, or no
+/// route at all) the whole block hides, the note about the glasses QR with it: no height, nothing drawn, no clicks, nothing
+/// for VoiceOver. It stays mounted, so the row's task still knows when it is on screen and asks once per appearance.
+struct PhoneSignInBlock: View {
+    @ObservedObject var model: ControllerModel
+    @ObservedObject var state: PhoneSignInState
+    var besideGlasses = false
+    /// Off in offscreen renders.
+    var polls = true
+
+    var body: some View {
+        let hidden = state.serverTooOld
+        SettingsHubBlock { PhoneSignInRow(model: model, state: state, besideGlasses: besideGlasses, polls: polls) }
+            .frame(height: hidden ? 0 : nil, alignment: .top)
+            .clipped()
+            .opacity(hidden ? 0 : 1)
+            .allowsHitTesting(!hidden)
+            .accessibilityHidden(hidden)
+    }
+}
+
 /// The window this copy of the Glasses section is drawn in, for its visibility gate.
 @MainActor final class GlassesWindowHolder: ObservableObject {
     weak var window: NSWindow?
