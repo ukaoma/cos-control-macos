@@ -29,7 +29,7 @@ B = "Sources/COSBrand.swift"
 LANES = {
     "rules": ["zsh", "Tests/run-settings-a.sh"],
     "hub": ["zsh", "Tests/run-settings-hub.sh"],
-    "dict": ["zsh", "-c", 'BIN=$(mktemp /tmp/cos-md.XXXXXX); trap "rm -f $BIN" EXIT; /usr/bin/python3 Tests/kit-compile.py Tests/compile-guard.sh swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library Sources/MacDictationCore.swift Tests/MacDictationChecks.swift -o $BIN && $BIN'],
+    "dict": ["zsh", "-c", 'BIN=$(mktemp /tmp/cos-md.XXXXXX); trap "rm -f $BIN" EXIT; R=$PWD; /usr/bin/python3 $R/Tests/kit-compile.py $R/Tests/compile-guard.sh swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library $R/Sources/MacDictationCore.swift $R/Tests/MacDictationChecks.swift -o $BIN && $BIN'],
     "pins": ["/usr/bin/python3", "Tests/settings-a-pins.py", "."],
 }
 GREEN = {"rules": ["settings rules checks:", "confirm return checks:"], "hub": ["settings hub checks:"], "dict": ["PASS Mac dictation:"], "pins": ["settings A pins:"]}
