@@ -162,7 +162,7 @@ import CryptoKit
   for (pose,row) in rowsV2 where pose != "working" && pose != "trio" {
    precondition(NSDictionary(dictionary:nextRows[pose]!).isEqual(to:row),"Motion V13 changes only working and trio, not \(pose)")
   }
-  precondition(refs(nextRows["working"]!).allSatisfy{$0.hasPrefix("windu-motion-v13a-") || $0.hasPrefix("windu-illustrated-v1-working-")},"V13 working is V13 strips over the unchanged entries")
+  precondition(refs(nextRows["working"]!).allSatisfy{$0.hasPrefix("windu-motion-v13b-") || $0.hasPrefix("windu-illustrated-v1-working-")},"V13 working is V13 strips over the unchanged entries")
   for f in refs(try JSONSerialization.jsonObject(with:next)){precondition((try! Data(contentsOf:stockV2.appendingPathComponent(f))) == (try! Data(contentsOf:candidate.appendingPathComponent(f))),"motion-v13 asset mismatch \(f)")}
   for f in filesV2 {precondition((try! Data(contentsOf:stockV2.appendingPathComponent(f))) == (try! Data(contentsOf:candidate.appendingPathComponent(f))),"motion-v2 rollback asset changed \(f)")}
   let stampV2=try fm.attributesOfItem(atPath:mapV2.path)[.modificationDate] as! Date

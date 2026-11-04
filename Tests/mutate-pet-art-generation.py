@@ -28,7 +28,7 @@ HISTORY = "Resources/BundledCharacters/jedi-miles-windu/stock-state-history.json
 FILES = [PIN, CONTROLLER, WINDU, NIA, DEFAULT, HISTORY,
          "Resources/BundledCharacters/jedi-elara-vale/session-pet-states.json",
          "Resources/BundledCharacters/jedi-rowan-vale/session-pet-states.json"]
-V13_HASH = "be30092cdffca5347f4ed1cc4cf01909778a64aeaf09583e673ef629047cc320"
+V13_HASH = "2893c451a44fee03a544804f81d5845dc3f633def64e8c3c1760da4eebb181d6"
 V2_HASH = "0292c01a15077ee7c28d61fb7d82b86b6959c2137fd55a30dc9375f18c7a2313"
 V1_HASH = "2ba8634a87ccbc0ec37bb10a383e4ffd76aba30122a31df120516f70513c39d1"
 ENTRY_28 = f'        (28, "{V2_HASH}"),  # Windu Motion V2, 0.5.360\n'

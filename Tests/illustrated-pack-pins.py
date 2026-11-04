@@ -23,11 +23,11 @@ for f,digest in ambient.items(): assert hashlib.sha256((pack/f).read_bytes()).he
 assert hashlib.sha256((pack/'ambient-v2-state-map.json').read_bytes()).hexdigest()=='2e020116b0c78da9346f07091c5514c92936c1f3b84af52a6a397fb2ef306500'
 motion=json.loads((root/'Tests/windu-motion-sha256.json').read_text());assert len(motion)==36
 for f,digest in motion.items(): assert hashlib.sha256((pack/f).read_bytes()).hexdigest()==digest,f
-# 0.5.368: Windu Motion V13.1 working (the V13 choreography with the waist alpha corrected, files windu-motion-v13a-*) and the approved
-# Session 3 V4 trio. Only those two rows changed (pose patch c342a3b5).
-assert hashlib.sha256((pack/'session-pet-states.json').read_bytes()).hexdigest()=='be30092cdffca5347f4ed1cc4cf01909778a64aeaf09583e673ef629047cc320'
+# 0.5.368: Windu Motion V13.2 working (the V13 choreography with the waist alpha and coverage corrected, files windu-motion-v13b-*)
+# and the approved Session 3 V4 trio. Only those two rows changed (pose patch 9aa599ed).
+assert hashlib.sha256((pack/'session-pet-states.json').read_bytes()).hexdigest()=='2893c451a44fee03a544804f81d5845dc3f633def64e8c3c1760da4eebb181d6'
 canon=lambda v:hashlib.sha256(json.dumps(v,sort_keys=True,separators=(',',':')).encode()).hexdigest()
-assert canon(rows['working'])=='f83bb035ce8ac8f9794d916a21215305f0fc2ac0992db917dee03fb9d92695ca','working row'
+assert canon(rows['working'])=='126b24408a99e530456a983182fd80c6961aeb915bc1e484c4e07149f155aa7f','working row'
 assert canon(rows['trio'])=='25488755229a0187979edb6377fc0e1d93ff4b3c4720279a9306c90507471c45','trio row'
 v13=json.loads((root/'Tests/windu-motion-v13-sha256.json').read_text());assert len(v13)==105
 for f,digest in v13.items(): assert hashlib.sha256((pack/f).read_bytes()).hexdigest()==digest,f
@@ -39,7 +39,7 @@ assert len(v2)==1 and v2[0]['retainedSource']=='bundled-character' and canon(v2[
 for f in pngs(v2[0]['state']): assert (pack/f).is_file(),f
 prior=json.loads((pack/'ambient-v2-state-map.json').read_text())['poses']
 for pose in set(rows)-{'working','trio'}: assert rows[pose]==prior[pose],pose
-for pose,new in [('working','v13a'),('trio','v4')]:
+for pose,new in [('working','v13b'),('trio','v4')]:
  a,b=rows[pose],prior[pose]
  for key in set(a)-{'file','retina','rotation'}: assert a[key]==b[key],(pose,key)
  assert a['rotation']['handoffFrame']==b['rotation']['handoffFrame'] and a['rotation']['version']==b['rotation']['version']
@@ -49,7 +49,7 @@ for pose,new in [('working','v13a'),('trio','v4')]:
  for x,y in zip(a['retina']['variants'],b['retina']['variants'],strict=True):
   c=x['id'][-1];assert x['id']==y['id'] and x['entryFile']==y['entryFile']
   if pose=='working':
-   v=lambda kind:[f'windu-motion-v13a-working-{c}-{kind}-2x-s{i}.png' for i in range(1,5)]
+   v=lambda kind:[f'windu-motion-v13b-working-{c}-{kind}-2x-s{i}.png' for i in range(1,5)]
    assert x['file']==v('full') and x['bodyFile']==v('body')
   else:
    # Session 3 V4 as approved: s1 full from motion V3, s3 full and body from motion V4, the rest the illustrated originals.
