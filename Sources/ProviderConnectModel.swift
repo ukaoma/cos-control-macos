@@ -2111,6 +2111,267 @@ enum PairingStateError: LocalizedError {
 }
 
 
+// MARK: - Open COS on your phone (0.5.367, server 6.99.3)
+
+// Miles locked himself out of Control Web on 2026-11-04: the sign-in page asks for a "Code from your Mac", and nothing on the
+// Mac made one. This row does: a QR the iPhone camera opens in Safari, already signed in (POST /api/web-session/handoff's
+// `phoneUrl`, one use, 2 minutes), and a short code to type instead (POST /api/web-session/device-code, one use, 5 minutes).
+// Both come from `cos-control-helper web-handoff | web-device-code` (WebSignInCore, HelperSources/PairingCore.swift). The QR
+// and the code exist only while the row is on screen: made fresh when it shows, again about every 90 seconds, and dropped
+// when it hides. Never saved, cached or logged; log lines carry stage names only.
+
+/// The phone link on screen, and when it was made.
+struct PhoneHandoff: Equatable, Sendable {
+    var url: String
+    var expiresAt: Date
+    var mintedAt: Date
+}
+
+/// The sign-in code on screen.
+struct PhoneSignInCode: Equatable, Sendable {
+    var code: String
+    var expiresAt: Date
+}
+
+enum PhoneSignInRules {
+    /// The web page's login error points here by this exact name.
+    static let title = "Open COS on your phone"
+    static let subtitle = "Scan with your iPhone camera. Safari opens COS already signed in."
+    static let qrNote = "Works once, for 2 minutes. Only on your tailnet."
+    /// Shown when the glasses pairing QR is drawn above, so the two are never mixed up.
+    static let notGlasses = "This QR is for Safari. The one in Connect your glasses is for the COS app."
+    static let codeNote = "Type this on the sign-in page. Works once, for 5 minutes."
+    static let showCode = "Show a sign-in code"
+    static let newQR = "Show a new QR"
+    static let making = "Making a QR…"
+    static let noTailnet = "Turn on Tailscale on this Mac."
+    static let needsUpdate = "Update the server to use this."
+    static let notReady = "This works once the COS server is running and verified."
+    static let noToken = "COS has no pairing token yet. Set up the server first."
+    static let unreachable = "COS could not reach the server. It tries again in a moment."
+    static let unreadable = "COS could not read the server's answer."
+    static let tokenRefused = "The server did not accept this Mac's pairing token."
+    static func refused(_ status: Int, code: Bool) -> String {
+        status == 401 || status == 403 ? tokenRefused
+            : "The server could not make a sign-in \(code ? "code" : "link") (HTTP \(status))."
+    }
+
+    /// A new link while the row stays on screen, so the one showing never runs out (2 minutes) under the person's camera.
+    static let refreshAfter: TimeInterval = 90
+    /// A link this close to its end is made again even before the 90 seconds (a Mac that slept).
+    static let expiryMargin: TimeInterval = 15
+    /// After a refusal or a miss, the next try.
+    static let retryAfter: TimeInterval = 10
+    /// A server without the route asks less often: it needs an update first.
+    static let updateRetryAfter: TimeInterval = 90
+
+    enum Result: Equatable, Sendable {
+        case qr(url: String, expiresAt: Date)
+        case code(String, expiresAt: Date)
+        /// A line instead, and when to ask again.
+        case line(String, retry: TimeInterval)
+    }
+
+    /// One helper answer, for either verb: the shared transports first, then the verb's own 200.
+    static func result(_ details: [String: Any], code: Bool, now: Date) -> Result {
+        let status = (details["httpStatus"] as? NSNumber)?.intValue ?? 0
+        switch details["transport"] as? String {
+        case "not_ready": return .line(notReady, retry: retryAfter)
+        case "no_token": return .line(noToken, retry: retryAfter)
+        case "unavailable": return .line(unreachable, retry: retryAfter)
+        case "unsupported": return .line(needsUpdate, retry: updateRetryAfter)
+        case "answered": break
+        default: return .line(unreadable, retry: retryAfter)
+        }
+        guard status == 200 else { return .line(refused(status, code: code), retry: retryAfter) }
+        if code {
+            guard let text = PairingJSON.string(details["code"]), let at = PairingJSON.date(details["expiresAt"]), at > now else {
+                return .line(unreadable, retry: retryAfter)
+            }
+            return .code(text, expiresAt: at)
+        }
+        switch details["phone"] as? String {
+        case "ready":
+            guard let link = PairingJSON.string(details["phoneUrl"]), let at = PairingJSON.date(details["expiresAt"]), at > now else {
+                return .line(unreadable, retry: retryAfter)
+            }
+            return .qr(url: link, expiresAt: at)
+        case "no_tailnet": return .line(noTailnet, retry: retryAfter)
+        case "needs_update": return .line(needsUpdate, retry: updateRetryAfter)
+        default: return .line(unreadable, retry: retryAfter)
+        }
+    }
+
+    /// Whether to ask for a link now: never inside the wait after the last try, then whenever none shows, or the one showing is
+    /// 90 seconds old or close to its end.
+    static func due(handoff: PhoneHandoff?, lastAttempt: Date?, retryAfter: TimeInterval, now: Date) -> Bool {
+        if let lastAttempt, now.timeIntervalSince(lastAttempt) < retryAfter { return false }
+        guard let handoff else { return true }
+        return now.timeIntervalSince(handoff.mintedAt) >= refreshAfter || handoff.expiresAt.timeIntervalSince(now) <= expiryMargin
+    }
+
+    /// "4:59 left", rounded up so a live code never reads 0:00.
+    static func left(_ remaining: TimeInterval) -> String {
+        let seconds = max(0, Int(remaining.rounded(.up)))
+        return "\(seconds / 60):\(String(format: "%02d", seconds % 60)) left"
+    }
+
+    static func stage(_ result: Result) -> String {
+        switch result {
+        case .qr: "qr"
+        case .code: "code"
+        case .line(let text, _):
+            switch text {
+            case notReady: "not_ready"
+            case noToken: "no_token"
+            case unreachable: "unreachable"
+            case needsUpdate: "needs_update"
+            case noTailnet: "no_tailnet"
+            case unreadable: "unreadable"
+            default: "refused"
+            }
+        }
+    }
+}
+
+@MainActor
+final class PhoneSignInState: ObservableObject {
+    @Published private(set) var handoff: PhoneHandoff?
+    /// The line shown instead of a QR.
+    @Published private(set) var line: String?
+    @Published private(set) var code: PhoneSignInCode?
+    /// The line shown instead of a code.
+    @Published private(set) var codeLine: String?
+    @Published private(set) var minting = false
+    @Published private(set) var codeBusy = false
+    /// The countdown's clock: moved each second while a code shows.
+    @Published private(set) var clock = Date()
+    private(set) var mintCount = 0
+    private(set) var codeCount = 0
+    private(set) var droppedReplies = 0
+    private var lastAttempt: Date?
+    private var retryAfter: TimeInterval = 0
+    /// Bumped by hide(): a reply that began before it is dropped, so nothing shows after the row went away.
+    private(set) var generation = 0
+    private var lastStage: String?
+
+    /// `cos-control-helper <args>`: its ok, message and details.
+    var runHelper: @MainActor ([String]) async throws -> PairingHelperAnswer = { _ in throw ProviderGuideError.unreadable }
+    var log: @MainActor (String) -> Void = { _ in }
+    var now: @MainActor () -> Date = Date.init
+    /// Seconds between ticks: the countdown's step.
+    var pollInterval: TimeInterval = 1
+
+    private func ask(_ verb: String, code: Bool) async -> PhoneSignInRules.Result {
+        do {
+            let answer = try await runHelper([verb])
+            guard answer.ok, let details = PairingJSON.object(answer.details) else { return .line(PhoneSignInRules.unreadable, retry: PhoneSignInRules.retryAfter) }
+            return PhoneSignInRules.result(details, code: code, now: now())
+        } catch {
+            return .line(PhoneSignInRules.unreachable, retry: PhoneSignInRules.retryAfter)
+        }
+    }
+
+    private func note(_ verb: String, _ result: PhoneSignInRules.Result) {
+        let stage = "\(verb) \(PhoneSignInRules.stage(result))"
+        if stage != lastStage { log(stage); lastStage = stage }
+    }
+
+    /// A new phone link. A failure takes the QR down and shows its line: an old link is not left up when the server stopped,
+    /// Tailscale went off or the server refused.
+    func mint() async {
+        guard !minting else { return }
+        minting = true
+        defer { minting = false }
+        let started = generation
+        mintCount += 1
+        lastAttempt = now()
+        let result = await ask("web-handoff", code: false)
+        guard started == generation else { droppedReplies += 1; return }
+        note("web-handoff", result)
+        switch result {
+        case .qr(let link, let at):
+            handoff = PhoneHandoff(url: link, expiresAt: at, mintedAt: now())
+            line = nil
+            retryAfter = 0
+        case .line(let text, let retry):
+            handoff = nil
+            line = text
+            retryAfter = retry
+        case .code:
+            handoff = nil
+            line = PhoneSignInRules.unreadable
+            retryAfter = PhoneSignInRules.retryAfter
+        }
+    }
+
+    /// "Show a new QR": the old one goes at once, a new one is made now.
+    func showNewQR() async {
+        handoff = nil
+        lastAttempt = nil
+        retryAfter = 0
+        await mint()
+    }
+
+    /// "Show a sign-in code".
+    func showCode() async {
+        guard !codeBusy else { return }
+        codeBusy = true
+        defer { codeBusy = false }
+        let started = generation
+        codeCount += 1
+        let result = await ask("web-device-code", code: true)
+        guard started == generation else { droppedReplies += 1; return }
+        note("web-device-code", result)
+        switch result {
+        case .code(let text, let at):
+            code = PhoneSignInCode(code: text, expiresAt: at)
+            codeLine = nil
+            clock = now()
+        case .line(let text, _):
+            code = nil
+            codeLine = text
+        case .qr:
+            code = nil
+            codeLine = PhoneSignInRules.unreadable
+        }
+    }
+
+    /// One tick while the row is on screen: expired things go, and a link is made when one is due.
+    func tick() async {
+        let t = now()
+        if code != nil { clock = t }
+        if let current = handoff, current.expiresAt <= t { handoff = nil }
+        if let current = code, current.expiresAt <= t { code = nil }
+        guard !minting, PhoneSignInRules.due(handoff: handoff, lastAttempt: lastAttempt, retryAfter: retryAfter, now: t) else { return }
+        await mint()
+    }
+
+    /// The row went off screen: the QR, the code and their lines go, and a reply still in flight is dropped.
+    func hide() {
+        generation += 1
+        handoff = nil
+        line = nil
+        code = nil
+        codeLine = nil
+        lastAttempt = nil
+        retryAfter = 0
+        lastStage = nil
+    }
+
+    var holdsAnything: Bool { handoff != nil || line != nil || code != nil || codeLine != nil || lastAttempt != nil }
+
+    /// The row's task: a tick each second while `visible`, hide() once when it stops being visible, and hide() when the task ends.
+    func run(visible: @escaping @MainActor () -> Bool, sleep: (@MainActor (TimeInterval) async -> Bool)? = nil) async {
+        let pause = sleep ?? { seconds in (try? await Task.sleep(for: .seconds(seconds))) != nil }
+        defer { hide() }
+        while !Task.isCancelled {
+            if visible() { await tick() } else if holdsAnything { hide() }
+            guard await pause(pollInterval), !Task.isCancelled else { return }
+        }
+    }
+}
+
 // MARK: - Dictation for everyone (0.5.317, server 6.74.0)
 
 /// A dictation that transcribed on this Mac, and the server version it ran on. Written by MacDictationStore after each

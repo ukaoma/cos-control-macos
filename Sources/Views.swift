@@ -4179,6 +4179,12 @@ private extension ControlPanel {
                 }
                 hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }
             }
+            // UT-29 (0.5.367, server 6.99.3): Open COS on your phone, for every device path. The web page's sign-in error
+            // names this row. It is the phone's browser; Connect your glasses above is the COS app.
+            SettingsHubBlock {
+                PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)
+            }
+            .settingsHubAnchor("UT-29")
         } advanced: {
             hubRow("UT-21") {
                 Button("Copy token") { model.perform("token") }.buttonStyle(TodayButtonStyle(small: true)).disabled(pairingTokenBlocked)

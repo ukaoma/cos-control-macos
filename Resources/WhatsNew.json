@@ -1,8 +1,16 @@
 {
-  "version": "0.5.366",
+  "version": "0.5.367",
   "whatsNew": {
-    "summary": "Rename a recording while it records: click the title or Rename in the live meeting view, type a name and press Return. COS keeps your words and may sharpen them when it saves. It needs the newer COS server. Settings is safer: Return never confirms a delete, Stop and Repair ask first, and settings that restart the server wait for running work. Plus everything in 0.5.365: a Web today line in Live cues and spreadsheets read on your Mac. Also in 0.5.363: with Today home on, ⌘K finds a session by meaning once you say yes for your decision model, and each search sends your words, plus the titles and first prompts of recent sessions, to it.",
+    "summary": "Open COS on your phone: in Settings, Glasses and iPhone, scan the QR with your iPhone camera and Safari opens COS already signed in, or show a short sign-in code to type. It needs the newer COS server. Plus everything in 0.5.366: rename a recording while it records, and safer Settings, where Return never confirms a delete and settings that restart the server wait for running work. Also in 0.5.363: with Today home on, ⌘K finds a session by meaning once you say yes for your decision model, and each search sends your words, plus the titles and first prompts of recent sessions, to it.",
     "sections": [
+      {
+        "title": "0.5.367",
+        "items": [
+          "Settings, Glasses and iPhone has a new row, Open COS on your phone. Scan its QR with your iPhone camera and Safari opens COS already signed in. The QR works once, for 2 minutes, and only on your tailnet.",
+          "Show a sign-in code gives you a short code to type on the sign-in page instead. It works once, for 5 minutes.",
+          "COS makes the QR only while the row is on screen, and a new one about every 90 seconds. It needs the newer COS server: on an older one the row says to update it, and without Tailscale on this Mac it says to turn it on."
+        ]
+      },
       {
         "title": "0.5.366",
         "items": [

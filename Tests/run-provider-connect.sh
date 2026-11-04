@@ -17,7 +17,8 @@ mkdir -p "$HOME_DIR"
 OUT="$(CFFIXED_USER_HOME="$HOME_DIR" HOME="$HOME_DIR" "$DIR/provider-connect-checks")" || { print -r -- "$OUT"; exit 1; }
 print -r -- "$OUT"
 COUNT="${${OUT##*checks: }%% passed*}"
-(( COUNT >= 194 )) || { print -u2 "Connect your AI checks ran only $COUNT (expected at least 194)"; exit 1; }
+# 566 at 0.5.367 (Open COS on your phone: its rules and its state); 194 before.
+(( COUNT >= 566 )) || { print -u2 "Connect your AI checks ran only $COUNT (expected at least 566)"; exit 1; }
 # The pet introduction after the REAL character-scale migration (Models.swift), on a scratch defaults suite.
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Tests/PetIntroMigrationCheck.swift" -o "$DIR/pet-intro-check"

@@ -124,6 +124,8 @@ struct ProviderConnectChecks {
         glassesProgress()
         await glassesFlow()
         await glassesQA()
+        phoneSignInRules()
+        await phoneSignInFlow()
         dictationEveryone()
         await dictationEveryoneFlow()
         if failures > 0 {
@@ -708,6 +710,210 @@ struct ProviderConnectChecks {
         check(ProviderGuide.statusTimeout == 35, "status timeout", "25 s deadline plus 10 s")
         check(ProviderPass.prompt(setUp: .codex, tag: "abcd1234ef")!.contains("~/Applications/ChatGPT.app") && ProviderPass.prompt(setUp: .claude, tag: "abcd1234ef")!.contains("/opt/homebrew/bin/claude"), "pass prompts", "COS's own paths")
         check(PetIntro.touchedKeys.allSatisfy { $0 != "cos.sessionPetCharacterPercent" }, "pet intro", "the migration's key is not a sign of a person")
+    }
+}
+
+// MARK: - Open COS on your phone (0.5.367, server 6.99.3)
+
+let phoneTicket = "AbCdEfGhIjKlMnOpQrStUvWxYz012345"
+let phoneLink = "http://example-mac.tail00000a.ts.net:3141/control?handoff=\(phoneTicket)"
+/// `web-handoff` details as the helper prints them (WebSignInCore.handoffAnswer).
+func handoffDetails(expires: Date, phone: String = "ready", link: String = phoneLink) -> String {
+    phone == "ready"
+        ? #"{"transport":"answered","httpStatus":200,"phone":"ready","phoneUrl":"\#(link)","expiresAt":"\#(iso(expires))"}"#
+        : #"{"transport":"answered","httpStatus":200,"phone":"\#(phone)"}"#
+}
+func deviceCodeDetails(expires: Date) -> String {
+    #"{"transport":"answered","httpStatus":200,"code":"K7Q2-M9XD","expiresAt":"\#(iso(expires))"}"#
+}
+
+@MainActor final class FakePhoneHelper {
+    var calls: [String] = []
+    var answers: [String: String] = [:]
+    var throwsFor: Set<String> = []
+    /// Runs before an answer is returned: a hide() while the call is in flight.
+    var during: (@MainActor () -> Void)?
+    func run(_ arguments: [String]) throws -> PairingHelperAnswer {
+        calls.append(arguments.joined(separator: " "))
+        during?()
+        if throwsFor.contains(arguments[0]) { throw ProviderGuideError.unreadable }
+        return PairingHelperAnswer(ok: true, message: "", details: Data((answers[arguments[0]] ?? "{}").utf8))
+    }
+    func count(_ verb: String) -> Int { calls.filter { $0 == verb }.count }
+}
+
+extension ProviderConnectChecks {
+    static func phoneDetails(_ json: String) -> [String: Any] { PairingJSON.object(Data(json.utf8)) ?? [:] }
+
+    static func phoneSignInRules() {
+        let now = pairingBase
+        typealias R = PhoneSignInRules
+        check(R.result(phoneDetails(handoffDetails(expires: now.addingTimeInterval(120))), code: false, now: now) == .qr(url: phoneLink, expiresAt: now.addingTimeInterval(120)),
+              "phone result", "a ready link is the QR")
+        check(R.result(phoneDetails(handoffDetails(expires: now, phone: "no_tailnet")), code: false, now: now) == .line(R.noTailnet, retry: R.retryAfter),
+              "phone no tailnet", "phoneUrl null: Turn on Tailscale on this Mac.")
+        check(R.result(phoneDetails(handoffDetails(expires: now, phone: "needs_update")), code: false, now: now) == .line(R.needsUpdate, retry: R.updateRetryAfter),
+              "phone old server", "no phoneUrl: update the server")
+        check(R.result(phoneDetails(#"{"transport":"unsupported","httpStatus":404}"#), code: false, now: now) == .line(R.needsUpdate, retry: R.updateRetryAfter)
+              && R.result(phoneDetails(#"{"transport":"unsupported","httpStatus":404}"#), code: true, now: now) == .line(R.needsUpdate, retry: R.updateRetryAfter),
+              "phone old server", "a 404 for either verb needs a newer server")
+        check(R.result(phoneDetails(#"{"transport":"not_ready"}"#), code: false, now: now) == .line(R.notReady, retry: R.retryAfter)
+              && R.result(phoneDetails(#"{"transport":"no_token"}"#), code: true, now: now) == .line(R.noToken, retry: R.retryAfter)
+              && R.result(phoneDetails(#"{"transport":"unavailable"}"#), code: false, now: now) == .line(R.unreachable, retry: R.retryAfter)
+              && R.result(phoneDetails(#"{"transport":"carrier pigeon"}"#), code: false, now: now) == .line(R.unreadable, retry: R.retryAfter)
+              && R.result([:], code: true, now: now) == .line(R.unreadable, retry: R.retryAfter),
+              "phone transports", "each transport has its own line")
+        check(R.result(phoneDetails(#"{"transport":"answered","httpStatus":401,"error":"unauthorized"}"#), code: false, now: now) == .line(R.tokenRefused, retry: R.retryAfter)
+              && R.result(phoneDetails(#"{"transport":"answered","httpStatus":500}"#), code: true, now: now) == .line("The server could not make a sign-in code (HTTP 500).", retry: R.retryAfter)
+              && R.result(phoneDetails(#"{"transport":"answered","httpStatus":503}"#), code: false, now: now) == .line("The server could not make a sign-in link (HTTP 503).", retry: R.retryAfter),
+              "phone refused", "a refusal says so with its status")
+        check(R.result(phoneDetails(handoffDetails(expires: now)), code: false, now: now) == .line(R.unreadable, retry: R.retryAfter)
+              && R.result(phoneDetails(handoffDetails(expires: now.addingTimeInterval(-1))), code: false, now: now) == .line(R.unreadable, retry: R.retryAfter),
+              "phone expired answer", "a link already expired is never shown")
+        check(R.result(phoneDetails(handoffDetails(expires: now.addingTimeInterval(60), phone: "unreadable")), code: false, now: now) == .line(R.unreadable, retry: R.retryAfter),
+              "phone transports", "unreadable")
+        check(R.result(phoneDetails(deviceCodeDetails(expires: now.addingTimeInterval(300))), code: true, now: now) == .code("K7Q2-M9XD", expiresAt: now.addingTimeInterval(300))
+              && R.result(phoneDetails(#"{"transport":"answered","httpStatus":200,"unreadable":true}"#), code: true, now: now) == .line(R.unreadable, retry: R.retryAfter),
+              "phone code result", "a code, or unreadable")
+        // A link answer read as a code (or the reverse) is never shown as the other.
+        check(R.result(phoneDetails(handoffDetails(expires: now.addingTimeInterval(60))), code: true, now: now) == .line(R.unreadable, retry: R.retryAfter)
+              && R.result(phoneDetails(deviceCodeDetails(expires: now.addingTimeInterval(60))), code: false, now: now) == .line(R.unreadable, retry: R.retryAfter),
+              "phone code result", "each verb reads only its own answer")
+        // When a link is due.
+        let fresh = PhoneHandoff(url: phoneLink, expiresAt: now.addingTimeInterval(120), mintedAt: now)
+        check(R.due(handoff: nil, lastAttempt: nil, retryAfter: 0, now: now), "phone due", "nothing showing: now")
+        check(!R.due(handoff: fresh, lastAttempt: now, retryAfter: 0, now: now.addingTimeInterval(89)), "phone refresh 90", "not before 90 s")
+        check(R.due(handoff: fresh, lastAttempt: now, retryAfter: 0, now: now.addingTimeInterval(90)), "phone refresh 90", "at 90 s")
+        let late = PhoneHandoff(url: phoneLink, expiresAt: now.addingTimeInterval(20), mintedAt: now)
+        check(!R.due(handoff: late, lastAttempt: now, retryAfter: 0, now: now.addingTimeInterval(4)) && R.due(handoff: late, lastAttempt: now, retryAfter: 0, now: now.addingTimeInterval(5)),
+              "phone expiry margin", "15 s before its end")
+        check(!R.due(handoff: nil, lastAttempt: now, retryAfter: 10, now: now.addingTimeInterval(9.9)) && R.due(handoff: nil, lastAttempt: now, retryAfter: 10, now: now.addingTimeInterval(10)),
+              "phone retry", "a failure waits 10 s")
+        check(R.left(299.2) == "5:00 left" && R.left(61) == "1:01 left" && R.left(0.2) == "0:01 left" && R.left(-3) == "0:00 left", "phone left", R.left(299.2))
+        // The copy, as the web page and the brief name it.
+        check(R.title == "Open COS on your phone" && R.subtitle == "Scan with your iPhone camera. Safari opens COS already signed in."
+              && R.qrNote == "Works once, for 2 minutes. Only on your tailnet." && R.codeNote == "Type this on the sign-in page. Works once, for 5 minutes."
+              && R.showCode == "Show a sign-in code" && R.newQR == "Show a new QR" && R.noTailnet == "Turn on Tailscale on this Mac."
+              && R.needsUpdate == "Update the server to use this.", "phone copy", "the exact words")
+        for text in [R.title, R.subtitle, R.qrNote, R.notGlasses, R.codeNote, R.showCode, R.newQR, R.making, R.noTailnet, R.needsUpdate, R.notReady,
+                     R.noToken, R.unreachable, R.unreadable, R.tokenRefused, R.refused(500, code: true)] {
+            check(!text.contains("—") && !text.contains("–") && !text.contains("→") && !text.contains("->"), "phone copy", "no dash or arrow: \(text)")
+        }
+    }
+
+    static func phoneSignInFlow() async {
+        var clock = pairingBase
+        var lines: [String] = []
+        let fake = FakePhoneHelper()
+        let state = PhoneSignInState()
+        state.runHelper = { args in try fake.run(args) }
+        state.now = { clock }
+        state.log = { lines.append($0) }
+        fake.answers = ["web-handoff": handoffDetails(expires: clock.addingTimeInterval(120)), "web-device-code": deviceCodeDetails(expires: clock.addingTimeInterval(300))]
+        // Shown: one link at once, none again inside 90 s, a fresh one at 90 s.
+        await state.tick()
+        check(fake.calls == ["web-handoff"] && state.handoff?.url == phoneLink && state.line == nil, "phone flow", "\(fake.calls)")
+        clock = pairingBase.addingTimeInterval(89)
+        await state.tick()
+        check(fake.count("web-handoff") == 1, "phone refresh 90", "\(fake.calls)")
+        fake.answers["web-handoff"] = handoffDetails(expires: clock.addingTimeInterval(120))
+        clock = pairingBase.addingTimeInterval(90)
+        await state.tick()
+        check(fake.count("web-handoff") == 2 && state.handoff?.mintedAt == clock, "phone refresh 90", "\(fake.calls)")
+        // A link past its end is never shown, not even while the next one is being made, nor when it fails.
+        fake.throwsFor = ["web-handoff"]
+        clock = clock.addingTimeInterval(121)
+        var shownDuring: PhoneHandoff?? = .none
+        fake.during = { shownDuring = .some(state.handoff) }
+        await state.tick()
+        fake.during = nil
+        check(shownDuring == .some(nil), "phone expired", "the expired link is down before the next is asked for: \(String(describing: shownDuring))")
+        check(state.handoff == nil && state.line == PhoneSignInRules.unreachable, "phone expired", "\(String(describing: state.handoff))")
+        // A failure waits 10 s before the next try.
+        clock = clock.addingTimeInterval(9)
+        await state.tick()
+        check(fake.count("web-handoff") == 3, "phone retry", "\(fake.calls)")
+        fake.throwsFor = []
+        fake.answers["web-handoff"] = handoffDetails(expires: clock, phone: "no_tailnet")
+        clock = clock.addingTimeInterval(1)
+        await state.tick()
+        check(fake.count("web-handoff") == 4 && state.handoff == nil && state.line == PhoneSignInRules.noTailnet, "phone no tailnet", "\(fake.calls)")
+        // A refresh that fails takes the QR down: an old link is not left up after Tailscale went off.
+        fake.answers["web-handoff"] = handoffDetails(expires: clock.addingTimeInterval(130))
+        clock = clock.addingTimeInterval(10)
+        await state.tick()
+        check(state.handoff != nil && state.line == nil, "phone flow", "back")
+        fake.answers["web-handoff"] = handoffDetails(expires: clock, phone: "needs_update")
+        clock = clock.addingTimeInterval(90)
+        await state.tick()
+        check(state.handoff == nil && state.line == PhoneSignInRules.needsUpdate, "phone failure clears", "\(String(describing: state.handoff))")
+        let asked = fake.count("web-handoff")
+        clock = clock.addingTimeInterval(60)
+        await state.tick()
+        check(fake.count("web-handoff") == asked, "phone old server", "an old server is asked again only after 90 s")
+        // Show a new QR: at once, whatever the wait.
+        fake.answers["web-handoff"] = handoffDetails(expires: clock.addingTimeInterval(120))
+        await state.showNewQR()
+        check(fake.count("web-handoff") == asked + 1 && state.handoff != nil, "phone new qr", "\(fake.calls)")
+        // The code: shown with its countdown, gone at its end.
+        fake.answers["web-device-code"] = deviceCodeDetails(expires: clock.addingTimeInterval(300))
+        await state.showCode()
+        check(state.code == PhoneSignInCode(code: "K7Q2-M9XD", expiresAt: clock.addingTimeInterval(300)) && state.codeLine == nil, "phone code", "\(String(describing: state.code))")
+        clock = clock.addingTimeInterval(30)
+        await state.tick()
+        check(PhoneSignInRules.left(state.code?.expiresAt.timeIntervalSince(state.clock) ?? 0) == "4:30 left", "phone left", "the clock moves while a code shows")
+        clock = clock.addingTimeInterval(270)
+        await state.tick()
+        check(state.code == nil, "phone code expiry", "a code past its end goes")
+        fake.answers["web-device-code"] = #"{"transport":"unsupported","httpStatus":404}"#
+        await state.showCode()
+        check(state.code == nil && state.codeLine == PhoneSignInRules.needsUpdate, "phone code", "a server before 6.99.1")
+        // Hidden: everything goes, and a reply that was in flight is dropped.
+        fake.answers["web-device-code"] = deviceCodeDetails(expires: clock.addingTimeInterval(300))
+        await state.showCode()
+        check(state.code != nil, "phone hide", "a code before hiding")
+        state.hide()
+        check(state.handoff == nil && state.line == nil && state.code == nil && state.codeLine == nil && !state.holdsAnything, "phone hide", "")
+        fake.answers["web-handoff"] = handoffDetails(expires: clock.addingTimeInterval(120))
+        fake.answers["web-device-code"] = deviceCodeDetails(expires: clock.addingTimeInterval(300))
+        fake.during = { state.hide() }
+        await state.mint()
+        await state.showCode()
+        check(state.handoff == nil && state.code == nil && state.droppedReplies == 2, "phone in flight", "a reply after hide is never shown")
+        fake.during = nil
+        // Shown again: a fresh link at once, never the old one.
+        await state.tick()
+        check(state.handoff?.url == phoneLink && fake.calls.last == "web-handoff", "phone fresh on show", "\(fake.calls)")
+        // Nothing logged ever carries the link, its ticket or the code.
+        check(!lines.isEmpty && lines.allSatisfy { !$0.contains(phoneTicket) && !$0.contains("http") && !$0.contains("K7Q2") }, "phone log", "\(lines)")
+
+        // The task: no call while hidden, hide() once when it stops being visible, and hide() when it ends.
+        let looped = PhoneSignInState(); let lf = FakePhoneHelper()
+        looped.runHelper = { args in try lf.run(args) }
+        looped.now = { clock }
+        lf.answers = fake.answers
+        var visible = false
+        var steps = 0
+        var callsWhileHidden = -1
+        var heldAfterHiding = true
+        await looped.run(visible: { visible }, sleep: { _ in
+            steps += 1
+            if steps == 1 { callsWhileHidden = lf.calls.count }
+            if steps == 2 { visible = true }
+            if steps == 3 { visible = false }
+            if steps == 4 { heldAfterHiding = looped.holdsAnything }
+            return steps < 5
+        })
+        check(callsWhileHidden == 0, "phone visibility", "no call before the row is on screen: \(callsWhileHidden)")
+        check(lf.calls == ["web-handoff"], "phone visibility", "one call, only while shown: \(lf.calls)")
+        check(!heldAfterHiding, "phone visibility", "hidden again: nothing kept, before the task ends")
+        check(!looped.holdsAnything && looped.handoff == nil, "phone visibility", "and after")
+        let ended = PhoneSignInState(); let ef = FakePhoneHelper()
+        ended.runHelper = { args in try ef.run(args) }
+        ended.now = { clock }
+        ef.answers = fake.answers
+        await ended.run(visible: { true }, sleep: { _ in false })
+        check(ef.calls == ["web-handoff"] && ended.handoff == nil && ended.generation == 1, "phone task end", "the task's end drops the link")
     }
 }
 

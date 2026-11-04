@@ -727,6 +727,8 @@ final class COSControlHelper {
         case "meeting-orphan-recover-all": try emitMeetingOrphanRecoverAll()
         case "meeting-sync-now": try emitMeetingSyncNow()
         case "token": try copyPairingToken()
+        case "web-handoff": try emitWebSignIn(handoff: true)
+        case "web-device-code": try emitWebSignIn(handoff: false)
         case "expire-clipboard": try expireClipboard(args: args)
         case "report": emit(ok: true, message: "Redacted report ready", details: ["report": redactedReport()])
         case "recent-messages": try emitRecentMessages(args: args)
@@ -8779,6 +8781,30 @@ final class COSControlHelper {
             "clipboardReceipt": String(digest.prefix(12)),
             "expiresAt": ISO8601DateFormatter().string(from: expiresAt),
         ])
+    }
+
+    /// 0.5.367 (server 6.99.3): Open COS on your phone. `web-handoff` asks POST /api/web-session/handoff for a one-use phone link
+    /// (the QR); `web-device-code` asks POST /api/web-session/device-code for a short code to type on the sign-in page. Loopback
+    /// only, with the token, no body, and only after the same check as Copy token: the managed server is fully verified. Every
+    /// answer is ok with `transport` (answered, unsupported, unavailable, no_token or not_ready) so the app words each one;
+    /// WebSignInCore (HelperSources/PairingCore.swift) decides what crosses. SECRET BOUNDARY: the link and the code go to stdout
+    /// for the app and nowhere else (no progress line, log or message); the token never leaves the helper.
+    private func emitWebSignIn(handoff: Bool) throws {
+        guard runtimeState(snapshot: ownershipSnapshot(), maintenance: maintenanceStatus(), health: request("/api/health", timeout: 12)?.body) == .managedHealthy else {
+            emit(ok: true, message: "The COS server is not verified yet", details: ["transport": "not_ready"])
+            return
+        }
+        guard let token = try? readToken() else {
+            emit(ok: true, message: "No pairing token", details: ["transport": "no_token"])
+            return
+        }
+        guard let response = request(handoff ? WebSignInCore.handoffPath : WebSignInCore.deviceCodePath, method: "POST", token: token, timeout: 8) else {
+            emit(ok: true, message: "COS server unreachable", details: ["transport": "unavailable"])
+            return
+        }
+        let details = handoff ? WebSignInCore.handoffAnswer(status: response.status, body: response.body)
+            : WebSignInCore.deviceCodeAnswer(status: response.status, body: response.body)
+        emit(ok: true, message: handoff ? "Phone link answered (\(response.status))" : "Sign-in code answered (\(response.status))", details: details)
     }
 
     private func expireClipboard(args: [String]) throws {

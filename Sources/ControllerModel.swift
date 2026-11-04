@@ -695,6 +695,9 @@ final class ControllerModel: ObservableObject {
     lazy var setupGuide: SetupGuideState = makeSetupGuide()
     /// The setup guide's Glasses section (Tailscale rows and the pairing QR). Inert in a model built by a check.
     lazy var glassesPairing: GlassesPairingState = makeGlassesPairing()
+    /// 0.5.367 (server 6.99.3): Open COS on your phone, the QR and code that sign the phone's browser in to Control Web. Inert
+    /// in a model built by a check. It holds a link or a code only while its row is on screen (PhoneSignInState.run).
+    lazy var phoneSignIn: PhoneSignInState = makePhoneSignIn()
     /// Opens the setup guide window (the Welcome window, which shows the full guide once COS is set up).
     var showSetupGuide: (() -> Void)?
     /// Opens the menu-bar panel on its settings (the pet's and the Dock's Settings…).
@@ -917,6 +920,21 @@ final class ControllerModel: ObservableObject {
         }
         pairing.log = { line in onboardingLog.info("pairing \(line, privacy: .public)") }
         return pairing
+    }
+
+    private func makePhoneSignIn() -> PhoneSignInState {
+        let state = PhoneSignInState()
+        let bundleURL = Bundle.main.bundleURL.standardizedFileURL
+        guard bundleURL.pathExtension == "app", Bundle.main.bundleIdentifier != nil, backgroundWorkEnabled else { return state }
+        let helper = self.helper
+        state.runHelper = { arguments in
+            // The helper checks the managed server first (its health read waits up to 12 s), then asks the server (8 s).
+            let response = try await helper.run(arguments, timeout: 40)
+            return PairingHelperAnswer(ok: response.ok, message: response.message, details: try JSONEncoder().encode(response.details))
+        }
+        // Stage names only: never the link, its ticket or the code.
+        state.log = { line in onboardingLog.info("phone sign-in \(line, privacy: .public)") }
+        return state
     }
 
     /// F4: shown once, while the pet is on, to anyone who never changed a pet setting.

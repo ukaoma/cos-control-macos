@@ -12,4 +12,5 @@ OUT="$("$DIR/pairing-core-checks" "$ROOT/Tests/fixtures/pairing")" || { print -r
 print -r -- "$OUT"
 # A floor on the count: a check that silently stops running must fail this.
 COUNT="${${OUT##*checks: }%% passed*}"
-(( COUNT >= 90 )) || { print -u2 "pairing core checks ran only $COUNT (expected at least 90)"; exit 1; }
+# 160 at 0.5.367 (Open COS on your phone: the web sign-in answers); 90 before.
+(( COUNT >= 160 )) || { print -u2 "pairing core checks ran only $COUNT (expected at least 160)"; exit 1; }

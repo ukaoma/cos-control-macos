@@ -223,3 +223,94 @@ enum PairingCore {
         }
     }
 }
+
+// MARK: - Open COS on your phone (0.5.367, server 6.99.3)
+//
+// `cos-control-helper web-handoff` and `web-device-code` (HelperSources/main.swift) POST these two loopback routes with the
+// pairing token, behind the same managed-server check as Copy token, and pass only what this maps. Pure, so
+// Tests/PairingCoreChecks.swift drives it alone. SECRET BOUNDARY: the phone link carries a one-use sign-in ticket and the code
+// signs a browser in. Both go to stdout for the app and nowhere else: never a progress line, a log or a message. The token never
+// leaves the helper.
+enum WebSignInCore {
+    /// One ticket, single use, 2 minutes. `phoneUrl` (6.99.3) is the tailnet link for the QR; older servers send only `url`.
+    static let handoffPath = "/api/web-session/handoff"
+    /// "XXXX-XXXX", single use, 5 minutes (6.99.1).
+    static let deviceCodePath = "/api/web-session/device-code"
+
+    /// A 404 is a server without the route, so it needs a newer server. Any other status is the server's answer.
+    static func transport(status: Int) -> String { status == 404 ? "unsupported" : "answered" }
+
+    /// The server's refusal code (`error` or `reason`), never its text.
+    static func errorCode(_ body: [String: Any]?) -> String? {
+        for key in ["error", "reason"] {
+            if let text = body?[key] as? String, text.range(of: #"\A[a-z_]{1,64}\z"#, options: .regularExpression) != nil { return text }
+        }
+        return nil
+    }
+
+    /// An ISO 8601 time the app can read, as the server sent it.
+    static func expiry(_ value: Any?) -> String? {
+        guard let text = value as? String, !text.isEmpty, text.count <= 40 else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: text) != nil || ISO8601DateFormatter().date(from: text) != nil ? text : nil
+    }
+
+    /// A MagicDNS name, as the server keeps it (normalizeTailscaleDnsName): lower case labels under .ts.net.
+    static func tailnetName(_ host: String) -> Bool {
+        host.count <= 253
+            && host.range(of: #"\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\.ts\.net\z"#,
+                          options: .regularExpression) != nil
+    }
+
+    /// The link the QR may carry: http or https, a tailnet host (100.64.0.0/10 or a name under .ts.net, so the QR only works on
+    /// the person's tailnet), the /control page, and exactly one query item, `handoff`, in the server's ticket grammar. When the
+    /// answer names its ticket, the link must carry that one. No user, password or fragment.
+    static func phoneURLValid(_ text: String, ticket: String?) -> Bool {
+        guard text.utf8.count <= 512, let parts = URLComponents(string: text),
+              let scheme = parts.scheme, scheme == "http" || scheme == "https",
+              parts.user == nil, parts.password == nil, parts.fragment == nil,
+              let host = parts.host, TailscaleCore.isTailnet(host) || tailnetName(host),
+              parts.path == "/control",
+              let items = parts.queryItems, items.count == 1, items[0].name == "handoff",
+              let value = items[0].value, value.range(of: #"\A[A-Za-z0-9_-]{24,64}\z"#, options: .regularExpression) != nil else { return false }
+        return ticket.map { $0 == value } ?? true
+    }
+
+    /// `web-handoff`'s details. Always `transport` and `httpStatus`. A 200 adds `phone`: `ready` with `phoneUrl` and `expiresAt`;
+    /// `no_tailnet` (phoneUrl null: this Mac has no tailnet address); `needs_update` (no phoneUrl at all: a server before 6.99.3);
+    /// `unreadable` for anything else. Never the loopback `url`, the `tailnet` pair or the bare ticket: the QR shows one link only,
+    /// since the sign-in cookie belongs to the origin it was opened on. Another status adds the server's `error` code.
+    static func handoffAnswer(status: Int, body: [String: Any]?) -> [String: Any] {
+        var out: [String: Any] = ["transport": transport(status: status), "httpStatus": status]
+        guard status == 200 else {
+            if let code = errorCode(body) { out["error"] = code }
+            return out
+        }
+        guard let body, body["ok"] as? Bool != false else { out["phone"] = "unreadable"; return out }
+        guard body.keys.contains("phoneUrl") else { out["phone"] = "needs_update"; return out }
+        if body["phoneUrl"] is NSNull { out["phone"] = "no_tailnet"; return out }
+        guard let link = body["phoneUrl"] as? String, phoneURLValid(link, ticket: body["ticket"] as? String),
+              let expiresAt = expiry(body["expiresAt"]) else { out["phone"] = "unreadable"; return out }
+        out["phone"] = "ready"
+        out["phoneUrl"] = link
+        out["expiresAt"] = expiresAt
+        return out
+    }
+
+    /// `web-device-code`'s details. Always `transport` and `httpStatus`. A 200 adds `code` ("XXXX-XXXX", Crockford letters and
+    /// digits) and `expiresAt`, or `unreadable: true`. Another status adds the server's `error` code.
+    static func deviceCodeAnswer(status: Int, body: [String: Any]?) -> [String: Any] {
+        var out: [String: Any] = ["transport": transport(status: status), "httpStatus": status]
+        guard status == 200 else {
+            if let code = errorCode(body) { out["error"] = code }
+            return out
+        }
+        guard let body, body["ok"] as? Bool != false, let code = body["code"] as? String,
+              code.range(of: #"\A[0-9A-Z]{4}-[0-9A-Z]{4}\z"#, options: .regularExpression) != nil,
+              let expiresAt = expiry(body["expiresAt"]) else { out["unreadable"] = true; return out }
+        out["code"] = code
+        out["expiresAt"] = expiresAt
+        return out
+    }
+}

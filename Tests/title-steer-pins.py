@@ -167,13 +167,18 @@ need(all(not re.search("[—–→]|->", w) for w in words), "no em dash, en das
 need(not re.search("[—–→]", meetings[meetings.index("struct LiveTitleEditor"):meetings.index("struct LiveTurnRow")]), "none in the field")
 
 # ── Version touchpoints.
+# 0.5.367 on: rename shipped in 0.5.366; pin its history, not the current version (run.sh pins Info.plist to the CHANGELOG).
 plist = (root / "Resources/Info.plist").read_text()
-need("<string>0.5.366</string>" in plist and "<string>420</string>" in plist, "Info.plist is 0.5.366, build 420")
-need("0.5.365</string>" not in plist and "<string>419</string>" not in plist, "no 0.5.365 or build 419 left in Info.plist")
+short = re.search(r"<key>CFBundleShortVersionString</key>\s*<string>([0-9.]+)</string>", plist)
+build = re.search(r"<key>CFBundleVersion</key>\s*<string>(\d+)</string>", plist)
+need(short is not None and build is not None and tuple(map(int, short.group(1).split("."))) >= (0, 5, 366) and int(build.group(1)) >= 420,
+     "Info.plist is 0.5.366 (build 420) or later")
 whats = json.loads((root / "Resources/WhatsNew.json").read_text())
-need(whats["version"] == "0.5.366" and whats["whatsNew"]["sections"][0]["title"] == "0.5.366", "What's New is 0.5.366, first")
-need(any("Rename" in item for item in whats["whatsNew"]["sections"][0]["items"]), "What's New says Rename")
-need((root / "CHANGELOG.md").read_text().startswith("## 0.5.366 (build 420)"), "the changelog's first entry is 0.5.366 (build 420)")
+sec366 = [s for s in whats["whatsNew"]["sections"] if s["title"] == "0.5.366"]
+need(len(sec366) == 1, "What's New keeps one 0.5.366 section")
+need(whats["version"] == short.group(1), "What's New names the current version")
+need(len(sec366) == 1 and any("Rename" in item for item in sec366[0]["items"]), "What's New says Rename")
+need("\n## 0.5.366 (build 420)" in "\n" + (root / "CHANGELOG.md").read_text(), "the changelog keeps its 0.5.366 (build 420) entry")
 need("run-title-steer.sh" in run_sh and "title-steer-helper-checks.py" in run_sh, "Tests/run.sh runs the lane and the helper checks")
 
 print("title steer pins: %d passed" % passed)

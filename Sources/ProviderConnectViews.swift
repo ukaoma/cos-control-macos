@@ -392,8 +392,9 @@ struct PanelConnectAIRow: View {
 @MainActor enum QRImage {
     private static var cache: [String: NSImage] = [:]
 
-    static func make(_ text: String) -> NSImage? {
-        if let hit = cache[text] { return hit }
+    /// `cached: false` (0.5.367, the phone sign-in QR): the link carries a one-use sign-in ticket, so its image is never kept.
+    static func make(_ text: String, cached: Bool = true) -> NSImage? {
+        if cached, let hit = cache[text] { return hit }
         let filter = CIFilter.qrCodeGenerator()
         filter.message = Data(text.utf8)
         filter.correctionLevel = "Q"
@@ -401,6 +402,7 @@ struct PanelConnectAIRow: View {
         let scaled = output.transformed(by: CGAffineTransform(scaleX: 10, y: 10))
         guard let image = CIContext().createCGImage(scaled, from: scaled.extent) else { return nil }
         let result = NSImage(cgImage: image, size: NSSize(width: scaled.extent.width, height: scaled.extent.height))
+        guard cached else { return result }
         if cache.count > 8 { cache.removeAll() }
         cache[text] = result
         return result
@@ -421,10 +423,12 @@ struct QRCodeView: View {
     let side: CGFloat
     /// What VoiceOver says (never the QR's own text, which carries the code and the address).
     var label = "QR code"
+    /// Off for a QR that carries a secret (QRImage.make).
+    var cached = true
 
     var body: some View {
         Group {
-            if let image = QRImage.make(text) {
+            if let image = QRImage.make(text, cached: cached) {
                 Image(nsImage: image).interpolation(.none).resizable().aspectRatio(1, contentMode: .fit)
             } else {
                 Color.clear
@@ -575,6 +579,69 @@ struct GlassesSetupRows: View {
     }
 
     private func openTailscale() { if !GlassesWindowHolder.openTailscaleApp() { openURL(GlassesRules.tailscaleDownload) } }
+}
+
+/// 0.5.367 (server 6.99.3): Open COS on your phone (PhoneSignInState, Sources/ProviderConnectModel.swift). A QR the iPhone
+/// camera opens in Safari already signed in to Control Web, and a short code to type on the sign-in page instead. Its task is
+/// the only thing that asks for either, and only while this row is on screen (its window visible, not minimized or covered).
+struct PhoneSignInRow: View {
+    @ObservedObject var model: ControllerModel
+    @ObservedObject var state: PhoneSignInState
+    /// The glasses pairing QR is drawn above: say which QR is which.
+    var besideGlasses = false
+    /// Off in offscreen renders.
+    var polls = true
+    @StateObject private var windowHolder = GlassesWindowHolder()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(PhoneSignInRules.title).font(COSType.body(14.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
+                Text(PhoneSignInRules.subtitle).font(COSType.body(13)).foregroundStyle(TodayInk.sub)
+                    .lineSpacing(2).fixedSize(horizontal: false, vertical: true)
+                if besideGlasses {
+                    Text(PhoneSignInRules.notGlasses).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            if let handoff = state.handoff {
+                QRCodeView(text: handoff.url, side: 228, label: "Sign-in QR for Safari on your iPhone", cached: false).frame(maxWidth: .infinity)
+                Text(PhoneSignInRules.qrNote).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).frame(maxWidth: .infinity)
+            } else if let line = state.line {
+                Text(line).font(COSType.body(12)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(PhoneSignInRules.making).font(COSType.body(12)).foregroundStyle(.secondary)
+            }
+            if let code = state.code {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(code.code).font(COSType.mono(24, weight: .bold)).textSelection(.enabled)
+                        .accessibilityLabel("Sign-in code \(code.code)")
+                    Text(PhoneSignInRules.left(code.expiresAt.timeIntervalSince(state.clock))).font(COSType.mono(11)).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                Text(PhoneSignInRules.codeNote).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+            } else if let codeLine = state.codeLine {
+                Text(codeLine).font(COSType.body(12)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 14) {
+                Button(PhoneSignInRules.showCode) { Task { await state.showCode() } }
+                    .buttonStyle(COSTextButtonStyle())
+                    .disabled(state.codeBusy)
+                Button(PhoneSignInRules.newQR) { Task { await state.showNewQR() } }
+                    .buttonStyle(COSTextButtonStyle())
+                    .controlSize(.small)
+                    .disabled(state.minting)
+                Spacer(minLength: 0)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(WindowProbe(holder: windowHolder))
+        .task(id: polls) {
+            guard polls else { return }
+            await state.run(visible: { [model, windowHolder] in windowHolder.onScreen(panelVisible: model.panelVisible) })
+        }
+    }
 }
 
 /// The window this copy of the Glasses section is drawn in, for its visibility gate.

@@ -149,6 +149,10 @@ enum SettingsHubCatalog {
     static let extras: [SettingsHubItem] = [
         .init("JV-13", "Find sessions by meaning", "After you say yes, each ⌘K search sends your words, plus session titles and the start of first prompts, to the model that decides search. Emails, links, home-folder paths and key-shaped text are removed first. Shown with Today home on and a server that supports it.", old: "", group: "ai.decision", advanced: false, mount: .group,
               keywords: ["meaning", "command k", "sessions", "consent", "jev", "subq"]),
+        // 0.5.367 (server 6.99.3): Open COS on your phone, the QR and code that sign the phone's browser in to Control Web. The
+        // web page's sign-in error names it. A hub row, not an inventory row.
+        .init("UT-29", "Open COS on your phone", "Scan with your iPhone camera. Safari opens COS already signed in.", old: "", group: "glasses.devices",
+              advanced: false, mount: .group, keywords: ["phone", "browser", "sign in", "web", "qr", "control web", "safari", "sign-in code", "login"]),
         .init("HUB-CL", "Use classic Settings", "Show the earlier one-page Settings in Activity.", old: "", group: "general.app", advanced: true, mount: .group,
               keywords: ["classic", "old settings", "rollback", "one page"]),
         // 0.5.362 (server API v3, live cues modes): the cue mode, grounding and the general cue limits. They show only for a server

@@ -210,6 +210,17 @@ import Foundation
         check(ids("pairing token").contains("UT-21"), "every word must match: pairing token")
         check(!ids("pairing zebra").contains("UT-21"), "a word that matches nothing removes the row")
         check(ids("classic").contains("HUB-CL"), "search finds Use classic Settings")
+        // 0.5.367 (server 6.99.3): Open COS on your phone is the hub's own row in Glasses and iPhone, Devices, not Advanced, found by
+        // what someone locked out would type.
+        let phone = SettingsHubCatalog.item("UT-29")
+        check(phone?.label == "Open COS on your phone" && phone?.group == "glasses.devices" && phone?.advanced == false && phone?.mount == .group
+              && SettingsHubCatalog.extras.contains { $0.id == "UT-29" } && !SettingsHubCatalog.items.contains { $0.id == "UT-29" }, "Open COS on your phone is a Devices row, not Advanced")
+        check(SettingsHubRoute.destination("UT-29")?.group == "glasses.devices" && SettingsHubRoute.destination("UT-29")?.opensAdvanced == false,
+              "Open COS on your phone routes to Devices")
+        for query in ["phone", "browser", "sign in", "web", "QR", "Control Web", "open cos on your phone", "safari"] {
+            check(ids(query).contains("UT-29"), "search finds Open COS on your phone by \(query)")
+        }
+        check(SettingsHubCatalog.advancedCount("glasses.devices") == 2, "Devices' Advanced is still Copy token and Reset message count")
         // 0.5.362: the cue mode and general limit rows are found by their names and their keywords.
         check(ids("cue mode").first == "HUB-CM" && ids("grounded").contains("HUB-CG") && ids("daily web searches").first == "HUB-GW", "search finds the cue mode, Grounded cues and the daily web searches")
         check(ids("general cues").contains("HUB-GB") && ids("general cues").contains("HUB-GI") && ids("insight").contains("HUB-GM") && ids("public topics").contains("HUB-CM"),

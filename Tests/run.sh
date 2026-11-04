@@ -273,6 +273,10 @@ python3 "$ROOT/Tests/cue-verdicts-helper-checks.py" "$TMP/cos-control-helper"
 # 0.5.366 Title steer (server 6.99.0): meeting-title-steer through the compiled helper against a loopback fixture (the route, the
 # query and the body exactly, the title on stdin only, every status an answer, only the contract's keys, the file's titleSteer).
 python3 "$ROOT/Tests/title-steer-helper-checks.py" "$TMP/cos-control-helper"
+# 0.5.367 Open COS on your phone (server 6.99.3): web-handoff and web-device-code through the compiled helper against a loopback
+# fixture: both dispatched, Copy token's managed-server check first (nothing reaches /api/web-session/* in a /tmp home), no
+# token, ticket or code on stdout or stderr. What crosses on a real answer is WebSignInCore, in Tests/run-pairing.sh.
+python3 "$ROOT/Tests/web-signin-helper-checks.py" "$TMP/cos-control-helper"
 # 0.5.336 live meeting view (server 6.86.0): live-provisional through the compiled helper against a loopback fixture (the
 # route and session exactly, only the line's chunk, generation and newest 600 characters, every status an answer, no text
 # on stderr). The Mac preview and liveCues on the start are in mac-recording-helper-checks.py above.
@@ -380,6 +384,10 @@ zsh "$ROOT/Tests/run-cue-verdicts.sh"
 COS_TITLE_STEER_LANE=pins zsh "$ROOT/Tests/run-title-steer.sh"
 COS_TITLE_STEER_LANE=models zsh "$ROOT/Tests/run-title-steer.sh"
 COS_TITLE_STEER_LANE=wiring zsh "$ROOT/Tests/run-title-steer.sh"
+# 0.5.367: Open COS on your phone (server 6.99.3). The wiring pins (Copy token's check before the token, one link only, the QR never
+# cached, the row only while its window is on screen, mounted once in Devices for every device path, the catalog row, the copy and
+# the version). Its rules and state run in Tests/run-provider-connect.sh, the helper's answers in Tests/run-pairing.sh.
+python3 "$ROOT/Tests/phone-signin-pins.py" "$ROOT"
 # 0.5.336: the live meeting view (server 6.86.0). The wiring pins (capability gating, the audiogram in its own object,
 # Reduce Motion, the one-second clock, Command-Shift-R once, live cues only on the Mac start, no grey text in any log),
 # then the pure rules (counts, anchoring, the strip, the title, the audiogram ring, the preview rate cap, the grey line).

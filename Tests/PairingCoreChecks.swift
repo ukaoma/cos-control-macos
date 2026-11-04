@@ -25,6 +25,7 @@ enum PairingCoreChecks {
         whois()
         addresses()
         answers()
+        webSignIn()
         if failures > 0 {
             FileHandle.standardError.write(Data("Pairing core checks: \(failures) failed, \(passes) passed\n".utf8))
             exit(1)
@@ -174,5 +175,89 @@ enum PairingCoreChecks {
         for reason in PairingCore.serverReasons.sorted() + ["server_too_old", "token_rejected", "unreachable"] {
             check(!PairingCore.message(reason).isEmpty && !PairingCore.message(reason).contains("—"), "messages", reason)
         }
+    }
+
+    // 0.5.367 (server 6.99.3): Open COS on your phone. The shapes are the server's own (cos-glasses-server
+    // server/routes/web-control.ts, 6.99.3): a base64url ticket of 32 characters, phoneUrl the MagicDNS name or else the tailnet IP.
+    static func webSignIn() {
+        let ticket = "AbCdEfGhIjKlMnOpQrStUvWxYz012345"
+        let name = "http://example-mac.tail00000a.ts.net:3141/control?handoff=\(ticket)"
+        let ip = "http://100.64.0.10:3141/control?handoff=\(ticket)"
+        let at = "2026-11-04T15:02:00.000Z"
+        let full: [String: Any] = ["ok": true, "ticket": ticket, "expiresAt": at, "url": "http://127.0.0.1:3141/control?handoff=\(ticket)",
+                                   "phoneUrl": name, "tailnet": ["ipUrl": ip, "nameUrl": name]]
+        check(WebSignInCore.handoffPath == "/api/web-session/handoff" && WebSignInCore.deviceCodePath == "/api/web-session/device-code",
+              "web routes", "the two routes")
+        // A ready answer carries the phone link and its expiry, and nothing else of the server's: never the loopback url, the
+        // tailnet pair or the bare ticket.
+        let ready = WebSignInCore.handoffAnswer(status: 200, body: full)
+        check(ready["phone"] as? String == "ready" && ready["phoneUrl"] as? String == name && ready["expiresAt"] as? String == at
+              && ready["transport"] as? String == "answered" && ready["httpStatus"] as? Int == 200, "web handoff ready", "\(ready)")
+        check(Set(ready.keys) == ["transport", "httpStatus", "phone", "phoneUrl", "expiresAt"], "web handoff only the link", "\(ready.keys.sorted())")
+        check(!"\(ready)".contains("127.0.0.1"), "web handoff only the link", "the loopback url never crosses")
+        var byIP = full; byIP["phoneUrl"] = ip
+        check(WebSignInCore.handoffAnswer(status: 200, body: byIP)["phoneUrl"] as? String == ip, "web handoff ready", "the tailnet IP when the Mac has no name")
+        // phoneUrl null: no tailnet address on this Mac. No phoneUrl at all: a server before 6.99.3.
+        var none = full; none["phoneUrl"] = NSNull()
+        let off = WebSignInCore.handoffAnswer(status: 200, body: none)
+        check(off["phone"] as? String == "no_tailnet" && off["phoneUrl"] == nil, "web handoff no tailnet", "\(off)")
+        var old = full; old.removeValue(forKey: "phoneUrl"); old.removeValue(forKey: "tailnet"); old.removeValue(forKey: "expiresAt")
+        let older = WebSignInCore.handoffAnswer(status: 200, body: old)
+        check(older["phone"] as? String == "needs_update" && older["phoneUrl"] == nil, "web handoff old server", "only url: \(older)")
+        // Links the QR must never carry.
+        let badLinks = [
+            "http://127.0.0.1:3141/control?handoff=\(ticket)",                      // loopback: useless on a phone
+            "http://localhost:3141/control?handoff=\(ticket)",
+            "http://192.168.1.20:3141/control?handoff=\(ticket)",                   // a LAN address is not the tailnet
+            "http://example.com/control?handoff=\(ticket)",                         // not a tailnet name
+            "http://evil.ts.net.example.com/control?handoff=\(ticket)",
+            "javascript://100.64.0.10/control?handoff=\(ticket)",                   // scheme
+            "http://100.64.0.10:3141/other?handoff=\(ticket)",                      // page
+            "http://100.64.0.10:3141/control?handoff=\(ticket)&next=x",             // a second query item
+            "http://100.64.0.10:3141/control?h=\(ticket)",                          // the wrong item
+            "http://100.64.0.10:3141/control?handoff=short",                        // the ticket grammar
+            "http://user@100.64.0.10:3141/control?handoff=\(ticket)",               // a user
+            "http://100.64.0.10:3141/control?handoff=\(ticket)#x",                  // a fragment
+            "http://100.64.0.10:3141/control?handoff=" + String(repeating: "a", count: 600),
+        ]
+        for link in badLinks {
+            var bad = full; bad["phoneUrl"] = link
+            let a = WebSignInCore.handoffAnswer(status: 200, body: bad)
+            check(a["phone"] as? String == "unreadable" && a["phoneUrl"] == nil, "web handoff link shape", link)
+        }
+        var other = full; other["phoneUrl"] = "http://100.64.0.10:3141/control?handoff=ZZZZEfGhIjKlMnOpQrStUvWxYz012345"
+        check(WebSignInCore.handoffAnswer(status: 200, body: other)["phone"] as? String == "unreadable", "web handoff ticket match", "another ticket's link")
+        var noTicket = full; noTicket.removeValue(forKey: "ticket")
+        check(WebSignInCore.handoffAnswer(status: 200, body: noTicket)["phone"] as? String == "ready", "web handoff ticket match", "no ticket named: the link alone")
+        for (key, value) in [("phoneUrl", 7 as Any), ("expiresAt", "tomorrow" as Any), ("expiresAt", NSNull() as Any), ("ok", false as Any)] {
+            var bad = full; bad[key] = value
+            check(WebSignInCore.handoffAnswer(status: 200, body: bad)["phone"] as? String == "unreadable", "web handoff unreadable", "\(key)=\(value)")
+        }
+        check(WebSignInCore.handoffAnswer(status: 200, body: nil)["phone"] as? String == "unreadable", "web handoff unreadable", "no body")
+        // A 404 needs a newer server; other refusals carry the server's code, never its text or data.
+        let missing = WebSignInCore.handoffAnswer(status: 404, body: nil)
+        check(missing["transport"] as? String == "unsupported" && missing["httpStatus"] as? Int == 404 && missing["phone"] == nil, "web 404", "\(missing)")
+        check(WebSignInCore.handoffAnswer(status: 404, body: ["error": "not_found"])["transport"] as? String == "unsupported", "web 404", "a JSON 404 too")
+        let refused = WebSignInCore.handoffAnswer(status: 403, body: ["error": "not_loopback", "message": "Web handoff tickets are minted only on this Mac.", "phoneUrl": name])
+        check(refused["transport"] as? String == "answered" && refused["error"] as? String == "not_loopback" && refused["message"] == nil
+              && refused["phoneUrl"] == nil && refused["phone"] == nil, "web refusal", "\(refused)")
+        check(WebSignInCore.handoffAnswer(status: 401, body: ["error": "Bad <b>token</b>"])["error"] == nil, "web refusal", "server text is never a code")
+        check(WebSignInCore.handoffAnswer(status: 500, body: ["reason": "draining"])["error"] as? String == "draining", "web refusal", "reason is read too")
+        // The device code.
+        let code = WebSignInCore.deviceCodeAnswer(status: 200, body: ["ok": true, "code": "K7Q2-M9XD", "expiresAt": at, "extra": "SECRET"])
+        check(code["code"] as? String == "K7Q2-M9XD" && code["expiresAt"] as? String == at && code["extra"] == nil && code["unreadable"] == nil
+              && Set(code.keys) == ["transport", "httpStatus", "code", "expiresAt"], "web code ready", "\(code)")
+        for bad in ["k7q2-m9xd", "K7Q2M9XD", "K7Q2-M9X", "K7Q2-M9XD\n", "K7Q2 M9XD", "<b>-</b>", ""] {
+            let a = WebSignInCore.deviceCodeAnswer(status: 200, body: ["ok": true, "code": bad, "expiresAt": at])
+            check(a["unreadable"] as? Bool == true && a["code"] == nil, "web code shape", bad)
+        }
+        check(WebSignInCore.deviceCodeAnswer(status: 200, body: ["ok": true, "code": "K7Q2-M9XD"])["unreadable"] as? Bool == true, "web code shape", "no expiry")
+        check(WebSignInCore.deviceCodeAnswer(status: 200, body: ["ok": false, "code": "K7Q2-M9XD", "expiresAt": at])["code"] == nil, "web code shape", "ok false")
+        let oldCode = WebSignInCore.deviceCodeAnswer(status: 404, body: nil)
+        check(oldCode["transport"] as? String == "unsupported" && oldCode["code"] == nil, "web 404", "a server before 6.99.1")
+        let codeRefused = WebSignInCore.deviceCodeAnswer(status: 401, body: ["error": "unauthorized", "code": "K7Q2-M9XD"])
+        check(codeRefused["error"] as? String == "unauthorized" && codeRefused["code"] == nil, "web refusal", "a refusal never carries a code")
+        check(WebSignInCore.expiry("2026-11-04T15:02:00Z") != nil && WebSignInCore.expiry(at) != nil && WebSignInCore.expiry("2026-11-04") == nil
+              && WebSignInCore.expiry(1_800_000_000) == nil, "web expiry", "ISO 8601 text only")
     }
 }
