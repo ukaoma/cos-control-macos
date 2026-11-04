@@ -423,7 +423,7 @@ final class ControllerModel: ObservableObject {
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
-    private static let petDefaultArtGeneration = 28
+    private static let petDefaultArtGeneration = 29
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(
@@ -5419,6 +5419,9 @@ final class ControllerModel: ObservableObject {
             // Generation 28 (0.5.360) moves exact stock Windu Motion V1 (0.5.350 to 0.5.359, generation 27) to Motion V2,
             // which drops the stray wreck fragment after the strike. Installs already on 27 skip this block, so the
             // number must rise whenever a bundled state map changes. Tests/pet-art-generation-pins.py fails when it does not.
+            // Generation 29 (0.5.368) moves exact stock Windu Motion V2 (0.5.360 to 0.5.367, generation 28), and every earlier
+            // recognized stock map, to Motion V13: the working strike cuts through the droid and each half flies off its own
+            // way, and trio takes the approved Session 3 V4 strips. Only the working and trio rows change; the V2 files stay.
             // Re-running the block is a no-op for every current pack, a chosen still, a custom cast or interval,
             // and the drawn robot; only an exact retained stock map of a bundled character is promoted.
             let bundledRefresh = PetSpriteStore.refreshRecognizedBundledCharacter(

@@ -128,6 +128,50 @@ import CryptoKit
   for f in filesV1 {precondition((try! Data(contentsOf:stockV1.appendingPathComponent(f))) == (try! Data(contentsOf:candidate.appendingPathComponent(f))),"motion-v1 rollback asset changed")}
   let stampV1=try fm.attributesOfItem(atPath:mapV1.path)[.modificationDate] as! Date
   precondition(refreshV1() == .notApplicable && (try! fm.attributesOfItem(atPath:mapV1.path)[.modificationDate] as! Date)==stampV1,"motion-v1 upgrade must be idempotent")
+  // Motion V13 (Miles 2026-11-04, generation 29): a Motion V2 installation (0.5.360 to 0.5.367) receives the V13 working strike
+  // and the Session 3 V4 trio under new names. Its motion-v2 files stay as they were for rollback; a customized V2 cast, or a
+  // V2 install with its own cadence, is left alone; and a rerun changes nothing.
+  let motionV2=(historyV1["maps"] as! [[String:Any]]).filter{($0["name"] as? String)=="Windu Motion V2 \u{00b7} Control 0.5.360"}
+  precondition(motionV2.count==1,"the Motion V2 map must be in the stock history exactly once")
+  let stateV2=motionV2[0]["state"]!,filesV2=refs(stateV2)
+  precondition(filesV2.contains("windu-motion-v2-working-c-full-1x.png") && filesV2.contains("windu-illustrated-v1-trio-a-full-1x.png"),"the history holds the shipped V2 map")
+  let stockV2=temp.appendingPathComponent("stockMotionV2")
+  try fm.createDirectory(at:stockV2,withIntermediateDirectories:true)
+  for f in filesV2 {try fm.copyItem(at:candidate.appendingPathComponent(f),to:stockV2.appendingPathComponent(f))}
+  let mapV2=stockV2.appendingPathComponent(PetSpriteStore.stateFileName),bytesV2=try JSONSerialization.data(withJSONObject:stateV2)
+  try bytesV2.write(to:mapV2)
+  func refreshV2(_ dir:URL? = nil)->PetSpriteStore.BundledCharacterRefreshResult {autoreleasepool{PetSpriteStore.refreshRecognizedBundledCharacter(into:dir ?? stockV2,sourceRootOverride:sources,retainedMilesOverride:old)}}
+  for f in ["windu-motion-v2-working-c-full-1x.png","windu-illustrated-v1-trio-b-body-2x-s3.png"] {
+   let customizedV2=stockV2.appendingPathComponent(f),originalV2=try Data(contentsOf:customizedV2)
+   try (originalV2+Data([1])).write(to:customizedV2)
+   precondition(refreshV2() == .notApplicable && (try! Data(contentsOf:mapV2))==bytesV2,"a custom motion-v2 layer must survive: \(f)")
+   try originalV2.write(to:customizedV2)
+  }
+  let tunedDirV2=temp.appendingPathComponent("customMotionV2")
+  try fm.createDirectory(at:tunedDirV2,withIntermediateDirectories:true)
+  for f in filesV2 {try fm.linkItem(at:candidate.appendingPathComponent(f),to:tunedDirV2.appendingPathComponent(f))}
+  var tunedV2=stateV2 as! [String:Any];var tunedRowsV2=tunedV2["poses"] as! [String:[String:Any]]
+  tunedRowsV2["trio"]!["interval"]=0.0225;tunedV2["poses"]=tunedRowsV2
+  let tunedBytesV2=try JSONSerialization.data(withJSONObject:tunedV2);try tunedBytesV2.write(to:tunedDirV2.appendingPathComponent(PetSpriteStore.stateFileName))
+  precondition(refreshV2(tunedDirV2) == .notApplicable && (try! Data(contentsOf:tunedDirV2.appendingPathComponent(PetSpriteStore.stateFileName)))==tunedBytesV2,
+    "a motion-v2 install with its own trio cadence must survive")
+  precondition(refreshV2() == .refreshed("jedi-miles-windu"),"motion-v2 stock must receive Motion V13")
+  precondition((try! Data(contentsOf:mapV2))==next)
+  let nextRows=(try JSONSerialization.jsonObject(with:next) as! [String:Any])["poses"] as! [String:[String:Any]]
+  let rowsV2=(stateV2 as! [String:Any])["poses"] as! [String:[String:Any]]
+  for (pose,row) in rowsV2 where pose != "working" && pose != "trio" {
+   precondition(NSDictionary(dictionary:nextRows[pose]!).isEqual(to:row),"Motion V13 changes only working and trio, not \(pose)")
+  }
+  precondition(refs(nextRows["working"]!).allSatisfy{$0.hasPrefix("windu-motion-v13-") || $0.hasPrefix("windu-illustrated-v1-working-")},"V13 working is V13 strips over the unchanged entries")
+  for f in refs(try JSONSerialization.jsonObject(with:next)){precondition((try! Data(contentsOf:stockV2.appendingPathComponent(f))) == (try! Data(contentsOf:candidate.appendingPathComponent(f))),"motion-v13 asset mismatch \(f)")}
+  for f in filesV2 {precondition((try! Data(contentsOf:stockV2.appendingPathComponent(f))) == (try! Data(contentsOf:candidate.appendingPathComponent(f))),"motion-v2 rollback asset changed \(f)")}
+  let stampV2=try fm.attributesOfItem(atPath:mapV2.path)[.modificationDate] as! Date
+  precondition(refreshV2() == .notApplicable && (try! fm.attributesOfItem(atPath:mapV2.path)[.modificationDate] as! Date)==stampV2,"motion-v2 upgrade must be idempotent")
+  for pose in [PetSpritePose.working,.trio]{autoreleasepool{
+   let r=PetSpriteStore.loadRotations(in:stockV2,displayScale:2,only:[pose])[pose]!
+   precondition(r.variants.count == (pose == .working ? 4 : 3) && r.frames == (pose == .working ? 184 : 172)
+     && r.manifest.handoffFrame == (pose == .working ? 145 : 121),"the upgraded install decodes every V13 and Session 3 V4 cast at 2x")
+  }}
   // Generation 28 re-runs this refresh for everyone already at 27. What it must leave alone: a Motion V1 install with
   // its own timing, every bundled character whose pack is already current, and a chosen still image.
   let customV1=stockV1.appendingPathComponent("customMotionV1")
@@ -159,6 +203,6 @@ import CryptoKit
     "a chosen still image must survive even beside a complete stock map")
   try fm.removeItem(at:chosenStill.appendingPathComponent("\(PetSpriteStore.fileStem).png"))
   precondition(refreshStill() == .refreshed("jedi-miles-windu"),"the same install with no still image does upgrade, so the check above is about the still")
-  print("PASS: V15, 348, 349 and motion-v1 upgrades, custom timing/scale/art protection, a rerun on current packs and a chosen still, missing-asset atomic failure, ambient native slicing/cadence, 13 unchanged casts and both rollback generations")
+  print("PASS: V15, 348, 349, motion-v1 and motion-v2 (to Motion V13) upgrades, custom motion-v2 layers and cadence kept, custom timing/scale/art protection, a rerun on current packs and a chosen still, missing-asset atomic failure, ambient native slicing/cadence, 13 unchanged casts and both rollback generations")
  }
 }
