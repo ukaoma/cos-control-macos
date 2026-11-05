@@ -723,8 +723,8 @@ import Foundation
     }
 
     static func centerSettingsGroups() {
-        // The table: 38 groups, each with a title, a category and at least one name no other row answers to.
-        check(C.settingsGroups.count == 38 && Set(C.settingsGroups.map(\.id)).count == 38, "[the Settings groups are a closed list]", "\(C.settingsGroups.count)")
+        // The table: 39 groups (0.5.372 adds COS reaching out), each with a title, a category and at least one name no other row answers to.
+        check(C.settingsGroups.count == 39 && Set(C.settingsGroups.map(\.id)).count == 39, "[the Settings groups are a closed list]", "\(C.settingsGroups.count)")
         for group in C.settingsGroups {
             let names = C.settingsGroupNames(group.id)
             check(!names.isEmpty && !group.title.isEmpty && !group.parent.isEmpty, "[every Settings group has a name of its own]", group.id)

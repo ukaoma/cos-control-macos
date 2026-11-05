@@ -1115,6 +1115,7 @@ enum SetupAssistant {
             SettingsGroup(id: "voice.performance", title: "Performance", parent: "Transcription and voice"),
             SettingsGroup(id: "work.sessions", title: "Sessions", parent: "Work and agents"),
             SettingsGroup(id: "work.chat", title: "Work chat", parent: "Work and agents"),
+            SettingsGroup(id: "work.reach", title: "COS reaching out", parent: "Work and agents"),
             SettingsGroup(id: "work.background", title: "Background", parent: "Work and agents"),
             SettingsGroup(id: "work.folders", title: "Folders and notes", parent: "Work and agents"),
             SettingsGroup(id: "work.brief", title: "Morning brief", parent: "Work and agents"),
