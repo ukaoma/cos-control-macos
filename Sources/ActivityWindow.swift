@@ -8181,7 +8181,7 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
         }
         let id = UUID().uuidString.lowercased()
         let source = WorkSource(id: target, title: title, revision: ActivityHome.dayKey(Date()), project: "today", context: context)
-        await handoff.submit(source: source, mode: .newSession, session: nil, model: handoff.models[index], prompt: prompt, intentID: id, attachmentIds: attachmentIds)
+        await handoff.submit(source: source, mode: .newSession, session: nil, model: handoff.models[index], prompt: prompt, attachmentIds: attachmentIds, intentID: id)
         let receipt = handoff.receipts.first { $0.id == id }
         let outcome = TodayRunGuard.outcome(receiptStatus: receipt?.status, error: handoff.error)
         let before = guardrail.pausedUntil(now: Date())

@@ -1313,9 +1313,9 @@ struct WorkRecommendationKey: Equatable {
     /// `replacing` names the delivered reply this send answers (Not done yet, Reply by voice): the fence ignores it, and
     /// it is marked reviewed only once the new handoff is on its way (never when the send was refused or failed).
     /// `resendAllFiles` (0.5.254, "Send all N again"): a Continue or Fork carries every file on the card, not only new ones.
-    func submit(source: WorkSource, mode: WorkHandoffMode, session: WorkSession?, model: WorkModelChoice?, prompt: String,
+    func submit(source: WorkSource, mode: WorkHandoffMode, session: WorkSession?, model: WorkModelChoice?, prompt: String, attachmentIds: [String] = [],
                 journalPrompt: String? = nil, origin: WorkRequestOrigin? = nil, replacing: String? = nil, resendAllFiles: Bool = false, orchestrationRunID: String? = nil, intentID suppliedID: String? = nil, recovery: WorkIndependentRecovery? = nil,
-                contextFileIDs: Set<String>? = nil, sessionFence: Bool = false, attachmentIds: [String] = []) async {
+                contextFileIDs: Set<String>? = nil, sessionFence: Bool = false) async {
         guard !busy else { return }
         if mode != .newSession, let line = KeyLanes.refusal(sessionID: session?.nativeID) { error = line; return }
         // 0.5.252: one send at a time. A send for the glasses does not take `busy` (the Agent workspace stays usable).

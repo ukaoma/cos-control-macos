@@ -152,8 +152,10 @@ need("-> Bool {" in start and start.count("return false") == 4 and "return accep
      "[cost guards] startRun says whether the run was accepted, so no caller reads a note that may be 20 seconds old")
 need("TodayHome.pickRunModel(" in start, "[cost guards] runs from Today use the picked non-Opus model")
 # 0.5.371: the third is Drop it's question route (dropItAskRun), the same Ask run with the same guard, switch and model pick (plan decision 3).
-need(today.count("today.startRun(") == 3 and today.count('today.startRun(target: "drop:ask:" + dropId,') == 1,
-     "[cost guards] only Prep me, the command center's Ask and troubleshoot rows, and a drop routed to a question start Work runs; the Today box only files")
+# The fourth is the COS chat composer's Ask (option A, Miles 2026-11-05, dropItAskJob): the same run, guard, switch and pick.
+need(today.count("today.startRun(") == 4 and today.count('today.startRun(target: "drop:ask:" + dropId,') == 1
+     and today.count('let accepted = await today.startRun(target: target, title: String(prompt.prefix(60)), prompt: prompt,') == 1,
+     "[cost guards] only Prep me, the command center's Ask and troubleshoot rows, a drop routed to a question and the COS chat's Ask start Work runs; the Today box only files")
 need("if let refusal = today.runRefusal(" in body(today, "    func commandTroubleshoot(", "\n    func commandStartRun("), "[cost guards] troubleshoot asks the guard before Doctor spends a question")
 refusal = body(store, "    func runRefusal(", "\n    @Published var stopping")
 need("guardrail.account(" not in refusal and "handoff.submit(" not in refusal and "TodayRunGuard(defaults: .standard).admission(" in refusal and "TodayRunGuard.preflight(" in refusal,
