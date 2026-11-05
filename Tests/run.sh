@@ -277,7 +277,7 @@ python3 "$ROOT/Tests/title-steer-helper-checks.py" "$TMP/cos-control-helper"
 # fixture: both dispatched, Copy token's managed-server check first (nothing reaches /api/web-session/* in a /tmp home), no
 # token, ticket or code on stdout or stderr. What crosses on a real answer is WebSignInCore, in Tests/run-pairing.sh.
 python3 "$ROOT/Tests/web-signin-helper-checks.py" "$TMP/cos-control-helper"
-# 0.5.370 Drop it (server Drop it P1): drop-it through the compiled helper against a loopback fixture (every op's method, path and
+# 0.5.371 Drop it (server Drop it P1): drop-it through the compiled helper against a loopback fixture (every op's method, path and
 # body exactly, the words only on stdin and never on stderr, off and unsupported, a refusal's code and plain line, only the contract's
 # keys, unreachable and no token).
 python3 "$ROOT/Tests/drop-it-helper-checks.py" "$TMP/cos-control-helper"
@@ -392,7 +392,7 @@ COS_TITLE_STEER_LANE=wiring zsh "$ROOT/Tests/run-title-steer.sh"
 # cached, the row only while its window is on screen, mounted once in Devices for every device path, the catalog row, the copy and
 # the version). Its rules and state run in Tests/run-provider-connect.sh, the helper's answers in Tests/run-pairing.sh.
 python3 "$ROOT/Tests/phone-signin-pins.py" "$ROOT"
-# 0.5.370: Drop it, the pinned COS chat in Messages (server Drop it P1). The wiring pins (Messages' list hashed unchanged, the row and the
+# 0.5.371: Drop it, the pinned COS chat in Messages (server Drop it P1). The wiring pins (Messages' list hashed unchanged, the row and the
 # panes gated on the capability, their own route flags, inline only, the words on stdin, ⌘K's row old and new, the Settings switch, the
 # source lists, the version), the words, replies, layout and store against a stand-in helper, then the model, ⌘K and Settings with the
 # whole app compiled. The helper lane runs above with the suite's own helper.
@@ -1482,7 +1482,7 @@ assert 'if row.provider == "claude", let name = Self.claudeSessionName(source.se
 assert "var sessionNameSource: String { fullTitle ?? title }" in store, "the name source is the whole title when there is one"
 assert "let data = try JSONSerialization.data(withJSONObject: job)" in submit, "the name rides in the job request"
 new = body(helper, "    private func emitWorkNew() throws {", "    private func emitWorkJob(args: [String]) throws {")
-assert "let sessionName = try Self.workNewSessionName(body)" in new and "messageEra: era, sessionName: sessionName)" in new, "the helper cleans the name and posts it"
+assert "let sessionName = try Self.workNewSessionName(body)" in new and "messageEra: era, sessionName: sessionName, maintenanceWorkflow: workflow)" in new, "the helper cleans the name and posts it"
 fresh = body(helper, "    private func emitFreshClaudeSessions(", "    private func emitSessionList(")
 assert fresh.index("Self.applyClaudeDesktopTitles(peers") < fresh.index("Self.applyClaudeCustomTitles(peers") < fresh.index("peers.removeAll { Self.isWarmUpRow($0) }"), "transcript titles apply after Desktop's, before the warm-up filter"
 assert "Self.isKeepWarmSessionTitle(($0[\"name\"] as? String) ?? \"\") }" not in helper, "no list hides a row as a warm-up by a title someone gave it (isWarmUpRow)"
@@ -6655,8 +6655,8 @@ for needle, why in (
     ('"Update the COS server to 6.47.0"', "route_absent names the version"),
     ('Button("Update Server") { model.perform("update") }', "route_absent carries the Update Server affordance"),
     ('"Your COS pipeline already brings in Fireflies meetings."', "a pipeline Mac says why it does not import"),
-    ('"COS does not change your pipeline\'s files in advise mode. Your answers are saved."',
-     "an advise-mode answer must not look like one that changed something"),
+    ('"Individual answers are saved in advise mode. Consolidate meetings runs a separate cleanup that can update your files."',
+     "individual advise-mode answers and the separate file-changing cleanup must be distinguished"),
     ('"Would merge automatically"', "the advise-mode group title"),
     ('"Suggestions"', "the advise-mode undecided group title"),
     ('"Not the same meeting"', "the refuse action"),

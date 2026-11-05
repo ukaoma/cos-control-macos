@@ -22,6 +22,7 @@ private actor CleanupTransport {
         case "work-new":
             let body = try JSONSerialization.jsonObject(with: data!) as! [String: Any]
             precondition(body["model"] as? String == "opus")
+            precondition(body["maintenanceWorkflow"] as? String == MeetingConsolidation.workflow)
             precondition((body["query"] as? String)?.contains(MeetingConsolidation.prompt) == true)
             sends += 1; intent = body["clientJobId"] as! String
             if loseReply { throw HelperClientError.commandFailed("Synthetic lost response") }

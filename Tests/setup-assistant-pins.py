@@ -178,7 +178,10 @@ pin(before(on_return, "if option {", "if noticeShowing { return .nothing }", "if
 order_row = block(core, "        private static func isOrder(_ row: Row) -> Bool {", "        static func listing(_ inputs: Inputs, words raw: String) -> Listing {")
 pin("case .command, .place, .settingsGroup: return row.group != .sessions" in order_row and ".hit" not in order_row and ".searchAll" not in order_row, "Return moves from the top only onto a command or a place, never a hit or a session list line")
 pin("listing.rows.first(where: { $0.group == .sessions && $0.selectable })" in on_return and ".found" not in on_return, "a title match keeps the move, and the hit group is never read by Return")
-pin("submit: { words in todaySubmitAsk(words) }" in ext and "file: file" not in window, "Return reaches today's own submit, which only files")
+# 0.5.371: Option-Return and the file row go through todayFileOrDrop, which files exactly as before (todaySubmitAsk) unless the server has
+# Drop it on, and then drops the words into the COS chat. Either way nothing runs.
+pin("submit: { words in todayFileOrDrop(words) }" in ext and "file: file" not in window
+    and "guard model.status.dropIt.available else { todaySubmitAsk(words); return }" in window, "Return reaches today's own submit, which only files")
 pin(".onTapGesture { closeCommandCenter() }" in ext, "a click outside closes it")
 
 # A row that ran leaves nothing armed: no highlight, no words in the box, no draft for the next open. The words are used up in
@@ -198,7 +201,10 @@ pin(before(start_run_fn, "let accepted = await today.startRun(", "commandKeys.cl
     "a run the guard accepted empties the draft, if it still holds what was sent, even with the panel gone; the note decides nothing")
 now_fn = block(ext, "    func commandRecordNow() {", "\n    }\n")
 pin(before(now_fn, "today.recordInFlight = true", "commandKeys.clearDraft()", "Task {"), "a recording under way empties the draft")
-pin(window.count("commandKeys.clearDraft(") == 3 and window.count("commandKeys.clearDraft()") == 1 and "commandKeys.clearWords?()" not in ext, "a filing, a run and a recording are the only three places that empty the draft, and only the recording does it unconditionally")
+# 0.5.371: the fourth is a drop the server took (todayFileOrDrop), after model.dropIt.send answered.
+drop_fn = block(window, "    func todayFileOrDrop(", "\n    }\n}\n")
+pin(before(drop_fn, "if let answer = await model.dropIt.send(text) {", "commandKeys.clearDraft(afterSend: text, accepted: true)"), "a drop the server took empties the draft, and only then")
+pin(window.count("commandKeys.clearDraft(") == 4 and window.count("commandKeys.clearDraft()") == 1 and "commandKeys.clearWords?()" not in ext, "a filing, a run and a recording are the only three places that empty the draft, and only the recording does it unconditionally")
 
 # Return never moves onto Start recording from a Start phrase inside a longer sentence: that row asks nothing before it records.
 notice = block(panel, "MacRecordingNoticeCard(onRecord: {", "}, onNotNow:")
@@ -436,9 +442,14 @@ _s363 = next((s for s in _all if s["title"] == "0.5.363"), {"title": "", "items"
 _notes = " ".join(_s363["items"])
 _older = " ".join(i for section in _all if section["title"] == "0.5.361" for i in section["items"])
 _sent = "plus the title and first 150 characters of the first prompt from up to 508 recent sessions"
-_summary = _json.loads(read("Resources/WhatsNew.json"))["whatsNew"]["summary"]
-pin("first prompts" in _summary and "sends your words" in _summary and "Settings, Decision models shows and changes your choice for the model that decides search" in _notes and "changes the choice for each model" not in _notes,
-    "the summary and the notes say what leaves, first prompts included, and name the choice truly")
+_release = _json.loads(read("Resources/WhatsNew.json"))
+_summary = _release["whatsNew"]["summary"]
+# Later summaries describe later releases. The detailed 0.5.363 disclosure and
+# the live consent/settings wording below remain mandatory for every release.
+if _release["version"] == "0.5.363":
+    pin("first prompts" in _summary and "sends your words" in _summary, "the 0.5.363 summary says what leaves")
+pin("Settings, Decision models shows and changes your choice for the model that decides search" in _notes and "changes the choice for each model" not in _notes,
+    "the retained disclosure names the model choice truly")
 _blurb = read("Sources/SettingsHubCatalog.swift")
 pin("session titles and the start of first prompts" in _blurb and 'sends your words and session titles' not in _blurb, "Settings' own line for the control says first prompts too")
 pin(_s363["title"] == "0.5.363" and "each search sends the words you type in ⌘K, " + _sent in _notes and "Emails, links, home-folder paths and key-shaped text are removed first. Names and other details are not." in _notes

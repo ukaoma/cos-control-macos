@@ -161,7 +161,7 @@ extension LiveMeetingCapability {
     }
 }
 
-/// 0.5.370 (server Drop it P1): `capabilities.dropIt` from /api/health. Here so ServerStatus holds it in every lane that compiles
+/// 0.5.371 (server Drop it P1): `capabilities.dropIt` from /api/health. Here so ServerStatus holds it in every lane that compiles
 /// Models.swift alone; the chat's rules are in Sources/DropIt.swift.
 struct DropItCapability: Equatable, Sendable {
     /// `capabilities.dropIt.protocol`; nil on a server without Drop it.
@@ -272,7 +272,7 @@ struct ServerStatus: Sendable {
     /// 0.5.336 (server 6.86.0): what /api/health says about the live meeting view (`capabilities.liveMeeting`,
     /// `capabilities.liveCues.kinds`, `capabilities.liveCuesV2`). All absent on an older server.
     var liveMeeting = LiveMeetingCapability()
-    /// 0.5.370: what /api/health says about Drop it (`capabilities.dropIt`). Unsupported on an older server.
+    /// 0.5.371: what /api/health says about Drop it (`capabilities.dropIt`). Unsupported on an older server.
     var dropIt = DropItCapability()
     var backgroundJobsSupported = false
     var backgroundJobsEnabled: Bool?

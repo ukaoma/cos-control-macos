@@ -1,5 +1,5 @@
 #!/bin/zsh
-# 0.5.370 Drop it (server Drop it P1): the pinned COS chat in Messages, its composer, History, ⌘K's Drop it row and the Settings
+# 0.5.371 Drop it (server Drop it P1): the pinned COS chat in Messages, its composer, History, ⌘K's Drop it row and the Settings
 # switch. Every compile goes through Tests/compile-guard.sh, one at a time.
 #   run-drop-it.sh                       the gate, in order: the wiring pins (Tests/drop-it-pins.py), then the words, replies, calls,
 #                                        layout and store against a stand-in helper, compiled with DropIt.swift and Models.swift
@@ -72,4 +72,4 @@ if [[ "$LANE" == "helper" ]]; then
     -framework Security -framework AppKit -o "$DIR/cos-control-helper"
   /usr/bin/python3 "$ROOT/Tests/drop-it-helper-checks.py" "$DIR/cos-control-helper"
 fi
-print "PASS: drop it (0.5.370)"
+print "PASS: drop it (0.5.371)"

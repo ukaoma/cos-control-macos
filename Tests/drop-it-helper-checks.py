@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""0.5.370 Drop it (server Drop it P1): the compiled helper's drop-it verb against a private loopback fixture. No real server,
+"""0.5.371 Drop it (server Drop it P1): the compiled helper's drop-it verb against a private loopback fixture. No real server,
 account, or credentials. Pins: every op's method, path and body exactly, with the token header; the words only on stdin (never
 argv) and never on stderr; a refused argument never reaches the server; every answer is ok with transport and httpStatus; a 404
 drop_it_off is `off`, a 404 that is not JSON `unsupported`; a refusal is the server's code and its plain line and nothing else;

@@ -4426,7 +4426,7 @@ private extension ControlPanel {
                 }
             }
             .disabled(model.busy)
-            // 0.5.370: Drop it (DROP-01), only for a server that has it (capabilities.dropIt protocol 1). PUT /api/drops/settings.
+            // 0.5.371: Drop it (DROP-01), only for a server that has it (capabilities.dropIt protocol 1). PUT /api/drops/settings.
             if model.status.dropIt.supported { DropItSettingRow(model: model, store: model.dropIt) }
         } advanced: {
             // Per-Mac defaults that Work chat's footer also offers (OUT-05, OUT-06).

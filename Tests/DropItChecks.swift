@@ -4,7 +4,7 @@ import Foundation
 /// The stand-in helper being down.
 struct StandDown: Error {}
 
-/// 0.5.370 Drop it (DropIt and DropItStore in Sources/DropIt.swift, the capability in Sources/Models.swift), executed. Compiled
+/// 0.5.371 Drop it (DropIt and DropItStore in Sources/DropIt.swift, the capability in Sources/Models.swift), executed. Compiled
 /// against those two files alone by Tests/run-drop-it.sh, with a stand-in for the helper: no helper binary, no server, no window.
 /// Prints "drop it checks: N passed". Every failure names its behaviour in brackets, which Tests/mutate-drop-it.py matches.
 @main struct DropItChecks {

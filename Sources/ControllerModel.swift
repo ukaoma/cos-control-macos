@@ -628,7 +628,7 @@ final class ControllerModel: ObservableObject {
     let meetingAsk = MeetingAskStore()
     /// 0.5.366 (server 6.99.0): renaming a live recording (TitleSteerStore, Sources/MeetingAskCore.swift).
     let titleSteer = TitleSteerStore()
-    /// 0.5.370 (server Drop it P1): the pinned COS chat in Messages, its composer, History and the Settings switch
+    /// 0.5.371 (server Drop it P1): the pinned COS chat in Messages, its composer, History and the Settings switch
     /// (DropItStore, Sources/DropIt.swift). Every new piece shows only while `status.dropIt.available`.
     lazy var dropIt: DropItStore = {
         let store = DropItStore()
@@ -3115,9 +3115,9 @@ final class ControllerModel: ObservableObject {
     @Published var dictationHistoryOpen = false
     /// 0.5.330: Activity → Dictation → Settings, written only by openDictationSettings and closeDictationSettings.
     @Published var dictationSettingsOpen = false
-    /// 0.5.370: Activity → Messages → the pinned COS chat. Written by `openDropItChat()` / `closeDropItChat()`, and by nothing else.
+    /// 0.5.371: Activity → Messages → the pinned COS chat. Written by `openDropItChat()` / `closeDropItChat()`, and by nothing else.
     @Published private(set) var dropItChatOpen = false
-    /// 0.5.370: the chat's History. Written by `openDropItHistory()` / `closeDropItHistory()`, and by nothing else.
+    /// 0.5.371: the chat's History. Written by `openDropItHistory()` / `closeDropItHistory()`, and by nothing else.
     @Published private(set) var dropItHistoryOpen = false
     /// 0.5.327: which cue review view is the Memories route (CueReviewPane), or nil while the Memories page shows.
     /// Written by `openCueReview(_:)` / `closeCueReview()`, and by nothing else.
@@ -3279,12 +3279,12 @@ final class ControllerModel: ObservableObject {
         dictationSettingsOpen = false
     }
 
-    /// 0.5.370: the pinned COS chat is the Messages route. Mounted only while the server has Drop it on.
+    /// 0.5.371: the pinned COS chat is the Messages route. Mounted only while the server has Drop it on.
     var dropItChatRouteActive: Bool {
         dropItChatOpen && status.dropIt.available
     }
 
-    /// 0.5.370: History is the Messages route, one rung above the chat (its Back lands on the chat).
+    /// 0.5.371: History is the Messages route, one rung above the chat (its Back lands on the chat).
     var dropItHistoryRouteActive: Bool {
         dropItHistoryOpen && status.dropIt.available
     }

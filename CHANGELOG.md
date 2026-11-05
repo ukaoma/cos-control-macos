@@ -1,10 +1,16 @@
-## 0.5.370 (build 424), Drop it: a pinned COS chat in Messages
+## 0.5.371 (build 425), Drop it and resumable meeting consolidation
 
-Built on 0.5.369 (build 423, meeting consolidation). Plus everything in 0.5.369. Meeting consolidation is unchanged. The ask: Drop it phase 1, Control half (plan `operations/personal/wk45_2026/PLAN_drop_it_2026-11-04.md`, approved mock `drop-it-mock`, Miles 2026-11-04). It pairs with the Drop it P1 server (branch `claude/drop-it-p1-server`), which advertises `capabilities.dropIt` and serves `/api/drops` and `/api/inbox`.
+Built on 0.5.369 (build 423, meeting consolidation). Plus everything in 0.5.369. A combined release: Drop it (below) and Codex's resumable meeting consolidation (`codex/consolidation-resume` 259f3ab). Both were prepared as 0.5.370 candidates; neither shipped under that number. Drop it, the ask: Drop it phase 1, Control half (plan `operations/personal/wk45_2026/PLAN_drop_it_2026-11-04.md`, approved mock `drop-it-mock`, Miles 2026-11-04). It pairs with the Drop it P1 server (branch `claude/drop-it-p1-server`), which advertises `capabilities.dropIt` and serves `/api/drops` and `/api/inbox`.
 
-What is new by default: nothing. Drop it is off on the server until it is turned on (Settings, Work and agents, Work chat, Drop it, or `COS_DROP_IT` on the server). While it is off, or on a server without it, Messages, its Recent list, ⌘K's File to Work and Option-Return are exactly as in 0.5.369, and no new row, pane or switch shows (the switch shows only for a server that has Drop it).
+What is new by default: for Drop it, nothing. Drop it is off on the server until it is turned on (Settings, Work and agents, Work chat, Drop it, or `COS_DROP_IT` on the server). While it is off, or on a server without it, Messages, its Recent list, ⌘K's File to Work and Option-Return are exactly as in 0.5.369, and no new row, pane or switch shows (the switch shows only for a server that has Drop it).
 
-What this build adds, on top of 0.5.369, while Drop it is on:
+Resumable meeting consolidation (needs glasses-server 6.99.8):
+
+- Consolidate meetings explicitly requests the server's resumable cleanup workflow. Saved passes continue automatically past the former 15-minute limit, with a verified report required for completion.
+- Stop cleanup is available beside the running receipt. Compatible server capability is required before sending; older servers refuse safely before admission.
+- Requires glasses-server 6.99.8 for resumable cleanup. Ordinary Work handoffs retain their existing payload and limits.
+
+Drop it adds, on top of 0.5.369, while Drop it is on:
 
 - Messages, Recent: a pinned COS row above the list, with the chat's last line, its time and how many pings, follow-ups and questions are unread (`GET /api/inbox/summary`, every 30 s while it shows). Not in Archive. The list under it is unchanged, pinned by hash.
 - The pinned COS chat, on its own route flag: your drops on the right with where they came from, COS on the left as compact cards with one primary button and quiet links, day separators, an "N new" line, and Mark all read. Opening it marks what it shows read (`POST /api/inbox/read`). It reads the chat every 10 s while open.

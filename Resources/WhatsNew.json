@@ -1,15 +1,18 @@
 {
-  "version": "0.5.370",
+  "version": "0.5.371",
   "whatsNew": {
-    "summary": "Drop it: with a newer COS server and Drop it turned on in Settings, a pinned COS chat sits at the top of Messages. Type a thought, an ask or a reminder, and COS files it and texts back, with Undo and Move in the chat. It is off until you turn it on. Plus everything in 0.5.369: Suggested merges has Consolidate meetings, a tracked AI cleanup of matching recordings that keeps the originals. Also in 0.5.363: with Today home on, ⌘K finds a session by meaning once you say yes for your decision model, and each search sends your words, plus the titles and first prompts of recent sessions, to it.",
+    "summary": "Drop it: with a newer COS server and Drop it turned on in Settings, a pinned COS chat sits at the top of Messages. Type a thought, an ask or a reminder, and COS files it and texts back, with Undo and Move in the chat. It is off until you turn it on. Meeting consolidation now continues automatically across saved passes, and Stop cleanup sits beside its status. Plus everything in 0.5.369: Suggested merges has Consolidate meetings, a tracked AI cleanup of matching recordings that keeps the originals.",
     "sections": [
       {
-        "title": "0.5.370",
+        "title": "0.5.371",
         "items": [
           "Drop it: a pinned COS chat at the top of Messages. Type a thought, an ask or a reminder, and COS files it where it belongs and texts back what it did.",
           "Each reply has Undo and Move for 24 hours. When COS is not sure where something goes, it asks one question instead of guessing. History lists everything you dropped, with where it went.",
           "The Messages tab shows a number when COS is waiting on your answer, and a dot when the chat has something you have not read.",
           "It is off until you turn it on in Settings, Work and agents, Work chat, and it needs a newer COS server. While it is off, Messages and ⌘K's File to Work are exactly as before.",
+          "Meeting consolidation continues automatically across saved passes, past the former 15-minute limit, and reports completion only after checking the saved inventory and audit.",
+          "Stop cleanup is available beside the running status. Originals and uncertain matches remain preserved.",
+          "Requires a compatible COS server with resumable cleanup support. Older servers refuse before starting.",
           "A drop never sends anything to anyone."
         ]
       },

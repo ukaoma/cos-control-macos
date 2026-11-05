@@ -109,7 +109,7 @@ MUTANTS = [
     ("P9 the title is read from argv", "pins", HELPER, "Self.meetingTitleSteerStdin(try readBoundedStdin(4_096))", "option(\"--title\", in: args)"),
     ("P10 the capability is read from a boolean", "pins", HELPER, "guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return false }", "guard let number = value as? NSNumber else { return false }"),
     ("P11 the pane keeps no observed store", "pins", MEETINGS, "    @ObservedObject private var steerStore: TitleSteerStore\n", "    private var steerStore: TitleSteerStore { model.titleSteer }\n"),
-    ("P12 the version is 0.5.365 again", "pins", "Resources/Info.plist", "<string>0.5.370</string>", "<string>0.5.365</string>"),
+    ("P12 the version is 0.5.365 again", "pins", "Resources/Info.plist", "<string>0.5.371</string>", "<string>0.5.365</string>"),
     ("P13 Return saves once the recording has stopped", "pins", MEETINGS, ".onSubmit { if !over, open { save(draft) } }", ".onSubmit { if !over { save(draft) } }"),
     ("P14 Save stays on once the recording has stopped", "pins", MEETINGS, ".disabled(over || store.busy || !open)", ".disabled(over || store.busy)"),
     ("P15 the field stays open once the recording stops", "pins", MEETINGS, "        .onChange(of: open) { _, now in if !now { store.cancel() } }\n", ""),

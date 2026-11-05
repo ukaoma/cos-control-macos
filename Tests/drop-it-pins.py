@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""0.5.370 Drop it: the wiring pins. Messages' existing Recent list, its rows and File to Work are byte-for-byte as in 0.5.368
+"""0.5.371 Drop it: the wiring pins. Messages' existing Recent list, its rows and File to Work are byte-for-byte as in 0.5.368
 (hashed); the pinned row mounts above the list only on Recent and only while the server has Drop it on; the chat and History
 mount on their own flags that only their openers write, inline and never as a sheet; Back, a tab switch and the server turning
 it off close them; ⌘K's row stays File to Work exactly unless Drop it is on; the Settings switch shows only for a server that has
@@ -156,12 +156,12 @@ for script in list((root / "Tests").glob("*.sh")) + list((root / "scripts").glob
 
 # ── Version touchpoints and the lanes.
 plist = read("Resources/Info.plist")
-need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.370</string>", plist) and re.search(r"<key>CFBundleVersion</key>\s*<string>424</string>", plist),
-     "version", "Info.plist is 0.5.370 (build 424)")
+need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.371</string>", plist) and re.search(r"<key>CFBundleVersion</key>\s*<string>425</string>", plist),
+     "version", "Info.plist is 0.5.371 (build 425)")
 whats = json.loads(read("Resources/WhatsNew.json"))
-sec = [s for s in whats["whatsNew"]["sections"] if s["title"] == "0.5.370"]
-need(whats.get("version") == "0.5.370" and len(sec) == 1 and any("Drop it" in i for i in sec[0]["items"]), "version", "What's New has one 0.5.370 section naming Drop it")
-need("\n## 0.5.370 (build 424)" in "\n" + read("CHANGELOG.md"), "version", "the changelog has its 0.5.370 (build 424) entry")
+sec = [s for s in whats["whatsNew"]["sections"] if s["title"] == "0.5.371"]
+need(whats.get("version") == "0.5.371" and len(sec) == 1 and any("Drop it" in i for i in sec[0]["items"]), "version", "What's New has one 0.5.371 section naming Drop it")
+need("\n## 0.5.371 (build 425)" in "\n" + read("CHANGELOG.md"), "version", "the changelog has its 0.5.371 (build 425) entry")
 need('python3 "$ROOT/Tests/drop-it-helper-checks.py" "$TMP/cos-control-helper"' in run_sh, "lanes wired", "Tests/run.sh runs the helper checks")
 for lane in ("pins", "models", "wiring"):
     need(f'COS_DROP_IT_LANE={lane} zsh "$ROOT/Tests/run-drop-it.sh"' in run_sh, "lanes wired", f"Tests/run.sh runs the {lane} lane")

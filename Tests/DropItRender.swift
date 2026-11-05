@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-// 0.5.370 Drop it, with the whole app compiled (Tests/run-drop-it.sh).
+// 0.5.371 Drop it, with the whole app compiled (Tests/run-drop-it.sh).
 //   DropItRender check            the wiring against the real ControllerModel and the command center: the route flags and their
 //                                 openers, the capability gate, Settings' switch closing the chat, ⌘K's row old and new, the hub
 //                                 search entry. Prints "drop it wiring checks: N passed" then "PASS: drop it wiring checks complete".
@@ -192,7 +192,7 @@ struct SettingsRowCard: View {
             // Messages with the pinned row, then the same window with Drop it off (the list exactly as before).
             try renderWindow(seededModel(dropIt: true), width: 1280, height: 860, name: "1-messages-cos-pinned", out: out) {}
             try renderWindow(seededModel(dropIt: false), width: 1280, height: 860, name: "1b-messages-drop-it-off", out: out) {}
-            // 0.5.370 (plan section 12): the rail with unread only (a server that sends no waiting): a dot, no number.
+            // 0.5.371 (plan section 12): the rail with unread only (a server that sends no waiting): a dot, no number.
             try renderWindow(seededModel(dropIt: true, waiting: nil), width: 1280, height: 860, name: "1c-messages-rail-dot", out: out) {}
             // The chat, in the window (opened the way the pinned row opens it).
             let chatModel = seededModel(dropIt: true)

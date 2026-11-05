@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-// MARK: Drop it views (0.5.370)
+// MARK: Drop it views (0.5.371)
 //
 // The pinned COS row above Messages' Recent list, the pinned chat with its Drop it composer, History, and the "Back to the chat"
 // strip a deep link leaves on the pane it opened. Built to the approved mock (operations/personal/wk45_2026/drop-it-mock): his
@@ -670,7 +670,7 @@ struct DropItSettingRow: View {
     }
 }
 
-// MARK: The Messages rail item's mark (0.5.370, plan section 12)
+// MARK: The Messages rail item's mark (0.5.371, plan section 12)
 
 /// Beside "Messages" on the Today rail: a number for what COS is waiting on him to answer, a dot for unread only. Read from
 /// GET /api/inbox/summary on the rail's own 30-second clock (no timer of its own). Nothing while Drop it is off or unsupported.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""0.5.370 Drop it: the mutation pass. Serial, every compile through Tests/compile-guard.sh, never run by Tests/run.sh (a wiring
+"""0.5.371 Drop it: the mutation pass. Serial, every compile through Tests/compile-guard.sh, never run by Tests/run.sh (a wiring
 mutant compiles the whole app; a helper mutant compiles the helper).
 
 Usage: mutate-drop-it.py [<repo root>]. A green baseline of every suite the chosen mutants use comes first, and the run stops on
@@ -13,7 +13,7 @@ scratch = tempfile.mkdtemp(prefix="cos-mutate-drop-it-", dir="/tmp")
 os.environ.setdefault("COS_TEST_KIT_DIR", os.path.join(scratch, "kits"))
 env = dict(os.environ)
 import signal
-# 0.5.370: a lane that runs past its limit is stopped (its whole process group) and counts as a kill: a hang is caught, not a
+# 0.5.371: a lane that runs past its limit is stopped (its whole process group) and counts as a kill: a hang is caught, not a
 # survivor. The 0.5.369 pass hung for three hours on M9, whose mutant made a held call wait forever.
 LIMITS = {"pins": 300, "models": 600, "wiring": 1800, "helper": 900}
 def sh(cmd, limit=1800):
@@ -77,7 +77,7 @@ mutants = [
  ("P5 the chat grows a sheet", V, "        .onDisappear { store.closed() }\n", "        .onDisappear { store.closed() }\n        .sheet(isPresented: .constant(false)) { EmptyView() }\n", PINS, "[inline]"),
  ("P6 a drop logs its words", D, "        sending = true\n", "        sending = true\n        print(text)\n", PINS, "[no logs]"),
  ("P7 Back skips History", W, "        } else if section == .messages, model.dropItHistoryRouteActive {\n            model.closeDropItHistory()\n", "", PINS, "[back]"),
- ("P8 a tab switch keeps the chat", W, "        // 0.5.370: the COS chat and History are Messages routes; a tab switch closes them like any detail.\n        model.closeDropItChat()\n", "", PINS, "[tab switch]"),
+ ("P8 a tab switch keeps the chat", W, "        // 0.5.371: the COS chat and History are Messages routes; a tab switch closes them like any detail.\n        model.closeDropItChat()\n", "", PINS, "[tab switch]"),
  ("P9 Option-Return drops on a server with it off", W, "guard model.status.dropIt.available else { todaySubmitAsk(words); return }", "guard model.status.dropIt.supported else { todaySubmitAsk(words); return }", PINS, "[command action]"),
  ("P10 the switch for every server", VW, "if model.status.dropIt.supported { DropItSettingRow(model: model, store: model.dropIt) }", "DropItSettingRow(model: model, store: model.dropIt)", PINS, "[settings row]"),
  ("P11 Back to the chat shows on the chat", W, ", !showingSettings, !(section == .messages && model.dropItChatRouteActive) {", ", !showingSettings {", PINS, "[deep links]"),

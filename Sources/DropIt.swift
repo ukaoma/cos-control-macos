@@ -1,7 +1,7 @@
 import Combine
 import Foundation
 
-// MARK: Drop it (0.5.370, server Drop it P1)
+// MARK: Drop it (0.5.371, server Drop it P1)
 //
 // Plan: operations/personal/wk45_2026/PLAN_drop_it_2026-11-04.md (Miles, 2026-11-04, all decided). Approved mock:
 // operations/personal/wk45_2026/drop-it-mock. A pinned COS chat sits at the top of Messages: he texts COS (a drop), COS files it
@@ -144,7 +144,7 @@ enum DropIt {
         var lastLine = ""
         var lastAt: Date?
         var version = 0
-        /// 0.5.370 (plan section 12): COS questions he has not answered and pings that need a reply. Unread clears on open;
+        /// 0.5.371 (plan section 12): COS questions he has not answered and pings that need a reply. Unread clears on open;
         /// waiting clears only when answered. nil on a server that does not send it: then the rail shows no number.
         var waiting: Int? = nil
     }

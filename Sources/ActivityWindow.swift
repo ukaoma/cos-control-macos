@@ -598,7 +598,7 @@ struct ActivityWindow: View {
     @State private var todayRetrying = false
     /// 0.5.259: the view Memories opens on when an item asks for one ("review"); cleared by the next tab choice.
     @State private var memoriesOpenView: String?
-    /// 0.5.370: set by a deep link from the COS chat (dropItOpen); the strip on the pane it opened, and the way back.
+    /// 0.5.371: set by a deep link from the COS chat (dropItOpen); the strip on the pane it opened, and the way back.
     @State private var dropItCameBack: String?
     /// 0.5.362: counts the times ⌘K asked the Memories page for a view, so the page, already open and read once, is told again.
     @State private var memoriesViewRequest = 0
@@ -803,7 +803,7 @@ struct ActivityWindow: View {
     @ViewBuilder
     private func activityContent(today: TodayHome.Frame?, width: CGFloat, now: Date) -> some View {
           VStack(spacing: 0) {
-            // 0.5.370: a deep link from the COS chat leaves the way back on the pane it opened.
+            // 0.5.371: a deep link from the COS chat leaves the way back on the pane it opened.
             if let line = dropItCameBack, !showingSettings, !(section == .messages && model.dropItChatRouteActive) {
                 DropItCameBackStrip(line: line, back: dropItBackToChat)
             }
@@ -818,7 +818,7 @@ struct ActivityWindow: View {
                     WorkSessionsView(store: handoffStore, isPreview: isolatedWorkPreview, onOpenWork: openHandoffWork, onOpenFullSession: openFullHandoffSession)
                 } else if isolatedWorkPreview, let selected = section, selected != .work, !(selected == .meetings && selectedLibraryRecordID != nil) {
                     previewOnlySection(selected)
-                // 0.5.370: the pinned COS chat and its History, each on its own flag (openDropItChat / openDropItHistory write them).
+                // 0.5.371: the pinned COS chat and its History, each on its own flag (openDropItChat / openDropItHistory write them).
                 } else if section == .messages, model.dropItHistoryRouteActive {
                     DropItHistoryPane(store: model.dropIt, onBack: { model.closeDropItHistory() }, onOpen: dropItOpenDrop)
                 } else if section == .messages, model.dropItChatRouteActive {
@@ -1499,7 +1499,7 @@ struct ActivityWindow: View {
         // 0.5.361: Dictation's settings are the third such pane. Left open, a later Open Dictation landed on Settings.
         model.closeDictationSettings()
         model.closeCueReview()
-        // 0.5.370: the COS chat and History are Messages routes; a tab switch closes them like any detail.
+        // 0.5.371: the COS chat and History are Messages routes; a tab switch closes them like any detail.
         model.closeDropItChat()
     }
 
@@ -3294,7 +3294,7 @@ struct ActivityWindow: View {
                 .padding(.horizontal, 12)
                 .padding(.top, 6)
                 .padding(.bottom, 8)
-            // 0.5.370: the pinned COS chat's row, above Recent and never in Archive, only while the server has Drop it on. The
+            // 0.5.371: the pinned COS chat's row, above Recent and never in Archive, only while the server has Drop it on. The
             // list under it is unchanged (Tests/drop-it-pins.py holds its text).
             if messagesSubview == .recent, model.status.dropIt.available {
                 DropItPinnedRow(store: model.dropIt, open: openDropItChat)
@@ -8618,7 +8618,7 @@ extension ActivityWindow {
         .overlay(alignment: .trailing) { Rectangle().fill(TodayInk.railBorder).frame(width: 1) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("COS sections")
-        // 0.5.370: the Messages mark reads the chat's summary on the rail's own 30-second clock (no timer of its own), and not
+        // 0.5.371: the Messages mark reads the chat's summary on the rail's own 30-second clock (no timer of its own), and not
         // at all while Drop it is off or the server lacks it.
         .task(id: model.status.dropIt.available ? Int(now.timeIntervalSince1970 / 30) : -1) {
             if model.status.dropIt.available { await model.dropIt.refreshSummary() }
@@ -8658,7 +8658,7 @@ extension ActivityWindow {
                         VStack(alignment: .leading, spacing: 1) {
                             HStack(alignment: .center, spacing: 7) {
                                 Text(name).font(COSType.body(14, weight: .semibold)).foregroundStyle(TodayInk.ink)
-                                // 0.5.370 (plan section 12): Messages carries the COS chat's waiting number, or its unread dot.
+                                // 0.5.371 (plan section 12): Messages carries the COS chat's waiting number, or its unread dot.
                                 if key == "messages" { DropItRailMark(store: model.dropIt, available: model.status.dropIt.available) }
                             }
                             if !story.text.isEmpty {
@@ -10260,7 +10260,7 @@ extension ActivityWindow {
     }
 }
 
-// MARK: - Drop it (0.5.370)
+// MARK: - Drop it (0.5.371)
 
 extension ActivityWindow {
     /// The pinned row's opener: Messages' other details close, and the chat's own flag opens (ControllerModel.openDropItChat).

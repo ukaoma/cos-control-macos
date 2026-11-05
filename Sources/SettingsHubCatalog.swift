@@ -153,7 +153,7 @@ enum SettingsHubCatalog {
         // web page's sign-in error names it. A hub row, not an inventory row.
         .init("UT-29", "Open COS on your phone", "Point your iPhone Camera here. Safari opens COS already signed in.", old: "", group: "glasses.devices",
               advanced: false, mount: .group, keywords: ["phone", "browser", "sign in", "web", "qr", "control web", "safari", "sign-in code", "login"]),
-        // 0.5.370 (server Drop it P1): the one Drop it switch, off by default, shown only for a server that has Drop it. A hub row, not
+        // 0.5.371 (server Drop it P1): the one Drop it switch, off by default, shown only for a server that has Drop it. A hub row, not
         // an inventory row. Its words are DropIt.settingLabel and settingDetail (Sources/DropIt.swift).
         .init("DROP-01", "Drop it", "A pinned COS chat at the top of Messages. Type a thought, an ask or a reminder, and COS files it and texts back. ⌘K's File to Work becomes Drop it.", old: "", group: "work.chat",
               advanced: false, mount: .group, keywords: ["drop", "drop it", "cos chat", "pinned", "inbox", "file to work", "capture", "quick capture", "note", "reminder"]),

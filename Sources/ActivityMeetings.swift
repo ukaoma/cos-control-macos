@@ -1507,7 +1507,7 @@ struct MeetingConsolidationControls: View {
                 HStack(spacing: 10) { runButton; modelPicker; Spacer(minLength: 0) }
                 VStack(alignment: .leading, spacing: 7) { runButton; modelPicker }
             }
-            Text("Reviews G2, Mac and cloud recordings, merges matching conversations, and trims overrun copies into the right meetings. Keeps originals and reports uncertain matches.")
+            Text("Reviews G2, Mac and cloud recordings, merges matching conversations, and trims overrun copies into the right meetings. Keeps originals and reports uncertain matches. Continues automatically across saved passes until verification finishes.")
                 .font(COSType.body(11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1520,6 +1520,19 @@ struct MeetingConsolidationControls: View {
                     Text(row.status == "completed" ? "Run finished — review the report" : "Cleanup: \(row.status)")
                         .font(COSType.body(11, weight: .medium))
                     Spacer(minLength: 0)
+                    if row.blocksNewHandoff, let job = row.jobID {
+                        Button("Stop cleanup") {
+                            Task {
+                                do {
+                                    _ = try await store.taskChatCall(["work-job-cancel", "--job-id", job])
+                                    await store.refreshReceipts(asked: true)
+                                    failure = store.error
+                                } catch { failure = error.localizedDescription }
+                            }
+                        }
+                        .buttonStyle(COSQuietButtonStyle()).controlSize(.small)
+                        .disabled(store.busy || starting)
+                    }
                     Button("Check status") {
                         Task {
                             await store.refreshReceipts(asked: true)
@@ -1583,11 +1596,11 @@ struct MeetingConsolidationControls: View {
     }
 
     private var modelPicker: some View {
-        Picker("Cleanup model", selection: $modelID) {
-            Text("Claude Opus").tag("opus")
-            Text("Codex Frontier").tag("codex-frontier")
-        }
-        .labelsHidden().pickerStyle(.menu).frame(width: 145)
+        COSDropdown("Cleanup model", selection: $modelID,
+                    options: [COSDropdownOption("opus", "Claude Opus"),
+                              COSDropdownOption("codex-frontier", "Codex Frontier")],
+                    showsLabel: false)
+        .frame(width: 145)
         .disabled(starting || active || store.busy)
     }
 }

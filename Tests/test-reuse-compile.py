@@ -69,7 +69,9 @@ class Base(unittest.TestCase):
         self.script('Tests/compile-guard.sh', '#!/bin/sh\nexec "$@"\n')
         self.script('bin/xcrun', '#!/bin/sh\n[ -n "$FAKE_BREAK_STORE" ] && rm -rf "$FAKE_BREAK_STORE/reuse"\ncase "$1" in --show-sdk-build-version) printf "${FAKE_SDK_BUILD:-1A1}";; *) printf sdk-test;; esac\n')
         self.script('bin/sw_vers', '#!/bin/sh\nprintf "${FAKE_HOST_BUILD:-24A1}"\n')
-        self.script('bin/compiler', FAKE_COMPILER)
+        # Use the running interpreter: Apple's /usr/bin/python3 launcher rejects
+        # synthetic DEVELOPER_DIR values before our fake compiler can run.
+        self.script('bin/compiler', FAKE_COMPILER.replace('#!/usr/bin/env python3', '#!' + sys.executable, 1))
         self.env = dict(os.environ, PATH=str(self.root/'bin')+os.pathsep+os.environ['PATH'])
         for key in ('COS_TEST_KIT_PERSIST', 'COS_TEST_KIT_STORE', 'COS_TEST_KIT_REUSE_MAX_ENTRIES', 'COS_TEST_KIT_REUSE_MAX_BYTES',
                     'FAKE_SLEEP', 'FAKE_SDK_BUILD', 'FAKE_HOST_BUILD', 'FAKE_BREAK_STORE', 'SDKROOT', 'COS_TEST_COMPILER_MODE',
