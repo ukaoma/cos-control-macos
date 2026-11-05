@@ -27,12 +27,8 @@ struct DropItReachRows: View {
     }
     private func stepper(_ id: String, _ path: String, _ range: ClosedRange<Int>, step: Int = 1, unit: String = "") -> some View {
         row(id) {
-            Stepper(value: Binding(get: { store.int(path) }, set: { store.setInt(path, min(range.upperBound, max(range.lowerBound, $0))) }),
-                    in: range, step: step) {
-                Text(unit.isEmpty ? "\(store.int(path))" : "\(store.int(path)) \(unit)")
-                    .font(COSType.mono(12.5)).foregroundStyle(TodayInk.ink).frame(minWidth: 44, alignment: .trailing)
-            }
-            .accessibilityLabel(label(id))
+            COSStepper(label(id), value: Binding(get: { store.int(path) }, set: { store.setInt(path, min(range.upperBound, max(range.lowerBound, $0))) }),
+                       in: range, step: step, valueText: unit.isEmpty ? "\(store.int(path))" : "\(store.int(path)) \(unit)", showsLabel: false)
         }
     }
     private func time(_ path: String, _ accessibility: String) -> some View {
@@ -140,7 +136,8 @@ private struct SteerField: View {
         SettingsHubRow(label: label, detail: detail, anchor: "item." + id) {
             HStack(spacing: 6) {
                 TextField("Words, comma separated", text: Binding(get: { draft ?? saved }, set: { draft = String($0.prefix(300)) }))
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
+                    .cosField()
                     .frame(width: 200)
                     .onSubmit(save)
                     .accessibilityLabel(label)
