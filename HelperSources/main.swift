@@ -20139,7 +20139,7 @@ final class COSControlHelper {
     }
 
     static func workNewPayload(clientJobId: String, query: String, model: String, messageEra: String,
-                               sessionName: String? = nil, maintenanceWorkflow: String? = nil, attachmentIds: [String] = []) -> [String: Any] {
+                               sessionName: String? = nil, maintenanceWorkflow: String? = nil) -> [String: Any] {
         // An unknown supplied session ID is NOT a request to create that ID.
         // The coordinator allocates and durably reuses the session for this
         // clientJobId/generation; inventing one causes session_identity_mismatch.
@@ -20149,7 +20149,6 @@ final class COSControlHelper {
         // drops keys it does not know.
         if let sessionName { payload["sessionName"] = sessionName }
         if let maintenanceWorkflow { payload["maintenanceWorkflow"] = maintenanceWorkflow }
-        if !attachmentIds.isEmpty { payload["attachmentIds"] = attachmentIds }
         return payload
     }
 
@@ -20457,8 +20456,8 @@ final class COSControlHelper {
             guard let ids = Self.dropItMediaIds(raw), workflow == nil else { throw HelperError.message("attachmentIds must be one to five media ids") }
             files = ids
         }
-        let payload = Self.workNewPayload(clientJobId: id, query: query, model: model, messageEra: era, sessionName: sessionName, maintenanceWorkflow: workflow,
-                                          attachmentIds: files)
+        var payload = Self.workNewPayload(clientJobId: id, query: query, model: model, messageEra: era, sessionName: sessionName, maintenanceWorkflow: workflow)
+        if !files.isEmpty { payload["attachmentIds"] = files }
         let json = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
         guard let response = request("/api/query-jobs", method: "POST", token: token, body: json, timeout: 30) else {
             throw HelperError.message("Conversation admission timed out; delivery is unknown. Recover the original receipt before trying again")

@@ -123,7 +123,7 @@ need("static func stage(_ provider: NSItemProvider, policy: ContextFilePolicy" i
 need('let accepted = await today.startRun(target: target, title: String(prompt.prefix(60)), prompt: prompt,' in window
      and 'handoff: handoffStore, attachmentIds: files)' in window and "query-jobs" not in core, "ask path", "Ask is Control's existing Today Work run, with the files' ids; no new query path")
 need('if !attachmentIds.isEmpty { job["attachmentIds"] = Array(attachmentIds.prefix(5)) }' in code("Sources/WorkHandoffStore.swift")
-     and 'if !attachmentIds.isEmpty { payload["attachmentIds"] = attachmentIds }' in helper, "ask path", "the media ids reach POST /api/query-jobs")
+     and 'if !files.isEmpty { payload["attachmentIds"] = files }' in helper, "ask path", "the media ids reach POST /api/query-jobs")
 need(window.count("        wireDropItComposer()\n") == 2 and "model.dropIt.dropTakes = model.status.dropIt.attachments" in window
      and "model.dropIt.isSecret = { WorkCardFiles.looksSecret(name: $0) }" in window, "composer wiring", "the chat and ⌘K both wire Ask, the drop file limit and the secrets rule")
 need('"dropItAttachments": files.map { $0 as Any } ?? NSNull()' in helper and 'attachments: details["dropItAttachments"]?.int' in models, "capability files", "capabilities.dropIt.attachments is read")
