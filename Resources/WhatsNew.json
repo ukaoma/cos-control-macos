@@ -1,8 +1,18 @@
 {
-  "version": "0.5.369",
+  "version": "0.5.370",
   "whatsNew": {
-    "summary": "Suggested merges now has Consolidate meetings: start a tracked AI cleanup of matching G2, Mac and cloud recordings, including overrun captures. Original recordings are preserved; the report lists applied changes and anything still needing review.",
+    "summary": "Drop it: with a newer COS server and Drop it turned on in Settings, a pinned COS chat sits at the top of Messages. Type a thought, an ask or a reminder, and COS files it and texts back, with Undo and Move in the chat. It is off until you turn it on. Plus everything in 0.5.369: Suggested merges has Consolidate meetings, a tracked AI cleanup of matching recordings that keeps the originals. Also in 0.5.363: with Today home on, ⌘K finds a session by meaning once you say yes for your decision model, and each search sends your words, plus the titles and first prompts of recent sessions, to it.",
     "sections": [
+      {
+        "title": "0.5.370",
+        "items": [
+          "Drop it: a pinned COS chat at the top of Messages. Type a thought, an ask or a reminder, and COS files it where it belongs and texts back what it did.",
+          "Each reply has Undo and Move for 24 hours. When COS is not sure where something goes, it asks one question instead of guessing. History lists everything you dropped, with where it went.",
+          "The Messages tab shows a number when COS is waiting on your answer, and a dot when the chat has something you have not read.",
+          "It is off until you turn it on in Settings, Work and agents, Work chat, and it needs a newer COS server. While it is off, Messages and ⌘K's File to Work are exactly as before.",
+          "A drop never sends anything to anyone."
+        ]
+      },
       {
         "title": "0.5.369",
         "items": [

@@ -703,6 +703,7 @@ final class COSControlHelper {
         case "live-cues-status": try emitLiveCuesStatus(args: args)
         case "live-provisional": try emitLiveProvisional(args: args)
         case "meeting-title-steer": try emitMeetingTitleSteer(args: args)
+        case "drop-it": try emitDropIt(args: args)
         case "meeting-stranded-save-all": try emitMeetingStrandedSaveAll()
         case "clear-stranded-video-uploads": try clearStrandedVideoUploads()
         case "reset-message-era": try resetMessageEra()
@@ -3054,6 +3055,8 @@ final class COSControlHelper {
         details["ownerName"] = profileOwnerName() ?? NSNull()
         // 0.5.336 (server 6.86.0): the live meeting view's capability keys, from public health; codes and bools only.
         details.merge(Self.liveMeetingStatusFields(health?["capabilities"])) { _, new in new }
+        // 0.5.370 (server Drop it P1): `capabilities.dropIt`, codes and bools only.
+        details.merge(Self.dropItStatusFields(health?["capabilities"])) { _, new in new }
         return details
     }
 
@@ -18274,6 +18277,321 @@ final class COSControlHelper {
         emit(ok: true, message: "Title steer answered (\(response.status))", details: details)
     }
 
+    // MARK: - Drop it (0.5.370, server Drop it P1)
+    //
+    // `drop-it --op OP` reaches the Drop it routes on the loopback server: the pinned COS chat in Messages, its composer, History
+    // and the one Settings switch. Every answer is ok with `transport` and `httpStatus`, like the live cues verbs: `off` for the
+    // server's 404 drop_it_off, `unsupported` for a 404 that is not JSON (a server from before the routes), `answered` otherwise.
+    // Only the contract's keys cross (Tests/drop-it-helper-checks.py pins each shape); a refusal carries the server's code and its
+    // plain one-line message (fixed server copy, never the person's words). SECRET BOUNDARY: a drop's words, a search and a
+    // chat line go to stdout for the app and in the server's request, and nowhere else: the words arrive on stdin (never argv,
+    // where any process on the Mac could read them), and no progress line, log or message carries them.
+    static let dropItOps: Set<String> = ["settings", "settings-set", "submit", "history", "get", "undo", "move", "ask", "sent",
+                                         "summary", "feed", "read", "action"]
+    static let dropItTextMax = 2_000
+    static let dropItDests: Set<String> = ["new_card", "existing_card", "thread", "memory", "session", "note", "reminder", "ask"]
+    static let dropItKinds: Set<String> = ["idea", "task", "note", "memory", "file", "reminder", "ask"]
+    static let dropItStatuses: Set<String> = ["open", "in_progress", "done", "undone"]
+    static let dropItStates: Set<String> = ["routing", "filed", "asking", "held", "asked", "undone"]
+    static let dropItFeedKinds: Set<String> = ["drop", "receipt", "question", "followup", "ping", "answer"]
+    static let dropItLinkKinds: Set<String> = ["card", "session", "handoff", "thread", "memory", "meeting", "file", "reminder", "ask"]
+    static let dropItSources: Set<String> = ["mac", "web", "g2", "telegram", "cos"]
+
+    static func dropItMatches(_ value: String, _ pattern: String) -> Bool { value.range(of: pattern, options: .regularExpression) != nil }
+    /// The server's DROP_ID: a lowercase UUID v4.
+    static func dropIdValid(_ value: String) -> Bool {
+        dropItMatches(value, "\\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\z")
+    }
+    /// The server's FEED_ID.
+    static func dropItFeedIdValid(_ value: String) -> Bool { dropItMatches(value, "\\Afi_[a-f0-9]{32}\\z") }
+    /// The server's link id grammar (cards, threads, sessions, memories).
+    static func dropItLinkIdValid(_ value: String) -> Bool { dropItMatches(value, "\\A[A-Za-z0-9][A-Za-z0-9._:@/-]{0,199}\\z") }
+    /// The two chat actions the server takes on POST /api/inbox/action.
+    static func dropItActionValid(_ value: String) -> Bool { dropItMatches(value, "\\A(undo|choose:[A-Za-z0-9_-]{1,32})\\z") }
+    /// Text without control characters other than tab and newline, at most `max` code points. nil for anything else.
+    static func dropItPlain(_ value: Any?, max: Int, newlines: Bool = false) -> String? {
+        guard let text = value as? String, text.unicodeScalars.count <= max else { return nil }
+        for scalar in text.unicodeScalars {
+            switch scalar.value {
+            case 0x09, 0x0a: if !newlines { return nil }
+            case 0x00...0x1f, 0x7f: return nil
+            default: continue
+            }
+        }
+        return text
+    }
+    private static func dropItBool(_ value: Any?) -> Bool? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+        return number.boolValue
+    }
+    private static func dropItInt(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), let int = Int(exactly: number.doubleValue) else { return nil }
+        return int
+    }
+    private static func dropItQuery(_ value: String) -> String {
+        // ASCII unreserved only: CharacterSet.alphanumerics would leave letters like é unescaped.
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
+    }
+    private static func dropItJSON(_ object: [String: Any]) -> String? {
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// The submit body: the words cleaned as the server cleans them (CRLF to LF, trimmed), 1 to 2,000 code points, no control
+    /// characters but tab and newline; the source is always this Mac. A session hint is optional. nil for anything else.
+    static func dropItSubmitBody(_ data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(object.keys).isSubset(of: ["dropId", "text", "hint"]),
+              let id = object["dropId"] as? String, dropIdValid(id),
+              let raw = object["text"] as? String else { return nil }
+        let text = raw.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, dropItPlain(text, max: dropItTextMax, newlines: true) != nil else { return nil }
+        var body: [String: Any] = ["dropId": id, "text": text, "source": "mac"]
+        if let hint = object["hint"] {
+            guard let hint = hint as? [String: Any], Set(hint.keys).isSubset(of: ["sessionId", "label"]),
+                  let session = hint["sessionId"] as? String, dropItLinkIdValid(session) else { return nil }
+            var out: [String: Any] = ["sessionId": session]
+            if let label = hint["label"] { guard let text = dropItPlain(label, max: 200) else { return nil }; if !text.isEmpty { out["label"] = text } }
+            body["hint"] = out
+        }
+        return dropItJSON(body)
+    }
+
+    /// History's query: words (on stdin, at most 200), a kind, a status, a page size from 1 to 200 and a drop to page after.
+    static func dropItHistoryPath(_ data: Data) -> String? {
+        let object: [String: Any]
+        if data.isEmpty { object = [:] } else {
+            guard let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+            object = parsed
+        }
+        guard Set(object.keys).isSubset(of: ["q", "kind", "status", "limit", "before"]) else { return nil }
+        var parts: [String] = []
+        if let q = object["q"] {
+            guard let words = dropItPlain(q, max: 200) else { return nil }
+            let trimmed = words.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty { parts.append("q=" + dropItQuery(trimmed)) }
+        }
+        if let kind = object["kind"] { guard let kind = kind as? String, dropItKinds.contains(kind) else { return nil }; parts.append("kind=" + kind) }
+        if let status = object["status"] { guard let status = status as? String, dropItStatuses.contains(status) else { return nil }; parts.append("status=" + status) }
+        if let limit = object["limit"] { guard let limit = dropItInt(limit), (1...200).contains(limit) else { return nil }; parts.append("limit=\(limit)") }
+        if let before = object["before"] { guard let before = before as? String, dropIdValid(before) else { return nil }; parts.append("before=" + before) }
+        return "/api/drops" + (parts.isEmpty ? "" : "?" + parts.joined(separator: "&"))
+    }
+
+    /// Move's body: a destination other than ask, and for a card, thread or session the target the person picked.
+    static func dropItMoveBody(_ data: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any], Set(object.keys).isSubset(of: ["dest", "target"]),
+              let dest = object["dest"] as? String, dropItDests.contains(dest), dest != "ask" else { return nil }
+        var body: [String: Any] = ["dest": dest]
+        if let target = object["target"] {
+            guard let target = target as? [String: Any], Set(target.keys).isSubset(of: ["id", "label", "domain"]),
+                  let id = target["id"] as? String, dropItLinkIdValid(id), let label = dropItPlain(target["label"], max: 200) else { return nil }
+            var out: [String: Any] = ["id": id, "label": label]
+            if let domain = target["domain"] { guard let domain = dropItPlain(domain, max: 64), !domain.isEmpty else { return nil }; out["domain"] = domain }
+            body["target"] = out
+        }
+        return dropItJSON(body)
+    }
+
+    /// One op as an HTTP request: method, path and body. nil for an argument outside the grammar (never sent).
+    static func dropItRequest(op: String, args: [String], stdin: Data) -> (method: String, path: String, body: String?)? {
+        func opt(_ name: String) -> String? {
+            guard let index = args.firstIndex(of: name), args.indices.contains(index + 1) else { return nil }
+            return args[index + 1]
+        }
+        func drop(_ suffix: String) -> String? { opt("--drop").flatMap { dropIdValid($0) ? "/api/drops/" + $0 + suffix : nil } }
+        switch op {
+        case "settings": return ("GET", "/api/drops/settings", nil)
+        case "settings-set":
+            guard let value = opt("--enabled"), value == "true" || value == "false" else { return nil }
+            return ("PUT", "/api/drops/settings", value == "true" ? #"{"enabled":true}"# : #"{"enabled":false}"#)
+        case "submit": return dropItSubmitBody(stdin).map { ("POST", "/api/drops", $0) }
+        case "history": return dropItHistoryPath(stdin).map { ("GET", $0, nil) }
+        case "get": return drop("").map { ("GET", $0, nil) }
+        case "undo": return drop("/undo").map { ("POST", $0, "{}") }
+        case "sent": return drop("/sent").map { ("POST", $0, "{}") }
+        case "move":
+            guard let path = drop("/move"), let body = dropItMoveBody(stdin) else { return nil }
+            return ("POST", path, body)
+        case "ask":
+            guard let path = drop("/ask"), let job = opt("--job"), dropIdValid(job),
+                  let generation = opt("--generation").flatMap({ Int($0) }), (1...1_000_000).contains(generation),
+                  let body = dropItJSON(["clientJobId": job, "generation": generation]) else { return nil }
+            return ("POST", path, body)
+        case "summary": return ("GET", "/api/inbox/summary", nil)
+        case "feed":
+            var parts: [String] = []
+            if let after = opt("--after") { guard dropItFeedIdValid(after) else { return nil }; parts.append("after=" + after) }
+            if let limit = opt("--limit") { guard let n = Int(limit), (1...200).contains(n) else { return nil }; parts.append("limit=\(n)") }
+            return ("GET", "/api/inbox/feed" + (parts.isEmpty ? "" : "?" + parts.joined(separator: "&")), nil)
+        case "read":
+            guard let through = opt("--through"), dropItFeedIdValid(through), let body = dropItJSON(["through": through]) else { return nil }
+            return ("POST", "/api/inbox/read", body)
+        case "action":
+            guard let item = opt("--item"), dropItFeedIdValid(item), let action = opt("--action"), dropItActionValid(action),
+                  let body = dropItJSON(["itemId": item, "action": action]) else { return nil }
+            return ("POST", "/api/inbox/action", body)
+        default: return nil
+        }
+    }
+
+    // The shapes that may cross. Each keeps only the contract's keys, typed; anything else is dropped (a list keeps its good rows).
+
+    static func dropItLink(_ value: Any?) -> [String: Any]? {
+        guard let raw = value as? [String: Any], let kind = raw["kind"] as? String, dropItLinkKinds.contains(kind),
+              let id = raw["id"] as? String, dropItLinkIdValid(id), let label = dropItPlain(raw["label"], max: 200) else { return nil }
+        var out: [String: Any] = ["kind": kind, "id": id, "label": label]
+        if let domain = dropItPlain(raw["domain"], max: 64), !domain.isEmpty { out["domain"] = domain }
+        if let created = dropItBool(raw["created"]) { out["created"] = created }
+        return out
+    }
+    static func dropItAction(_ value: Any?) -> [String: Any]? {
+        guard let raw = value as? [String: Any], let id = raw["id"] as? String, dropItMatches(id, "\\A[a-z][a-z_]{0,31}(:[A-Za-z0-9_-]{1,32})?\\z"),
+              let label = dropItPlain(raw["label"], max: 80), !label.isEmpty else { return nil }
+        return ["id": id, "label": label]
+    }
+    private static func dropItStamp(_ value: Any?) -> String? { dropItPlain(value, max: 40).flatMap { $0.isEmpty ? nil : $0 } }
+
+    static func dropItFeedItem(_ value: Any?) -> [String: Any]? {
+        guard let raw = value as? [String: Any], let id = raw["id"] as? String, dropItFeedIdValid(id),
+              let kind = raw["kind"] as? String, dropItFeedKinds.contains(kind),
+              let thread = raw["threadId"] as? String, dropItLinkIdValid(thread), let created = dropItStamp(raw["createdAt"]),
+              let source = raw["source"] as? String, dropItSources.contains(source),
+              let line = dropItPlain(raw["line"], max: 2_000, newlines: true),
+              let state = raw["state"] as? String, state == "live" || state == "done" else { return nil }
+        var out: [String: Any] = ["id": id, "kind": kind, "threadId": thread, "createdAt": created, "source": source, "line": line, "state": state,
+                                  "readAt": dropItStamp(raw["readAt"]).map { $0 as Any } ?? NSNull(),
+                                  "links": ((raw["links"] as? [Any]) ?? []).prefix(12).compactMap(dropItLink),
+                                  "actions": ((raw["actions"] as? [Any]) ?? []).prefix(8).compactMap(dropItAction)]
+        if let title = dropItPlain(raw["title"], max: 200), !title.isEmpty { out["title"] = title }
+        if let until = dropItStamp(raw["undoUntil"]) { out["undoUntil"] = until }
+        return out
+    }
+
+    static func dropItChoice(_ value: Any?) -> [String: Any]? {
+        guard let raw = value as? [String: Any], let id = raw["id"] as? String, dropItMatches(id, "\\A[A-Za-z0-9_-]{1,32}\\z"),
+              let dest = raw["dest"] as? String, dropItDests.contains(dest), let label = dropItPlain(raw["label"], max: 200) else { return nil }
+        var out: [String: Any] = ["id": id, "dest": dest, "label": label, "detail": dropItPlain(raw["detail"], max: 400) ?? ""]
+        if let target = raw["target"] as? [String: Any], let tid = target["id"] as? String, dropItLinkIdValid(tid), let tlabel = dropItPlain(target["label"], max: 200) {
+            var t: [String: Any] = ["id": tid, "label": tlabel]
+            if let domain = dropItPlain(target["domain"], max: 64), !domain.isEmpty { t["domain"] = domain }
+            out["target"] = t
+        }
+        return out
+    }
+
+    static func dropItView(_ value: Any?) -> [String: Any]? {
+        guard let raw = value as? [String: Any], let id = raw["id"] as? String, dropIdValid(id),
+              let text = dropItPlain(raw["text"], max: dropItTextMax, newlines: true),
+              let source = raw["source"] as? String, dropItSources.contains(source), let created = dropItStamp(raw["createdAt"]),
+              let state = raw["state"] as? String, dropItStates.contains(state), let kind = raw["kind"] as? String, dropItKinds.contains(kind),
+              let status = raw["status"] as? String, dropItStatuses.contains(status) else { return nil }
+        var out: [String: Any] = ["id": id, "text": text, "source": source, "createdAt": created, "state": state, "kind": kind, "status": status,
+                                  "updatedAt": dropItStamp(raw["updatedAt"]).map { $0 as Any } ?? NSNull(),
+                                  "dest": (raw["dest"] as? String).flatMap { dropItDests.contains($0) ? $0 : nil }.map { $0 as Any } ?? NSNull(),
+                                  "links": ((raw["links"] as? [Any]) ?? []).prefix(12).compactMap(dropItLink),
+                                  "undoUntil": dropItStamp(raw["undoUntil"]).map { $0 as Any } ?? NSNull(),
+                                  "canUndo": dropItBool(raw["canUndo"]) ?? false]
+        if let choices = raw["choices"] as? [Any] { out["choices"] = choices.prefix(3).compactMap(dropItChoice) }
+        if let hold = raw["hold"] as? [String: Any], let session = hold["sessionId"] as? String, dropItLinkIdValid(session), let label = dropItPlain(hold["label"], max: 200) {
+            var h: [String: Any] = ["sessionId": session, "label": label]
+            if let sent = dropItStamp(hold["sentAt"]) { h["sentAt"] = sent }
+            out["hold"] = h
+        }
+        if let remind = raw["remind"] as? [String: Any] { out["remind"] = ["at": dropItStamp(remind["at"]).map { $0 as Any } ?? NSNull()] }
+        if let file = raw["file"] as? [String: Any], let name = dropItPlain(file["displayName"], max: 255), !name.isEmpty { out["file"] = ["displayName": name] }
+        return out
+    }
+
+    /// One op's answer for the app. A 200 is that op's shape; anything else is the server's code and its plain message.
+    static func dropItAnswer(op: String, status: Int, body: [String: Any]?) -> [String: Any] {
+        var out: [String: Any] = [:]
+        guard status == 200, let body else {
+            if let error = body?["error"] as? [String: Any] {
+                if let code = error["code"] as? String, dropItMatches(code, "\\A[a-z_]{1,64}\\z") { out["error"] = code }
+                if let message = dropItPlain(error["message"], max: 300), !message.isEmpty { out["message"] = message }
+            }
+            return out
+        }
+        switch op {
+        case "settings", "settings-set":
+            if let version = dropItInt(body["protocol"]) { out["protocol"] = version }
+            if let enabled = dropItBool(body["enabled"]) { out["enabled"] = enabled }
+            if let source = body["source"] as? String, source == "env" || source == "settings" { out["source"] = source }
+            if dropItBool(body["savedButEnvWins"]) == true { out["savedButEnvWins"] = true }
+        case "history":
+            out["drops"] = ((body["drops"] as? [Any]) ?? []).prefix(200).compactMap(dropItView)
+            out["more"] = dropItBool(body["more"]) ?? false
+            if let states = body["cardStates"] as? String, ["read", "unavailable", "none"].contains(states) { out["cardStates"] = states }
+        case "summary":
+            out["unread"] = max(0, dropItInt(body["unread"]) ?? 0)
+            out["lastLine"] = dropItPlain(body["lastLine"], max: 200, newlines: true) ?? ""
+            out["lastAt"] = dropItStamp(body["lastAt"]).map { $0 as Any } ?? NSNull()
+            out["version"] = dropItInt(body["version"]) ?? 0
+            // 0.5.370 (plan section 12): what COS is waiting on him to answer. Absent on a server without it, and then absent here.
+            if let waiting = dropItInt(body["waiting"]) { out["waiting"] = max(0, waiting) }
+        case "feed":
+            out["items"] = ((body["items"] as? [Any]) ?? []).prefix(200).compactMap(dropItFeedItem)
+            out["version"] = dropItInt(body["version"]) ?? 0
+            out["more"] = dropItBool(body["more"]) ?? false
+        case "read":
+            out["unread"] = max(0, dropItInt(body["unread"]) ?? 0)
+            out["version"] = dropItInt(body["version"]) ?? 0
+        default:
+            // A DropAnswer: submit, get, undo, move, ask, sent, action.
+            guard let drop = dropItView(body["drop"]) else { return out }
+            out["drop"] = drop
+            out["items"] = ((body["items"] as? [Any]) ?? []).prefix(200).compactMap(dropItFeedItem)
+            out["replayed"] = dropItBool(body["replayed"]) ?? false
+            if let next = body["next"] as? [String: Any], next["kind"] as? String == "ask",
+               let prompt = dropItPlain(next["prompt"], max: dropItTextMax, newlines: true) {
+                out["next"] = ["kind": "ask", "prompt": prompt]
+            }
+        }
+        return out
+    }
+
+    /// `off`: the server's 404 drop_it_off. `unsupported`: a 404 with no JSON (a server from before the routes). Else `answered`.
+    static func dropItTransport(status: Int, body: [String: Any]?) -> String {
+        guard status == 404 else { return "answered" }
+        if body == nil { return "unsupported" }
+        return (body?["error"] as? [String: Any])?["code"] as? String == "drop_it_off" ? "off" : "answered"
+    }
+
+    /// `capabilities.dropIt` from public /api/health: `dropItProtocol` (an integer or null), `dropItEnabled` (a real boolean true
+    /// only) and `dropItSource` ("env" or "settings", else null).
+    static func dropItStatusFields(_ capabilities: Any?) -> [String: Any] {
+        let block = (capabilities as? [String: Any])?["dropIt"] as? [String: Any]
+        let source = (block?["source"] as? String).flatMap { $0 == "env" || $0 == "settings" ? $0 : nil }
+        return ["dropItProtocol": dropItInt(block?["protocol"]).map { $0 as Any } ?? NSNull(),
+                "dropItEnabled": dropItBool(block?["enabled"]) ?? false,
+                "dropItSource": source.map { $0 as Any } ?? NSNull()]
+    }
+
+    private func emitDropIt(args: [String]) throws {
+        guard let op = option("--op", in: args), Self.dropItOps.contains(op) else { throw HelperError.message("Use --op and one of the Drop it operations") }
+        let takesStdin: Set<String> = ["submit", "history", "move"]
+        let input = takesStdin.contains(op) ? try readBoundedStdin(16_384) : Data()
+        guard let call = Self.dropItRequest(op: op, args: args, stdin: input) else {
+            throw HelperError.message("That Drop it request is not valid")
+        }
+        guard let token = try? readToken() else {
+            emit(ok: true, message: "No pairing token", details: ["transport": "no_token"])
+            return
+        }
+        // A drop runs the router (one Jev request at most) before it answers; reads are quick.
+        let timeout = op == "submit" || op == "move" || op == "action" ? 30 : 10
+        guard let response = request(call.path, method: call.method, token: token, body: call.body, timeout: timeout) else {
+            emit(ok: true, message: "COS server unreachable", details: ["transport": "unavailable"])
+            return
+        }
+        var details = Self.dropItAnswer(op: op, status: response.status, body: response.body)
+        details["transport"] = Self.dropItTransport(status: response.status, body: response.body)
+        details["httpStatus"] = response.status
+        emit(ok: true, message: "Drop it answered (\(response.status))", details: details)
+    }
+
     private func emitLiveCuesHistory(args: [String]) throws {
         guard let path = Self.liveCuesHistoryPath(days: option("--days", in: args), session: option("--session", in: args),
                                                   unrated: args.contains("--unrated")) else {
@@ -24238,6 +24556,37 @@ final class COSControlHelper {
         let oddSteerRead = try Self.liveTranscriptParse(Data(#"{"sessionId":"meeting_1","chunksIndexed":[],"titleSteer":42}"#.utf8), sessionId: "meeting_1", since: -1, stamp: "1")
         try expect(steerRead["titleSteer"] as? String == "Polling accuracy chat" && steerlessRead["titleSteer"] == nil && oddSteerRead["titleSteer"] == nil,
                    "title steer: a live-transcript read carries the file's titleSteer cleaned, and none from a file without one or with one that is not text")
+        // 0.5.370 Drop it: the grammar, the shapes and the transport (Tests/drop-it-helper-checks.py runs the verb against a fixture).
+        let dropID = "1b9d6bcd-bbfd-4b2d-9b5d-ab8dfbbd4bed"
+        try expect(Self.dropIdValid(dropID) && !Self.dropIdValid(dropID.uppercased()) && !Self.dropIdValid("1b9d6bcd-bbfd-1b2d-9b5d-ab8dfbbd4bed")
+                   && Self.dropItFeedIdValid("fi_" + String(repeating: "a", count: 32)) && !Self.dropItFeedIdValid("fi_x")
+                   && Self.dropItActionValid("undo") && Self.dropItActionValid("choose:o1") && !Self.dropItActionValid("move") && !Self.dropItActionValid("choose:"),
+                   "drop it: drop ids are lowercase UUID v4, feed ids fi_ and 32 hex, and the chat takes only undo and choose:<id>")
+        let submitted = Self.dropItSubmitBody(Data(#"{"dropId":"\#(dropID)","text":"  send Gina the JCK numbers\r\n"}"#.utf8))
+        try expect(submitted == #"{"dropId":"\#(dropID)","source":"mac","text":"send Gina the JCK numbers"}"#
+                   && Self.dropItSubmitBody(Data(#"{"dropId":"\#(dropID)","text":"   "}"#.utf8)) == nil
+                   && Self.dropItSubmitBody(Data(#"{"dropId":"\#(dropID)","text":"a\u0007b"}"#.utf8)) == nil
+                   && Self.dropItSubmitBody(Data(#"{"dropId":"\#(dropID)","text":"x","source":"web"}"#.utf8)) == nil
+                   && Self.dropItSubmitBody(Data(("{\"dropId\":\"\(dropID)\",\"text\":\"" + String(repeating: "a", count: 2_001) + "\"}").utf8)) == nil,
+                   "drop it: the words are trimmed, at most 2,000 code points, no control characters, and the source is always this Mac")
+        try expect(Self.dropItHistoryPath(Data(#"{"q":"JCK numbers","kind":"task","status":"in_progress","limit":50}"#.utf8)) == "/api/drops?q=JCK%20numbers&kind=task&status=in_progress&limit=50"
+                   && Self.dropItHistoryPath(Data()) == "/api/drops" && Self.dropItHistoryPath(Data(#"{"kind":"pings"}"#.utf8)) == nil
+                   && Self.dropItHistoryPath(Data(#"{"q":"a&b=c"}"#.utf8)) == "/api/drops?q=a%26b%3Dc",
+                   "drop it: History's words are escaped into the query, and a kind or status outside the server's sets is refused")
+        try expect(Self.dropItMoveBody(Data(#"{"dest":"ask"}"#.utf8)) == nil && Self.dropItMoveBody(Data(#"{"dest":"memory"}"#.utf8)) == #"{"dest":"memory"}"#
+                   && Self.dropItMoveBody(Data(#"{"dest":"thread","target":{"id":"thr_1","label":"JCK"}}"#.utf8)) == #"{"dest":"thread","target":{"id":"thr_1","label":"JCK"}}"#,
+                   "drop it: Move never asks, and carries only the picked target")
+        try expect(Self.dropItTransport(status: 404, body: nil) == "unsupported" && Self.dropItTransport(status: 404, body: ["error": ["code": "drop_it_off"]]) == "off"
+                   && Self.dropItTransport(status: 404, body: ["error": ["code": "drop_not_found"]]) == "answered" && Self.dropItTransport(status: 409, body: nil) == "answered",
+                   "drop it: off is the server's drop_it_off, unsupported a 404 with no JSON")
+        let dropFields = Self.dropItStatusFields(["dropIt": ["protocol": 1, "enabled": true, "source": "settings"]])
+        try expect(dropFields["dropItProtocol"] as? Int == 1 && dropFields["dropItEnabled"] as? Bool == true && dropFields["dropItSource"] as? String == "settings"
+                   && Self.dropItStatusFields(["dropIt": ["protocol": 1, "enabled": NSNumber(value: 1)]])["dropItEnabled"] as? Bool == false
+                   && Self.dropItStatusFields(nil)["dropItProtocol"] is NSNull,
+                   "drop it: the capability is a protocol number and a real boolean; nothing advertised reads as no protocol")
+        let refused = Self.dropItAnswer(op: "undo", status: 409, body: ["error": ["code": "edited", "message": "The card was changed since, so Undo leaves it alone."], "stack": "SECRET"])
+        try expect(refused["error"] as? String == "edited" && refused["message"] as? String == "The card was changed since, so Undo leaves it alone." && refused["stack"] == nil,
+                   "drop it: a refusal is the server's code and its plain line, nothing else")
         let previewAnswer = Self.macRecordingPreviewAnswer(status: 200, body: ["sessionId": "mac_x", "chunkIndex": 4, "previewGen": 2, "text": "hello there", "provisional": true,
                                                                              "model": "turbo", "backend": "metal", "serverInstanceId": "SECRET"], chunkIndex: 4, previewGen: 2)
         try expect(previewAnswer["text"] as? String == "hello there" && previewAnswer["chunkIndex"] as? Int == 4 && previewAnswer["previewGen"] as? Int == 2
