@@ -1,8 +1,18 @@
 {
-  "version": "0.5.371",
+  "version": "0.5.372",
   "whatsNew": {
-    "summary": "Drop it: with a newer COS server and Drop it turned on in Settings, a pinned COS chat sits at the top of Messages. Type a thought, an ask or a reminder, and COS files it and texts back, with Undo and Move in the chat. It is off until you turn it on. Meeting consolidation now continues automatically across saved passes, and Stop cleanup sits beside its status. Plus everything in 0.5.369: Suggested merges has Consolidate meetings, a tracked AI cleanup of matching recordings that keeps the originals.",
+    "summary": "COS reaching out: with Drop it on, reminders and follow-ups on your drops notify you on this Mac, and a new Settings card decides what COS may interrupt you about, how often and when. Plus everything in 0.5.371: Drop it, a pinned COS chat at the top of Messages where you type a thought, an ask or a reminder and COS files it and texts back, with Ask and attachments.",
     "sections": [
+      {
+        "title": "0.5.372",
+        "items": [
+          "COS reaching out: with Drop it on, reminders and follow-ups on your drops now notify you on this Mac. Clicking one opens the COS chat.",
+          "Reminders fire on time even when the server is busy. Done, Snooze and Tomorrow work right in the chat.",
+          "A new Settings card, Work and agents, COS reaching out, decides what COS may interrupt you about, how often, quiet hours, a weekly check-in and your reminder defaults.",
+          "Dragging a file over the message box now shows where it will land, after the files already attached, without covering them.",
+          "Nothing changes while Drop it is off."
+        ]
+      },
       {
         "title": "0.5.371",
         "items": [

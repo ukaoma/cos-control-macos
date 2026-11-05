@@ -18,7 +18,8 @@ import tempfile
 root = pathlib.Path(sys.argv[1]).resolve()
 PACK = "Resources/BundledCharacters/jedi-miles-windu"
 COPY = ["Tests/illustrated-pack-pins.py", "Tests/illustrated-pack-sha256.json", "Tests/ambient-pack-sha256.json",
-        "Tests/windu-motion-sha256.json", "Tests/windu-motion-v13-sha256.json", "Resources/DefaultPet/session-pet-states.json"]
+        "Tests/windu-motion-sha256.json", "Tests/windu-motion-v13-sha256.json", "Tests/windu-v25-sha256.json",
+        "Resources/DefaultPet/session-pet-states.json"]
 MAP = f"{PACK}/session-pet-states.json"
 HISTORY = f"{PACK}/stock-state-history.json"
 MANIFEST = "Tests/windu-motion-v13-sha256.json"

@@ -20,7 +20,7 @@ import CryptoKit
   precondition(remap.count==184 && Array(remap[84...])==Array(84..<184))
   let expected=[(0,28,24),(28,20,20),(48,16,24),(64,12,12),(76,8,4),(84,100,100)].flatMap { start, old, count in (0..<count).map { start + $0*old/count } }
   precondition(remap==expected,"both run bursts must take .48 seconds; impact remains frame85")
-  // 0.5.368: the bundled working row is Motion V13. Motion V2 (0.5.360 to 0.5.367) stays in the pack, for rollback and as the
+  // 0.5.368 to 0.5.370: the bundled working row was Motion V13 (Windu V25 is from 0.5.371, below). Motion V2 (0.5.360 to 0.5.367) stays in the pack, for rollback and as the
   // stock map those installs are recognized by, so its retime and fragment rules still run, on the V2 row from the history.
   let fm=FileManager.default
   let motionV2=fm.temporaryDirectory.appendingPathComponent("windu-motion-v2-\(UUID())")
@@ -136,6 +136,6 @@ import CryptoKit
     for i in stride(from:0,to:starts.count,by:3){precondition(Set(starts[i..<i+3]).count==3)}
    }
   }
-  print("PASS: actual Windu Motion V2 rollback retime pixels and fragment-free tail, Motion V13 at 1x and 2x (4 casts, distinct strikes, tail body is the full frame, no body before the handoff), 3 distinct swarm casts, 48 loop handoffs and no immediate repeats")
+  print("PASS: bundled Windu V25 Session 1 at 1x and 2x (4 casts, 184 frames, handoff 145, original tail and entry layers), retained Motion V13 at 1x and 2x (distinct strikes, tail body is the full frame, no body before the handoff), Motion V2 rollback retime pixels and fragment-free tail, 3 distinct swarm casts, 48 loop handoffs and no immediate repeats")
  }
 }

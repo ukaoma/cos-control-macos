@@ -1,3 +1,33 @@
+## 0.5.372 (build 426), COS reaching out: notifications, reminders and settings for Drop it
+
+Built on 0.5.371 (build 425). Plus everything in 0.5.371. Needs glasses-server 6.99.11 or newer (Drop it P2).
+
+What is new by default: nothing while Drop it is off. With Drop it on, COS's reminder and follow-up notifications now reach this Mac. The server's P2 defaults decide what may interrupt: reminders and follow-ups on your drops do; everything else lands in the COS chat without a notification. All of it can be changed in the new Settings card.
+
+- Notifications: while Drop it is on, COS Control reads the server's banner outbox (`GET /api/inbox/banners`) every 20 seconds with a per-boot cursor, and shows each banner through the existing notifier. After a server restart, or on a first install, only banners from the last 10 minutes show. Clicking one opens Messages on the pinned COS chat.
+- Reminders, a local backup: every pending reminder (`GET /api/drops/reminders`, read every minute) is also a scheduled macOS notification with the server's id, `reminder-<dropId>`, so it fires on time even when the server is busy. The server's banner for the same reminder is skipped when the backup already showed it. Done, Snooze and Undo move or remove it on the next read. "Notify me about reminders" off removes them all. At most 40, the soonest first, up to eight days ahead.
+- Settings, Work and agents, COS reaching out (new card, REACH-01 to REACH-17): the same rows and words as COS Control Web.
+  - Pings, interruptions a day, from one kind a day, minutes between, quiet hours, weekends are quiet, first interruption.
+  - What COS pings about.
+  - Ping me about and Leave alone.
+  - Follow-ups on your drops and their kinds.
+  - Weekly check-in, with its day and time.
+  - Default reminder time, snooze length, notify me about reminders, and show on the glasses.
+  - Which may interrupt.
+  
+  Each change sends one field (`PUT /api/drops/settings/p2`) and shows what the server saved: it clamps, so 50 interruptions a day shows 20. A change that does not save goes back and says why. The card shows only while Drop it is on and the server answers its P2 settings.
+- The COS chat's reminder buttons work on the Mac: Done, Snooze, Tomorrow, the "When should I remind you?" choices (Tomorrow 9:00, Monday 9:00) and dismiss (`POST /api/inbox/action`).
+- The helper's `drop-it` verb gains `banners`, `reminders`, `p2` and `p2-set`. A settings change crosses only known sections and keys, typed; anything else is refused before the server. The action grammar adds dismiss, reminder_done, snooze_1h, snooze_tomorrow and when:tomorrow_9 or when:monday_9.
+- Checks: `Tests/drop-it-p2-pins.py`, `Tests/DropItP2Checks.swift` (lane p2 of `Tests/run-drop-it.sh`), `Tests/drop-it-p2-helper-checks.py` (in `Tests/run.sh`).
+
+Also in this build (deferred from 0.5.371):
+- The composer's drag-over label no longer covers the second file chip's size. Mid drag, "Drop to attach to this message" is a dashed slot at the end of the chip row, where the file will land (`DropItDropSlot`); with no files yet, the row appears for the drag. Pinned in `Tests/drop-it-p2-pins.py`.
+- `Tests/WinduMotionChecks.swift` names what it checks: the bundled Windu V25 Session 1 row, the retained Motion V13 and the Motion V2 rollback (its pass line still said "Motion V13").
+
+Known gap: when a drop's Work card finishes, two notifications can fire: the existing Work notice and the new follow-up banner. Skipping the Work notice for drop-linked cards is not in this build.
+
+Not in this build: the glasses half (the pinned COS item on the lens and the reminder push), and History search by meaning on the Mac.
+
 ## 0.5.371 (build 425), Drop it with Ask and files, Windu V25 Session 1, and resumable meeting consolidation
 
 Built on 0.5.369 (build 423, meeting consolidation). Plus everything in 0.5.369. A combined release: Drop it (below) and Codex's resumable meeting consolidation (`codex/consolidation-resume` 259f3ab). Both were prepared as 0.5.370 candidates; neither shipped under that number. Drop it, the ask: Drop it phase 1, Control half (plan `operations/personal/wk45_2026/PLAN_drop_it_2026-11-04.md`, approved mock `drop-it-mock`, Miles 2026-11-04). It pairs with the Drop it P1 server (branch `claude/drop-it-p1-server`), which advertises `capabilities.dropIt` and serves `/api/drops` and `/api/inbox`.

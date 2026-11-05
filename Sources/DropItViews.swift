@@ -458,12 +458,19 @@ struct DropItChatPane: View {
         let dropReady = DropIt.cleaned(draft) != nil && !store.asking && !store.sending
         return VStack(alignment: .leading, spacing: 6) {
             VStack(alignment: .leading, spacing: 8) {
-                if !store.attachments.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(store.attachments) { file in DropItFileChip(file: file, remove: { store.removeAttachment(file.id) }, retry: { store.retryAttachment(file.id) }) }
+                // 0.5.372: mid drag, the "Drop to attach" slot sits at the end of the chip row, where the file will land, instead of
+                // an overlay on the box (0.5.371's covered the second chip's size). With no files yet the row appears for the drag.
+                if !store.attachments.isEmpty || dropTargeted {
+                    ScrollViewReader { reader in
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(store.attachments) { file in DropItFileChip(file: file, remove: { store.removeAttachment(file.id) }, retry: { store.retryAttachment(file.id) }) }
+                                if dropTargeted { DropItDropSlot().id(DropItDropSlot.anchor) }
+                            }
+                            .padding(.vertical, 2)
                         }
-                        .padding(.vertical, 2)
+                        .onChange(of: dropTargeted) { _, on in if on { reader.scrollTo(DropItDropSlot.anchor, anchor: .trailing) } }
+                        .onAppear { if dropTargeted { reader.scrollTo(DropItDropSlot.anchor, anchor: .trailing) } }
                     }
                 }
                 HStack(alignment: .center, spacing: 8) {
@@ -491,14 +498,6 @@ struct DropItChatPane: View {
             .padding(.leading, 14).padding(.trailing, 8).padding(.vertical, 6)
             .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(dropTargeted ? TodayInk.qopen : TodayInk.panel))
             .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(dropTargeted ? TodayInk.accent : TodayInk.btnBorder, lineWidth: dropTargeted ? 1.5 : 1))
-            .overlay {
-                if dropTargeted {
-                    Label(DropIt.dropZoneTarget, systemImage: "paperclip").font(COSType.body(13, weight: .semibold)).foregroundStyle(TodayInk.accent)
-                        .padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(Capsule().fill(TodayInk.panel))
-                        .allowsHitTesting(false)
-                }
-            }
             // Files only, on the box itself (an overlay drop destination never fires, 0.5.246).
             .modifier(MeetingFilesDrop(enabled: true, targeted: $dropTargeted) { providers in
                 Task { await DropItIntake.take(.providers(providers), store: store) }
@@ -618,6 +617,22 @@ struct DropItChatPane: View {
 }
 
 /// One file on the composer: its thumbnail or kind, its name and state, Retry when it failed, and Remove.
+/// 0.5.372: the drag-over slot at the end of the chip row: the chip's shape, dashed, saying where a dropped file goes. It never
+/// takes hits, so the drop lands on the box (MeetingFilesDrop) as before.
+struct DropItDropSlot: View {
+    static let anchor = "drop-it-drop-slot"
+    var body: some View {
+        Label(DropIt.dropZoneTarget, systemImage: "paperclip")
+            .font(COSType.body(13, weight: .semibold)).foregroundStyle(TodayInk.accent)
+            .lineLimit(1).fixedSize()
+            .padding(.horizontal, 12).frame(minHeight: 38)
+            .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(TodayInk.panel))
+            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(TodayInk.accent, style: StrokeStyle(lineWidth: 1.2, dash: [4, 3])))
+            .allowsHitTesting(false)
+            .accessibilityLabel(DropIt.dropZoneTarget)
+    }
+}
+
 struct DropItFileChip: View {
     let file: DropIt.Attachment
     let remove: () -> Void

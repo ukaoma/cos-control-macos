@@ -23,7 +23,14 @@ need(i < j, "[click] a COS chat notification is routed before the Work one")
 need("guard available() else { tick = 0; return }" in p2, "[off] nothing runs while Drop it is off")
 need('"$ROOT/Sources/DropItP2.swift" "$ROOT/Sources/DropItP2Views.swift"' in release, "[source lists] the release build has both new files")
 need('else if action.isServerAction { Task { await store.serverAction(item, action) } }' in chat, "[chat actions] reminder buttons reach the server")
+need(chat.count("if dropTargeted { DropItDropSlot().id(DropItDropSlot.anchor) }") == 1 and chat.count("DropIt.dropZoneTarget") == 2
+     and "Label(DropIt.dropZoneTarget" not in chat.split("struct DropItDropSlot")[0], "[drag over] the drop slot ends the chip row and no overlay label covers a chip")
 need('"banners", "reminders", "p2", "p2-set"' in helper and 'case "p2-set":' in helper, "[helper] the four P2 ops")
 for text in re.findall(r'\.init\("REACH-\d\d", "([^"]*)", "([^"]*)"', catalog):
     need(not re.search("[—–→]|->", text[0] + text[1]), "[copy] no em dash, en dash or arrow: " + text[0])
+import json
+whats = json.loads(read("Resources/WhatsNew.json")); plist = read("Resources/Info.plist"); log = read("CHANGELOG.md")
+need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.372</string>", plist) is not None and whats.get("version") == "0.5.372", "[version] Info.plist and What's New are 0.5.372")
+need(whats["whatsNew"]["sections"][0]["title"] == "0.5.372" and any("COS reaching out" in i for i in whats["whatsNew"]["sections"][0]["items"]), "[version] What's New leads with a 0.5.372 section naming COS reaching out")
+need(log.startswith("## 0.5.372 (build 426)") and "\n## 0.5.371 (build 425)" in log, "[version] the changelog's 0.5.372 entry sits above 0.5.371's")
 print(f"drop it p2 pins: {passed} passed")
