@@ -217,6 +217,10 @@ struct SettingsRowCard: View {
         }
 
         // ── wiring checks
+        Thread.detachNewThread {
+            Thread.sleep(forTimeInterval: 180)
+            print("drop it wiring check FAILED: [timeout] the wiring checks did not finish in 180 s"); exit(1)
+        }
         let off = seededModel(dropIt: false)
         off.openDropItChat()
         check(!off.dropItChatRouteActive && !off.dropItChatOpen, "[route gate] with Drop it off the chat never opens")

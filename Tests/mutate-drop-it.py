@@ -12,9 +12,25 @@ root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else pathlib.Path(__file__)
 scratch = tempfile.mkdtemp(prefix="cos-mutate-drop-it-", dir="/tmp")
 os.environ.setdefault("COS_TEST_KIT_DIR", os.path.join(scratch, "kits"))
 env = dict(os.environ)
-def sh(cmd):
-    r = subprocess.run(cmd, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, shell=True)
-    return r.returncode, r.stdout
+import signal
+# 0.5.370: a lane that runs past its limit is stopped (its whole process group) and counts as a kill: a hang is caught, not a
+# survivor. The 0.5.369 pass hung for three hours on M9, whose mutant made a held call wait forever.
+LIMITS = {"pins": 300, "models": 600, "wiring": 1800, "helper": 900}
+def sh(cmd, limit=1800):
+    proc = subprocess.Popen(cmd, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, shell=True, start_new_session=True)
+    try:
+        out, _ = proc.communicate(timeout=limit)
+        return proc.returncode, out
+    except subprocess.TimeoutExpired:
+        try: os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError: pass
+        try: out, _ = proc.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            try: os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            out, _ = proc.communicate()
+        return None, (out or "") + f"\n[hang: stopped after {limit} s]"
+def lane(cmd): return next(k for k in LIMITS if f"COS_DROP_IT_LANE={k} " in cmd)
 PINS = "COS_DROP_IT_LANE=pins zsh Tests/run-drop-it.sh"
 MODELS = "COS_DROP_IT_LANE=models zsh Tests/run-drop-it.sh"
 WIRING = "COS_DROP_IT_LANE=wiring zsh Tests/run-drop-it.sh"
@@ -84,7 +100,7 @@ if only: mutants = [m for m in mutants if any(part in m[0] for part in only)]
 needed = {m[4] for m in mutants}
 for name, cmd in (("pins", PINS), ("models", MODELS), ("wiring", WIRING), ("helper", HELPER)):
     if cmd not in needed: continue
-    code, out = sh(cmd)
+    code, out = sh(cmd, LIMITS[name])
     if code != 0: print(f"BASELINE RED ({name}):\n{out[-3000:]}"); sys.exit(1)
     print(f"baseline {name}: green ({out.strip().splitlines()[-1][:120]})", flush=True)
 results = []
@@ -98,12 +114,13 @@ for name, path, old, new, cmd, expect in mutants:
     p.write_text(mutated)
     landed = p.read_text() == mutated and mutated != src
     try:
-        code, out = sh(cmd)
+        code, out = sh(cmd, LIMITS[lane(cmd)])
     finally:
         p.write_text(src)
     killed = code != 0
-    by = expect in out
-    verdict = ("KILLED" if killed else "SURVIVED") + (f" by {expect}" if killed and by else " (other failure)" if killed else "") + ("" if landed else " (MUTATION DID NOT LAND)")
+    hung = code is None
+    by = expect in out or "[timeout]" in out or hung
+    verdict = ("KILLED" if killed else "SURVIVED") + (" by a hang (timeout)" if hung else f" by {expect}" if killed and expect in out else " by [timeout]" if killed and by else " (other failure)" if killed else "") + ("" if landed else " (MUTATION DID NOT LAND)")
     results.append((name, verdict))
     print(f"{verdict:70s} {name}", flush=True)
     if killed and not by: print(out[-1500:])

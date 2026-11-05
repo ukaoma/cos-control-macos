@@ -60,6 +60,11 @@ struct StandDown: Error {}
     }
 
     @MainActor static func main() async {
+        // A failsafe: a change that makes a held call wait forever fails here instead of hanging the lane.
+        Thread.detachNewThread {
+            Thread.sleep(forTimeInterval: 120)
+            print("drop it check FAILED: [timeout] the checks did not finish in 120 s"); exit(1)
+        }
         // ── Replies
         check(DropIt.reply(details(#"{"transport":"off","httpStatus":404,"error":"drop_it_off"}"#)) .isOff, "[reply off] a 404 drop_it_off is off")
         if case .unsupported = DropIt.reply(details(#"{"transport":"unsupported","httpStatus":404}"#)) { passed += 1 } else { check(false, "[reply unsupported] a server without the routes needs an update") }
@@ -202,11 +207,15 @@ struct StandDown: Error {}
         check(DropIt.commandNote(sent!) == "Filed to Work, Quilt. It is in your COS chat.", "[command note] ⌘K says what the receipt says")
         check(await store.send("   ") == nil && stand.calls("submit").count == 1 && store.line == DropIt.tooLongLine, "[send] nothing to drop sends nothing")
 
+        // Both calls are started before the stand lets go, so a missing guard shows as a third submit, never as a wait that
+        // cannot end (the 0.5.369 order awaited the second call before the release, and its M9 mutant hung for hours).
         stand.holding = ["submit"]
         async let first = store.send("one")
         await Task.yield(); await Task.yield()
-        let second = await store.send("two")
+        async let secondCall = store.send("two")
+        await Task.yield(); await Task.yield()
         stand.release("submit")
+        let second = await secondCall
         _ = await first
         check(second == nil && stand.calls("submit").count == 2, "[send once] a second drop while one is out sends nothing")
 
@@ -234,8 +243,10 @@ struct StandDown: Error {}
         async let undoing = store.undo(receiptItem)
         await Task.yield(); await Task.yield()
         check(store.isBusy(drop), "[busy] the drop's buttons wait while its change is out")
-        let again = await store.undo(receiptItem)
+        async let againCall = store.undo(receiptItem)
+        await Task.yield(); await Task.yield()
         stand.release("action")
+        let again = await againCall
         let undid = await undoing
         check(undid && !again && stand.calls("action").count == 1 && stand.calls("action")[0] == ["drop-it", "--op", "action", "--item", feedID(4), "--action", "undo"],
               "[undo once] Undo posts the item's undo once; a double tap waits")
