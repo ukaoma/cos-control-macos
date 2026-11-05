@@ -154,11 +154,13 @@ struct DropItChatPane: View {
     var polls = true
     /// The renders' typed words (the box starts empty in the app).
     var initialDraft = ""
+    /// The renders' drag in progress over the box (false in the app until a drag enters).
+    var initialTargeted = false
     @State private var draft = ""
     @State private var moving: String?
     @State private var movePick: String?
     @State private var moveSearch = ""
-    @FocusState private var composerFocused: Bool
+    @State private var dropTargeted = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -177,8 +179,20 @@ struct DropItChatPane: View {
                 await store.loadFeed()
             }
         }
+        // An Ask still answering is read back every 3 seconds, in the renders too only when it polls.
+        .task(id: store.asks.filter { !$0.finished }.count) {
+            if polls {
+                while !Task.isCancelled, store.asks.contains(where: { !$0.finished }) {
+                    await store.refreshAsks()
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                }
+            }
+        }
         .onDisappear { store.closed() }
-        .onAppear { if draft.isEmpty, !initialDraft.isEmpty { draft = initialDraft } }
+        .onAppear {
+            if draft.isEmpty, !initialDraft.isEmpty { draft = initialDraft }
+            if initialTargeted { dropTargeted = true }
+        }
     }
 
     private var header: some View {
@@ -209,13 +223,13 @@ struct DropItChatPane: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    if store.loaded && store.items.isEmpty {
+                    if store.loaded && store.items.isEmpty && store.asks.isEmpty {
                         Text(DropIt.chatEmpty).font(COSType.body(13)).foregroundStyle(TodayInk.grey)
                             .frame(maxWidth: .infinity).padding(.top, 40)
                     } else if !store.loaded, let line = store.line {
                         Text(line).font(COSType.body(13)).foregroundStyle(TodayInk.grey).frame(maxWidth: .infinity).padding(.top, 40)
                     }
-                    ForEach(DropIt.rows(store.items, firstNew: store.newMark?.first, newCount: store.newMark?.count ?? 0, now: now)) { row in
+                    ForEach(DropIt.rows(DropIt.merged(store.items, asks: store.asks), firstNew: store.newMark?.first, newCount: store.newMark?.count ?? 0, now: now)) { row in
                         rowView(row)
                     }
                     Color.clear.frame(height: 1).id("drop-it-bottom")
@@ -226,7 +240,7 @@ struct DropItChatPane: View {
             }
             // Opens on the newest line, and follows a new one in.
             .defaultScrollAnchor(.bottom)
-            .onChange(of: store.items.count) { _, _ in proxy.scrollTo("drop-it-bottom", anchor: .bottom) }
+            .onChange(of: store.items.count + store.asks.count) { _, _ in proxy.scrollTo("drop-it-bottom", anchor: .bottom) }
             .onAppear { proxy.scrollTo("drop-it-bottom", anchor: .bottom) }
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
@@ -249,7 +263,7 @@ struct DropItChatPane: View {
             .padding(.top, 8)
             .accessibilityElement(children: .combine)
         case .item(let item):
-            if item.fromYou { youBubble(item) } else { cosCard(item) }
+            if item.kind == "ask" { askRows(item) } else if item.fromYou { youBubble(item) } else { cosCard(item) }
         }
     }
 
@@ -261,6 +275,11 @@ struct DropItChatPane: View {
                 .padding(.horizontal, 14).padding(.vertical, 10)
                 .background(UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18, bottomTrailingRadius: 6, topTrailingRadius: 18, style: .continuous).fill(DropInk.youBg))
                 .overlay(UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18, bottomTrailingRadius: 6, topTrailingRadius: 18, style: .continuous).stroke(DropInk.youBorder, lineWidth: 1))
+            // 6.99.13: the files that went with a drop are its file links.
+            let files = item.links.filter { $0.kind == "file" }
+            if !files.isEmpty {
+                HStack(spacing: 6) { ForEach(files, id: \.id) { link in DropItSentFile(name: link.label, kind: DropIt.fileKind(name: link.label), thumb: nil) } }
+            }
             if item.kind == "drop", !DropIt.sourcePhrase(item.source).isEmpty {
                 Text(DropIt.sourcePhrase(item.source)).font(COSType.body(11.5)).foregroundStyle(DropInk.tertiary).padding(.trailing, 4)
             }
@@ -426,41 +445,78 @@ struct DropItChatPane: View {
         .padding(.top, 10)
     }
 
-    // MARK: The composer: Drop it
+    // MARK: The composer: Ask and Drop (0.5.371 option A), with attachments
 
+    /// The approved mock's row A: the box with the words and two buttons, Ask (filled) and Drop (outlined). The whole box is the
+    /// drop target for files, as a meeting's Files box is (MeetingFilesDrop, on the box, never an overlay), and the text view is
+    /// the meeting composer's (MeetingAskComposer), so a file dropped or pasted on the words becomes an attachment and never its
+    /// path as text. Add and Paste sit under the box and never collapse away.
     private var composer: some View {
-        let words = DropIt.cleaned(draft)
+        let askReady = DropIt.askBlock(text: draft, files: store.attachments) == nil && !store.asking && !store.sending
+        let dropReady = DropIt.cleaned(draft) != nil && !store.asking && !store.sending
         return VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .bottom, spacing: 8) {
-                TextField(DropIt.placeholder, text: $draft, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(COSType.body(14))
-                    .lineLimit(1...6)
-                    .focused($composerFocused)
-                    .onSubmit(send)
-                    .padding(.vertical, 7)
-                    .accessibilityLabel("Drop it")
-                if hooks.dictationOn {
-                    Button(action: hooks.dictate) {
-                        Image(systemName: "mic").font(.system(size: 14)).foregroundStyle(TodayInk.grey).frame(width: 30, height: 30)
+            VStack(alignment: .leading, spacing: 8) {
+                if !store.attachments.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(store.attachments) { file in DropItFileChip(file: file, remove: { store.removeAttachment(file.id) }, retry: { store.retryAttachment(file.id) }) }
+                        }
+                        .padding(.vertical, 2)
                     }
-                    .buttonStyle(.plain).help(DropIt.dictateHelp).accessibilityLabel(DropIt.dictateHelp)
                 }
-                Button(store.sending ? DropIt.sendingLine : DropIt.sendLabel, action: send)
-                    .buttonStyle(DropItSendStyle(ready: words != nil && !store.sending))
-                    .disabled(words == nil || store.sending)
+                HStack(alignment: .center, spacing: 8) {
+                    MeetingAskComposer(text: $draft, placeholder: DropIt.placeholder, onSubmit: ask,
+                                       onAttach: { attachment in Task { await DropItIntake.take(attachment, store: store) } },
+                                       onOptionSubmit: drop, fontSize: 14)
+                        .padding(.vertical, 7)
+                        .accessibilityLabel("Message to COS")
+                    if hooks.dictationOn {
+                        Button(action: hooks.dictate) {
+                            Image(systemName: "mic").font(.system(size: 14)).foregroundStyle(TodayInk.grey).frame(width: 30, height: 30)
+                        }
+                        .buttonStyle(.plain).help(DropIt.dictateHelp).accessibilityLabel(DropIt.dictateHelp)
+                    }
+                    Button(store.asking ? DropIt.askingLine : DropIt.askLabel, action: ask)
+                        .buttonStyle(DropItComposerButtonStyle(filled: true, ready: askReady))
+                        .disabled(!askReady)
+                        .help("Return")
+                    Button(store.sending ? DropIt.sendingLine : DropIt.dropLabel, action: drop)
+                        .buttonStyle(DropItComposerButtonStyle(filled: false, ready: dropReady))
+                        .disabled(!dropReady)
+                        .help("Option-Return")
+                }
             }
             .padding(.leading, 14).padding(.trailing, 8).padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(TodayInk.panel))
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(composerFocused ? TodayInk.accent : TodayInk.btnBorder, lineWidth: 1))
-            if let line = store.line, store.loaded {
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(dropTargeted ? TodayInk.qopen : TodayInk.panel))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(dropTargeted ? TodayInk.accent : TodayInk.btnBorder, lineWidth: dropTargeted ? 1.5 : 1))
+            .overlay {
+                if dropTargeted {
+                    Label(DropIt.dropZoneTarget, systemImage: "paperclip").font(COSType.body(13, weight: .semibold)).foregroundStyle(TodayInk.accent)
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Capsule().fill(TodayInk.panel))
+                        .allowsHitTesting(false)
+                }
+            }
+            // Files only, on the box itself (an overlay drop destination never fires, 0.5.246).
+            .modifier(MeetingFilesDrop(enabled: true, targeted: $dropTargeted) { providers in
+                Task { await DropItIntake.take(.providers(providers), store: store) }
+            })
+            if let line = store.line, store.loaded || !store.attachments.isEmpty {
                 Text(line).font(COSType.body(12)).foregroundStyle(TodayInk.hot).fixedSize(horizontal: false, vertical: true)
             }
-            HStack {
+            HStack(spacing: 10) {
+                Button { addFiles() } label: { Label(DropIt.addLabel, systemImage: "paperclip") }
+                    .buttonStyle(TodayLinkStyle(color: TodayInk.grey, size: 12))
+                    .help(DropIt.attachHelp).accessibilityLabel(DropIt.attachHelp)
+                    .disabled(store.attachments.count >= DropIt.maxAttachments)
+                Button { Task { await DropItIntake.paste(NSPasteboard.general, store: store) } } label: { Label(DropIt.pasteLabel, systemImage: "doc.on.clipboard") }
+                    .buttonStyle(TodayLinkStyle(color: TodayInk.grey, size: 12))
+                    .disabled(store.attachments.count >= DropIt.maxAttachments)
                 Text(DropIt.footReturn)
                 Spacer(minLength: 12)
                 Text(DropIt.footNothingOut)
             }
+            .lineLimit(1)
             .font(COSType.body(11.5)).foregroundStyle(TodayInk.grey).padding(.horizontal, 4)
         }
         .frame(maxWidth: 760)
@@ -470,26 +526,210 @@ struct DropItChatPane: View {
         .overlay(alignment: .top) { Rectangle().fill(TodayInk.rowBorder).frame(height: 1) }
     }
 
-    private func send() {
-        guard DropIt.cleaned(draft) != nil, !store.sending else { return }
+    /// Return: Ask, with the files.
+    private func ask() {
+        // store.ask says why when the files are not up yet; an empty box does nothing.
+        guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !store.asking, !store.sending else { return }
+        let words = draft
+        Task {
+            // The box keeps the words until the run has started.
+            if await store.ask(words), draft == words { draft = "" }
+        }
+    }
+
+    /// Option-Return: Drop. With files, only on a server that takes them (store.send says why not).
+    private func drop() {
+        guard DropIt.cleaned(draft) != nil, !store.sending, !store.asking else { return }
         let words = draft
         Task {
             // The box keeps the words until the server has them.
             if await store.send(words) != nil, draft == words { draft = "" }
         }
     }
+
+    /// Add: files, several at once, from the open panel. Dragging is never required.
+    private func addFiles() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = true
+        panel.prompt = "Attach"; panel.message = "Choose photos, video, PDFs or documents to send with your message."
+        guard panel.runModal() == .OK else { return }
+        store.attach(panel.urls.map { ($0, $0.lastPathComponent) })
+    }
+
+    // MARK: This Mac's Asks
+
+    /// His words with the files he sent, then COS's answer as it comes in.
+    private func askRows(_ item: DropIt.Item) -> some View {
+        let ask = store.asks.first { $0.id == item.threadId }
+        return VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(item.line).font(COSType.body(14.5)).foregroundStyle(DropInk.youInk)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                    .background(UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18, bottomTrailingRadius: 6, topTrailingRadius: 18, style: .continuous).fill(DropInk.youBg))
+                    .overlay(UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18, bottomTrailingRadius: 6, topTrailingRadius: 18, style: .continuous).stroke(DropInk.youBorder, lineWidth: 1))
+                if let files = ask?.files, !files.isEmpty {
+                    HStack(spacing: 6) { ForEach(Array(files.enumerated()), id: \.offset) { _, file in DropItSentFile(name: file.name, kind: file.kind, thumb: file.thumb) } }
+                }
+                Text(DropIt.askSource).font(COSType.body(11.5)).foregroundStyle(DropInk.tertiary).padding(.trailing, 4)
+            }
+            .frame(maxWidth: 560, alignment: .trailing)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            if let ask {
+                HStack(alignment: .bottom, spacing: 10) {
+                    DropItAvatar(size: 30).padding(.bottom, 18)
+                    HStack(alignment: .top, spacing: 11) {
+                        DropItGlyph(glyph: .answer)
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text(DropIt.askTitle(ask)).font(COSType.body(14, weight: .semibold)).foregroundStyle(TodayInk.ink)
+                                Text(askStateWord(ask)).font(COSType.body(12)).foregroundStyle(TodayInk.sub)
+                            }
+                            if ["failed", "refused", "canceled"].contains(ask.status) {
+                                Text(DropIt.askFailedLine).font(COSType.body(13)).foregroundStyle(TodayInk.hot).fixedSize(horizontal: false, vertical: true)
+                            } else if let answer = ask.answer, !answer.isEmpty {
+                                COSMarkdownView(text: answer).font(COSType.body(13.5)).foregroundStyle(TodayInk.ink).textSelection(.enabled)
+                            } else {
+                                Text(DropIt.askWaiting).font(COSType.body(13)).foregroundStyle(TodayInk.sub)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 12)
+                    .background(UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 6, bottomTrailingRadius: 18, topTrailingRadius: 18, style: .continuous).fill(TodayInk.panel))
+                    .overlay(UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 6, bottomTrailingRadius: 18, topTrailingRadius: 18, style: .continuous).stroke(TodayInk.panelBorder, lineWidth: 1))
+                }
+                .frame(maxWidth: 600, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .id(item.id)
+    }
+
+    private func askStateWord(_ ask: DropIt.Ask) -> String {
+        switch ask.status {
+        case "completed", "delivered", "reviewed": "Answered"
+        case "failed", "refused", "canceled": "Did not finish"
+        default: "Answering"
+        }
+    }
 }
 
-/// The composer's Drop it button: quiet while the box is empty, the accent once there are words.
-struct DropItSendStyle: ButtonStyle {
+/// One file on the composer: its thumbnail or kind, its name and state, Retry when it failed, and Remove.
+struct DropItFileChip: View {
+    let file: DropIt.Attachment
+    let remove: () -> Void
+    let retry: () -> Void
+    var body: some View {
+        HStack(spacing: 8) {
+            DropItFileThumb(kind: file.kind, thumb: file.thumb, size: 32)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(file.name).font(COSType.body(12, weight: .medium)).foregroundStyle(TodayInk.ink).lineLimit(1).truncationMode(.middle)
+                Text(file.meta).font(COSType.body(11)).foregroundStyle(file.state == .failed ? TodayInk.hot : TodayInk.sub).lineLimit(1)
+            }
+            .frame(maxWidth: 170, alignment: .leading)
+            if file.busy { ProgressView().controlSize(.small).scaleEffect(0.7).frame(width: 14, height: 14) }
+            if file.state == .failed { Button("Retry", action: retry).buttonStyle(TodayLinkStyle(size: 12)) }
+            Button(action: remove) {
+                Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).foregroundStyle(TodayInk.grey).frame(width: 20, height: 20).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).help("Remove " + file.name).accessibilityLabel("Remove " + file.name)
+        }
+        .padding(.leading, 6).padding(.trailing, 4).padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(TodayInk.page))
+        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(file.state == .failed ? TodayInk.hotBorder : TodayInk.panelBorder, lineWidth: 1))
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// A photo's own thumbnail, else the kind's symbol.
+struct DropItFileThumb: View {
+    let kind: DropIt.FileKind
+    let thumb: URL?
+    var size: CGFloat = 32
+    var body: some View {
+        Group {
+            if let thumb, let image = NSImage(contentsOf: thumb) {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+            } else {
+                Image(systemName: kind == .photo ? "photo" : kind == .video ? "film" : "doc.text")
+                    .font(.system(size: size * 0.42)).foregroundStyle(TodayInk.accent)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity).background(TodayInk.qopen)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .accessibilityHidden(true)
+    }
+}
+
+/// A file under his sent words.
+struct DropItSentFile: View {
+    let name: String
+    let kind: DropIt.FileKind
+    let thumb: URL?
+    var body: some View {
+        HStack(spacing: 6) {
+            DropItFileThumb(kind: kind, thumb: thumb, size: 22)
+            Text(name).font(COSType.body(11.5)).foregroundStyle(TodayInk.sub).lineLimit(1).truncationMode(.middle).frame(maxWidth: 150, alignment: .leading)
+        }
+        .padding(.horizontal, 6).padding(.vertical, 4)
+        .background(RoundedRectangle(cornerRadius: 8).fill(TodayInk.panel))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(TodayInk.panelBorder, lineWidth: 1))
+        .accessibilityLabel("Attached " + name)
+    }
+}
+
+/// What the composer is handed, read the meeting Files way: Finder files as they are, a screenshot or image as a PNG, and a
+/// drop's providers through the meeting's own staging (WorkCardFileStore.stage), so a screenshot thumbnail, a Photos or Mail
+/// promise and image data all arrive as files. A link is words, not a file.
+@MainActor enum DropItIntake {
+    static func take(_ attachment: MeetingAskAttachment, store: DropItStore) async {
+        switch attachment {
+        case .files(let urls): store.attach(urls.map { ($0, $0.lastPathComponent) })
+        case .image(let data):
+            guard let png = WorkCardFileStore.pngData(data) else { store.line = DropIt.nothingToPasteLine; return }
+            store.attachImage(png)
+        case .providers(let providers):
+            var incoming: [DropIt.Incoming] = []
+            var refusals: [String] = []
+            let folder = store.stagingRoot
+            for (ordinal, provider) in providers.enumerated() {
+                let staged = await WorkCardFileStore.stage(provider, policy: .meeting, ordinal: ordinal, count: providers.count) {
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                    return folder
+                }
+                switch staged {
+                case .finder(let url): incoming.append(DropIt.Incoming(url: url, name: url.lastPathComponent, owned: false))
+                case .copy(let url, let display, _): incoming.append(DropIt.Incoming(url: url, name: display, owned: true))
+                case .web: refusals.append(DropIt.linkNotFileLine)
+                case .refused(let refusal): refusals.append(refusal.message)
+                }
+            }
+            store.attach(incoming, refusals: refusals)
+        }
+    }
+
+    /// Paste: Finder files as files, else a copied screenshot or image.
+    static func paste(_ pasteboard: NSPasteboard, store: DropItStore) async {
+        let payload = WorkCardFileStore.meetingPastePayload(pasteboard)
+        if !payload.urls.isEmpty { await take(.files(payload.urls), store: store); return }
+        guard let image = payload.image else { store.line = DropIt.nothingToPasteLine; return }
+        await take(.image(image), store: store)
+    }
+}
+
+/// The composer's two buttons: Ask filled with the accent, Drop outlined in it; both quiet until they can go.
+struct DropItComposerButtonStyle: ButtonStyle {
+    let filled: Bool
     let ready: Bool
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(COSType.body(13, weight: .medium))
-            .foregroundStyle(ready ? TodayInk.onAccent : DropInk.tertiary)
-            .padding(.horizontal, 12).frame(minHeight: 32)
-            .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(ready ? TodayInk.accent : TodayInk.btnBg))
-            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(ready ? TodayInk.accent : TodayInk.kbdBorder, lineWidth: 1))
+            .font(COSType.body(13.5, weight: .semibold))
+            .foregroundStyle(ready ? (filled ? TodayInk.onAccent : TodayInk.accent) : DropInk.tertiary)
+            .padding(.horizontal, 14).frame(minHeight: 32)
+            .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(filled && ready ? TodayInk.accent : filled ? TodayInk.btnBg : TodayInk.panel))
+            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(ready ? TodayInk.accent : TodayInk.kbdBorder, lineWidth: filled ? 1 : 1.5))
             .opacity(configuration.isPressed ? 0.8 : 1)
             .contentShape(RoundedRectangle(cornerRadius: 9))
     }

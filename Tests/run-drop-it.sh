@@ -32,7 +32,7 @@ if [[ "$MODE" == "render" ]]; then
   OUT="${2:?usage: run-drop-it.sh render <folder for the PNGs>}"
   mkdir -p "$OUT"
   app_binary
-  env "${RUN_ENV[@]}" "$DIR/drop-it-render" render "${OUT:A}" 2>"$DIR/stderr.log" || { cat "$DIR/stderr.log" >&2; exit 1; }
+  env "${RUN_ENV[@]}" "$DIR/drop-it-render" render "${OUT:A}" ${3:+"${3:A}"} 2>"$DIR/stderr.log" || { cat "$DIR/stderr.log" >&2; exit 1; }
   exit 0
 fi
 [[ "$MODE" == "check" ]] || { print -u2 "usage: run-drop-it.sh [check | render <dir>]"; exit 64; }
@@ -51,7 +51,7 @@ if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
   print -r -- "$OUT"
   # A floor on the count: a check that silently stops running must fail this.
   COUNT="${${OUT##*checks: }%% passed*}"
-  (( COUNT >= 92 )) || { print -u2 "drop it checks ran only $COUNT (expected at least 92)"; exit 1; }
+  (( COUNT >= 140 )) || { print -u2 "drop it checks ran only $COUNT (expected at least 140)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "wiring" ]]; then

@@ -2563,12 +2563,22 @@ extension WorkCardFiles {
     enum Staged { case finder(URL), copy(URL, String, String), web(URL), refused(WorkCardRefusal) }
 
     private func stage(_ provider: NSItemProvider, root: URL, workID: String, ordinal: Int = 0, count: Int = 1, at date: Date = Date()) async -> Staged {
+        await Self.stage(provider, policy: policy, ordinal: ordinal, count: count, at: date) {
+            try WorkCardFiles.locked(root: root) { try WorkCardFiles.preparedFolder(root: root, workID: workID) }
+        }
+    }
+
+    /// 0.5.371: one provider staged into `folder()` (asked only when the provider is not a Finder file). The card and meeting
+    /// drops use it through `stage` above, and the COS chat's composer uses it for its attachments (DropItViews.swift), so a
+    /// screenshot thumbnail, a Photos or Mail promise and image data are read the one way they are read on a meeting.
+    static func stage(_ provider: NSItemProvider, policy: ContextFilePolicy, ordinal: Int = 0, count: Int = 1, at date: Date = Date(),
+                      folder makeFolder: () throws -> URL) async -> Staged {
         if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
             guard let url = await Self.loadURL(provider), url.isFileURL else { return .refused(.noFile) }
             return .finder(url)
         }
         let folder: URL
-        do { folder = try WorkCardFiles.locked(root: root) { try WorkCardFiles.preparedFolder(root: root, workID: workID) } }
+        do { folder = try makeFolder() }
         catch { return .refused(error as? WorkCardRefusal ?? .store(error.localizedDescription)) }
         let named = provider.suggestedName.map(WorkCardFiles.cleanDisplay)
         // A promise or a typed file: the first registered type an agent can use, copied into the card's folder.

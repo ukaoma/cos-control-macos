@@ -2281,7 +2281,8 @@ final class COSControlHelper {
             request.httpBody = Data(body.utf8)
         }
         if let rawBody {
-            request.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
+            // 0.5.371: a caller that names its own type (the COS chat's file upload) keeps it; every other raw body is audio.
+            if request.value(forHTTPHeaderField: "Content-Type") == nil { request.setValue("audio/wav", forHTTPHeaderField: "Content-Type") }
             request.httpBody = rawBody
         }
         let box = HTTPResultBox()
@@ -18287,7 +18288,7 @@ final class COSControlHelper {
     // chat line go to stdout for the app and in the server's request, and nowhere else: the words arrive on stdin (never argv,
     // where any process on the Mac could read them), and no progress line, log or message carries them.
     static let dropItOps: Set<String> = ["settings", "settings-set", "submit", "history", "get", "undo", "move", "ask", "sent",
-                                         "summary", "feed", "read", "action"]
+                                         "summary", "feed", "read", "action", "upload"]
     static let dropItTextMax = 2_000
     static let dropItDests: Set<String> = ["new_card", "existing_card", "thread", "memory", "session", "note", "reminder", "ask"]
     static let dropItKinds: Set<String> = ["idea", "task", "note", "memory", "file", "reminder", "ask"]
@@ -18301,6 +18302,17 @@ final class COSControlHelper {
     /// The server's DROP_ID: a lowercase UUID v4.
     static func dropIdValid(_ value: String) -> Bool {
         dropItMatches(value, "\\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\z")
+    }
+    /// The server's MEDIA_ID_RE, and a list of them: one to five, each valid, no repeats. nil for anything else.
+    static func dropItMediaIdValid(_ value: String) -> Bool { dropItMatches(value, "\\Am_[a-f0-9]{24}\\z") }
+    static func dropItMediaIds(_ value: Any?) -> [String]? {
+        guard let list = value as? [Any], list.count <= 5 else { return nil }
+        var out: [String] = []
+        for item in list {
+            guard let id = item as? String, dropItMediaIdValid(id), !out.contains(id) else { return nil }
+            out.append(id)
+        }
+        return out
     }
     /// The server's FEED_ID.
     static func dropItFeedIdValid(_ value: String) -> Bool { dropItMatches(value, "\\Afi_[a-f0-9]{32}\\z") }
@@ -18342,12 +18354,17 @@ final class COSControlHelper {
     /// characters but tab and newline; the source is always this Mac. A session hint is optional. nil for anything else.
     static func dropItSubmitBody(_ data: Data) -> String? {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              Set(object.keys).isSubset(of: ["dropId", "text", "hint"]),
+              Set(object.keys).isSubset(of: ["dropId", "text", "hint", "attachmentIds"]),
               let id = object["dropId"] as? String, dropIdValid(id),
               let raw = object["text"] as? String else { return nil }
         let text = raw.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, dropItPlain(text, max: dropItTextMax, newlines: true) != nil else { return nil }
         var body: [String: Any] = ["dropId": id, "text": text, "source": "mac"]
+        // 0.5.371 (server 6.99.13): the composer's uploaded files, one to five media ids, only for a server that takes them.
+        if let files = object["attachmentIds"] {
+            guard let ids = dropItMediaIds(files), !ids.isEmpty else { return nil }
+            body["attachmentIds"] = ids
+        }
         if let hint = object["hint"] {
             guard let hint = hint as? [String: Any], Set(hint.keys).isSubset(of: ["sessionId", "label"]),
                   let session = hint["sessionId"] as? String, dropItLinkIdValid(session) else { return nil }
@@ -18520,6 +18537,8 @@ final class COSControlHelper {
             if let enabled = dropItBool(body["enabled"]) { out["enabled"] = enabled }
             if let source = body["source"] as? String, source == "env" || source == "settings" { out["source"] = source }
             if dropItBool(body["savedButEnvWins"]) == true { out["savedButEnvWins"] = true }
+            // 6.99.13: how many files a drop takes, as /api/health says it.
+            if let files = dropItInt(body["attachments"]), (0...20).contains(files) { out["attachments"] = files }
         case "history":
             out["drops"] = ((body["drops"] as? [Any]) ?? []).prefix(200).compactMap(dropItView)
             out["more"] = dropItBool(body["more"]) ?? false
@@ -18546,7 +18565,9 @@ final class COSControlHelper {
             out["replayed"] = dropItBool(body["replayed"]) ?? false
             if let next = body["next"] as? [String: Any], next["kind"] as? String == "ask",
                let prompt = dropItPlain(next["prompt"], max: dropItTextMax, newlines: true) {
-                out["next"] = ["kind": "ask", "prompt": prompt]
+                var ask: [String: Any] = ["kind": "ask", "prompt": prompt]
+                if let ids = dropItMediaIds(next["attachmentIds"]), !ids.isEmpty { ask["attachmentIds"] = ids }
+                out["next"] = ask
             }
         }
         return out
@@ -18564,15 +18585,19 @@ final class COSControlHelper {
     static func dropItStatusFields(_ capabilities: Any?) -> [String: Any] {
         let block = (capabilities as? [String: Any])?["dropIt"] as? [String: Any]
         let source = (block?["source"] as? String).flatMap { $0 == "env" || $0 == "settings" ? $0 : nil }
+        // 0.5.371 (server 6.99.13): how many files a drop takes; absent on an older server, which takes words only.
+        let files = dropItInt(block?["attachments"]).flatMap { (0...20).contains($0) ? $0 : nil }
         return ["dropItProtocol": dropItInt(block?["protocol"]).map { $0 as Any } ?? NSNull(),
                 "dropItEnabled": dropItBool(block?["enabled"]) ?? false,
-                "dropItSource": source.map { $0 as Any } ?? NSNull()]
+                "dropItSource": source.map { $0 as Any } ?? NSNull(),
+                "dropItAttachments": files.map { $0 as Any } ?? NSNull()]
     }
 
     private func emitDropIt(args: [String]) throws {
         guard let op = option("--op", in: args), Self.dropItOps.contains(op) else { throw HelperError.message("Use --op and one of the Drop it operations") }
-        let takesStdin: Set<String> = ["submit", "history", "move"]
+        let takesStdin: Set<String> = ["submit", "history", "move", "upload"]
         let input = takesStdin.contains(op) ? try readBoundedStdin(16_384) : Data()
+        if op == "upload" { try emitDropItUpload(input); return }
         guard let call = Self.dropItRequest(op: op, args: args, stdin: input) else {
             throw HelperError.message("That Drop it request is not valid")
         }
@@ -18590,6 +18615,78 @@ final class COSControlHelper {
         details["transport"] = Self.dropItTransport(status: response.status, body: response.body)
         details["httpStatus"] = response.status
         emit(ok: true, message: "Drop it answered (\(response.status))", details: details)
+    }
+
+    /// 0.5.371: one file from the COS chat's composer, as the web's composer sends it (6.99.12). stdin:
+    /// {path, name, kind: photo|doc|video, mime, capturedAt}. A photo (already a 1024 px JPEG, at most 2 MB) goes base64 to
+    /// POST /api/media as a user_photo; a document (at most 64 MB) or a video (MP4 or MOV, at most 100 MB) goes raw to
+    /// POST /api/media/file with its type and name. The answer is the media id, or the server's code. The file's name and bytes
+    /// go only to the server; nothing is logged.
+    static let dropItUploadTypes: [String: Set<String>] = [
+        "photo": ["image/jpeg"],
+        "doc": ["application/pdf", "text/plain", "text/markdown", "text/csv", "application/json",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+        "video": ["video/mp4", "video/quicktime"]]
+    static let dropItUploadLimits: [String: Int] = ["photo": 2 * 1024 * 1024, "doc": 64 * 1024 * 1024, "video": 100 * 1024 * 1024]
+
+    /// The upload's request, or nil for anything outside the grammar (never sent).
+    static func dropItUploadRequest(_ stdin: Data, read: (String) -> Data?) -> (path: String, body: Data, headers: [String: String], json: Bool)? {
+        guard let object = try? JSONSerialization.jsonObject(with: stdin) as? [String: Any],
+              Set(object.keys).isSubset(of: ["path", "name", "kind", "mime", "capturedAt"]),
+              let path = object["path"] as? String, path.hasPrefix("/"), !path.contains("\u{0}"),
+              let name = dropItPlain(object["name"], max: 120), !name.isEmpty,
+              let kind = object["kind"] as? String, let types = dropItUploadTypes[kind], let limit = dropItUploadLimits[kind],
+              let mime = object["mime"] as? String, types.contains(mime) else { return nil }
+        let captured = dropItPlain(object["capturedAt"], max: 40) ?? ""
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), !isDirectory.boolValue,
+              let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? NSNumber,
+              size.intValue > 0, size.intValue <= limit, let bytes = read(path), bytes.count == size.intValue else { return nil }
+        if kind == "photo" {
+            var image: [String: Any] = ["data": bytes.base64EncodedString(), "label": name]
+            if !captured.isEmpty { image["capturedAt"] = captured }
+            guard let body = try? JSONSerialization.data(withJSONObject: ["images": [image], "kind": "user_photo"]) else { return nil }
+            return ("/api/media", body, [:], true)
+        }
+        var headers = ["Content-Type": mime,
+                       "X-COS-Filename": name.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-._~"))) ?? "file"]
+        if !captured.isEmpty { headers["X-COS-Captured-At"] = captured }
+        return ("/api/media/file", bytes, headers, false)
+    }
+
+    /// The media id from either route's answer: `attachments[0].id` (a photo) or `attachment.id` (a file).
+    static func dropItUploadAnswer(status: Int, body: [String: Any]?) -> [String: Any] {
+        var out: [String: Any] = [:]
+        if status == 200 {
+            let ref = (body?["attachment"] as? [String: Any]) ?? ((body?["attachments"] as? [Any])?.first as? [String: Any])
+            if let id = ref?["id"] as? String, dropItMediaIdValid(id) { out["mediaId"] = id }
+            return out
+        }
+        let code = (body?["error"] as? String) ?? ((body?["error"] as? [String: Any])?["code"] as? String)
+        if let code, dropItMatches(code, "\\A[a-z_]{1,64}\\z") { out["error"] = code }
+        else if status == 413 { out["error"] = "payload_too_large" }
+        return out
+    }
+
+    private func emitDropItUpload(_ input: Data) throws {
+        guard let call = Self.dropItUploadRequest(input, read: { try? Data(contentsOf: URL(fileURLWithPath: $0), options: .mappedIfSafe) }) else {
+            throw HelperError.message("That Drop it upload is not valid")
+        }
+        guard let token = try? readToken() else {
+            emit(ok: true, message: "No pairing token", details: ["transport": "no_token"])
+            return
+        }
+        let response = call.json
+            ? request(call.path, method: "POST", token: token, body: String(decoding: call.body, as: UTF8.self), timeout: 60)
+            : request(call.path, method: "POST", token: token, rawBody: call.body, headers: call.headers, timeout: 180)
+        guard let response else {
+            emit(ok: true, message: "COS server unreachable", details: ["transport": "unavailable"])
+            return
+        }
+        var details = Self.dropItUploadAnswer(status: response.status, body: response.body)
+        details["transport"] = response.status == 404 && response.body == nil ? "unsupported" : "answered"
+        details["httpStatus"] = response.status
+        emit(ok: true, message: "Upload answered (\(response.status))", details: details)
     }
 
     private func emitLiveCuesHistory(args: [String]) throws {
@@ -20042,7 +20139,7 @@ final class COSControlHelper {
     }
 
     static func workNewPayload(clientJobId: String, query: String, model: String, messageEra: String,
-                               sessionName: String? = nil, maintenanceWorkflow: String? = nil) -> [String: Any] {
+                               sessionName: String? = nil, maintenanceWorkflow: String? = nil, attachmentIds: [String] = []) -> [String: Any] {
         // An unknown supplied session ID is NOT a request to create that ID.
         // The coordinator allocates and durably reuses the session for this
         // clientJobId/generation; inventing one causes session_identity_mismatch.
@@ -20052,6 +20149,7 @@ final class COSControlHelper {
         // drops keys it does not know.
         if let sessionName { payload["sessionName"] = sessionName }
         if let maintenanceWorkflow { payload["maintenanceWorkflow"] = maintenanceWorkflow }
+        if !attachmentIds.isEmpty { payload["attachmentIds"] = attachmentIds }
         return payload
     }
 
@@ -20353,7 +20451,14 @@ final class COSControlHelper {
               let counterBody = counter.body, let era = Self.workMessageEra(counterBody) else {
             throw HelperError.message("Cannot verify the current conversation era; no handoff was sent")
         }
-        let payload = Self.workNewPayload(clientJobId: id, query: query, model: model, messageEra: era, sessionName: sessionName, maintenanceWorkflow: workflow)
+        // 0.5.371: the COS chat's Ask carries its uploaded files (one to five media ids); anything else about them is refused.
+        var files: [String] = []
+        if let raw = body["attachmentIds"] {
+            guard let ids = Self.dropItMediaIds(raw), workflow == nil else { throw HelperError.message("attachmentIds must be one to five media ids") }
+            files = ids
+        }
+        let payload = Self.workNewPayload(clientJobId: id, query: query, model: model, messageEra: era, sessionName: sessionName, maintenanceWorkflow: workflow,
+                                          attachmentIds: files)
         let json = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
         guard let response = request("/api/query-jobs", method: "POST", token: token, body: json, timeout: 30) else {
             throw HelperError.message("Conversation admission timed out; delivery is unknown. Recover the original receipt before trying again")

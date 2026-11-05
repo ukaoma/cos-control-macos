@@ -99,10 +99,36 @@ need("try? await Task.sleep(nanoseconds: 30_000_000_000)" in drop_views and "try
 need('static func call(_ op: String, _ extra: [String] = []) -> [String] { ["drop-it", "--op", op] + extra }' in core, "stdin", "every call is the drop-it verb and its op")
 need('return (call("submit"), data)' in core and 'return (call("history"), data)' in core and 'return (call("move", ["--drop", dropId]), data)' in core,
      "stdin", "a drop's words, History's search and Move's target go on stdin, never in the arguments")
-need('let takesStdin: Set<String> = ["submit", "history", "move"]' in helper and "case \"drop-it\": try emitDropIt(args: args)" in helper,
+need('let takesStdin: Set<String> = ["submit", "history", "move", "upload"]' in helper and "case \"drop-it\": try emitDropIt(args: args)" in helper,
      "stdin", "the helper reads those three on stdin and dispatches the verb")
 helper_drop = between(helper, "    private func emitDropIt(args: [String]) throws {", "\n    }\n")
 need("progress(" not in helper_drop and "print(" not in helper_drop, "no logs", "the helper's verb writes nothing but its answer")
+
+# ── 0.5.371 option A: Ask and Drop, and files on the composer.
+meeting_ask = code("Sources/MeetingAsk.swift")
+need("MeetingAskComposer(text: $draft, placeholder: DropIt.placeholder, onSubmit: ask," in drop_views and "onOptionSubmit: drop, fontSize: 14)" in drop_views,
+     "composer keys", "the box is the meeting Ask composer: Return asks, Option-Return drops")
+need("if flags.contains(.option), !flags.contains(.shift), let drop = parent.onOptionSubmit { drop(); return true }" in meeting_ask
+     and "var onOptionSubmit: (() -> Void)? = nil" in meeting_ask, "composer keys", "Option-Return calls Drop only where a caller sets it; the meeting keeps its new line")
+need("TextField(DropIt.placeholder" not in drop_views and "onAttach: { attachment in Task { await DropItIntake.take(attachment, store: store) } }" in drop_views,
+     "file never text", "a file dropped or pasted on the words is an attachment, never its path as text")
+need(drop_views.count(".modifier(MeetingFilesDrop(enabled: true, targeted: $dropTargeted)") == 1, "drop zone", "the whole box is the drop target, the meeting Files box's own drop")
+comp = between(drop_views, "    private var composer: some View {", "    private func ask() {")
+need("if !store.attachments.isEmpty" in comp and "Button { addFiles() }" in comp and "DropItIntake.paste(NSPasteboard.general" in comp
+     and comp.index("Button { addFiles() }") > comp.index(".modifier(MeetingFilesDrop("), "drop zone", "Add and Paste always show under the box; only the chips row is conditional")
+need("await WorkCardFileStore.stage(provider, policy: .meeting" in drop_views and "WorkCardFileStore.meetingPastePayload(pasteboard)" in drop_views
+     and "WorkCardFileStore.pngData(data)" in drop_views, "reuse meeting files", "drops, pastes and images are read with the meeting Files code")
+need("static func stage(_ provider: NSItemProvider, policy: ContextFilePolicy" in code("Sources/WorkCardFiles.swift")
+     and "await Self.stage(provider, policy: policy, ordinal: ordinal, count: count, at: date) {" in code("Sources/WorkCardFiles.swift"), "reuse meeting files", "one staging implementation, used by cards, meetings and the composer")
+need('let accepted = await today.startRun(target: target, title: String(prompt.prefix(60)), prompt: prompt,' in window
+     and 'handoff: handoffStore, attachmentIds: files)' in window and "query-jobs" not in core, "ask path", "Ask is Control's existing Today Work run, with the files' ids; no new query path")
+need('if !attachmentIds.isEmpty { job["attachmentIds"] = Array(attachmentIds.prefix(5)) }' in code("Sources/WorkHandoffStore.swift")
+     and 'if !attachmentIds.isEmpty { payload["attachmentIds"] = attachmentIds }' in helper, "ask path", "the media ids reach POST /api/query-jobs")
+need(window.count("        wireDropItComposer()\n") == 2 and "model.dropIt.dropTakes = model.status.dropIt.attachments" in window
+     and "model.dropIt.isSecret = { WorkCardFiles.looksSecret(name: $0) }" in window, "composer wiring", "the chat and ⌘K both wire Ask, the drop file limit and the secrets rule")
+need('"dropItAttachments": files.map { $0 as Any } ?? NSNull()' in helper and 'attachments: details["dropItAttachments"]?.int' in models, "capability files", "capabilities.dropIt.attachments is read")
+need('if op == "upload" { try emitDropItUpload(input); return }' in helper and "progress(" not in between(helper, "    private func emitDropItUpload(_ input: Data) throws {", "\n    }\n"),
+     "uploads", "the upload is its own op and writes nothing but its answer")
 
 # ── The capability.
 need("details.merge(Self.dropItStatusFields(health?[\"capabilities\"])) { _, new in new }" in helper, "capability", "status reads capabilities.dropIt")

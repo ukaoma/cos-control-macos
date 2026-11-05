@@ -1726,11 +1726,21 @@ struct MeetingAskComposer: NSViewRepresentable {
     var enabled = true
     var onSubmit: () -> Void
     var onAttach: (MeetingAskAttachment) -> Void
+    /// 0.5.371 (the COS chat's Drop): Option-Return calls this instead of starting a new line. nil keeps the meeting's
+    /// behaviour, where Option-Return and Shift-Return both start a new line.
+    var onOptionSubmit: (() -> Void)? = nil
+    /// The text size; the meeting's 12.5 unless the caller asks for another.
+    var fontSize: CGFloat = 12.5
     static let maxLines = 6
     /// The `.cosField()` face's font (DM Sans 12.5), as AppKit needs it.
     static var font: NSFont {
         _ = COSType.body(12.5)
         return NSFontManager.shared.font(withFamily: "DM Sans", traits: [], weight: 5, size: 12.5) ?? .systemFont(ofSize: 12.5)
+    }
+
+    static func composerFont(size: CGFloat) -> NSFont {
+        _ = COSType.body(size)
+        return NSFontManager.shared.font(withFamily: "DM Sans", traits: [], weight: 5, size: size) ?? .systemFont(ofSize: size)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -1742,7 +1752,7 @@ struct MeetingAskComposer: NSViewRepresentable {
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
         scroll.autohidesScrollers = true
-        let view = MeetingAskComposerTextView.make(font: Self.font)
+        let view = MeetingAskComposerTextView.make(font: fontSize == 12.5 ? Self.font : Self.composerFont(size: fontSize))
         view.delegate = context.coordinator
         scroll.documentView = view
         apply(to: view)
@@ -1778,6 +1788,7 @@ struct MeetingAskComposer: NSViewRepresentable {
         func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
             guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
             let flags = NSApp.currentEvent?.modifierFlags ?? []
+            if flags.contains(.option), !flags.contains(.shift), let drop = parent.onOptionSubmit { drop(); return true }
             if flags.contains(.shift) || flags.contains(.option) { textView.insertNewlineIgnoringFieldEditor(nil); return true }
             parent.onSubmit()
             return true

@@ -170,6 +170,9 @@ struct DropItCapability: Equatable, Sendable {
     var enabled = false
     /// `capabilities.dropIt.source`: "env" when COS_DROP_IT decides, "settings" otherwise; nil when not said.
     var source: String? = nil
+    /// 0.5.371 (server 6.99.13): `capabilities.dropIt.attachments`, how many files a drop takes. nil on an older server: a drop
+    /// there takes words only, and Ask carries the files.
+    var attachments: Int? = nil
 
     /// The server has the Drop it routes this build speaks (protocol 1).
     var supported: Bool { protocolVersion == 1 }
@@ -177,13 +180,13 @@ struct DropItCapability: Equatable, Sendable {
     /// server, Messages and ⌘K are exactly as before.
     var available: Bool { supported && enabled }
 
-    init(protocolVersion: Int? = nil, enabled: Bool = false, source: String? = nil) {
-        self.protocolVersion = protocolVersion; self.enabled = enabled; self.source = source
+    init(protocolVersion: Int? = nil, enabled: Bool = false, source: String? = nil, attachments: Int? = nil) {
+        self.protocolVersion = protocolVersion; self.enabled = enabled; self.source = source; self.attachments = attachments
     }
     /// The helper's status keys (HelperSources/main.swift dropItStatusFields). A key the server did not send stays off.
     init(statusDetails details: [String: JSONValue]) {
         self.init(protocolVersion: details["dropItProtocol"]?.int, enabled: details["dropItEnabled"]?.bool == true,
-                  source: details["dropItSource"]?.string)
+                  source: details["dropItSource"]?.string, attachments: details["dropItAttachments"]?.int)
     }
 }
 

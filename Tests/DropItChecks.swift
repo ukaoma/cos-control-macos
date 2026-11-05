@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import ImageIO
 
 /// The stand-in helper being down.
 struct StandDown: Error {}
@@ -178,7 +179,8 @@ struct StandDown: Error {}
         let stand = Stand()
         let store = DropItStore(run: { args, data in try await stand.run(args, data) })
         var asked: [(String, String)] = []
-        store.askRun = { id, prompt in asked.append((id, prompt)); return "6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b" }
+        var askedFiles: [[String]] = []
+        store.askRun = { id, prompt, files in asked.append((id, prompt)); askedFiles.append(files); return "6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b" }
 
         // Summary and the feed
         stand.answers["summary"] = answered(200, #""unread":2,"lastLine":"Heads up.","lastAt":"2026-11-04T20:00:00.000Z","version":3"#)
@@ -231,7 +233,7 @@ struct StandDown: Error {}
         _ = await store.send("what did Jeremy say?")
         check(asked.count == 1 && asked[0].0 == drop && asked[0].1 == "what did Jeremy say?", "[ask] a question runs the existing Ask job with the words")
         check(stand.calls("ask") == [["drop-it", "--op", "ask", "--drop", drop, "--job", "6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b", "--generation", "1"]], "[ask link] then links the job to the drop")
-        store.askRun = { _, _ in nil }
+        store.askRun = { _, _, _ in nil }
         _ = await store.send("what now?")
         check(store.line == DropIt.askHeldLine && stand.calls("ask").count == 1, "[ask held] a run that did not start links nothing and says why")
 
@@ -241,7 +243,8 @@ struct StandDown: Error {}
         stand.holding = ["action"]
         let receiptItem = store.items.first { $0.id == feedID(4) }!
         async let undoing = store.undo(receiptItem)
-        await Task.yield(); await Task.yield()
+        // The child task hops to the main actor; wait for it (bounded) rather than counting yields, which raced.
+        for _ in 0..<100 where !store.isBusy(drop) { try? await Task.sleep(nanoseconds: 5_000_000) }
         check(store.isBusy(drop), "[busy] the drop's buttons wait while its change is out")
         async let againCall = store.undo(receiptItem)
         await Task.yield(); await Task.yield()
@@ -293,10 +296,140 @@ struct StandDown: Error {}
         stand.answers["settings-set"] = answered(503, #""error":"settings_unwritable""#)
         check(await store.setEnabled(true) == nil && store.settingsLine == DropIt.failedLine, "[settings refused] a failed change says so")
 
+        // ── 0.5.371 option A: Ask and Drop, with attachments
+        let mediaA = "m_" + String(repeating: "a", count: 24), mediaB = "m_" + String(repeating: "b", count: 24)
+        check(DropItCapability(statusDetails: details(#"{"dropItProtocol":1,"dropItEnabled":true,"dropItAttachments":5}"#)).attachments == 5
+              && DropItCapability(statusDetails: details(#"{"dropItProtocol":1,"dropItEnabled":true}"#)).attachments == nil, "[capability files] the drop file count is read, absent on an older server")
+        if case .success(let what) = DropIt.classify(name: "Store front.HEIC", bytes: 9_000_000) { check(what.kind == .photo && what.mime == "image/jpeg", "[classify] a photo of any size goes up as a resized JPEG") } else { check(false, "[classify] a photo is attached") }
+        if case .success(let what) = DropIt.classify(name: "Q4 deck.pdf", bytes: 3_000_000) { check(what.kind == .doc && what.mime == "application/pdf", "[classify] a PDF is a document") } else { check(false, "[classify] a PDF is attached") }
+        if case .success(let what) = DropIt.classify(name: "walkthrough.mov", bytes: 50_000_000) { check(what.kind == .video && what.mime == "video/quicktime", "[classify] a MOV is a video") } else { check(false, "[classify] a MOV is attached") }
+        if case .failure(let r) = DropIt.classify(name: "huge.pdf", bytes: 65 * 1024 * 1024) { check(r.line == "huge.pdf is 65 MB. The largest file COS takes is 64 MB.", "[classify limits] a document over 64 MB says so") } else { check(false, "[classify limits] a document over 64 MB is refused") }
+        if case .failure(let r) = DropIt.classify(name: "long.mp4", bytes: 101 * 1024 * 1024) { check(r.line.hasSuffix("The largest video COS takes is 100 MB."), "[classify limits] a video over 100 MB says so") } else { check(false, "[classify limits] a video over 100 MB is refused") }
+        if case .failure(let r) = DropIt.classify(name: "notes.docx", bytes: 1_000) { check(r.line == "notes.docx cannot be attached. " + DropIt.attachKinds, "[classify] an unknown kind says what COS takes") } else { check(false, "[classify] an unknown kind is refused") }
+        if case .failure = DropIt.classify(name: "service-key.json", bytes: 1_000, secret: true) { passed += 1 } else { check(false, "[classify secret] a secrets file is never attached") }
+        func att(_ state: DropIt.Attachment.State, _ media: String? = nil) -> DropIt.Attachment {
+            DropIt.Attachment(id: DropIt.newDropID(), name: "a.pdf", kind: .doc, mime: "application/pdf", bytes: 10, source: URL(fileURLWithPath: "/tmp/a.pdf"), state: state, mediaId: media)
+        }
+        check(DropIt.askBlock(text: "  ", files: []) == "" && DropIt.askBlock(text: "what is this?", files: []) == nil, "[ask block] words are needed, and enough")
+        check(DropIt.askBlock(text: "what is this?", files: [att(.uploading)]) == DropIt.filesWaitLine, "[ask waits] Ask waits for the files to be up")
+        check(DropIt.askBlock(text: "what is this?", files: [att(.failed)]) == DropIt.fileFailedLine, "[ask waits] a failed file says retry or remove")
+        check(DropIt.askBlock(text: String(repeating: "a", count: 20_001), files: []) == DropIt.askTooLongLine && DropIt.askBlock(text: String(repeating: "a", count: 3_000), files: []) == nil,
+              "[ask limit] an ask is not held to a drop's 2,000")
+        check(DropIt.dropBlock(files: [att(.ready, mediaA)], serverTakes: nil) == DropIt.dropWordsOnlyLine && DropIt.dropBlock(files: [att(.ready, mediaA)], serverTakes: 0) == DropIt.dropWordsOnlyLine,
+              "[drop files gate] a server that does not take files on a drop refuses them with the line")
+        check(DropIt.dropBlock(files: [att(.ready, mediaA)], serverTakes: 5) == nil && DropIt.dropBlock(files: [], serverTakes: nil) == nil, "[drop files gate] a server that takes them, or no files, goes")
+        check(DropIt.dropBlock(files: [att(.ready, mediaA), att(.ready, mediaB)], serverTakes: 1) != nil, "[drop files gate] more than the server takes is refused")
+        let mediaC = "m_" + String(repeating: "c", count: 24)
+        check(DropIt.readyIDs([att(.ready, mediaA), att(.uploading, mediaC), att(.failed, mediaC), att(.ready, "bogus"), att(.ready, mediaB), att(.ready, mediaA)]) == [mediaA, mediaB],
+              "[ready ids] only valid ids of files that are up, once each (a file still going up or failed has an id that must not go)")
+        let withFiles = DropIt.submitCall(dropId: drop, text: "file this", attachmentIds: [mediaA])
+        check(withFiles?.arguments == ["drop-it", "--op", "submit"] && stdinObject(withFiles?.stdin)["attachmentIds"] as? [String] == [mediaA], "[submit files] a drop's files go on stdin")
+        check(stdinObject(DropIt.submitCall(dropId: drop, text: "words")?.stdin)["attachmentIds"] == nil, "[submit files] a drop without files sends no attachmentIds")
+        let upFile = DropIt.Attachment(id: "x", name: "Q4 deck.pdf", kind: .doc, mime: "application/pdf", bytes: 10, source: URL(fileURLWithPath: "/tmp/secret-folder/Q4 deck.pdf"))
+        let up = DropIt.uploadCall(upFile, capturedAt: Date(timeIntervalSince1970: 0))
+        check(up?.arguments == ["drop-it", "--op", "upload"] && stdinObject(up?.stdin)["path"] as? String == "/tmp/secret-folder/Q4 deck.pdf" && stdinObject(up?.stdin)["kind"] as? String == "doc",
+              "[upload stdin] the file's path and name go on stdin, never in the arguments")
+        if case .success(let id) = DropIt.uploadResult(.ok(answered(200, #""mediaId":"\#(mediaA)""#))) { check(id == mediaA, "[upload result] the media id") } else { check(false, "[upload result] a 200 with an id is up") }
+        if case .failure(let r) = DropIt.uploadResult(.ok(answered(200, #""mediaId":"nope""#))) { check(r.line == "The Mac did not keep the file", "[upload result] no valid id is a failure") } else { check(false, "[upload result] a bad id is not up") }
+        if case .failure(let r) = DropIt.uploadResult(.refused(code: "file_too_large", line: "x")) { check(r.line == "Too large for COS", "[upload result] a code is worded, never shown raw") } else { check(false, "[upload result] a refusal fails") }
+        check(DropIt.answer(dropAnswer([], next: #"{"kind":"ask","prompt":"what is this?","attachmentIds":["\#(mediaA)","bad"]}"#))?.askAttachmentIds == [mediaA], "[ask link files] next.attachmentIds are read, valid ones only")
+
+        // A photo is resized to at most 1024 px, as a JPEG.
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("drop-it-checks-" + DropIt.newDropID(), isDirectory: true)
+        try? FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        let bigPhoto = scratch.appendingPathComponent("Store front.png")
+        if let ctx = CGContext(data: nil, width: 2400, height: 1600, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
+            ctx.setFillColor(CGColor(red: 0.6, green: 0.4, blue: 0.2, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: 2400, height: 1600))
+            if let image = ctx.makeImage(), let dest = CGImageDestinationCreateWithURL(bigPhoto as CFURL, "public.png" as CFString, 1, nil) { CGImageDestinationAddImage(dest, image, nil); _ = CGImageDestinationFinalize(dest) }
+        }
+        let jpeg = DropIt.photoJPEG(bigPhoto)
+        let size = jpeg.flatMap { CGImageSourceCreateWithData($0 as CFData, nil) }.flatMap { CGImageSourceCopyPropertiesAtIndex($0, 0, nil) as? [CFString: Any] }
+        check((size?[kCGImagePropertyPixelWidth] as? Int) == 1024 && (size?[kCGImagePropertyPixelHeight] as? Int) == 683 && jpeg?.prefix(2) == Data([0xFF, 0xD8]),
+              "[photo resize] a photo goes up at most 1024 px on its longest edge, as a JPEG")
+
+        // The store: attach, upload, remove, the five cap, Ask with files, Drop with files.
+        let files = DropItStore(run: { args, data in try await stand.run(args, data) })
+        files.stagingRoot = scratch.appendingPathComponent("staging", isDirectory: true)
+        let pdf = scratch.appendingPathComponent("Q4 deck.pdf"); try? Data("%PDF-1.4\n".utf8).write(to: pdf)
+        stand.answers["upload"] = answered(200, #""mediaId":"\#(mediaA)""#)
+        files.attach([(bigPhoto, "Store front.png"), (pdf, "Q4 deck.pdf")])
+        func settle() async { for _ in 0..<200 where files.attachments.contains(where: \.busy) { try? await Task.sleep(nanoseconds: 10_000_000) } }
+        await settle()
+        let uploads = stand.log.filter { stand.op($0.args) == "upload" }
+        check(files.attachments.count == 2 && files.attachments.allSatisfy { $0.state == .ready && $0.mediaId == mediaA } && uploads.count == 2,
+              "[upload] each file goes up once, at once, and shows ready")
+        let photoUp = uploads.map { stdinObject($0.stdin) }.first { $0["kind"] as? String == "photo" }
+        let docUp = uploads.map { stdinObject($0.stdin) }.first { $0["kind"] as? String == "doc" }
+        check((photoUp?["path"] as? String)?.hasSuffix(".jpg") == true && photoUp?["path"] as? String != bigPhoto.path
+              && files.attachments[0].thumb != nil && docUp?["path"] as? String == pdf.path, "[upload] a photo goes up as its resized copy, a document as itself")
+        files.attach((0..<4).map { (pdf, "copy \($0).pdf") })
+        check(files.attachments.count == 5 && files.line == "Up to 5 attachments per message. copy 3.pdf was not added.", "[attach cap] at most five; the sixth is refused by name")
+        await settle()
+        let dropped = files.attachments.last!.id
+        files.removeAttachment(dropped)
+        check(files.attachments.count == 4 && !files.attachments.contains { $0.id == dropped }, "[remove] Remove takes the file off")
+        let photoCopy = files.attachments[0].thumb!
+        files.removeAttachment(files.attachments[0].id)
+        check(!FileManager.default.fileExists(atPath: photoCopy.path) && FileManager.default.fileExists(atPath: bigPhoto.path), "[remove] the composer's own copy goes; his file stays")
+        files.attach([(scratch.appendingPathComponent("notes.docx"), "notes.docx")])
+        check(files.attachments.count == 3 && files.line?.hasPrefix("notes.docx cannot be attached.") == true, "[classify] an unknown kind is refused with a line, never added")
+        // Drop on an older server: nothing is dropped, the files stay.
+        let submitsBefore = stand.calls("submit").count
+        files.dropTakes = nil
+        check(await files.send("file these") == nil && files.line == DropIt.dropWordsOnlyLine && stand.calls("submit").count == submitsBefore && files.attachments.count == 3,
+              "[drop files gate] Drop with files on an older server drops nothing and says so")
+        files.dropTakes = 5
+        stand.answers["submit"] = dropAnswer([item(feedID(10), kind: "drop", at: "2026-11-04T20:05:00.000Z", source: "mac")])
+        _ = await files.send("file these")
+        check(stand.calls("submit").count == submitsBefore + 1 && stdinObject(stand.log.last { stand.op($0.args) == "submit" }?.stdin)["attachmentIds"] as? [String] == [mediaA]
+              && files.attachments.isEmpty, "[submit files] Drop on a server that takes files sends their ids and clears them")
+        // Ask with files: the words and the ids, through the existing run.
+        var jobs: [(target: String, prompt: String, ids: [String])] = []
+        files.askJob = { target, prompt, ids in jobs.append((target, prompt, ids)); return .started("7a1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b") }
+        stand.answers["upload"] = answered(200, #""mediaId":"\#(mediaB)""#)
+        stand.holding = ["upload"]
+        files.attach([(pdf, "Q4 deck.pdf")])
+        for _ in 0..<50 where stand.waiting["upload"] == nil { try? await Task.sleep(nanoseconds: 10_000_000) }
+        check(await files.ask("what changed in this deck?") == false && files.line == DropIt.filesWaitLine && jobs.isEmpty, "[ask waits] Ask while a file goes up waits and says so")
+        stand.release("upload")
+        await settle()
+        check(await files.ask("  what changed in this deck? ") && jobs.count == 1 && jobs[0].prompt == "what changed in this deck?" && jobs[0].ids == [mediaB]
+              && jobs[0].target.hasPrefix("cos:ask:") && files.attachments.isEmpty, "[ask files] Ask sends the words with the files' ids and clears the files")
+        check(files.asks.count == 1 && files.asks[0].files.map(\.name) == ["Q4 deck.pdf"] && files.asks[0].id == "7a1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b", "[asks in the chat] the Ask is kept with its files")
+        files.askState = { ids in [ids[0]: DropIt.AskState(status: "completed", answer: "Slide 4 moved to the appendix.", number: 215)] }
+        await files.refreshAsks()
+        check(files.asks[0].answer == "Slide 4 moved to the appendix." && files.asks[0].number == 215 && DropIt.askTitle(files.asks[0]) == "Message #215" && files.asks[0].finished,
+              "[ask answer] the answer lands under his words with its Messages number")
+        let merged = DropIt.merged([DropIt.item(details("{\"x\":" + item(feedID(11), kind: "drop", at: "2099-01-01T00:00:00.000Z", source: "mac") + "}")["x"]!)!], asks: files.asks)
+        check(merged.map(\.kind) == ["ask", "drop"] && merged[0].countsUnread == false, "[asks in the chat] an Ask takes its place by time and is never unread")
+        files.askJob = { _, _, _ in .refused("Work is busy. Try again in a minute.") }
+        check(await files.ask("again?") == false && files.line == "Work is busy. Try again in a minute.", "[ask refused] a run that did not start says why, and the words stay")
+        stand.answers["submit"] = dropAnswer([], next: #"{"kind":"ask","prompt":"what is in this?","attachmentIds":["\#(mediaA)"]}"#)
+        askedFiles = []
+        store.askRun = { _, _, ids in askedFiles.append(ids); return "6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b" }
+        _ = await store.send("what is in this?")
+        check(askedFiles == [[mediaA]], "[ask link files] a drop that became a question carries its files to the Ask")
+        // 6.99.13: a refusal keeps the words and the files; file links and a drop's attachments decode.
+        files.dropTakes = 5
+        files.attach([(pdf, "Q4 deck.pdf")])
+        await settle()
+        stand.answers["submit"] = answered(410, #""error":"attachment_expired","message":"A file expired before it was dropped (uploads wait 4 hours). Add it again, then Drop.""#)
+        check(await files.send("file this") == nil && files.attachments.count == 1 && files.line == "A file expired before it was dropped (uploads wait 4 hours). Add it again, then Drop.",
+              "[drop files refused] a refused drop keeps its files and shows the server's line")
+        let fileItem = DropIt.item(details("{\"x\":" + item(feedID(12), kind: "drop", at: "2026-11-05T12:00:00.000Z", links: #"[{"kind":"file","id":"\#(mediaA)","label":"Q4 deck.pdf"}]"#, source: "mac") + "}")["x"]!)
+        check(fileItem?.links.first?.kind == "file" && fileItem?.links.first?.id == mediaA && DropIt.fileKind(name: "Q4 deck.pdf") == .doc, "[file links] a drop's file link decodes")
+        stand.answers["settings"] = answered(200, #""protocol":1,"enabled":true,"source":"settings","attachments":5"#)
+        files.dropTakes = nil
+        await files.readSettings()
+        check(files.dropTakes == 5, "[capability files] the settings answer says how many files a drop takes")
+        try? FileManager.default.removeItem(at: scratch)
+
         // Words: no em dash, en dash or arrow in anything the chat says.
         for text in [DropIt.pinNote, DropIt.chatLine, DropIt.placeholder, DropIt.footReturn, DropIt.footNothingOut, DropIt.historyLine, DropIt.moveNote,
                      DropIt.offLine, DropIt.oldServerLine, DropIt.unreachableLine, DropIt.askHeldLine, DropIt.sendSessionLine, DropIt.settingDetail,
-                     DropIt.settingEnvLine, DropIt.cameBackCard, DropIt.cameBackThread, DropIt.cameBackMemory, DropIt.historyEmpty, DropIt.historyMiss, DropIt.chatEmpty] {
+                     DropIt.settingEnvLine, DropIt.cameBackCard, DropIt.cameBackThread, DropIt.cameBackMemory, DropIt.historyEmpty, DropIt.historyMiss, DropIt.chatEmpty,
+                     DropIt.dropWordsOnlyLine, DropIt.filesWaitLine, DropIt.fileFailedLine, DropIt.askWaiting, DropIt.askFailedLine, DropIt.dropZoneLine,
+                     DropIt.dropZoneTarget, DropIt.attachKinds, DropIt.linkNotFileLine, DropIt.nothingToPasteLine, DropIt.askTooLongLine] {
             check(text.range(of: "[\u{2014}\u{2013}\u{2192}]|->", options: .regularExpression) == nil, "[copy] no em dash, en dash or arrow: \(text)")
         }
         print("drop it checks: \(passed) passed")

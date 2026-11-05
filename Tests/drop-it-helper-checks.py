@@ -34,7 +34,8 @@ with tempfile.TemporaryDirectory(prefix='cos-drop-it-', dir='/tmp') as tmp:
         def log_message(self, *args): pass
         def answer(self):
             data = self.rfile.read(int(self.headers.get('Content-Length', '0')))
-            requests.append((self.command, self.path, self.headers.get('X-COS-Token') == token, data.decode() if data else None))
+            requests.append((self.command, self.path, self.headers.get('X-COS-Token') == token, data.decode('utf-8', 'replace') if data else None,
+                             {'type': self.headers.get('Content-Type'), 'name': self.headers.get('X-COS-Filename'), 'raw': data}))
             if state['body'] is None:
                 raw = b'<!DOCTYPE html><pre>Cannot GET</pre>'; self.send_response(state['status']); self.send_header('Content-Type', 'text/html')
                 self.send_header('Content-Length', str(len(raw))); self.end_headers(); self.wfile.write(raw); return
@@ -90,6 +91,61 @@ with tempfile.TemporaryDirectory(prefix='cos-drop-it-', dir='/tmp') as tmp:
         check(not run('--op', 'submit', stdin=b'not json')['ok'], 'submit refuses a body that is not JSON')
         check(run('--op', 'submit', stdin=json.dumps({'dropId': DROP, 'text': 'a' * 2000}).encode())['ok'], '2,000 characters go')
         check(len(requests) == prior + 1, 'a refused submit never reaches the server')
+
+        # ── 0.5.371: a drop's files (server 6.99.13), and the composer's uploads
+        MA, MB = 'm_' + 'a' * 24, 'm_' + 'b' * 24
+        run('--op', 'submit', stdin=json.dumps({'dropId': DROP, 'text': WORDS, 'attachmentIds': [MA, MB]}).encode())
+        check(body() == {'dropId': DROP, 'text': WORDS, 'source': 'mac', 'attachmentIds': [MA, MB]}, 'submit carries the files ids as given')
+        prior = len(requests)
+        for bad in ([], [MA, MA], ['m_x'], [MA] * 6, 'm_' + 'a' * 24, [MA, 'm_' + 'c' * 23, MB, 'm_d', 'm_e', 'm_f']):
+            check(not run('--op', 'submit', stdin=json.dumps({'dropId': DROP, 'text': 'x', 'attachmentIds': bad}).encode())['ok'], f'submit refuses attachmentIds {str(bad)[:40]}')
+        check(len(requests) == prior, 'a refused file list never reaches the server')
+        state['body'] = dict(ANSWER, next={'kind': 'ask', 'prompt': 'what is in this?', 'attachmentIds': [MA, 'bad']}, drop=dict(VIEW, dest='ask', kind='ask', state='asked'))
+        check(run('--op', 'submit', stdin=json.dumps({'dropId': DROP, 'text': 'what is in this?'}).encode())['details']['next'] == {'kind': 'ask', 'prompt': 'what is in this?'},
+              'next ask with a bad id list carries no files')
+        state['body'] = dict(ANSWER, next={'kind': 'ask', 'prompt': 'what is in this?', 'attachmentIds': [MA]}, drop=dict(VIEW, dest='ask', kind='ask', state='asked'))
+        check(run('--op', 'submit', stdin=json.dumps({'dropId': DROP, 'text': 'what is in this?'}).encode())['details']['next'] == {'kind': 'ask', 'prompt': 'what is in this?', 'attachmentIds': [MA]},
+              'next ask carries its files ids')
+        files = home / 'Zanzibar files'; files.mkdir()
+        photo = files / 'Zanzibar store.jpg'; photo.write_bytes(b'\xff\xd8\xff' + b'p' * 500)
+        pdf = files / 'Zanzibar Q4 deck.pdf'; pdf.write_bytes(b'%PDF-1.4\n' + b'd' * 900)
+        state['body'] = {'attachments': [{'id': MA, 'kind': 'user_photo', 'path': 'SECRET'}]}
+        got = run('--op', 'upload', stdin=json.dumps({'path': str(photo), 'name': 'Zanzibar store.jpg', 'kind': 'photo', 'mime': 'image/jpeg', 'capturedAt': '2026-11-05T12:00:00Z'}).encode())
+        sent = body()
+        import base64
+        check(requests[-1][:3] == ('POST', '/api/media', True) and sent['kind'] == 'user_photo' and len(sent['images']) == 1
+              and base64.b64decode(sent['images'][0]['data']) == photo.read_bytes() and sent['images'][0]['label'] == 'Zanzibar store.jpg'
+              and sent['images'][0]['capturedAt'] == '2026-11-05T12:00:00Z', 'a photo goes base64 to /api/media as a user photo')
+        check(got['details'] == {'transport': 'answered', 'httpStatus': 200, 'mediaId': MA}, 'the photo answer is its media id only')
+        state['body'] = {'attachment': {'id': MB, 'kind': 'user_document', 'mime': 'application/pdf'}}
+        got = run('--op', 'upload', stdin=json.dumps({'path': str(pdf), 'name': 'Zanzibar Q4 deck.pdf', 'kind': 'doc', 'mime': 'application/pdf', 'capturedAt': '2026-11-05T12:00:00Z'}).encode())
+        check(requests[-1][:3] == ('POST', '/api/media/file', True) and requests[-1][4]['raw'] == pdf.read_bytes() and requests[-1][4]['type'] == 'application/pdf'
+              and requests[-1][4]['name'] == 'Zanzibar%20Q4%20deck.pdf', 'a document goes raw to /api/media/file with its type and encoded name')
+        check(got['details'] == {'transport': 'answered', 'httpStatus': 200, 'mediaId': MB}, 'the file answer is its media id only')
+        state['status'] = 413; state['body'] = {'error': 'file_too_large', 'maxBytes': 1}
+        check(run('--op', 'upload', stdin=json.dumps({'path': str(pdf), 'name': 'd.pdf', 'kind': 'doc', 'mime': 'application/pdf'}).encode())['details']
+              == {'transport': 'answered', 'httpStatus': 413, 'error': 'file_too_large'}, 'an upload refusal is its code')
+        state['status'] = 200; state['body'] = ANSWER
+        big = files / 'big.jpg'; big.write_bytes(b'x' * (2 * 1024 * 1024 + 1))
+        prior = len(requests)
+        for bad in ({'path': 'relative.pdf', 'name': 'a.pdf', 'kind': 'doc', 'mime': 'application/pdf'},
+                    {'path': str(files / 'missing.pdf'), 'name': 'a.pdf', 'kind': 'doc', 'mime': 'application/pdf'},
+                    {'path': str(files), 'name': 'a.pdf', 'kind': 'doc', 'mime': 'application/pdf'},
+                    {'path': str(pdf), 'name': 'a.pdf', 'kind': 'doc', 'mime': 'application/x-msdownload'},
+                    {'path': str(pdf), 'name': 'a.pdf', 'kind': 'exe', 'mime': 'application/pdf'},
+                    {'path': str(photo), 'name': 'a.jpg', 'kind': 'photo', 'mime': 'image/png'},
+                    {'path': str(big), 'name': 'big.jpg', 'kind': 'photo', 'mime': 'image/jpeg'},
+                    {'path': str(pdf), 'name': 'a\u0007.pdf', 'kind': 'doc', 'mime': 'application/pdf'},
+                    {'path': str(pdf), 'name': 'a.pdf', 'kind': 'doc', 'mime': 'application/pdf', 'extra': 1}):
+            check(not run('--op', 'upload', stdin=json.dumps(bad).encode())['ok'], f'upload refuses {str(bad)[-60:]}')
+        check(len(requests) == prior, 'a refused upload never reaches the server')
+        state['body'] = dict(ANSWER, drop=dict(VIEW, attachments=[{'id': MA, 'name': 'Q4 deck.pdf', 'mime': 'application/pdf', 'kind': 'user_document', 'bytes': 9}]),
+                             items=[dict(FEED_ITEM, links=[{'kind': 'file', 'id': MA, 'label': 'Q4 deck.pdf'}])])
+        d = run('--op', 'get', '--drop', DROP)['details']
+        check(d['drop'] and 'attachments' not in d['drop'] and d['items'][0]['links'] == [{'kind': 'file', 'id': MA, 'label': 'Q4 deck.pdf'}], 'a drop with attachments decodes and its file links cross')
+        state['body'] = {'protocol': 1, 'enabled': True, 'source': 'settings', 'attachments': 5, 'p2Settings': 1}
+        check(run('--op', 'settings')['details'] == {'transport': 'answered', 'httpStatus': 200, 'protocol': 1, 'enabled': True, 'source': 'settings', 'attachments': 5}, 'settings carries attachments when sent')
+        state['body'] = ANSWER
 
         # ── the other ops' requests
         cases = [

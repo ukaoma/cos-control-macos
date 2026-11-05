@@ -8156,7 +8156,7 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
     /// matched by its own id. Returns whether the run was accepted. runNote says so for the page, but an earlier "Started" note
     /// outlives this call by 20 seconds, so a caller that must know cannot read the note.
     @discardableResult
-    func startRun(target: String, title: String, prompt: String, context: String, handoff: WorkHandoffStore) async -> Bool {
+    func startRun(target: String, title: String, prompt: String, context: String, handoff: WorkHandoffStore, attachmentIds: [String] = []) async -> Bool {
         guard !runBusy else { return false }
         let guardrail = TodayRunGuard(defaults: .standard)
         let admission = guardrail.admission(target: target, inFlight: Self.inFlightTargets(handoff.receipts),
@@ -8181,7 +8181,7 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
         }
         let id = UUID().uuidString.lowercased()
         let source = WorkSource(id: target, title: title, revision: ActivityHome.dayKey(Date()), project: "today", context: context)
-        await handoff.submit(source: source, mode: .newSession, session: nil, model: handoff.models[index], prompt: prompt, intentID: id)
+        await handoff.submit(source: source, mode: .newSession, session: nil, model: handoff.models[index], prompt: prompt, intentID: id, attachmentIds: attachmentIds)
         let receipt = handoff.receipts.first { $0.id == id }
         let outcome = TodayRunGuard.outcome(receiptStatus: receipt?.status, error: handoff.error)
         let before = guardrail.pausedUntil(now: Date())
@@ -10269,7 +10269,7 @@ extension ActivityWindow {
         selectedArchiveDate = nil
         selectedArchiveChat = nil
         dropItCameBack = nil
-        model.dropIt.askRun = dropItAskRun
+        wireDropItComposer()
         model.openDropItChat()
     }
 
@@ -10283,12 +10283,45 @@ extension ActivityWindow {
 
     /// A question routed to COS runs as the existing Ask job: a Today Work run with the words (its guard, its switch, its model
     /// pick). Its clientJobId comes back to link the drop, or nil when it did not start.
-    var dropItAskRun: @MainActor (String, String) async -> String? {
-        { [today, handoffStore] dropId, prompt in
+    var dropItAskRun: @MainActor (String, String, [String]) async -> String? {
+        { [today, handoffStore] dropId, prompt, files in
             let accepted = await today.startRun(target: "drop:ask:" + dropId, title: String(prompt.prefix(60)), prompt: prompt,
-                                                context: "Asked in the COS chat on \(TodayHome.headerDate(Date())).", handoff: handoffStore)
+                                                context: "Asked in the COS chat on \(TodayHome.headerDate(Date())).", handoff: handoffStore, attachmentIds: files)
             return accepted ? today.lastStartedRunID : nil
         }
+    }
+
+    /// 0.5.371 option A: the composer's Ask, the same Today Work run as a drop routed to a question, with the uploaded files.
+    /// A refusal is the run guard's own line (Work busy, the switch, the breaker, no model).
+    var dropItAskJob: @MainActor (String, String, [String]) async -> DropItStore.AskStart {
+        { [today, handoffStore] target, prompt, files in
+            let accepted = await today.startRun(target: target, title: String(prompt.prefix(60)), prompt: prompt,
+                                                context: "Asked in the COS chat on \(TodayHome.headerDate(Date())).", handoff: handoffStore, attachmentIds: files)
+            guard accepted, let id = today.lastStartedRunID else { return .refused(today.runNote ?? DropIt.askHeldLine) }
+            return .started(id)
+        }
+    }
+
+    /// The receipts behind this Mac's Asks, read again from the server.
+    var dropItAskState: @MainActor ([String]) async -> [String: DropIt.AskState] {
+        { [handoffStore] ids in
+            await handoffStore.refreshReceipts()
+            var out: [String: DropIt.AskState] = [:]
+            for receipt in handoffStore.receipts where ids.contains(receipt.id) {
+                out[receipt.id] = DropIt.AskState(status: receipt.status, answer: receipt.result, number: receipt.messageNumber)
+            }
+            return out
+        }
+    }
+
+    /// Everything the composer needs from the window: the Ask run, its read-back, the server's drop file limit and the
+    /// card files' secret rule. Set by each opener, as askRun is.
+    func wireDropItComposer() {
+        model.dropIt.askRun = dropItAskRun
+        model.dropIt.askJob = dropItAskJob
+        model.dropIt.askState = dropItAskState
+        model.dropIt.dropTakes = model.status.dropIt.attachments
+        model.dropIt.isSecret = { WorkCardFiles.looksSecret(name: $0) }
     }
 
     /// Mac dictation for the composer, and what Move offers.
@@ -10355,7 +10388,7 @@ extension ActivityWindow {
         let text = words.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !today.runBusy, !today.captureBusy else { return }
         today.captureBusy = true
-        model.dropIt.askRun = dropItAskRun
+        wireDropItComposer()
         Task {
             defer { today.captureBusy = false }
             if let answer = await model.dropIt.send(text) {

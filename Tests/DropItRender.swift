@@ -75,6 +75,7 @@ func details(_ json: String) -> [String: JSONValue] {
 func answered(_ body: String) -> HelperResponse {
     HelperResponse(ok: true, message: "x", details: details(#"{"transport":"answered","httpStatus":200,"# + body + "}"))
 }
+nonisolated(unsafe) var uploadCount = 0
 /// The stand-in for the helper's drop-it ops.
 @MainActor func fixtureRun(feedOn: Bool = true, waiting: Int? = 1) -> DropItStore.Run {
     { args, _ in
@@ -85,9 +86,45 @@ func answered(_ body: String) -> HelperResponse {
         case "read": return answered(#""unread":2,"version":13"#)
         case "get": return answered(#""drop":\#(historyDrops[2]),"items":[],"replayed":false"#)
         case "settings": return answered(#""protocol":1,"enabled":true,"source":"settings""#)
+        case "upload":
+            uploadCount += 1
+            return answered(#""mediaId":"m_\#(String(format: "%024x", uploadCount))""#)
         default: throw CancellationError()
         }
     }
+}
+
+/// 0.5.371 composer fixtures: a store-front photo and a one-page PDF, drawn here (no real files), in the scratch home.
+func fixtureFiles() -> (photo: URL, pdf: URL) {
+    let folder = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("composer-fixtures", isDirectory: true)
+    try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let photo = folder.appendingPathComponent("Clover switcher store front.png"), pdf = folder.appendingPathComponent("Price test brief.pdf")
+    let image = NSImage(size: NSSize(width: 1600, height: 1200), flipped: false) { rect in
+        NSGradient(colors: [NSColor(srgbRed: 0.83, green: 0.62, blue: 0.36, alpha: 1), NSColor(srgbRed: 0.32, green: 0.22, blue: 0.14, alpha: 1)])!.draw(in: rect, angle: -60)
+        NSColor(srgbRed: 0.96, green: 0.92, blue: 0.84, alpha: 1).setFill()
+        NSBezierPath(roundedRect: NSRect(x: 260, y: 220, width: 1080, height: 620), xRadius: 30, yRadius: 30).fill()
+        NSColor(srgbRed: 0.42, green: 0.28, blue: 0.16, alpha: 1).setFill()
+        for i in 0..<5 { NSBezierPath(rect: NSRect(x: 330 + i * 200, y: 300, width: 140, height: 380)).fill() }
+        return true
+    }
+    if let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) { try? rep.representation(using: .png, properties: [:])?.write(to: photo) }
+    var box = CGRect(x: 0, y: 0, width: 612, height: 792)
+    if let consumer = CGDataConsumer(url: pdf as CFURL), let ctx = CGContext(consumer: consumer, mediaBox: &box, nil) {
+        ctx.beginPDFPage(nil); ctx.setFillColor(NSColor.black.cgColor); ctx.fill(CGRect(x: 72, y: 700, width: 300, height: 14)); ctx.endPDFPage(); ctx.closePDF()
+    }
+    return (photo, pdf)
+}
+
+/// A store whose composer has the two fixture files up.
+@MainActor func composerStore() async -> DropItStore {
+    let model = seededModel(dropIt: true)
+    let store = model.dropIt
+    store.stagingRoot = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("composer-staging", isDirectory: true)
+    let files = fixtureFiles()
+    store.attach([(files.photo, files.photo.lastPathComponent), (files.pdf, files.pdf.lastPathComponent)])
+    for _ in 0..<300 where store.attachments.contains(where: \.busy) { try? await Task.sleep(nanoseconds: 10_000_000) }
+    await store.loadFeed(opening: true)
+    return store
 }
 
 /// Recent turns shaped like the mock's list (the unchanged Messages rows).
@@ -207,6 +244,29 @@ struct SettingsRowCard: View {
             let typed = seededModel(dropIt: true)
             try render(DropItChatPane(store: typed.dropIt, onAllMessages: {}, onHistory: {}, onOpen: { _, _ in }, polls: false,
                                       initialDraft: "Bottle POS: ask Gina for two Clover switcher stories for the price test page"), width: 1000, height: 760, name: "4b-composer-typed", out: out)
+            // 0.5.371 option A: the composer, empty; typed with a photo and a PDF; mid drag-over; and after an Ask with files.
+            let composerOut = CommandLine.arguments.count > 3 ? URL(fileURLWithPath: CommandLine.arguments[3], isDirectory: true) : out
+            try FileManager.default.createDirectory(at: composerOut, withIntermediateDirectories: true)
+            let empty = seededModel(dropIt: true)
+            try render(DropItChatPane(store: empty.dropIt, onAllMessages: {}, onHistory: {}, onOpen: { _, _ in }, polls: false), width: 1000, height: 760, name: "1-composer-empty", out: composerOut)
+            let typedFiles = await composerStore()
+            try render(DropItChatPane(store: typedFiles, onAllMessages: {}, onHistory: {}, onOpen: { _, _ in }, polls: false,
+                                      initialDraft: "What should the price test page say to stores switching from Clover?"), width: 1000, height: 760, name: "2-composer-typed-two-files", out: composerOut)
+            let dragging = await composerStore()
+            try render(DropItChatPane(store: dragging, onAllMessages: {}, onHistory: {}, onOpen: { _, _ in }, polls: false,
+                                      initialDraft: "What should the price test page say to stores switching from Clover?", initialTargeted: true), width: 1000, height: 760, name: "3-composer-drag-over", out: composerOut)
+            let asked = await composerStore()
+            asked.askJob = { _, _, _ in .started("8b1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b") }
+            asked.askState = { ids in [ids[0]: DropIt.AskState(status: "completed", answer: "Lead with the switch, not the discount. The photo shows a counter built for Clover's terminal, so open with *we move your items and history for you*. The brief's $10 offer works as the second line. Use the two store stories Gina is pulling.", number: 216)] }
+            _ = await asked.ask("What should the price test page say to stores switching from Clover?")
+            await asked.refreshAsks()
+            try render(DropItChatPane(store: asked, onAllMessages: {}, onHistory: {}, onOpen: { _, _ in }, polls: false), width: 1000, height: 1100, name: "4-after-ask-with-files", out: composerOut)
+            // Drop with files on a server that takes words only: nothing is dropped, the line says why.
+            let oldServer = await composerStore()
+            oldServer.dropTakes = nil
+            _ = await oldServer.send("File these for the price test")
+            try render(DropItChatPane(store: oldServer, onAllMessages: {}, onHistory: {}, onOpen: { _, _ in }, polls: false,
+                                      initialDraft: "File these for the price test"), width: 1000, height: 760, name: "5-drop-files-older-server", out: composerOut)
             // Settings: the Drop it row in Work chat, on and off.
             try render(SettingsRowCard(model: seededModel(dropIt: true)), width: 720, name: "5-settings-drop-it-on", out: out)
             try render(SettingsRowCard(model: seededModel(dropIt: false)), width: 720, name: "5b-settings-drop-it-off", out: out)

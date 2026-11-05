@@ -269,6 +269,9 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     /// 0.5.333 (Work orchestrator, canary C3 precision fix 1): a fork's child, journaled the moment it is known and never
     /// cleared, so the server's discovery finds the child even when `sessionID` later names something else (or nothing).
     var forkChildID: String? = nil
+    /// 0.5.371: the Messages number the server gave this run's answer (`job.globalMsgNum`), for the COS chat's Ask card.
+    /// Optional, never a new status: an older journal reads it as absent.
+    var messageNumber: Int? = nil
     /// Server-terminal states never block another handoff: completed, failed, refused, canceled (server job states:
     /// completed | failed | canceled | interrupted; interrupted is recorded as failed).
     nonisolated static let terminalStatuses: Set<String> = ["completed", "failed", "refused", "canceled", "reviewed"]
@@ -1312,7 +1315,7 @@ struct WorkRecommendationKey: Equatable {
     /// `resendAllFiles` (0.5.254, "Send all N again"): a Continue or Fork carries every file on the card, not only new ones.
     func submit(source: WorkSource, mode: WorkHandoffMode, session: WorkSession?, model: WorkModelChoice?, prompt: String,
                 journalPrompt: String? = nil, origin: WorkRequestOrigin? = nil, replacing: String? = nil, resendAllFiles: Bool = false, orchestrationRunID: String? = nil, intentID suppliedID: String? = nil, recovery: WorkIndependentRecovery? = nil,
-                contextFileIDs: Set<String>? = nil, sessionFence: Bool = false) async {
+                contextFileIDs: Set<String>? = nil, sessionFence: Bool = false, attachmentIds: [String] = []) async {
         guard !busy else { return }
         if mode != .newSession, let line = KeyLanes.refusal(sessionID: session?.nativeID) { error = line; return }
         // 0.5.252: one send at a time. A send for the glasses does not take `busy` (the Agent workspace stays usable).
@@ -1459,6 +1462,8 @@ struct WorkRecommendationKey: Equatable {
                 row.channel = "job"; try save(row)
                 var job: [String: Any] = ["clientJobId": id, "query": sent, "model": model!.id]
                 if source.id == MeetingConsolidation.source.id { job["maintenanceWorkflow"] = MeetingConsolidation.workflow }
+                // 0.5.371: the COS chat's Ask sends its uploaded files with the words (POST /api/query-jobs attachmentIds).
+                if !attachmentIds.isEmpty { job["attachmentIds"] = Array(attachmentIds.prefix(5)) }
                 // 0.5.250: a Claude session is named after its task (server 6.58.2 passes it to `claude -p --name`), so
                 // Claude's sidebar shows the task, not "General coding session". An older server drops the key.
                 if row.provider == "claude", let name = Self.claudeSessionName(source.sessionNameSource) { job["sessionName"] = name }
@@ -2214,6 +2219,7 @@ struct WorkRecommendationKey: Equatable {
         let state = job["status"]?.string ?? "unknown"
         row.status = WorkHandoffReceipt.receiptStatus(forJobState: state)
         row.result = job["response"]?.string ?? job["partialText"]?.string
+        if let number = job["globalMsgNum"]?.int, number > 0 { row.messageNumber = number }
         row.detail = job["error"]?.object?["message"]?.string ?? (row.status == "completed" ? "Response ready for review. Task completion and publication remain separate."
             : WorkHandoffReceipt.terminalStatuses.contains(row.status) ? "The server reports this run \(state)." : "Still \(state). Check status to read it again.")
         // Server 6.62.1 types a provider's own refusal. A usage limit is not fixed by trying the same assistant again.

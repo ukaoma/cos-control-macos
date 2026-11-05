@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import ImageIO
 
 // MARK: Drop it (0.5.371, server Drop it P1)
 //
@@ -25,11 +26,16 @@ enum DropIt {
     static let allMessages = "All messages"
     static let historyLink = "History"
     static let markAllRead = "Mark all read"
-    static let placeholder = "Drop a thought, ask, or remind me…"
+    static let placeholder = "Ask COS, or drop a thought, a task, a reminder"
     static let sendLabel = "Drop it"
-    static let footReturn = "Return drops it. COS asks only when it is not sure."
+    /// 0.5.371 option A (Miles, 2026-11-05): two buttons, as on the web. Ask (filled) gets an answer from COS; Drop (outlined)
+    /// files it. Return asks, Option-Return drops, Shift-Return starts a new line.
+    static let askLabel = "Ask"
+    static let dropLabel = "Drop"
+    static let askingLine = "Asking…"
+    static let footReturn = "Return asks. Option-Return drops it."
     static let footNothingOut = "A drop never sends anything to anyone."
-    static let chatEmpty = "Nothing here yet. Drop a thought below, and COS texts back where it went."
+    static let chatEmpty = "Nothing here yet. Ask COS something, or drop a thought and COS files it."
     static let historyTitle = "History"
     static let historyLine = "Everything you dropped, where it went, and how it ended."
     static let backToChat = "Back to the COS chat"
@@ -138,6 +144,8 @@ enum DropIt {
         var replayed: Bool
         /// The server's `next: {kind: 'ask', prompt}`: Control submits the existing Ask job, then links it (POST /drops/:id/ask).
         var askPrompt: String?
+        /// 6.99.13: a drop with files that became a question carries them on (`next.attachmentIds`), so the Ask sees the files.
+        var askAttachmentIds: [String] = []
     }
     struct Summary: Equatable, Sendable {
         var unread = 0
@@ -195,7 +203,9 @@ enum DropIt {
     static func answer(_ details: [String: JSONValue]) -> Answer? {
         guard let drop = drop(details["drop"]) else { return nil }
         let prompt = details["next"]?.object.flatMap { $0["kind"]?.string == "ask" ? $0["prompt"]?.string : nil }
-        return Answer(drop: drop, items: (details["items"]?.array ?? []).compactMap(item), replayed: details["replayed"]?.bool == true, askPrompt: prompt)
+        let files = prompt == nil ? [] : (details["next"]?.object?["attachmentIds"]?.array ?? []).compactMap(\.string).filter(mediaIDValid)
+        return Answer(drop: drop, items: (details["items"]?.array ?? []).compactMap(item), replayed: details["replayed"]?.bool == true, askPrompt: prompt,
+                      askAttachmentIds: Array(files.prefix(maxAttachments)))
     }
     static func summary(_ details: [String: JSONValue]) -> Summary {
         Summary(unread: max(0, details["unread"]?.int ?? 0), lastLine: details["lastLine"]?.string ?? "", lastAt: date(details["lastAt"]),
@@ -318,9 +328,13 @@ enum DropIt {
         return words
     }
 
-    /// A drop: its id and the words on stdin, never in the arguments.
-    static func submitCall(dropId: String, text: String) -> (arguments: [String], stdin: Data)? {
-        guard let words = cleaned(text), let data = json(["dropId": dropId, "text": words]) else { return nil }
+    /// A drop: its id and the words on stdin, never in the arguments. 0.5.371: with files only for a server that takes them
+    /// (`capabilities.dropIt.attachments`, 6.99.13); the store refuses before this on an older one.
+    static func submitCall(dropId: String, text: String, attachmentIds: [String] = []) -> (arguments: [String], stdin: Data)? {
+        guard let words = cleaned(text) else { return nil }
+        var body: [String: Any] = ["dropId": dropId, "text": words]
+        if !attachmentIds.isEmpty { body["attachmentIds"] = Array(attachmentIds.prefix(maxAttachments)) }
+        guard let data = json(body) else { return nil }
         return (call("submit"), data)
     }
 
@@ -554,6 +568,221 @@ enum DropIt {
     }
 }
 
+// MARK: Ask and attachments (0.5.371 option A, Miles 2026-11-05)
+//
+// "I like your recommendation so long as it includes the attachment functionality for rich media. Should work similar to the drag
+// and drop on meetings with files." The composer takes photos, video, PDFs and documents by drop, paste or Add, up to five per
+// message, with the limits the server's Ask uploads have (server/web-control/panes/cos-chat.js, 6.99.12, is the reference). Each
+// file goes up at once (POST /api/media for a photo, resized here to a 1024 px JPEG; POST /api/media/file for the rest) through
+// the helper's `drop-it --op upload`; Ask sends the media ids with the words through Control's existing Ask (a Today Work run,
+// `work-new`, POST /api/query-jobs), and Drop sends them only to a server that says it takes them.
+
+extension DropIt {
+    /// MAX_ATTACHMENTS_PER_PROMPT, and the server's per-kind limits (image-safety.ts, rich-media-safety.ts).
+    static let maxAttachments = 5
+    static let photoMaxBytes: Int64 = 2 * 1024 * 1024
+    static let docMaxBytes: Int64 = 64 * 1024 * 1024
+    static let videoMaxBytes: Int64 = 100 * 1024 * 1024
+    static let photoEdge = 1024
+    static let photoQuality = 0.85
+    /// An Ask's words: the composer's, up to what a Today run takes. A drop keeps its 2,000.
+    static let askTextMax = 20_000
+
+    static let attachHelp = "Attach photos or files"
+    static let addLabel = "Add"
+    static let pasteLabel = "Paste"
+    static let dropZoneLine = "Drop photos, video, PDFs or documents here, or paste a screenshot."
+    static let dropZoneTarget = "Drop to attach to this message"
+    static let attachKinds = "COS takes photos, PDF, TXT, MD, CSV, JSON, XLSX, MP4 and MOV."
+    static let dropWordsOnlyLine = "Drop takes words only on this server. Ask sends the files, or update the COS server."
+    static let filesWaitLine = "Wait for the files to finish uploading, then send."
+    static let fileFailedLine = "A file did not upload. Retry it or remove it, then send."
+    static let askTooLongLine = "An ask is 1 to 20,000 characters."
+    static let askSource = "Asked on this Mac"
+    static let askWaiting = "COS is answering. It also lands in Messages."
+    static let askFailedLine = "COS could not finish this answer. Ask again when you are ready."
+    static let nothingToPasteLine = "There is no screenshot or file to paste."
+    static let linkNotFileLine = "A link goes in the words, not as a file."
+
+    static func mediaIDValid(_ id: String) -> Bool { id.range(of: "\\Am_[a-f0-9]{24}\\z", options: .regularExpression) != nil }
+
+    /// What a file is to COS.
+    enum FileKind: String, Sendable, Equatable { case photo, doc, video }
+    static let photoExtensions: Set<String> = ["jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "tif", "tiff"]
+    static let docTypes: [String: String] = ["pdf": "application/pdf", "txt": "text/plain", "md": "text/markdown", "csv": "text/csv",
+                                             "json": "application/json", "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]
+    static let videoTypes: [String: String] = ["mp4": "video/mp4", "m4v": "video/mp4", "mov": "video/quicktime"]
+
+    static func sizeText(_ bytes: Int64) -> String {
+        if bytes >= 1_048_576 {
+            let mb = Double(bytes) / 1_048_576
+            return (mb >= 10 ? String(Int(mb.rounded())) : String(format: "%.1f", mb)) + " MB"
+        }
+        return String(max(1, Int((Double(bytes) / 1024).rounded()))) + " KB"
+    }
+
+    /// The kind and type a file goes up as, or the sentence that says why it cannot be attached. `secret`: the card files' rule
+    /// (WorkCardFiles.looksSecret), so a key or an .env is never attached.
+    static func classify(name: String, bytes: Int64, secret: Bool = false) -> Result<(kind: FileKind, mime: String), FileRefusal> {
+        if secret { return .failure(FileRefusal(name + " looks like a secrets file, so it was not attached.")) }
+        let ext = (name as NSString).pathExtension.lowercased()
+        if photoExtensions.contains(ext) { return .success((.photo, "image/jpeg")) }
+        if let mime = videoTypes[ext] {
+            guard bytes <= videoMaxBytes else { return .failure(FileRefusal(name + " is " + sizeText(bytes) + ". The largest video COS takes is 100 MB.")) }
+            return .success((.video, mime))
+        }
+        if let mime = docTypes[ext] {
+            guard bytes <= docMaxBytes else { return .failure(FileRefusal(name + " is " + sizeText(bytes) + ". The largest file COS takes is 64 MB.")) }
+            return .success((.doc, mime))
+        }
+        return .failure(FileRefusal(name + " cannot be attached. " + attachKinds))
+    }
+    /// A sent file's kind from its name, for its symbol.
+    static func fileKind(name: String) -> FileKind {
+        let ext = (name as NSString).pathExtension.lowercased()
+        return photoExtensions.contains(ext) ? .photo : videoTypes[ext] != nil ? .video : .doc
+    }
+    struct FileRefusal: Error, Equatable, Sendable { var line: String; init(_ line: String) { self.line = line } }
+    /// One file handed to the composer: where it is, its name, and whether the composer made the copy (and removes it).
+    struct Incoming: Equatable, Sendable { var url: URL; var name: String; var owned: Bool }
+
+    /// One file on the composer.
+    struct Attachment: Identifiable, Equatable, Sendable {
+        enum State: Equatable, Sendable { case preparing, uploading, ready, failed }
+        var id: String
+        var name: String
+        var kind: FileKind
+        var mime: String
+        var bytes: Int64
+        /// What goes up: the file itself, or (a photo) its resized copy.
+        var source: URL
+        /// The photo's resized copy, for the thumbnail.
+        var thumb: URL?
+        var state: State = .preparing
+        var mediaId: String?
+        var error: String?
+        /// Copies this composer made (a paste, a resized photo): removed with the attachment.
+        var owned: [URL] = []
+        var busy: Bool { state == .preparing || state == .uploading }
+        var meta: String {
+            switch state {
+            case .preparing: kind == .photo ? "Resizing" : "Preparing"
+            case .uploading: "Uploading"
+            case .failed: error ?? "Did not upload"
+            case .ready: sizeText(bytes)
+            }
+        }
+    }
+
+    /// Why Ask cannot go yet, or nil. The words are required (a Today run is words first); every file must be up.
+    static func askBlock(text: String, files: [Attachment]) -> String? {
+        let words = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !words.isEmpty else { return "" }
+        guard words.unicodeScalars.count <= askTextMax else { return askTooLongLine }
+        if files.contains(where: \.busy) { return filesWaitLine }
+        if files.contains(where: { $0.state == .failed }) { return fileFailedLine }
+        return nil
+    }
+
+    /// Why Drop cannot take these files, or nil. A server that does not advertise `dropIt.attachments` takes words only: the
+    /// drop is refused with the files, never sent without them.
+    static func dropBlock(files: [Attachment], serverTakes: Int?) -> String? {
+        guard !files.isEmpty else { return nil }
+        guard let takes = serverTakes, takes > 0 else { return dropWordsOnlyLine }
+        if files.count > takes { return "This COS server takes up to \(takes) files on a drop. Remove some, or Ask instead." }
+        if files.contains(where: \.busy) { return filesWaitLine }
+        if files.contains(where: { $0.state == .failed }) { return fileFailedLine }
+        return nil
+    }
+
+    /// The media ids of the files that are up, in order, never more than five.
+    static func readyIDs(_ files: [Attachment]) -> [String] {
+        var out: [String] = []
+        for id in files.filter({ $0.state == .ready }).compactMap(\.mediaId) where mediaIDValid(id) && !out.contains(id) { out.append(id) }
+        return Array(out.prefix(maxAttachments))
+    }
+
+    /// The upload: the file's path and its name on stdin (never argv), and what it is.
+    static func uploadCall(_ file: Attachment, capturedAt: Date) -> (arguments: [String], stdin: Data)? {
+        let stamp = ISO8601DateFormatter().string(from: capturedAt)
+        guard file.source.isFileURL, let data = json(["path": file.source.path, "name": String(file.name.prefix(120)), "kind": file.kind.rawValue,
+                                                     "mime": file.mime, "capturedAt": stamp]) else { return nil }
+        return (call("upload"), data)
+    }
+
+    /// The server's media id, or the chip's words for why it did not go up (web parity: UPLOAD_COPY).
+    static func uploadResult(_ reply: Reply) -> Result<String, FileRefusal> {
+        switch reply {
+        case .ok(let details):
+            guard let id = details["mediaId"]?.string, mediaIDValid(id) else { return .failure(FileRefusal("The Mac did not keep the file")) }
+            return .success(id)
+        case .refused(let code, _):
+            switch code {
+            case "batch_too_large": return .failure(FileRefusal("Too large for one upload"))
+            case "too_many_images": return .failure(FileRefusal("Up to 5 attachments per message"))
+            case "media_processing_unavailable": return .failure(FileRefusal("The Mac cannot read photos right now"))
+            case "unsupported_kind", "unsupported_media_type": return .failure(FileRefusal("COS cannot read this kind of file"))
+            case "file_too_large", "attachment_too_large", "payload_too_large": return .failure(FileRefusal("Too large for COS"))
+            case "server_maintenance": return .failure(FileRefusal("The Mac is updating. Retry in a minute"))
+            default: return .failure(FileRefusal("Did not upload"))
+            }
+        case .unsupported: return .failure(FileRefusal("This COS server takes no files. Update it"))
+        case .unreachable: return .failure(FileRefusal("The COS server did not answer. Retry"))
+        case .noToken: return .failure(FileRefusal("Not paired with the COS server"))
+        case .off: return .failure(FileRefusal("Did not upload"))
+        }
+    }
+
+    /// A photo at most 1024 px on its longest edge, as a JPEG at quality 0.85, transparency on white (web parity: resizePhoto).
+    static func photoJPEG(_ source: URL) -> Data? {
+        guard let image = CGImageSourceCreateWithURL(source as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
+                                        kCGImageSourceThumbnailMaxPixelSize: photoEdge]
+        guard let scaled = CGImageSourceCreateThumbnailAtIndex(image, 0, options as CFDictionary) else { return nil }
+        let w = scaled.width, h = scaled.height
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1)); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        ctx.draw(scaled, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let flat = ctx.makeImage() else { return nil }
+        let out = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(out, "public.jpeg" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dest, flat, [kCGImageDestinationLossyCompressionQuality: photoQuality] as CFDictionary)
+        return CGImageDestinationFinalize(dest) ? out as Data : nil
+    }
+
+    /// An Ask from this Mac, as the chat shows it: his words and files on the right, the answer under it. In memory, like the web's.
+    struct Ask: Identifiable, Equatable, Sendable {
+        struct File: Equatable, Sendable { var name: String; var kind: FileKind; var thumb: URL? }
+        var id: String
+        var words: String
+        var files: [File]
+        var at: Date
+        /// What the run says so far: its state, its words, and the Messages number the server gave it.
+        var status = "running"
+        var answer: String?
+        var number: Int?
+        var finished: Bool { ["completed", "failed", "canceled", "refused"].contains(status) }
+    }
+    /// What the window reads back for an Ask (the Work receipt behind it).
+    struct AskState: Equatable, Sendable { var status: String; var answer: String?; var number: Int? }
+
+    /// An Ask as a chat item, so it takes its place among the drops by time (kind "ask" is this Mac's own, never the server's).
+    static func askItem(_ ask: Ask) -> Item {
+        Item(id: "ask-" + ask.id, kind: "ask", threadId: ask.id, createdAt: ask.at, readAt: ask.at, source: "mac", title: nil, line: ask.words,
+             links: [], actions: [], live: false, undoUntil: nil)
+    }
+    /// The chat's items with this Mac's Asks among them, oldest first.
+    static func merged(_ items: [Item], asks: [Ask]) -> [Item] {
+        guard !asks.isEmpty else { return items }
+        return (items + asks.map(askItem)).enumerated().sorted { a, b in
+            a.element.createdAt == b.element.createdAt ? a.offset < b.offset : a.element.createdAt < b.element.createdAt
+        }.map(\.element)
+    }
+    /// The card title over an answer: its Messages number once the server gave one.
+    static func askTitle(_ ask: Ask) -> String { ask.number.map { "Message #\($0)" } ?? "Asking COS" }
+}
+
 // MARK: The store
 
 @MainActor
@@ -590,8 +819,32 @@ final class DropItStore: ObservableObject {
 
     var run: Run
     /// The existing Ask job (a Today Work run with the words), started for a drop the server routes to an ask. Returns the
-    /// run's clientJobId, or nil when it did not start (its own guard, the switch, no model).
-    var askRun: (@MainActor (String, String) async -> String?)?
+    /// run's clientJobId, or nil when it did not start (its own guard, the switch, no model). The third value is the drop's
+    /// files (6.99.13 `next.attachmentIds`), which go with the question.
+    var askRun: (@MainActor (String, String, [String]) async -> String?)?
+
+    // MARK: Ask and attachments (0.5.371 option A)
+
+    /// What starting an Ask came to: the run's clientJobId, or the line that says why it did not start.
+    enum AskStart: Equatable, Sendable { case started(String), refused(String) }
+    /// The composer's Ask: the same Today Work run (its guard, its switch, its model pick) with the words and the media ids.
+    var askJob: (@MainActor (_ target: String, _ prompt: String, _ attachmentIds: [String]) async -> AskStart)?
+    /// Reads the runs behind this Mac's Asks back (their receipts), by clientJobId.
+    var askState: (@MainActor (_ ids: [String]) async -> [String: DropIt.AskState])?
+    /// The files on the composer, in the order they were added.
+    @Published private(set) var attachments: [DropIt.Attachment] = []
+    /// This Mac's Asks, oldest first, with what their runs say so far.
+    @Published private(set) var asks: [DropIt.Ask] = []
+    /// An Ask is starting.
+    @Published private(set) var asking = false
+    /// `capabilities.dropIt.attachments` (6.99.13): how many files a drop takes. nil or 0: words only.
+    var dropTakes: Int?
+    /// The card files' secret-name rule (WorkCardFiles.looksSecret), set by the app.
+    var isSecret: (String) -> Bool = { _ in false }
+    /// Where resized photos and pasted screenshots wait to go up: this user's only, never iCloud.
+    var stagingRoot = FileManager.default.temporaryDirectory.appendingPathComponent("cos-drop-it-attachments", isDirectory: true)
+    /// When a file went up (the server's capturedAt), injectable for the checks.
+    var now: () -> Date = Date.init
     /// How many history requests went out (the checks count them).
     private(set) var historyRequests = 0
     private var historyGeneration = 0
@@ -666,7 +919,10 @@ final class DropItStore: ObservableObject {
     func send(_ text: String) async -> DropIt.Answer? {
         guard !sending else { return nil }
         let dropId = DropIt.newDropID()
-        guard let call = DropIt.submitCall(dropId: dropId, text: text) else { line = DropIt.tooLongLine; return nil }
+        // Files go with a drop only to a server that takes them; otherwise nothing is dropped and the files stay.
+        if let block = DropIt.dropBlock(files: attachments, serverTakes: dropTakes) { line = block; return nil }
+        let files = DropIt.readyIDs(attachments)
+        guard let call = DropIt.submitCall(dropId: dropId, text: text, attachmentIds: files) else { line = DropIt.tooLongLine; return nil }
         sending = true
         defer { sending = false }
         line = nil
@@ -676,16 +932,152 @@ final class DropItStore: ObservableObject {
             return nil
         }
         merge(answer)
-        if let prompt = answer.askPrompt { await startAsk(dropId: answer.drop.id, prompt: prompt) }
+        if !files.isEmpty { attachments.removeAll { files.contains($0.mediaId ?? "") } }
+        if let prompt = answer.askPrompt { await startAsk(dropId: answer.drop.id, prompt: prompt, files: answer.askAttachmentIds) }
         return answer
     }
 
     /// The existing Ask job, then the link. A run that does not start leaves the drop asked, with a line that says why.
-    private func startAsk(dropId: String, prompt: String) async {
-        guard let askRun, let job = await askRun(dropId, prompt) else { line = DropIt.askHeldLine; return }
+    private func startAsk(dropId: String, prompt: String, files: [String] = []) async {
+        guard let askRun, let job = await askRun(dropId, prompt, files) else { line = DropIt.askHeldLine; return }
         let reply = await ask(DropIt.call("ask", ["--drop", dropId, "--job", job, "--generation", "1"]))
         if case .ok(let details) = reply, let answer = DropIt.answer(details) { merge(answer) }
         else { line = DropIt.line(reply) }
+    }
+
+    /// Ask: the words and the files that are up, as one Today Work run (`work-new`, POST /api/query-jobs), so the answer lands
+    /// in Messages with its number and here under his words. True when it started (the composer clears).
+    @discardableResult
+    func ask(_ text: String) async -> Bool {
+        guard !asking, !sending else { return false }
+        if let block = DropIt.askBlock(text: text, files: attachments) { if !block.isEmpty { line = block }; return false }
+        guard let askJob else { line = DropIt.askHeldLine; return false }
+        asking = true
+        defer { asking = false }
+        line = nil
+        let words = text.replacingOccurrences(of: "\r\n", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let ids = DropIt.readyIDs(attachments)
+        let sent = attachments.filter { ids.contains($0.mediaId ?? "") }
+        switch await askJob("cos:ask:" + DropIt.newDropID(), words, ids) {
+        case .started(let job):
+            asks.append(DropIt.Ask(id: job, words: words, files: sent.map { DropIt.Ask.File(name: $0.name, kind: $0.kind, thumb: $0.thumb) }, at: now()))
+            // The files went with the words; their copies stay for the thumbnails under his bubble.
+            attachments.removeAll { ids.contains($0.mediaId ?? "") }
+            return true
+        case .refused(let reason):
+            line = reason
+            return false
+        }
+    }
+
+    /// Reads back the runs of the Asks still going.
+    func refreshAsks() async {
+        let open = asks.filter { !$0.finished }.map(\.id)
+        guard !open.isEmpty, let askState else { return }
+        let states = await askState(open)
+        for index in asks.indices {
+            guard let state = states[asks[index].id] else { continue }
+            asks[index].status = state.status
+            if let answer = state.answer, !answer.isEmpty { asks[index].answer = answer }
+            if let number = state.number { asks[index].number = number }
+        }
+    }
+
+    /// Files from a drop, a paste or Add. Each goes up at once; past five, or a kind COS cannot read, it is refused with a line
+    /// and never added. `owned`: copies this composer made, removed with the attachment.
+    func attach(_ files: [(url: URL, name: String)], owned: Bool = false, refusals extra: [String] = []) {
+        attach(files.map { DropIt.Incoming(url: $0.url, name: $0.name, owned: owned) }, refusals: extra)
+    }
+    /// The same, file by file: a drop can bring a Finder file (his, left alone) and a promise this composer copied (owned).
+    func attach(_ files: [DropIt.Incoming], refusals extra: [String] = []) {
+        var refusals = extra
+        for file in files {
+            let owned = file.owned
+            guard attachments.count < DropIt.maxAttachments else {
+                refusals.append("Up to 5 attachments per message. " + file.name + " was not added.")
+                if owned { try? FileManager.default.removeItem(at: file.url) }
+                continue
+            }
+            let bytes = ((try? FileManager.default.attributesOfItem(atPath: file.url.path))?[.size] as? NSNumber)?.int64Value ?? 0
+            switch DropIt.classify(name: file.name, bytes: bytes, secret: isSecret(file.name)) {
+            case .failure(let refusal):
+                refusals.append(refusal.line)
+                if owned { try? FileManager.default.removeItem(at: file.url) }
+            case .success(let what):
+                let item = DropIt.Attachment(id: DropIt.newDropID(), name: file.name, kind: what.kind, mime: what.mime, bytes: bytes, source: file.url,
+                                             owned: owned ? [file.url] : [])
+                attachments.append(item)
+                Task { await upload(item.id) }
+            }
+        }
+        line = refusals.isEmpty ? nil : refusals.joined(separator: " ")
+    }
+
+    /// A pasted screenshot (PNG data), named for when it was pasted, as the meeting paste names it.
+    func attachImage(_ png: Data, at date: Date = Date()) {
+        let format = DateFormatter()
+        format.locale = Locale(identifier: "en_US_POSIX"); format.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        let name = "Pasted screenshot " + format.string(from: date) + ".png"
+        guard let url = stage(png, ext: "png") else { line = DropIt.failedLine; return }
+        attach([(url, name)], owned: true)
+    }
+
+    /// Writes bytes into the staging folder (0700, the file 0600). nil when it could not.
+    func stage(_ data: Data, ext: String) -> URL? {
+        do {
+            try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let url = stagingRoot.appendingPathComponent(DropIt.newDropID() + "." + ext)
+            try data.write(to: url, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            return url
+        } catch { return nil }
+    }
+
+    func removeAttachment(_ id: String) {
+        guard let index = attachments.firstIndex(where: { $0.id == id }) else { return }
+        for url in attachments[index].owned { try? FileManager.default.removeItem(at: url) }
+        attachments.remove(at: index)
+        if line == DropIt.fileFailedLine || line == DropIt.filesWaitLine || line == DropIt.dropWordsOnlyLine { line = nil }
+    }
+
+    func retryAttachment(_ id: String) {
+        guard let index = attachments.firstIndex(where: { $0.id == id }), attachments[index].state == .failed else { return }
+        attachments[index].state = .preparing
+        attachments[index].error = nil
+        Task { await upload(id) }
+    }
+
+    /// One file up: a photo is resized first. A file removed while it goes up is let go (its answer is dropped).
+    private func upload(_ id: String) async {
+        guard var file = attachments.first(where: { $0.id == id }) else { return }
+        if file.kind == .photo, file.thumb == nil {
+            let source = file.source
+            let jpeg = await Task.detached { DropIt.photoJPEG(source) }.value
+            guard attachments.contains(where: { $0.id == id }) else { return }
+            guard let jpeg else { return fail(id, "This photo could not be read") }
+            guard Int64(jpeg.count) <= DropIt.photoMaxBytes else { return fail(id, "Over 2 MB even after resizing") }
+            guard let url = stage(jpeg, ext: "jpg") else { return fail(id, "Did not upload") }
+            file.source = url; file.thumb = url; file.bytes = Int64(jpeg.count); file.owned.append(url)
+        }
+        file.state = .uploading
+        set(file)
+        guard let call = DropIt.uploadCall(file, capturedAt: now()) else { return fail(id, "Did not upload") }
+        let reply = await ask(call.arguments, call.stdin)
+        guard var current = attachments.first(where: { $0.id == id }) else { return }
+        switch DropIt.uploadResult(reply) {
+        case .success(let media): current.mediaId = media; current.state = .ready; current.error = nil
+        case .failure(let refusal): current.state = .failed; current.error = refusal.line
+        }
+        set(current)
+        if current.state == .ready, line == DropIt.filesWaitLine, !attachments.contains(where: \.busy) { line = nil }
+    }
+    private func set(_ file: DropIt.Attachment) {
+        if let index = attachments.firstIndex(where: { $0.id == file.id }) { attachments[index] = file }
+    }
+    private func fail(_ id: String, _ why: String) {
+        guard let index = attachments.firstIndex(where: { $0.id == id }) else { return }
+        attachments[index].state = .failed
+        attachments[index].error = why
     }
 
     func isBusy(_ thread: String) -> Bool { busyThreads.contains(thread) }
@@ -755,6 +1147,8 @@ final class DropItStore: ObservableObject {
         let reply = await ask(DropIt.call("settings"))
         guard case .ok(let details) = reply else { if case .unsupported = reply { settings = nil }; return }
         settings = DropIt.Settings(enabled: details["enabled"]?.bool == true, envDecides: details["source"]?.string == "env")
+        // 6.99.13 says on its settings too how many files a drop takes; an older server says nothing and keeps what health said.
+        if let files = details["attachments"]?.int { dropTakes = files }
     }
 
     /// PUT /api/drops/settings. Returns the switch as the server now has it, or nil when the change did not go.
