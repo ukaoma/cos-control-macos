@@ -41,6 +41,10 @@ enum MacRecordingSigtermWiring {
 
 @MainActor extension COSAppDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // 0.5.373: a breadcrumb for every quit, so a slow one shows whether a recording's save held it or nothing did.
+        let (logPending, logNeeds, logWired) = (MacRecordingTermination.pending, MacRecordingTermination.needsPrepare?() ?? true,
+                                                MacRecordingTermination.prepare != nil)
+        recordingLog.notice("shouldTerminate: pending=\(logPending, privacy: .public) needsPrepare=\(logNeeds, privacy: .public) wired=\(logWired, privacy: .public)")
         guard let prepare = MacRecordingTermination.prepare,
               MacRecordingTermination.pending || MacRecordingTermination.needsPrepare?() ?? true else { return .terminateNow }
         guard !MacRecordingTermination.pending else { return .terminateLater }
@@ -51,6 +55,7 @@ enum MacRecordingSigtermWiring {
             await prepare()
             guard MacRecordingTermination.generation == mine else { return }   // cancelled meanwhile
             MacRecordingTermination.pending = false
+            recordingLog.notice("shouldTerminate: the recording's save finished; quitting")
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater

@@ -16,6 +16,8 @@ Lanes:
   macrec      Sources/MacRecordingCore.swift with Tests/MacRecordingChecks.swift
   wiring      Tests/run-app-update-finish.sh wiring (the whole app, against a stand-in and the real helper)
   pins        Tests/app-update-finish-pins.py (Python only)
+  appquit     0.5.373: Tests/run-app-quit.sh (AppQuit.swift on a real NSApplication: the swap's quit request)
+  quitpins    0.5.373: Tests/app-update-quit-request-pins.py (Python only)
 """
 import json, os, pathlib, shutil, subprocess, sys, tempfile, time
 
@@ -25,6 +27,8 @@ C = "Sources/ControllerModel.swift"
 R = "Sources/MacRecording.swift"
 RC = "Sources/MacRecordingCore.swift"
 V = "Sources/Views.swift"
+A = "Sources/AppQuit.swift"
+APP = "Sources/COSControlApp.swift"
 
 # (name, file, original, mutant, words (any one names the killing failure), lane)
 MUTANTS = [
@@ -55,8 +59,8 @@ MUTANTS = [
      ["[unknown waits the minute]"], "escalation"),
     ("no linger", H, "        while bundleHasRunningProcess(live), Date() < lingerUntil { Thread.sleep(forTimeInterval: 0.2) }\n", "",
      ["[recording reason]", "[linger installs]"], "escalation"),
-    ("forcedQuit not recorded", H, '            "forcedQuit": forced != nil,\n        ]\n        if let forced {',
-     '            "forcedQuit": false,\n        ]\n        if let forced {', ["[success records forced quit]"], "escalation"),
+    ("forcedQuit not recorded", H, '            "forcedQuit": forced != nil,\n            "quitRequested": true,',
+     '            "forcedQuit": false,\n            "quitRequested": true,', ["[success records forced quit]"], "escalation"),
     ("staged verb skips its checks", H, "            try checkStagedControlApp(staged, version: version, build: build)\n        } catch {\n            details[\"message\"]",
      "        } catch {\n            details[\"message\"]", ["[staged verb verifies]"], "escalation"),
     ("staged verb any failure", H, '        guard let failureReason, ["quitTimeout", "recording"].contains(failureReason), let failureAt,',
@@ -140,6 +144,39 @@ MUTANTS = [
     ("launch never asks for a staged build", C, "            await self?.checkStagedAppUpdate()\n", "", ["[launch offer order]"], "pins"),
     ("banner opens What's New on a staged offer", V, "                if model.appUpdateFlow.finishesStaged { model.finishStagedAppUpdate() } else { model.presentWhatsNew() }",
      "                model.presentWhatsNew()", ["[banner finishes in one click]"], "pins"),
+    # 0.5.373: the swap asks Control to quit (real helper and a listening stand-in, escalation case 8).
+    ("swap never asks", H, "        requestLiveQuit(live)\n        switch quitLiveForSwap(live, timings: timings) {",
+     "        switch quitLiveForSwap(live, timings: timings) {", ["[asks control to quit]"], "escalation"),
+    ("request names no bundle", H, "Notification.Name(Self.appUpdateQuitRequestName), object: live.path, userInfo: nil",
+     "Notification.Name(Self.appUpdateQuitRequestName), object: nil, userInfo: nil", ["[asks control to quit]", "[request names the live bundle]"], "escalation"),
+    ("request under another name", H, 'static let appUpdateQuitRequestName = "com.gotcos.control.appUpdate.quitRequest"',
+     'static let appUpdateQuitRequestName = "com.gotcos.control.appUpdate.quit"', ["[asks control to quit]"], "escalation"),
+    ("request not recorded", H, '            "quitRequested": true,', '            "quitRequested": false,', ["[success records the request]"], "escalation"),
+    ("quit time not recorded", H, '            "quitSeconds": quitSeconds,', '            "quitSeconds": 99,', ["[success records the request]"], "escalation"),
+    # 0.5.373: Control's listener (run-app-quit.sh: the rule, then a real never-active NSApplication against posts).
+    ("listener ignores the bundle", A, "        guard let object, samePath(object, ownBundle) else { return .otherBundle }",
+     "        guard object != nil else { return .otherBundle }", ["[ignores another bundle]"], "appquit"),
+    ("listener ignores what is staged", A, "        guard let pendingBuild, pendingBuild > currentBuild else { return .nothingNewerStaged }\n", "",
+     ["[nothing newer staged]"], "appquit"),
+    ("same build counts as newer", A, "guard let pendingBuild, pendingBuild > currentBuild else", "guard let pendingBuild, pendingBuild >= currentBuild else",
+     ["[nothing newer staged]"], "appquit"),
+    ("listener asks twice", A, "        return quitPending ? .alreadyQuitting : .quit", "        return .quit", ["[already quitting]"], "appquit"),
+    ("listener never quits", A, '        if decided == .quit { AppQuit.request("update swap") }', "        _ = decided", ["[quits on its own request]"], "appquit"),
+    ("symlinks not resolved", A, "            URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path",
+     "            URL(fileURLWithPath: path).standardizedFileURL.path", ["[quits on its own request]", "[decide]"], "appquit"),
+    ("empty paths are one bundle", A, "        guard !a.isEmpty, !b.isEmpty else { return false }\n", "", ["[ignores another bundle]"], "appquit"),
+    ("string build ignored", A, '        if let build = object["build"] as? String { return Int(build) }\n', "", ["[decide]"], "appquit"),
+    ("listener reads no record", A, "        let pending = record.flatMap { pendingBuild(at: $0) }", "        let pending: Int? = 199",
+     ["[nothing newer staged]"], "appquit"),
+    # Expected to SURVIVE on this Mac unless an inactive app's delivery is suspended: reported, not assumed.
+    ("post not immediate", A, "object: liveBundle, userInfo: nil, deliverImmediately: true)", "object: liveBundle, userInfo: nil, deliverImmediately: false)",
+     ["[quits on its own request]"], "appquit"),
+    # 0.5.373 wiring nothing executes in the lanes above (pins).
+    ("app never listens", APP, "        AppUpdateQuitRequest.install(ownBundle: Bundle.main.bundleURL.path, currentBuild: ControllerModel.currentBuild)\n", "",
+     ["[app listens]"], "quitpins"),
+    ("app forgets a waiting quit", APP, "        AppUpdateQuitRequest.quitPending = { MacRecordingTermination.pending }\n", "", ["[app listens]"], "quitpins"),
+    ("swap asks after the wait", H, "        requestLiveQuit(live)\n        switch quitLiveForSwap(live, timings: timings) {\n        case .quit:\n",
+     "        switch quitLiveForSwap(live, timings: timings) {\n        case .quit:\n            requestLiveQuit(live)\n", ["[asks before the wait]"], "quitpins"),
     ("forced quit before the blockers", H, "        let blockers = appUpdateWorkBlockers()\n        if !blockers.isEmpty {\n            try writeAppUpdateJSON(updatesFailureURL, [\n                \"reason\": \"busy\",",
      "        let blockers: [String] = []\n        if !blockers.isEmpty {\n            try writeAppUpdateJSON(updatesFailureURL, [\n                \"reason\": \"busy\",", ["[swap order]"], "pins"),
 ]
@@ -181,7 +218,7 @@ def run(lane, copy, scratch):
                 return 1, p.stdout + p.stderr
         live = scratch / "live-app"
         if not live.exists():
-            subprocess.run(["/usr/bin/cc", "-O1", "-o", str(live), str(copy / "Tests/fixtures/app-update/live-app.c")], check=True)
+            subprocess.run(["/usr/bin/cc", "-O1", "-o", str(live), str(copy / "Tests/fixtures/app-update/live-app.c"), "-framework", "CoreFoundation"], check=True)
         p = subprocess.run(["/usr/bin/python3", str(copy / "Tests/app-update-escalation-checks.py"), str(helper), str(live)],
                            capture_output=True, text=True, timeout=900)
         return p.returncode, p.stdout + p.stderr
@@ -205,6 +242,11 @@ def run(lane, copy, scratch):
                 return 124, "the checks did not finish"
         finally:
             shutil.rmtree(out_dir, ignore_errors=True)
+    if lane == "appquit":
+        return guarded(["/bin/zsh", str(copy / "Tests/run-app-quit.sh")], env=env)
+    if lane == "quitpins":
+        p = subprocess.run(["/usr/bin/python3", str(copy / "Tests/app-update-quit-request-pins.py"), str(copy)], capture_output=True, text=True)
+        return p.returncode, p.stdout + p.stderr
     if lane == "wiring":
         return guarded(["/bin/zsh", str(copy / "Tests/run-app-update-finish.sh"), str(scratch / "baseline-helper")],
                        env=dict(env, COS_APP_UPDATE_FINISH_LANE="wiring"))
@@ -222,7 +264,7 @@ def main():
         shutil.rmtree(copy)
     shutil.copytree(src, copy, ignore=shutil.ignore_patterns(".git", "dist", "*.zip"))
     chosen = [m for m in MUTANTS if not only or m[0] in only]
-    lanes = sorted({m[5] for m in chosen}, key=["pins", "checks", "macrec", "selftest", "escalation", "wiring"].index)
+    lanes = sorted({m[5] for m in chosen}, key=["pins", "quitpins", "checks", "macrec", "appquit", "selftest", "escalation", "wiring"].index)
     for lane in lanes:
         code, out = run(lane, copy, scratch)
         if code != 0:

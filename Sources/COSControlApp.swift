@@ -165,6 +165,10 @@ struct COSControlApp: App {
         MacRecordingTermination.prepare = { await model.macRecording.prepareToQuit() }
         MacRecordingSigtermWiring.install()
         MacRecordingTermination.needsPrepare = { model.macRecording.needsQuitTeardown }
+        // 0.5.373: the update swap asks Control to quit (a shell-driven install never did, so each one was SIGTERMed).
+        AppUpdateQuitRequest.quitPending = { MacRecordingTermination.pending }
+        AppUpdateQuitRequest.pendingRecord = { model.updateFailureRecord.deletingLastPathComponent().appendingPathComponent("pending.json") }
+        AppUpdateQuitRequest.install(ownBundle: Bundle.main.bundleURL.path, currentBuild: ControllerModel.currentBuild)
         model.recordingStatusChanged = { [weak model] _ in NSApp.dockTile.badgeLabel = model?.recordingDockBadge }
         // A Dock click opens Welcome while COS is not set up, else Activity.
         COSAppDelegate.onReopen = {

@@ -1,8 +1,16 @@
 {
-  "version": "0.5.372",
+  "version": "0.5.373",
   "whatsNew": {
-    "summary": "COS reaching out: with Drop it on, reminders and follow-ups on your drops notify you on this Mac, and a new Settings card decides what COS may interrupt you about, how often and when. Plus everything in 0.5.371: Drop it, a pinned COS chat at the top of Messages where you type a thought, an ask or a reminder and COS files it and texts back, with Ask and attachments.",
+    "summary": "COS Control closes cleanly for an update started outside the app: the installer now asks it to quit, instead of closing it by force after 20 seconds. Plus everything in 0.5.372: with Drop it on, reminders and follow-ups on your drops notify you on this Mac, and a Settings card decides what COS may interrupt you about.",
     "sections": [
+      {
+        "title": "0.5.373",
+        "items": [
+          "An update started outside COS Control, from the command line or an install script, now asks Control to quit. Before, Control was never asked, waited 20 seconds and was closed by force.",
+          "Updates from Control's own Install button already closed by themselves and work as before.",
+          "This applies from the next update on: the copy of Control you are running now is the one that closes for this update."
+        ]
+      },
       {
         "title": "0.5.372",
         "items": [

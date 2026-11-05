@@ -9759,7 +9759,8 @@ final class COSControlHelper {
     /// The detached swap's timings in seconds. A /tmp/ test home may shorten them (COS_CONTROL_TEST_QUIT_TIMINGS, five
     /// comma-separated values from 0.2 to 120: quit, term, kill, unknown, linger); production always uses these.
     struct AppUpdateQuitTimings: Equatable {
-        /// A normal quit (AppQuit.request() runs in Control before the swap starts waiting).
+        /// A normal quit. 0.5.373: the swap asks for it itself (requestLiveQuit); before, it assumed Control had already
+        /// asked (AppQuit.request() after apply --detach), so an install driven from a shell always ran out this wait.
         var quit: TimeInterval = 20
         /// After SIGTERM, before SIGKILL.
         var term: TimeInterval = 10
@@ -9856,6 +9857,25 @@ final class COSControlHelper {
         guard case let .running(path, started) = Self.processIdentity(process.pid), started == process.started,
               Self.sameFile(path, as: target) else { return false }
         return Darwin.kill(process.pid, signal) == 0
+    }
+
+    // MARK: 0.5.373 the swap asks Control to quit
+    //
+    // Miles's Mac, 2026-11-05: 0.5.366 to 0.5.371 (installed from the release kit's shell, which runs apply --detach and
+    // never quits Control) all ended forcedQuit=true, signals=[SIGTERM]. The 0.5.371 SIGTERM came at 10:59:50.678, 20 s
+    // after the swap began, and Control logged nothing about quitting in between: nobody asked it. The 0.5.359 to 0.5.365
+    // kits quit it with osascript and none of those was forced. Now the swap posts the request Control listens for
+    // (AppUpdateQuitRequest in Sources/AppQuit.swift; the same name, pinned by Tests/app-update-quit-request-pins.py),
+    // naming the live bundle, before it starts the normal-quit wait. A Control that already asked ignores it.
+
+    /// The distributed notification Control (0.5.373 and later) quits on when the object is its own bundle's path.
+    static let appUpdateQuitRequestName = "com.gotcos.control.appUpdate.quitRequest"
+
+    /// Posts the request to every listener; delivered immediately, so an inactive Control gets it.
+    private func requestLiveQuit(_ live: URL) {
+        DistributedNotificationCenter.default().postNotificationName(
+            Notification.Name(Self.appUpdateQuitRequestName), object: live.path, userInfo: nil, deliverImmediately: true)
+        progress("app update: asked COS Control to quit (\(live.path))")
     }
 
     enum LiveQuit: Equatable {
@@ -10059,13 +10079,18 @@ final class COSControlHelper {
         }
 
         // 0.5.322: a normal quit, else a forced one when no Mac recording is in flight (quitLiveForSwap).
+        // 0.5.373: asked for first, and timed, so the record says how long the normal quit took.
         let timings = Self.appUpdateQuitTimings(environment: ProcessInfo.processInfo.environment)
         var forced: (signals: [String], pids: [Int])?
+        let quitAsked = Date()
+        requestLiveQuit(live)
         switch quitLiveForSwap(live, timings: timings) {
-        case .quit: break
+        case .quit:
+            progress("app update: COS Control quit in \(String(format: "%.1f", Date().timeIntervalSince(quitAsked))) s")
         case let .forced(signals, pids): forced = (signals, pids)
         case let .gaveUp(reason): try giveUpQuitForSwap(reason, live: live, timings: timings)
         }
+        let quitSeconds = (Date().timeIntervalSince(quitAsked) * 10).rounded() / 10
 
         try ensurePrivateDirectory(updatesPrevious)
         let previousApp = updatesPrevious.appendingPathComponent("COS Control.app")
@@ -10101,6 +10126,8 @@ final class COSControlHelper {
             "build": build,
             "appliedAt": ISO8601DateFormatter().string(from: Date()),
             "forcedQuit": forced != nil,
+            "quitRequested": true,
+            "quitSeconds": quitSeconds,
         ]
         if let forced {
             success["forcedSignals"] = forced.signals

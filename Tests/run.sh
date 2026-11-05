@@ -2944,8 +2944,9 @@ echo "click-to-update SHA refuse, stage, swap, and complete passed"
 # 0.5.322: the swap can no longer strand Control on Installing. A live stand-in that never quits: SIGTERM after 20 s
 # (short test timings), SIGKILL 10 s later, only the live bundle's own process by PID; a Mac recording that is starting,
 # recording or stopping is never signalled (reason recording); an unreadable state signals nothing; success.json says
-# forcedQuit; and staged-app-update, the launch offer's read-only facts.
-/usr/bin/cc -O1 -Wall -o "$TMP/live-app" "$ROOT/Tests/fixtures/app-update/live-app.c"
+# forcedQuit; and staged-app-update, the launch offer's read-only facts. 0.5.373: the swap asks Control to quit first (a
+# stand-in that quits when asked; the stand-in's listen mode needs CoreFoundation).
+/usr/bin/cc -O1 -Wall -o "$TMP/live-app" "$ROOT/Tests/fixtures/app-update/live-app.c" -framework CoreFoundation
 /usr/bin/python3 "$ROOT/Tests/app-update-escalation-checks.py" "$TMP/cos-control-helper" "$TMP/live-app"
 
 /usr/bin/grep -q 'com.cos.glasses-control-recovery' "$ROOT/HelperSources/main.swift"

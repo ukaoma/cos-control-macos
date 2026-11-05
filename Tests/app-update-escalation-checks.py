@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """0.5.322: the detached update swap can no longer strand Control on Installing. The REAL helper, dummy signed apps and
 a disposable COS_CONTROL_TEST_HOME per case (the click-to-update block's style). The live app is a stand-in process
-(Tests/fixtures/app-update/live-app.c) that never quits by itself, so only the swap's signals can end it.
+(Tests/fixtures/app-update/live-app.c) that never quits by itself, so only the swap's signals can end it. 0.5.373 adds
+case 8: a stand-in that quits when the swap asks (its listen mode), so the request itself is proven.
 
     python3 Tests/app-update-escalation-checks.py <cos-control-helper> <live-app binary>
 
@@ -271,6 +272,42 @@ try:
     check(swapper.returncode == 0 and c.live_build() == "199", "normal quit", f"{out[-400:]} {err[-400:]}")
     check(((c.record("success.json") or {}).get("forcedQuit")) is False and terms(live) == 0, "normal quit", "a normal quit is not forced")
 
+    # 8. 0.5.373: the swap asks Control to quit (Miles's Mac, 2026-11-05: an install driven from a shell never asked, so
+    #    every one was SIGTERMed after the 20 s wait). A stand-in that quits by itself only when the request names its own
+    #    bundle (Control's AppUpdateQuitRequest), beside another listener for a different bundle that must stay up.
+    c = Case("asked")
+    live = c.start("listen", "live.log", hold=c.live)
+    other_app = make_app(c.root / "other", "0.5.50", "88")
+    bystander = c.start("listen", "bystander.log", app=other_app, hold=other_app)
+    c.state("idle", live.pid)
+    code, value, err, took = c.swap()
+    check(code == 0 and c.live_build() == "199", "asks control to quit", f"the swap must install: {value} {err[-600:]}")
+    try:
+        live.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        fail("asks control to quit", "the live stand-in is still running after the swap")
+    check(live.returncode == 0 and terms(live) == 0, "asks control to quit",
+          f"Control quit by itself when asked, never by a signal: rc={live.returncode} {live.marker.read_text()!r}")
+    lines = live.marker.read_text().split("\n")
+    asked = [l.split(" ", 3) for l in lines if l.startswith(f"QUITREQ {live.pid} ")]
+    check(len(asked) >= 1 and asked[0][3] == str(c.live), "request names the live bundle",
+          f"the request names the live bundle {str(c.live)!r}: {asked}")
+    quit_line = next((l for l in lines if l.startswith(f"QUIT {live.pid} ")), "")
+    quit_at = int(quit_line.split()[2]) / 1000 if quit_line else None
+    check(quit_at is not None and c.swap_started <= quit_at < c.swap_started + QUIT, "asks control to quit",
+          f"asked before the normal-quit wait ran out ({QUIT} s): quit {((quit_at or 0) - c.swap_started):.2f} s in")
+    success = c.record("success.json") or {}
+    check(success.get("forcedQuit") is False and success.get("quitRequested") is True and "forcedSignals" not in success,
+          "success records the request", f"success.json: {success}")
+    check(isinstance(success.get("quitSeconds"), (int, float)) and 0 <= success["quitSeconds"] < QUIT, "success records the request",
+          f"success.json says how long the quit took: {success.get('quitSeconds')!r}")
+    by = bystander.marker.read_text()
+    check(alive(bystander) and terms(bystander) == 0 and f"QUIT {bystander.pid} " not in by, "request names one bundle",
+          f"a Control at another path heard the request and stayed up, unsignalled: alive={alive(bystander)} {by!r}")
+    check(f"QUITREQ {bystander.pid} " in by, "request names one bundle",
+          "the bystander heard the request (otherwise this case proves nothing about the object)")
+    bystander.kill()
+
     # 7. staged-app-update, read only: the launch offer's facts.
     c = Case("staged")
     def staged(current="88"):
@@ -318,4 +355,4 @@ finally:
     pass
 
 cleanup()
-print(f"app update escalation checks: {passed} passed (forced quit by PID, SIGTERM then SIGKILL, recording never killed, unknown signals nothing, linger, staged offer)")
+print(f"app update escalation checks: {passed} passed (forced quit by PID, SIGTERM then SIGKILL, recording never killed, unknown signals nothing, linger, staged offer, the swap asks Control to quit)")

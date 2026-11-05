@@ -30,7 +30,9 @@ for text in re.findall(r'\.init\("REACH-\d\d", "([^"]*)", "([^"]*)"', catalog):
     need(not re.search("[—–→]|->", text[0] + text[1]), "[copy] no em dash, en dash or arrow: " + text[0])
 import json
 whats = json.loads(read("Resources/WhatsNew.json")); plist = read("Resources/Info.plist"); log = read("CHANGELOG.md")
-need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.372</string>", plist) is not None and whats.get("version") == "0.5.372", "[version] Info.plist and What's New are 0.5.372")
-need(whats["whatsNew"]["sections"][0]["title"] == "0.5.372" and any("COS reaching out" in i for i in whats["whatsNew"]["sections"][0]["items"]), "[version] What's New leads with a 0.5.372 section naming COS reaching out")
-need(log.startswith("## 0.5.372 (build 426)") and "\n## 0.5.371 (build 425)" in log, "[version] the changelog's 0.5.372 entry sits above 0.5.371's")
+# 0.5.373 (the quit fix) sits on top: P2's own section, entry and order still hold; app-update-quit-request-pins pins the bump.
+p2 = [s for s in whats["whatsNew"]["sections"] if s["title"] == "0.5.372"]
+need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.37[2-9]</string>", plist) is not None and whats.get("version", "").startswith("0.5.37"), "[version] Info.plist and What's New are 0.5.372 or a later 0.5.37x")
+need(len(p2) == 1 and any("COS reaching out" in i for i in p2[0]["items"]) and whats["whatsNew"]["sections"].index(p2[0]) <= 1, "[version] What's New has its 0.5.372 section naming COS reaching out, first or right under the next build's")
+need("\n## 0.5.372 (build 426)" in "\n" + log and log.index("## 0.5.372 (build 426)") < log.index("\n## 0.5.371 (build 425)"), "[version] the changelog's 0.5.372 entry sits above 0.5.371's")
 print(f"drop it p2 pins: {passed} passed")
