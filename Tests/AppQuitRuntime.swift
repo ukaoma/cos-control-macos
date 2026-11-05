@@ -70,6 +70,11 @@ func decideChecks(scratch: String) -> Bool {
     if scratch.hasPrefix("/tmp/") {
         need(AppUpdateQuitRequest.samePath("/private" + own, own), "decide", "/private/tmp and /tmp are one bundle")
     }
+    // A real symlink (a linked Applications folder): standardizing alone does not follow it, so this needs the resolve.
+    let link = scratch + "/linked"
+    try? FileManager.default.removeItem(atPath: link)
+    try? FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: scratch + "/live")
+    need(AppUpdateQuitRequest.samePath(link + "/COS Control.app", own), "decide", "a bundle reached through a symlinked folder is one bundle")
     let record = URL(fileURLWithPath: scratch + "/decide-pending.json")
     for (body, want) in [("{\"build\": 427}", 427), ("{\"build\": \"428\"}", 428)] as [(String, Int?)] {
         try? body.write(to: record, atomically: true, encoding: .utf8)

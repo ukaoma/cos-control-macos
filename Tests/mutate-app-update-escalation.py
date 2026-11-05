@@ -168,9 +168,10 @@ MUTANTS = [
     ("string build ignored", A, '        if let build = object["build"] as? String { return Int(build) }\n', "", ["[decide]"], "appquit"),
     ("listener reads no record", A, "        let pending = record.flatMap { pendingBuild(at: $0) }", "        let pending: Int? = 199",
      ["[nothing newer staged]"], "appquit"),
-    # Expected to SURVIVE on this Mac unless an inactive app's delivery is suspended: reported, not assumed.
+    # Pin-only, measured 2026-11-05: with deliverImmediately false the never-active probe still got the request on this Mac,
+    # so no execution check can tell; app-update-quit-request-pins.py keeps the flag on both posts.
     ("post not immediate", A, "object: liveBundle, userInfo: nil, deliverImmediately: true)", "object: liveBundle, userInfo: nil, deliverImmediately: false)",
-     ["[quits on its own request]"], "appquit"),
+     ["[request names the live bundle]"], "appquit"),
     # 0.5.373 wiring nothing executes in the lanes above (pins).
     ("app never listens", APP, "        AppUpdateQuitRequest.install(ownBundle: Bundle.main.bundleURL.path, currentBuild: ControllerModel.currentBuild)\n", "",
      ["[app listens]"], "quitpins"),
@@ -202,6 +203,7 @@ def run(lane, copy, scratch):
         helper = scratch / "cos-control-helper"
         helper.unlink(missing_ok=True)
         code, out = guarded(guard + SWIFTC + [str(copy / H), str(copy / "HelperSources/ProviderStatusCore.swift"), str(copy / "HelperSources/PairingCore.swift"),
+                                              str(copy / "HelperSources/SessionUsageCollector.swift"), str(copy / "Sources/SessionUsageCore.swift"),
                                               str(copy / "Sources/WorkSessionLinks.swift"), "-framework", "Security", "-framework", "AppKit", "-o", str(helper)], env=env)
         if code != 0:
             return code, out
