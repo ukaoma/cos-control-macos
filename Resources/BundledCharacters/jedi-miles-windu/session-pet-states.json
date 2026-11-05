@@ -381,29 +381,29 @@
     "working": {
       "frames": 184,
       "interval": 0.02,
-      "file": "windu-motion-v13b-working-a-full-1x.png",
+      "file": "windu-v25-working-a-full-1x.png",
       "retina": {
         "scale": 2,
         "file": [
-          "windu-motion-v13b-working-a-full-2x-s1.png",
-          "windu-motion-v13b-working-a-full-2x-s2.png",
-          "windu-motion-v13b-working-a-full-2x-s3.png",
-          "windu-motion-v13b-working-a-full-2x-s4.png"
+          "windu-v25-working-a-full-2x-s1.png",
+          "windu-v25-working-a-full-2x-s2.png",
+          "windu-v25-working-a-full-2x-s3.png",
+          "windu-v25-working-a-full-2x-s4.png"
         ],
         "variants": [
           {
             "id": "working-a",
             "file": [
-              "windu-motion-v13b-working-a-full-2x-s1.png",
-              "windu-motion-v13b-working-a-full-2x-s2.png",
-              "windu-motion-v13b-working-a-full-2x-s3.png",
-              "windu-motion-v13b-working-a-full-2x-s4.png"
+              "windu-v25-working-a-full-2x-s1.png",
+              "windu-v25-working-a-full-2x-s2.png",
+              "windu-v25-working-a-full-2x-s3.png",
+              "windu-v25-working-a-full-2x-s4.png"
             ],
             "bodyFile": [
-              "windu-motion-v13b-working-a-body-2x-s1.png",
-              "windu-motion-v13b-working-a-body-2x-s2.png",
-              "windu-motion-v13b-working-a-body-2x-s3.png",
-              "windu-motion-v13b-working-a-body-2x-s4.png"
+              "windu-illustrated-v1-working-a-body-2x-s1.png",
+              "windu-illustrated-v1-working-a-body-2x-s2.png",
+              "windu-motion-v2-working-a-body-2x-s3.png",
+              "windu-motion-v2-working-a-body-2x-s4.png"
             ],
             "entryFile": [
               "windu-illustrated-v1-working-a-entry-2x-s1.png",
@@ -415,16 +415,16 @@
           {
             "id": "working-b",
             "file": [
-              "windu-motion-v13b-working-b-full-2x-s1.png",
-              "windu-motion-v13b-working-b-full-2x-s2.png",
-              "windu-motion-v13b-working-b-full-2x-s3.png",
-              "windu-motion-v13b-working-b-full-2x-s4.png"
+              "windu-v25-working-b-full-2x-s1.png",
+              "windu-v25-working-b-full-2x-s2.png",
+              "windu-v25-working-b-full-2x-s3.png",
+              "windu-v25-working-b-full-2x-s4.png"
             ],
             "bodyFile": [
-              "windu-motion-v13b-working-b-body-2x-s1.png",
-              "windu-motion-v13b-working-b-body-2x-s2.png",
-              "windu-motion-v13b-working-b-body-2x-s3.png",
-              "windu-motion-v13b-working-b-body-2x-s4.png"
+              "windu-illustrated-v1-working-b-body-2x-s1.png",
+              "windu-illustrated-v1-working-b-body-2x-s2.png",
+              "windu-motion-v2-working-b-body-2x-s3.png",
+              "windu-motion-v2-working-b-body-2x-s4.png"
             ],
             "entryFile": [
               "windu-illustrated-v1-working-b-entry-2x-s1.png",
@@ -436,16 +436,16 @@
           {
             "id": "working-c",
             "file": [
-              "windu-motion-v13b-working-c-full-2x-s1.png",
-              "windu-motion-v13b-working-c-full-2x-s2.png",
-              "windu-motion-v13b-working-c-full-2x-s3.png",
-              "windu-motion-v13b-working-c-full-2x-s4.png"
+              "windu-v25-working-c-full-2x-s1.png",
+              "windu-v25-working-c-full-2x-s2.png",
+              "windu-v25-working-c-full-2x-s3.png",
+              "windu-v25-working-c-full-2x-s4.png"
             ],
             "bodyFile": [
-              "windu-motion-v13b-working-c-body-2x-s1.png",
-              "windu-motion-v13b-working-c-body-2x-s2.png",
-              "windu-motion-v13b-working-c-body-2x-s3.png",
-              "windu-motion-v13b-working-c-body-2x-s4.png"
+              "windu-illustrated-v1-working-c-body-2x-s1.png",
+              "windu-illustrated-v1-working-c-body-2x-s2.png",
+              "windu-motion-v2-working-c-body-2x-s3.png",
+              "windu-motion-v2-working-c-body-2x-s4.png"
             ],
             "entryFile": [
               "windu-illustrated-v1-working-c-entry-2x-s1.png",
@@ -457,16 +457,16 @@
           {
             "id": "working-d",
             "file": [
-              "windu-motion-v13b-working-d-full-2x-s1.png",
-              "windu-motion-v13b-working-d-full-2x-s2.png",
-              "windu-motion-v13b-working-d-full-2x-s3.png",
-              "windu-motion-v13b-working-d-full-2x-s4.png"
+              "windu-v25-working-d-full-2x-s1.png",
+              "windu-v25-working-d-full-2x-s2.png",
+              "windu-v25-working-d-full-2x-s3.png",
+              "windu-v25-working-d-full-2x-s4.png"
             ],
             "bodyFile": [
-              "windu-motion-v13b-working-d-body-2x-s1.png",
-              "windu-motion-v13b-working-d-body-2x-s2.png",
-              "windu-motion-v13b-working-d-body-2x-s3.png",
-              "windu-motion-v13b-working-d-body-2x-s4.png"
+              "windu-illustrated-v1-working-d-body-2x-s1.png",
+              "windu-illustrated-v1-working-d-body-2x-s2.png",
+              "windu-motion-v2-working-d-body-2x-s3.png",
+              "windu-motion-v2-working-d-body-2x-s4.png"
             ],
             "entryFile": [
               "windu-illustrated-v1-working-d-entry-2x-s1.png",
@@ -483,26 +483,26 @@
         "variants": [
           {
             "id": "working-a",
-            "file": "windu-motion-v13b-working-a-full-1x.png",
-            "bodyFile": "windu-motion-v13b-working-a-body-1x.png",
+            "file": "windu-v25-working-a-full-1x.png",
+            "bodyFile": "windu-motion-v2-working-a-body-1x.png",
             "entryFile": "windu-illustrated-v1-working-a-entry-1x.png"
           },
           {
             "id": "working-b",
-            "file": "windu-motion-v13b-working-b-full-1x.png",
-            "bodyFile": "windu-motion-v13b-working-b-body-1x.png",
+            "file": "windu-v25-working-b-full-1x.png",
+            "bodyFile": "windu-motion-v2-working-b-body-1x.png",
             "entryFile": "windu-illustrated-v1-working-b-entry-1x.png"
           },
           {
             "id": "working-c",
-            "file": "windu-motion-v13b-working-c-full-1x.png",
-            "bodyFile": "windu-motion-v13b-working-c-body-1x.png",
+            "file": "windu-v25-working-c-full-1x.png",
+            "bodyFile": "windu-motion-v2-working-c-body-1x.png",
             "entryFile": "windu-illustrated-v1-working-c-entry-1x.png"
           },
           {
             "id": "working-d",
-            "file": "windu-motion-v13b-working-d-full-1x.png",
-            "bodyFile": "windu-motion-v13b-working-d-body-1x.png",
+            "file": "windu-v25-working-d-full-1x.png",
+            "bodyFile": "windu-motion-v2-working-d-body-1x.png",
             "entryFile": "windu-illustrated-v1-working-d-entry-1x.png"
           }
         ]

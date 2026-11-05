@@ -423,7 +423,7 @@ final class ControllerModel: ObservableObject {
     private static let petDefaultSeededKey = "cos.sessionPetDefaultSeeded"
     private static let petDismissedKey = "cos.sessionPetDismissed"
     private static let petDefaultArtGenerationKey = "cos.sessionPetDefaultArtGeneration"
-    private static let petDefaultArtGeneration = 29
+    private static let petDefaultArtGeneration = 30
 
     private static func loadPetCharacterPercent(defaults: UserDefaults = .standard) -> Int {
         PetCharacterScale.loadPersistedPercent(
@@ -5480,6 +5480,10 @@ final class ControllerModel: ObservableObject {
             // Generation 29 (0.5.368) moves exact stock Windu Motion V2 (0.5.360 to 0.5.367, generation 28), and every earlier
             // recognized stock map, to Motion V13: the working strike cuts through the droid and each half flies off its own
             // way, and trio takes the approved Session 3 V4 strips. Only the working and trio rows change; the V2 files stay.
+            // Generation 30 (0.5.371, Miles 2026-11-05 "looks great lets install it") moves exact stock Motion V13 (0.5.368 to
+            // 0.5.370, generation 29), and every earlier recognized stock map, to Windu V25 Session 1: the 0.5.365 run and
+            // deflection with right-facing recovery art for frames 92 to 113. Only the working row changes (20 new strips; its
+            // body and entry layers are the existing Motion V2 and Illustrated V1 ones); the V13 files stay for rollback.
             // Re-running the block is a no-op for every current pack, a chosen still, a custom cast or interval,
             // and the drawn robot; only an exact retained stock map of a bundled character is promoted.
             let bundledRefresh = PetSpriteStore.refreshRecognizedBundledCharacter(

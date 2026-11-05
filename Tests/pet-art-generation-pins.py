@@ -38,6 +38,7 @@ LEDGER = {
         (27, "2ba8634a87ccbc0ec37bb10a383e4ffd76aba30122a31df120516f70513c39d1"),  # Windu Motion V1, 0.5.350 to 0.5.358
         (28, "0292c01a15077ee7c28d61fb7d82b86b6959c2137fd55a30dc9375f18c7a2313"),  # Windu Motion V2, 0.5.360
         (29, "2893c451a44fee03a544804f81d5845dc3f633def64e8c3c1760da4eebb181d6"),  # Windu Motion V13 working, Session 3 V4 trio, 0.5.368
+        (30, "0782aeae343528789afd21b62dabcae2744407c2171b0541243aabc6c118d97a"),  # Windu V25 Session 1 working, 0.5.371
     ],
     "DefaultPet": [(27, "af4fc61df77344d955633563cef7b0c55fd7dc39a02753c443d26d9f16f4d134")],
 }
@@ -49,6 +50,7 @@ LEDGER = {
 PREVIOUS_STATE = {
     ("BundledCharacters/jedi-miles-windu", 27): "07db3f086b1595b779694c20f70e2e1de63822de71ec131eaa22758a0a51f7bf",
     ("BundledCharacters/jedi-miles-windu", 28): "b652308e6cc05a078d5e8709ffd2eed3e1880ec03e2feb731a7204ab7802fdef",
+    ("BundledCharacters/jedi-miles-windu", 29): "3c501206337d76052adf045ca91c89a48c25a8f25bd55ecbc8cc74dc7f3a8be3",
 }
 
 

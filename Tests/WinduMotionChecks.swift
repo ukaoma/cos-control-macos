@@ -66,11 +66,20 @@ import CryptoKit
   // 1x and through the Retina strips at 2x: four casts sharing the run-in and then distinct, 184 frames, handoff 145.
   // From the handoff on, the body strip the tail draws IS the full frame (nothing of the droid is left to cross the hero),
   // and before it the body strip is empty, so the tail can only ever show the hero who finished the strike.
+  // 0.5.371: V13 is no longer the bundled row (Windu V25 is, below). It stays in the stock history for rollback and for the
+  // installs it upgrades, so its rules run on the V13 row from the history, in a folder of its own.
+  let v13Maps=(history["maps"] as! [[String:Any]]).filter{($0["name"] as? String)=="Windu Motion V13 \u{00b7} Control 0.5.368"}
+  precondition(v13Maps.count==1,"the Motion V13 map must stay in the stock history")
+  let v13Row=((v13Maps[0]["state"] as! [String:Any])["poses"] as! [String:[String:Any]])["working"]!
+  let motionV13=fm.temporaryDirectory.appendingPathComponent("windu-motion-v13-\(UUID())")
+  try fm.createDirectory(at:motionV13,withIntermediateDirectories:true);defer{try? fm.removeItem(at:motionV13)}
+  for f in pngs(v13Row) {try fm.linkItem(at:pack.appendingPathComponent(f),to:motionV13.appendingPathComponent(f))}
+  try JSONSerialization.data(withJSONObject:["poses":["working":v13Row]]).write(to:motionV13.appendingPathComponent(PetSpriteStore.stateFileName))
   for scale in [CGFloat(1),2] { autoreleasepool {
-   let actual=PetSpriteStore.loadRotations(in:pack,displayScale:scale,only:[.working])[.working]!
-   precondition(actual.variants.count==4 && actual.frames==184 && actual.manifest.handoffFrame==145 && actual.manifest.variants.allSatisfy{$0.file.hasPrefix("windu-motion-v13b-working-")},"the bundled working row is Motion V13")
+   let actual=PetSpriteStore.loadRotations(in:motionV13,displayScale:scale,only:[.working])[.working]!
+   precondition(actual.variants.count==4 && actual.frames==184 && actual.manifest.handoffFrame==145 && actual.manifest.variants.allSatisfy{$0.file.hasPrefix("windu-motion-v13b-working-")},"the retained working row is Motion V13")
    let width=PetSpriteStrip.raster(actual.variants[0].full[0])!.width
-   precondition(width==Int(scale)*PetSpriteStrip.raster(PetSpriteStore.loadRotations(in:pack,only:[.working])[.working]!.variants[0].full[0])!.width,"\(scale)x must decode the \(scale)x strips")
+   precondition(width==Int(scale)*PetSpriteStrip.raster(PetSpriteStore.loadRotations(in:motionV13,only:[.working])[.working]!.variants[0].full[0])!.width,"\(scale)x must decode the \(scale)x strips")
    let castA=actual.variants[0].full.map(digest)
    for (i,variant) in actual.variants.enumerated() { autoreleasepool {
     let full=variant.full.map(digest)
@@ -82,6 +91,22 @@ import CryptoKit
      if f+1>=145 {precondition(body==full[f],"the tail body is not the full frame at \(i)/\(f), \(scale)x")}
      else {precondition(PetSpriteStrip.raster(variant.body[f]).map{alphaMax($0)==0} ?? false,"the body strip draws before the handoff at \(i)/\(f), \(scale)x")}
     }
+   }}
+  }}
+  // Windu V25 Session 1 (Miles 2026-11-05): the bundled working row. Four casts, 184 frames at .02 s, handoff 145, at 1x and
+  // through the Retina strips at 2x; every full frame draws something; the tail and entry layers are the ones Motion V2 and
+  // Illustrated V1 shipped (V25 kept the original tail-layer bindings), byte for byte.
+  let v25Row=((try JSONSerialization.jsonObject(with:Data(contentsOf:pack.appendingPathComponent(PetSpriteStore.stateFileName))) as! [String:Any])["poses"] as! [String:[String:Any]])["working"]!
+  for v in (v25Row["rotation"] as! [String:Any])["variants"] as! [[String:String]] {
+   precondition(v["bodyFile"]!.hasPrefix("windu-motion-v2-working-") && v["entryFile"]!.hasPrefix("windu-illustrated-v1-working-"),"V25 keeps the original tail and entry layers")
+  }
+  for scale in [CGFloat(1),2] { autoreleasepool {
+   let actual=PetSpriteStore.loadRotations(in:pack,displayScale:scale,only:[.working])[.working]!
+   precondition(actual.variants.count==4 && actual.frames==184 && actual.manifest.handoffFrame==145 && actual.manifest.variants.allSatisfy{$0.file.hasPrefix("windu-v25-working-")},"the bundled working row is Windu V25")
+   precondition(PetSpriteStrip.raster(actual.variants[0].full[0])!.width==Int(scale)*PetSpriteStrip.raster(PetSpriteStore.loadRotations(in:pack,only:[.working])[.working]!.variants[0].full[0])!.width,"V25 at \(scale)x must decode the \(scale)x strips")
+   for (i,variant) in actual.variants.enumerated() { autoreleasepool {
+    precondition(variant.full.count==184 && variant.body.count==184 && variant.entry.count==184,"V25 cast \(i) has 184 frames in every layer at \(scale)x")
+    for f in 0..<184 {precondition((PetSpriteStrip.raster(variant.full[f]).map(alphaMax) ?? 0)>0,"Windu V25 frame \(i)/\(f) is blank at \(scale)x")}
    }}
   }}
   autoreleasepool {

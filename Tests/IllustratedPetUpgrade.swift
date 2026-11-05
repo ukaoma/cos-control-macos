@@ -162,7 +162,8 @@ import CryptoKit
   for (pose,row) in rowsV2 where pose != "working" && pose != "trio" {
    precondition(NSDictionary(dictionary:nextRows[pose]!).isEqual(to:row),"Motion V13 changes only working and trio, not \(pose)")
   }
-  precondition(refs(nextRows["working"]!).allSatisfy{$0.hasPrefix("windu-motion-v13b-") || $0.hasPrefix("windu-illustrated-v1-working-")},"V13 working is V13 strips over the unchanged entries")
+  // 0.5.371: the current working row is Windu V25 (its new full strips over the Motion V2 body and Illustrated V1 entry layers).
+  precondition(refs(nextRows["working"]!).allSatisfy{$0.hasPrefix("windu-v25-working-") || $0.hasPrefix("windu-motion-v2-working-") || $0.hasPrefix("windu-illustrated-v1-working-")},"V25 working is V25 strips over the unchanged body and entry layers")
   for f in refs(try JSONSerialization.jsonObject(with:next)){precondition((try! Data(contentsOf:stockV2.appendingPathComponent(f))) == (try! Data(contentsOf:candidate.appendingPathComponent(f))),"motion-v13 asset mismatch \(f)")}
   for f in filesV2 {precondition((try! Data(contentsOf:stockV2.appendingPathComponent(f))) == (try! Data(contentsOf:candidate.appendingPathComponent(f))),"motion-v2 rollback asset changed \(f)")}
   let stampV2=try fm.attributesOfItem(atPath:mapV2.path)[.modificationDate] as! Date
@@ -172,6 +173,36 @@ import CryptoKit
    precondition(r.variants.count == (pose == .working ? 4 : 3) && r.frames == (pose == .working ? 184 : 172)
      && r.manifest.handoffFrame == (pose == .working ? 145 : 121),"the upgraded install decodes every V13 and Session 3 V4 cast at 2x")
   }}
+  // Windu V25 Session 1 (Miles 2026-11-05, generation 30): a Motion V13 installation (0.5.368 to 0.5.370) receives the V25 working
+  // row. Its V13 files stay for rollback; a customized V13 cast is left alone; and a rerun changes nothing.
+  let motionV13=(historyV1["maps"] as! [[String:Any]]).filter{($0["name"] as? String)=="Windu Motion V13 \u{00b7} Control 0.5.368"}
+  precondition(motionV13.count==1,"the Motion V13 map must be in the stock history exactly once")
+  let stateV13=motionV13[0]["state"]!,filesV13=refs(stateV13)
+  precondition(filesV13.contains("windu-motion-v13b-working-a-full-1x.png"),"the history holds the shipped V13 map")
+  let stockV13=temp.appendingPathComponent("stockMotionV13")
+  try fm.createDirectory(at:stockV13,withIntermediateDirectories:true)
+  for f in filesV13 {try fm.copyItem(at:candidate.appendingPathComponent(f),to:stockV13.appendingPathComponent(f))}
+  let mapV13=stockV13.appendingPathComponent(PetSpriteStore.stateFileName),bytesV13=try JSONSerialization.data(withJSONObject:stateV13)
+  try bytesV13.write(to:mapV13)
+  func refreshV13()->PetSpriteStore.BundledCharacterRefreshResult {autoreleasepool{PetSpriteStore.refreshRecognizedBundledCharacter(into:stockV13,sourceRootOverride:sources,retainedMilesOverride:old)}}
+  let customizedV13=stockV13.appendingPathComponent("windu-motion-v13b-working-b-full-1x.png"),originalV13=try Data(contentsOf:customizedV13)
+  try (originalV13+Data([1])).write(to:customizedV13)
+  precondition(refreshV13() == .notApplicable && (try! Data(contentsOf:mapV13))==bytesV13,"a custom motion-v13 cast must survive")
+  try originalV13.write(to:customizedV13)
+  precondition(refreshV13() == .refreshed("jedi-miles-windu"),"motion-v13 stock must receive Windu V25")
+  precondition((try! Data(contentsOf:mapV13))==next,"the upgraded V13 install has exactly the bundled V25 map")
+  let rowsV13=(stateV13 as! [String:Any])["poses"] as! [String:[String:Any]]
+  for (pose,row) in rowsV13 where pose != "working" {
+   precondition(NSDictionary(dictionary:nextRows[pose]!).isEqual(to:row),"Windu V25 changes only working, not \(pose)")
+  }
+  for f in refs(try JSONSerialization.jsonObject(with:next)){precondition((try! Data(contentsOf:stockV13.appendingPathComponent(f))) == (try! Data(contentsOf:candidate.appendingPathComponent(f))),"windu-v25 asset mismatch \(f)")}
+  for f in filesV13 {precondition((try! Data(contentsOf:stockV13.appendingPathComponent(f))) == (try! Data(contentsOf:candidate.appendingPathComponent(f))),"motion-v13 rollback asset changed \(f)")}
+  let stampV13=try fm.attributesOfItem(atPath:mapV13.path)[.modificationDate] as! Date
+  precondition(refreshV13() == .notApplicable && (try! fm.attributesOfItem(atPath:mapV13.path)[.modificationDate] as! Date)==stampV13,"motion-v13 upgrade must be idempotent")
+  autoreleasepool{
+   let r=PetSpriteStore.loadRotations(in:stockV13,displayScale:2,only:[.working])[.working]!
+   precondition(r.variants.count==4 && r.frames==184 && r.manifest.handoffFrame==145 && r.manifest.variants.allSatisfy{$0.file.hasPrefix("windu-v25-working-")},"the upgraded install decodes every V25 cast at 2x")
+  }
   // Generation 28 re-runs this refresh for everyone already at 27. What it must leave alone: a Motion V1 install with
   // its own timing, every bundled character whose pack is already current, and a chosen still image.
   let customV1=stockV1.appendingPathComponent("customMotionV1")
@@ -203,6 +234,6 @@ import CryptoKit
     "a chosen still image must survive even beside a complete stock map")
   try fm.removeItem(at:chosenStill.appendingPathComponent("\(PetSpriteStore.fileStem).png"))
   precondition(refreshStill() == .refreshed("jedi-miles-windu"),"the same install with no still image does upgrade, so the check above is about the still")
-  print("PASS: V15, 348, 349, motion-v1 and motion-v2 (to Motion V13) upgrades, custom motion-v2 layers and cadence kept, custom timing/scale/art protection, a rerun on current packs and a chosen still, missing-asset atomic failure, ambient native slicing/cadence, 13 unchanged casts and both rollback generations")
+  print("PASS: V15, 348, 349, motion-v1, motion-v2 and motion-v13 (to Windu V25) upgrades, custom motion-v2 and motion-v13 layers and cadence kept, custom timing/scale/art protection, a rerun on current packs and a chosen still, missing-asset atomic failure, ambient native slicing/cadence, 13 unchanged casts and both rollback generations")
  }
 }
