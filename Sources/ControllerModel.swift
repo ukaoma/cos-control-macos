@@ -684,7 +684,9 @@ final class ControllerModel: ObservableObject {
     }()
     /// 0.5.372 (server Drop it P2): COS reaching out. Banners from the server's outbox, the reminders' local backup and the
     /// P2 settings (DropItP2Store, Sources/DropItP2.swift). Runs only while `status.dropIt.available`.
-    lazy var dropItP2: DropItP2Store = {
+    /// Wired in a method, not in the lazy initializer: its closures mix isolations, which Swift 6 refuses in an initializer.
+    lazy var dropItP2: DropItP2Store = makeDropItP2()
+    private func makeDropItP2() -> DropItP2Store {
         let store = DropItP2Store()
         store.run = { [weak self] arguments, input in
             guard let self else { throw HelperClientError.commandFailed("COS Control is closing.") }
@@ -697,7 +699,7 @@ final class ControllerModel: ObservableObject {
         store.scheduled = { await notifier.pendingDropItReminders() }
         store.removePending = { ids in notifier.removePendingDropIt(ids) }
         return store
-    }()
+    }
     let macRecording = MacRecordingStore()
     let dictation = MacDictationStore.shared
     /// 0.5.309: the one COS dictionary (vocabulary and corrections) and what Fix a word taught it.

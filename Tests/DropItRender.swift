@@ -270,6 +270,12 @@ struct SettingsRowCard: View {
             // Settings: the Drop it row in Work chat, on and off.
             try render(SettingsRowCard(model: seededModel(dropIt: true)), width: 720, name: "5-settings-drop-it-on", out: out)
             try render(SettingsRowCard(model: seededModel(dropIt: false)), width: 720, name: "5b-settings-drop-it-off", out: out)
+            // 0.5.372: Settings, Work and agents, COS reaching out, as the server's P2 settings answer it.
+            let reach = DropItP2Store(run: { _, _ in
+                answered(#""protocol":1,"settings":{"pings":{"on":true,"dailyCap":6,"perSource":2,"gapMinutes":45,"quietStart":"18:00","quietEnd":"06:00","weekendsQuiet":true,"firstBanner":"08:00","sources":{"prep":true,"agent":true,"followups":true,"stale":false,"signals":true}},"followUps":{"on":true,"kinds":{"card":true,"handoff":true,"session":true,"thread":false}},"checkin":{"on":true,"weekday":1,"time":"09:00"},"reminders":{"defaultTime":"09:00","snoozeMinutes":60,"banners":true,"lensPush":true},"banners":{"reminder":true,"resolution":true,"prep":false,"agent":false,"followups":false,"stale":false,"checkin":false},"steer":{"about":"JCK, Rain","leaveAlone":"HubDB"}}"#)
+            }, defaults: UserDefaults(suiteName: "drop-it-render-reach")!)
+            await reach.readSettings()
+            try render(DropItReachRows(store: reach), width: 720, name: "7-settings-cos-reaching-out", out: out)
             // The strip a deep link leaves on the pane it opened.
             try render(DropItCameBackStrip(line: DropIt.cameBackCard, back: {}), width: 900, name: "6-back-to-the-chat", out: out)
             print("DropItRender wrote PNGs to \(out.path)")

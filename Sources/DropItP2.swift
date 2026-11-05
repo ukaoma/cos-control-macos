@@ -24,6 +24,18 @@ enum DropItP2 {
     static let reminderHorizon: TimeInterval = 8 * 24 * 3600
     static let reminderBody = "From your COS chat."
     static let savedFailedLine = "That setting did not save. Try again."
+    static let savedUnreachableLine = "The COS server is not answering, so that setting did not save."
+
+    /// Why a settings change did not save: the server's own one-line reason when it gave one, else the settings line. Drop it's
+    /// fallbacks ("That did not go through", "Your words are still in the box") are written for drops, not for a settings row.
+    static func setFailedLine(_ reply: DropIt.Reply) -> String {
+        switch reply {
+        case .refused(_, let line) where line != DropIt.failedLine: return line
+        case .off, .unsupported, .noToken: return DropIt.line(reply) ?? savedFailedLine
+        case .unreachable: return savedUnreachableLine
+        default: return savedFailedLine
+        }
+    }
 
     struct Banner: Equatable, Sendable {
         var seq: Int
@@ -154,8 +166,9 @@ final class DropItP2Store: ObservableObject {
     private var loop: Task<Void, Never>?
     private var tick = 0
 
-    init(run: @escaping Run = { _, _ in throw CancellationError() }, defaults: UserDefaults = .standard) {
-        self.run = run
+    /// No default closure in the signature: a main-actor default argument does not compile in the whole app (Swift 6).
+    init(run: Run? = nil, defaults: UserDefaults = .standard) {
+        self.run = run ?? { _, _ in throw CancellationError() }
         self.defaults = defaults
     }
 
@@ -238,7 +251,7 @@ final class DropItP2Store: ObservableObject {
         let reply = await ask(DropIt.call("p2-set"), body)
         guard case .ok(let details) = reply, let saved = details["settings"]?.object else {
             settings = before
-            line = DropIt.line(reply) ?? DropItP2.savedFailedLine
+            line = DropItP2.setFailedLine(reply)
             return
         }
         settings = saved

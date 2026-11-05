@@ -164,9 +164,12 @@ import Foundation
         stand.answers["p2-set"] = answered(503, #""error":"settings_unwritable""#)
         await store.set("pings.gapMinutes", .number(90), raw: 90)
         check(store.int("pings.gapMinutes") == 45 && store.line == DropItP2.savedFailedLine, "[set refused] the old value comes back and the line says why")
+        stand.answers["p2-set"] = answered(400, #""error":"invalid_settings","message":"Quiet hours need a start and an end.""#)
+        await store.set("pings.gapMinutes", .number(90), raw: 90)
+        check(store.int("pings.gapMinutes") == 45 && store.line == "Quiet hours need a start and an end.", "[set refused] the server's own reason shows when it gives one")
         stand.answers["p2-set"] = nil
         await store.set("checkin.weekday", .number(3), raw: 3)
-        check(store.int("checkin.weekday") == 1 && store.line == DropIt.unreachableLine, "[set unreachable] an unreachable helper reverts too")
+        check(store.int("checkin.weekday") == 1 && store.line == DropItP2.savedUnreachableLine, "[set unreachable] an unreachable helper reverts too, with the settings line, never the drop's 'words are still in the box'")
 
         // A server without the P2 settings hides the card
         stand.answers["p2"] = details(#"{"transport":"unsupported","httpStatus":404}"#)
@@ -179,7 +182,7 @@ import Foundation
         check(empty.settings == nil && empty.line == nil, "[no settings] a change before a read sends nothing")
 
         // Words
-        for text in [DropItP2.groupTitle, DropItP2.reminderBody, DropItP2.savedFailedLine] {
+        for text in [DropItP2.groupTitle, DropItP2.reminderBody, DropItP2.savedFailedLine, DropItP2.savedUnreachableLine] {
             check(text.range(of: "[\u{2014}\u{2013}\u{2192}]|->", options: .regularExpression) == nil, "[copy] no em dash, en dash or arrow: \(text)")
         }
         check(DropIt.serverActions == ["reminder_done", "snooze_1h", "snooze_tomorrow", "when:tomorrow_9", "when:monday_9", "dismiss"], "[actions] the six server actions")
