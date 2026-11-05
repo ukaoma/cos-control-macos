@@ -3897,7 +3897,7 @@ private extension ControlPanel {
                         VStack(alignment: .leading, spacing: 26) {
                             hubTopStrip(reader)
                             if hubSearching {
-                                SettingsHubSearchResults(query: hubQuery, sections: SettingsHubSearch.results(hubQuery, shown: hubGroupShown, itemShown: { $0 != "JV-13" || meaningSearchShown }),
+                                SettingsHubSearchResults(query: hubQuery, sections: SettingsHubSearch.results(hubQuery, shown: hubGroupShown, itemShown: { ($0 != "JV-13" || meaningSearchShown) && ($0 != "DROP-01" || model.status.dropIt.supported) }),
                                                          open: { hubOpen($0, reader) },
                                                          gateLine: { SettingsHubCatalog.gateLine($0.id, hidden: hubOptionHidden) })
                             } else {
@@ -4426,6 +4426,8 @@ private extension ControlPanel {
                 }
             }
             .disabled(model.busy)
+            // 0.5.369: Drop it (DROP-01), only for a server that has it (capabilities.dropIt protocol 1). PUT /api/drops/settings.
+            if model.status.dropIt.supported { DropItSettingRow(model: model, store: model.dropIt) }
         } advanced: {
             // Per-Mac defaults that Work chat's footer also offers (OUT-05, OUT-06).
             hubRow("OUT-05", detail: hubDetail("OUT-05") + " " + SettingsHubCopy.plannerNote) {

@@ -628,6 +628,17 @@ final class ControllerModel: ObservableObject {
     let meetingAsk = MeetingAskStore()
     /// 0.5.366 (server 6.99.0): renaming a live recording (TitleSteerStore, Sources/MeetingAskCore.swift).
     let titleSteer = TitleSteerStore()
+    /// 0.5.369 (server Drop it P1): the pinned COS chat in Messages, its composer, History and the Settings switch
+    /// (DropItStore, Sources/DropIt.swift). Every new piece shows only while `status.dropIt.available`.
+    lazy var dropIt: DropItStore = {
+        let store = DropItStore()
+        store.run = { [weak self] arguments, input in
+            guard let self else { throw HelperClientError.commandFailed("COS Control is closing.") }
+            // A drop runs the router before it answers; the helper's own request waits 30 s at most.
+            return try await self.runHelper(arguments, timeout: 40, stdinData: input)
+        }
+        return store
+    }()
     let macRecording = MacRecordingStore()
     let dictation = MacDictationStore.shared
     /// 0.5.309: the one COS dictionary (vocabulary and corrections) and what Fix a word taught it.
@@ -3104,6 +3115,10 @@ final class ControllerModel: ObservableObject {
     @Published var dictationHistoryOpen = false
     /// 0.5.330: Activity → Dictation → Settings, written only by openDictationSettings and closeDictationSettings.
     @Published var dictationSettingsOpen = false
+    /// 0.5.369: Activity → Messages → the pinned COS chat. Written by `openDropItChat()` / `closeDropItChat()`, and by nothing else.
+    @Published private(set) var dropItChatOpen = false
+    /// 0.5.369: the chat's History. Written by `openDropItHistory()` / `closeDropItHistory()`, and by nothing else.
+    @Published private(set) var dropItHistoryOpen = false
     /// 0.5.327: which cue review view is the Memories route (CueReviewPane), or nil while the Memories page shows.
     /// Written by `openCueReview(_:)` / `closeCueReview()`, and by nothing else.
     @Published private(set) var cueReview: CueVerdicts.Review?
@@ -3262,6 +3277,49 @@ final class ControllerModel: ObservableObject {
 
     func closeDictationSettings() {
         dictationSettingsOpen = false
+    }
+
+    /// 0.5.369: the pinned COS chat is the Messages route. Mounted only while the server has Drop it on.
+    var dropItChatRouteActive: Bool {
+        dropItChatOpen && status.dropIt.available
+    }
+
+    /// 0.5.369: History is the Messages route, one rung above the chat (its Back lands on the chat).
+    var dropItHistoryRouteActive: Bool {
+        dropItHistoryOpen && status.dropIt.available
+    }
+
+    func openDropItChat() {
+        guard status.dropIt.available else { return }
+        closeMediaPreview()
+        closeArchiveDay()
+        closeArchiveChat()
+        dropItHistoryOpen = false
+        dropItChatOpen = true
+    }
+
+    func closeDropItChat() {
+        dropItHistoryOpen = false
+        dropItChatOpen = false
+    }
+
+    func openDropItHistory() {
+        guard status.dropIt.available else { return }
+        closeMediaPreview()
+        dropItChatOpen = true
+        dropItHistoryOpen = true
+    }
+
+    func closeDropItHistory() {
+        dropItHistoryOpen = false
+    }
+
+    /// Settings, Work chat, Drop it (DI-01): PUT /api/drops/settings, then the capability follows the server's answer at once
+    /// (the next status read confirms it). Turning it off closes the chat.
+    func setDropItEnabled(_ on: Bool) async {
+        guard let now = await dropIt.setEnabled(on) else { return }
+        status.dropIt.enabled = now
+        if !now { closeDropItChat() }
     }
 
     /// From anywhere (a pane's "Dictation settings" button, the Dictation menu): Activity opens on Dictation, then Settings.

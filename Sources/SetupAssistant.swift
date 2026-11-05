@@ -118,6 +118,8 @@ enum SetupAssistant {
         /// A message typed into an open session and not sent (ControllerModel.chatDraft). Going anywhere else clears it, so a
         /// place row asks first.
         var unsentSessionDraft = false
+        /// 0.5.369: the server has Drop it on (ServerStatus.dropIt.available). The File to Work row becomes Drop it.
+        var dropIt = false
 
         init() {}
     }
@@ -2383,6 +2385,11 @@ enum SetupAssistant {
             return Command.allCases.contains { $0.phrases.contains { $0.contains(" ") && padded.contains(" " + plain($0) + " ") } }
         }
 
+        /// 0.5.369: the File to Work row while Drop it is on. Same id, kind and key; its words go to POST /api/drops, and the
+        /// receipt lands in the pinned COS chat.
+        static let dropRow = Row(id: "file", kind: .file, group: .asking, title: "Drop it",
+                                 detail: "COS files your words and texts back in your COS chat. Nothing is sent to anyone.", trailing: "Option-Return")
+
         /// Why Ask COS waits, or nil.
         static func askHeld(_ s: Snapshot) -> String? {
             if !s.workRunsOn { return "Work runs from Today is off in Settings." }
@@ -2624,6 +2631,8 @@ enum SetupAssistant {
                                 detail: "Runs Doctor first, then one Work run. It asks before it changes anything."))
             }
             rows.append(Row(id: "file", kind: .file, group: .asking, title: "File to Work", detail: "Saves your words to the Work inbox. No run.", trailing: "Option-Return"))
+            // 0.5.369: with Drop it on (the server has it on), the same row drops the words into the pinned COS chat instead.
+            if s.dropIt, let index = rows.lastIndex(where: { $0.id == "file" }) { rows[index] = dropRow }
 
             result.rows = twinsTold(rows, now: inputs.now, calendar: inputs.calendar)
             // Any command or place in the list counts: "go to se" shows Open Sessions, "go to usage" shows Usage, and Return must not

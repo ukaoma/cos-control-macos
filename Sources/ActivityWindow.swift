@@ -598,6 +598,8 @@ struct ActivityWindow: View {
     @State private var todayRetrying = false
     /// 0.5.259: the view Memories opens on when an item asks for one ("review"); cleared by the next tab choice.
     @State private var memoriesOpenView: String?
+    /// 0.5.369: set by a deep link from the COS chat (dropItOpen); the strip on the pane it opened, and the way back.
+    @State private var dropItCameBack: String?
     /// 0.5.362: counts the times ⌘K asked the Memories page for a view, so the page, already open and read once, is told again.
     @State private var memoriesViewRequest = 0
     /// One indicator that travels between tabs instead of six that blink.
@@ -753,6 +755,7 @@ struct ActivityWindow: View {
         case .messages:
             model.selectedMediaPreview != nil || selectedTurnID != nil
                 || selectedArchiveDate != nil || selectedArchiveChat != nil
+                || model.dropItChatRouteActive || model.dropItHistoryRouteActive
         case .speakers: selectedVoiceName != nil || selectedSpeakerSessionID != nil
         case .meetings:
             selectedLibraryRecordID != nil || model.meetingImportRouteActive || model.meetingSuggestionsRouteActive
@@ -799,6 +802,11 @@ struct ActivityWindow: View {
     /// the Today home's frame when that home is on.
     @ViewBuilder
     private func activityContent(today: TodayHome.Frame?, width: CGFloat, now: Date) -> some View {
+          VStack(spacing: 0) {
+            // 0.5.369: a deep link from the COS chat leaves the way back on the pane it opened.
+            if let line = dropItCameBack, !showingSettings, !(section == .messages && model.dropItChatRouteActive) {
+                DropItCameBackStrip(line: line, back: dropItBackToChat)
+            }
             Group {
                 if showingSettings {
                     // The hub takes the whole region (its own sidebar and On this page); the classic panel keeps its 780.
@@ -810,6 +818,12 @@ struct ActivityWindow: View {
                     WorkSessionsView(store: handoffStore, isPreview: isolatedWorkPreview, onOpenWork: openHandoffWork, onOpenFullSession: openFullHandoffSession)
                 } else if isolatedWorkPreview, let selected = section, selected != .work, !(selected == .meetings && selectedLibraryRecordID != nil) {
                     previewOnlySection(selected)
+                // 0.5.369: the pinned COS chat and its History, each on its own flag (openDropItChat / openDropItHistory write them).
+                } else if section == .messages, model.dropItHistoryRouteActive {
+                    DropItHistoryPane(store: model.dropIt, onBack: { model.closeDropItHistory() }, onOpen: dropItOpenDrop)
+                } else if section == .messages, model.dropItChatRouteActive {
+                    DropItChatPane(store: model.dropIt, hooks: dropItHooks, onAllMessages: { model.closeDropItChat() },
+                                   onHistory: { model.openDropItHistory() }, onOpen: dropItOpen)
                 } else if section == .messages, let preview = model.selectedMediaPreview {
                     mediaDetail(preview)
                 } else if section == .messages, let selectedTurn {
@@ -933,6 +947,7 @@ struct ActivityWindow: View {
                     activityHome
                 }
             }
+          }
     }
 
     /// Settings opened as the hub, which brings its own sidebar in place of the Today rail and its own back control.
@@ -1285,6 +1300,7 @@ struct ActivityWindow: View {
 
     private func select(_ requested: ActivitySection) {
         showingSettings = false
+        dropItCameBack = nil
         if taskDetail != nil { requestCloseTaskDetail(); return }
         memoriesOpenView = nil
         if !isolatedWorkPreview { showingLinkedSession = false; historicalWorkID = nil }
@@ -1302,6 +1318,7 @@ struct ActivityWindow: View {
 
     private func goHome() {
         showingSettings = false
+        dropItCameBack = nil
         if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil } // A send being handed over keeps its overlay; it shows the result back in Work.
         if taskDetail != nil { requestCloseTaskDetail(); return }
         if isolatedWorkPreview { withOptionalAnimation { section = nil }; return }
@@ -1368,6 +1385,10 @@ struct ActivityWindow: View {
         } else if section == .work, workWorkspaceState.selectedID != nil || reviewStore.selectedMeeting != nil || workWorkspaceState.meetingPicker {
             workWorkspaceState.selectedID = nil; handoffStore.selectedWorkID = nil
             reviewStore.selectedMeeting = nil; workWorkspaceState.meetingPicker = false
+        } else if section == .messages, model.dropItHistoryRouteActive {
+            model.closeDropItHistory()
+        } else if section == .messages, model.dropItChatRouteActive {
+            model.closeDropItChat()
         } else if section == .messages, model.selectedMediaPreview != nil {
             model.closeMediaPreview()
         } else if section == .messages, selectedTurnID != nil {
@@ -1478,6 +1499,8 @@ struct ActivityWindow: View {
         // 0.5.361: Dictation's settings are the third such pane. Left open, a later Open Dictation landed on Settings.
         model.closeDictationSettings()
         model.closeCueReview()
+        // 0.5.369: the COS chat and History are Messages routes; a tab switch closes them like any detail.
+        model.closeDropItChat()
     }
 
     /// From the cue review rail back to the Memories page, open on one of its own views ("review", "recent").
@@ -3271,6 +3294,13 @@ struct ActivityWindow: View {
                 .padding(.horizontal, 12)
                 .padding(.top, 6)
                 .padding(.bottom, 8)
+            // 0.5.369: the pinned COS chat's row, above Recent and never in Archive, only while the server has Drop it on. The
+            // list under it is unchanged (Tests/drop-it-pins.py holds its text).
+            if messagesSubview == .recent, model.status.dropIt.available {
+                DropItPinnedRow(store: model.dropIt, open: openDropItChat)
+                    .padding(.horizontal, 22)
+                    .padding(.bottom, 4)
+            }
 
             // 0.5.343: the turns build in place on first load (COSBuildUp); the chain is today's.
             COSBuildUp(.list(6), tune: .messages, loading: model.recentGlassesStatus == .loading, landed: !model.recentMessages.isEmpty,
@@ -9515,6 +9545,7 @@ extension ActivityWindow {
         }
         s.appUpdate = update
         s.dictationEnabled = model.dictation.enabled
+        s.dropIt = model.status.dropIt.available
         s.accessibilityTrusted = model.petJumpTrusted
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: s.microphoneAllowed = true
@@ -9662,7 +9693,7 @@ extension ActivityWindow {
             Color.clear.contentShape(Rectangle()).onTapGesture { closeCommandCenter() }.accessibilityHidden(true)
             CommandCenterPanel(base: commandInputs(frame: frame, now: now), keys: commandKeys, store: model.macRecording, fixture: commandFixture,
                                recording: { commandRecording() }, snapshot: { commandSnapshot() }, resultInputs: { commandResultInputs() },
-                               run: { row, listing in commandRun(row, listing) }, submit: { words in todaySubmitAsk(words) },
+                               run: { row, listing in commandRun(row, listing) }, submit: { words in todayFileOrDrop(words) },
                                search: { words in try await commandSearchSessions(words) },
                                find: { ask, stage in try await commandFindSessions(ask, stage: stage) },
                                reread: {
@@ -9702,7 +9733,7 @@ extension ActivityWindow {
             commandAsk(listing)
             return .stay
         case .file:
-            todaySubmitAsk(listing.words)
+            todayFileOrDrop(listing.words)
             return .stay
         case .savedAnswer, .info:
             return .stay
@@ -10213,6 +10244,114 @@ extension ActivityWindow {
         Task {
             let accepted = await today.startRun(target: run.target, title: run.title, prompt: run.prompt, context: run.context, handoff: handoffStore)
             commandKeys.clearDraft(afterSend: sent, accepted: accepted)
+        }
+    }
+}
+
+// MARK: - Drop it (0.5.369)
+
+extension ActivityWindow {
+    /// The pinned row's opener: Messages' other details close, and the chat's own flag opens (ControllerModel.openDropItChat).
+    func openDropItChat() {
+        selectedTurnID = nil
+        selectedArchiveDate = nil
+        selectedArchiveChat = nil
+        dropItCameBack = nil
+        model.dropIt.askRun = dropItAskRun
+        model.openDropItChat()
+    }
+
+    /// From the strip a deep link left: Messages, on the chat.
+    func dropItBackToChat() {
+        dropItCameBack = nil
+        select(.messages)
+        messagesSubview = .recent
+        openDropItChat()
+    }
+
+    /// A question routed to COS runs as the existing Ask job: a Today Work run with the words (its guard, its switch, its model
+    /// pick). Its clientJobId comes back to link the drop, or nil when it did not start.
+    var dropItAskRun: @MainActor (String, String) async -> String? {
+        { [today, handoffStore] dropId, prompt in
+            let accepted = await today.startRun(target: "drop:ask:" + dropId, title: String(prompt.prefix(60)), prompt: prompt,
+                                                context: "Asked in the COS chat on \(TodayHome.headerDate(Date())).", handoff: handoffStore)
+            return accepted ? today.lastStartedRunID : nil
+        }
+    }
+
+    /// Mac dictation for the composer, and what Move offers.
+    var dropItHooks: DropItComposerHooks {
+        let model = self.model
+        return DropItComposerHooks(
+            dictationOn: model.dictation.enabled,
+            dictate: { if model.dictation.phase == "Listening" { model.dictation.stop() } else { model.dictation.start() } },
+            domains: { model.domainOptions.map { ($0.name, $0.label) } },
+            threads: { model.threadRecords.filter { !$0.isResolved }.map { ($0.id, $0.title) } },
+            loadMoveOptions: {
+                await model.loadDomains()
+                if model.threadRecords.isEmpty { await model.loadContextRecords(kind: "thread") }
+            })
+    }
+
+    /// An open action on a chat item: Work with the card selected, the session, Threads, Memories To review, or Messages. Each
+    /// leaves "Back to the chat" on the pane it opened.
+    func dropItOpen(_ item: DropIt.Item, _ action: DropIt.Action) {
+        dropItFollow(action.id, link: DropIt.link(for: action, in: item))
+    }
+
+    /// History's Open: where the drop lives, or the chat when it lives nowhere now.
+    func dropItOpenDrop(_ drop: DropIt.Drop) {
+        guard let action = DropIt.openAction(for: drop) else { model.closeDropItHistory(); return }
+        dropItFollow(action, link: drop.links.first)
+    }
+
+    func dropItFollow(_ action: String, link: DropIt.Link?) {
+        switch action {
+        case "open_card":
+            guard let link, let domain = link.domain, !domain.isEmpty else { return }
+            openHandoffWork("task:\(domain):\(link.id)")
+            dropItCameBack = DropIt.cameBackCard
+        case "open_thread":
+            guard let link else { return }
+            select(.threads)
+            dropItCameBack = DropIt.cameBackThread
+            Task {
+                if model.threadRecords.isEmpty { await model.loadContextRecords(kind: "thread") }
+                guard section == .threads, let record = model.threadRecords.first(where: { $0.id == link.id }) else { return }
+                selectedContextID = record.id
+                model.openContextRecord(record, kind: "thread")
+            }
+        case "open_memory":
+            commandOpenMemories("review", native: .toReview)
+            dropItCameBack = DropIt.cameBackMemory
+        case "open_session", "send_to_session":
+            guard let link else { return }
+            if action == "send_to_session" { model.dropIt.line = DropIt.sendSessionLine }
+            openHandoffSession(link.id)
+            if section == .sessions { dropItCameBack = DropIt.cameBack }
+        case "open_messages":
+            // The answer is a Messages conversation: the list it lives in, under the pinned row.
+            model.closeDropItChat()
+        default:
+            break
+        }
+    }
+
+    /// ⌘K's File to Work row and Option-Return: Drop it while the server has it on, else filing exactly as before.
+    func todayFileOrDrop(_ words: String) {
+        guard model.status.dropIt.available else { todaySubmitAsk(words); return }
+        let text = words.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !today.runBusy, !today.captureBusy else { return }
+        today.captureBusy = true
+        model.dropIt.askRun = dropItAskRun
+        Task {
+            defer { today.captureBusy = false }
+            if let answer = await model.dropIt.send(text) {
+                commandKeys.clearDraft(afterSend: text, accepted: true)
+                today.runNote = DropIt.commandNote(answer)
+            } else {
+                today.runNote = model.dropIt.line ?? DropIt.failedLine
+            }
         }
     }
 }

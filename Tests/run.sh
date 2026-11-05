@@ -277,6 +277,10 @@ python3 "$ROOT/Tests/title-steer-helper-checks.py" "$TMP/cos-control-helper"
 # fixture: both dispatched, Copy token's managed-server check first (nothing reaches /api/web-session/* in a /tmp home), no
 # token, ticket or code on stdout or stderr. What crosses on a real answer is WebSignInCore, in Tests/run-pairing.sh.
 python3 "$ROOT/Tests/web-signin-helper-checks.py" "$TMP/cos-control-helper"
+# 0.5.369 Drop it (server Drop it P1): drop-it through the compiled helper against a loopback fixture (every op's method, path and
+# body exactly, the words only on stdin and never on stderr, off and unsupported, a refusal's code and plain line, only the contract's
+# keys, unreachable and no token).
+python3 "$ROOT/Tests/drop-it-helper-checks.py" "$TMP/cos-control-helper"
 # 0.5.336 live meeting view (server 6.86.0): live-provisional through the compiled helper against a loopback fixture (the
 # route and session exactly, only the line's chunk, generation and newest 600 characters, every status an answer, no text
 # on stderr). The Mac preview and liveCues on the start are in mac-recording-helper-checks.py above.
@@ -317,7 +321,7 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
   "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/KeyLanes.swift" "$ROOT/Sources/KeyLanesViews.swift" "$ROOT/Sources/WorkSessionLinks.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/Sources/WorkOrchestrator.swift" "$ROOT/Sources/WorkLensPlans.swift" "$ROOT/Sources/WorkLensPlansPump.swift" "$ROOT/Sources/WorkChatQueue.swift" "$ROOT/Sources/WorkReferences.swift" "$ROOT/Sources/WorkTaskContext.swift" "$ROOT/Sources/WorkContextMeter.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" "$ROOT/Sources/MeetingSpeakerPolicy.swift" "$ROOT/Sources/MeetingAskCore.swift" "$ROOT/Sources/MeetingAsk.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
-  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" \
+  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" "$ROOT/Sources/DropIt.swift" "$ROOT/Sources/DropItViews.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/ControlSetup.swift" \
   "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift" \
@@ -388,6 +392,13 @@ COS_TITLE_STEER_LANE=wiring zsh "$ROOT/Tests/run-title-steer.sh"
 # cached, the row only while its window is on screen, mounted once in Devices for every device path, the catalog row, the copy and
 # the version). Its rules and state run in Tests/run-provider-connect.sh, the helper's answers in Tests/run-pairing.sh.
 python3 "$ROOT/Tests/phone-signin-pins.py" "$ROOT"
+# 0.5.369: Drop it, the pinned COS chat in Messages (server Drop it P1). The wiring pins (Messages' list hashed unchanged, the row and the
+# panes gated on the capability, their own route flags, inline only, the words on stdin, ⌘K's row old and new, the Settings switch, the
+# source lists, the version), the words, replies, layout and store against a stand-in helper, then the model, ⌘K and Settings with the
+# whole app compiled. The helper lane runs above with the suite's own helper.
+COS_DROP_IT_LANE=pins zsh "$ROOT/Tests/run-drop-it.sh"
+COS_DROP_IT_LANE=models zsh "$ROOT/Tests/run-drop-it.sh"
+COS_DROP_IT_LANE=wiring zsh "$ROOT/Tests/run-drop-it.sh"
 # 0.5.336: the live meeting view (server 6.86.0). The wiring pins (capability gating, the audiogram in its own object,
 # Reduce Motion, the one-second clock, Command-Shift-R once, live cues only on the Mac start, no grey text in any log),
 # then the pure rules (counts, anchoring, the strip, the title, the audiogram ring, the preview rate cap, the grey line).
@@ -428,7 +439,7 @@ zsh "$ROOT/Tests/run-illustrated-pet.sh"
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/KeyLanes.swift" "$ROOT/Sources/KeyLanesViews.swift" "$ROOT/Sources/WorkSessionLinks.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/Sources/WorkOrchestrator.swift" "$ROOT/Sources/WorkLensPlans.swift" "$ROOT/Sources/WorkLensPlansPump.swift" "$ROOT/Sources/WorkChatQueue.swift" "$ROOT/Sources/WorkReferences.swift" "$ROOT/Sources/WorkTaskContext.swift" "$ROOT/Sources/WorkContextMeter.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" "$ROOT/Sources/MeetingSpeakerPolicy.swift" "$ROOT/Sources/MeetingAskCore.swift" "$ROOT/Sources/MeetingAsk.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
-  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" \
+  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" "$ROOT/Sources/DropIt.swift" "$ROOT/Sources/DropItViews.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/ControlSetup.swift" "$ROOT/Sources/ControlInstance.swift" \
   "$ROOT/Tests/JediIdleContract.swift" -framework AppKit -framework SwiftUI -o "$TMP/jedi-idle-contract"
@@ -2960,7 +2971,7 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
   "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/KeyLanes.swift" "$ROOT/Sources/KeyLanesViews.swift" "$ROOT/Sources/WorkSessionLinks.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/Sources/WorkOrchestrator.swift" "$ROOT/Sources/WorkLensPlans.swift" "$ROOT/Sources/WorkLensPlansPump.swift" "$ROOT/Sources/WorkChatQueue.swift" "$ROOT/Sources/WorkReferences.swift" "$ROOT/Sources/WorkTaskContext.swift" "$ROOT/Sources/WorkContextMeter.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" "$ROOT/Sources/MeetingSpeakerPolicy.swift" "$ROOT/Sources/MeetingAskCore.swift" "$ROOT/Sources/MeetingAsk.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
-  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" \
+  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" "$ROOT/Sources/DropIt.swift" "$ROOT/Sources/DropItViews.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/ControlSetup.swift" \
   "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift" \

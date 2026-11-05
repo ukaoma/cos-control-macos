@@ -161,6 +161,32 @@ extension LiveMeetingCapability {
     }
 }
 
+/// 0.5.369 (server Drop it P1): `capabilities.dropIt` from /api/health. Here so ServerStatus holds it in every lane that compiles
+/// Models.swift alone; the chat's rules are in Sources/DropIt.swift.
+struct DropItCapability: Equatable, Sendable {
+    /// `capabilities.dropIt.protocol`; nil on a server without Drop it.
+    var protocolVersion: Int? = nil
+    /// `capabilities.dropIt.enabled`: the server's switch (Settings, or COS_DROP_IT in its environment).
+    var enabled = false
+    /// `capabilities.dropIt.source`: "env" when COS_DROP_IT decides, "settings" otherwise; nil when not said.
+    var source: String? = nil
+
+    /// The server has the Drop it routes this build speaks (protocol 1).
+    var supported: Bool { protocolVersion == 1 }
+    /// Every new piece of Drop it shows only then: the pinned row, the chat, History and ⌘K's Drop it row. Off, or an older
+    /// server, Messages and ⌘K are exactly as before.
+    var available: Bool { supported && enabled }
+
+    init(protocolVersion: Int? = nil, enabled: Bool = false, source: String? = nil) {
+        self.protocolVersion = protocolVersion; self.enabled = enabled; self.source = source
+    }
+    /// The helper's status keys (HelperSources/main.swift dropItStatusFields). A key the server did not send stays off.
+    init(statusDetails details: [String: JSONValue]) {
+        self.init(protocolVersion: details["dropItProtocol"]?.int, enabled: details["dropItEnabled"]?.bool == true,
+                  source: details["dropItSource"]?.string)
+    }
+}
+
 struct ServerStatus: Sendable {
     /// Absence must be proven. A failed probe, foreign owner, disabled service,
     /// or interrupted transaction is never a fresh install.
@@ -246,6 +272,8 @@ struct ServerStatus: Sendable {
     /// 0.5.336 (server 6.86.0): what /api/health says about the live meeting view (`capabilities.liveMeeting`,
     /// `capabilities.liveCues.kinds`, `capabilities.liveCuesV2`). All absent on an older server.
     var liveMeeting = LiveMeetingCapability()
+    /// 0.5.369: what /api/health says about Drop it (`capabilities.dropIt`). Unsupported on an older server.
+    var dropIt = DropItCapability()
     var backgroundJobsSupported = false
     var backgroundJobsEnabled: Bool?
     var meetingPreviewSupported = false
@@ -497,6 +525,7 @@ struct ServerStatus: Sendable {
         liveTranscriptionSessions = details["liveTranscriptionSessions"]?.int
         staleTranscriptionSessionIds = (details["staleTranscriptionSessionIds"]?.array ?? []).compactMap(\.string)
         liveMeeting = LiveMeetingCapability(statusDetails: details)
+        dropIt = DropItCapability(statusDetails: details)
         backgroundJobsSupported = details["backgroundJobsSupported"]?.bool ?? false
         backgroundJobsEnabled = details["backgroundJobsEnabled"]?.bool
         meetingPreviewSupported = details["meetingPreviewSupported"]?.bool ?? false

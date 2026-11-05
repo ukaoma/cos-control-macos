@@ -1,3 +1,24 @@
+## 0.5.369 (build 423), Drop it: a pinned COS chat in Messages
+
+Built on 0.5.368 (build 422). Plus everything in 0.5.368. The ask: Drop it phase 1, Control half (plan `operations/personal/wk45_2026/PLAN_drop_it_2026-11-04.md`, approved mock `drop-it-mock`, Miles 2026-11-04). It pairs with the Drop it P1 server (branch `claude/drop-it-p1-server`), which advertises `capabilities.dropIt` and serves `/api/drops` and `/api/inbox`.
+
+What is new by default: nothing. Drop it is off on the server until it is turned on (Settings, Work and agents, Work chat, Drop it, or `COS_DROP_IT` on the server). While it is off, or on a server without it, Messages, its Recent list, ⌘K's File to Work and Option-Return are exactly as in 0.5.368, and no new row, pane or switch shows (the switch shows only for a server that has Drop it).
+
+What this build adds, on top of 0.5.368, while Drop it is on:
+
+- Messages, Recent: a pinned COS row above the list, with the chat's last line, its time and how many pings, follow-ups and questions are unread (`GET /api/inbox/summary`, every 30 s while it shows). Not in Archive. The list under it is unchanged, pinned by hash.
+- The pinned COS chat, on its own route flag: your drops on the right with where they came from, COS on the left as compact cards with one primary button and quiet links, day separators, an "N new" line, and Mark all read. Opening it marks what it shows read (`POST /api/inbox/read`). It reads the chat every 10 s while open.
+- Drop it, the composer: Return drops the words (`POST /api/drops`, a new UUID v4 each time, source mac); the box keeps them until the server has them. The microphone button starts Mac dictation into the box when dictation is on. A drop the server routes to a question runs the existing Ask job (a Today Work run, with its own switch, guard and caps) and links it back (`POST /api/drops/:id/ask`); the answer posts in the chat as a follow-up.
+- Undo, Move and the one question work inline: Undo and a choice post `/api/inbox/action`; Move opens a box under the receipt with each Work area, your open threads (searchable), a memory and a plain note, and posts `/api/drops/:id/move`. A refusal shows on the card in the server's own words (an unknown reason code is never shown raw).
+- Open actions use the existing navigation, and each leaves "Back to the chat" on the pane it opened: Open card selects the card in Work, Open thread opens it in Threads, Open memory opens Memories on To review, Open session opens that session, Open in Messages goes to the list.
+- History, one rung above the chat on its own flag: everything dropped, newest first, searchable by words, with an underlined kind switch and a Status menu, each row with its kind, when, where it went, its status and Open.
+- ⌘K: the File to Work row becomes Drop it (same row, same key) and posts to `/api/drops`; its line says what the receipt said.
+- Settings, Work and agents, Work chat: the Drop it switch (`PUT /api/drops/settings`), found by search ("drop it", "file to work", "cos chat"). When `COS_DROP_IT` decides on the server, the row says so.
+- The helper's new `drop-it --op ...` verb: the words, History's search and Move's target go on stdin, never in the arguments; only the contract's keys cross; nothing logs the words.
+- Checks: `Tests/drop-it-helper-checks.py` (84), `Tests/drop-it-pins.py`, `Tests/DropItChecks.swift` (85), `Tests/DropItRender.swift check` (15) and a mutation pass (`Tests/mutate-drop-it.py`). Renders: `Tests/run-drop-it.sh render <dir>`.
+
+Not in this build (plan P2): attaching a file, a routing preview before sending (the server has no preview route), pings, reminders' times and banners, the phone and lens pinned chat, and sending a held follow-up to its session from the chat (Send to session opens the session).
+
 ## 0.5.368 (build 422), Windu's strike cuts through the droid
 
 Built on 0.5.367 (build 421). Plus everything in 0.5.367. The ask: Miles approved Windu Motion V13 with the approved Session 3 V4 on 2026-11-04 at 11:01 CST, and asked to keep the previous versions backed up. This build ships V13.2, the alpha and coverage correction of it. V6 to V12 are not in this build.

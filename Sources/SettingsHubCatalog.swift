@@ -153,6 +153,10 @@ enum SettingsHubCatalog {
         // web page's sign-in error names it. A hub row, not an inventory row.
         .init("UT-29", "Open COS on your phone", "Point your iPhone Camera here. Safari opens COS already signed in.", old: "", group: "glasses.devices",
               advanced: false, mount: .group, keywords: ["phone", "browser", "sign in", "web", "qr", "control web", "safari", "sign-in code", "login"]),
+        // 0.5.369 (server Drop it P1): the one Drop it switch, off by default, shown only for a server that has Drop it. A hub row, not
+        // an inventory row. Its words are DropIt.settingLabel and settingDetail (Sources/DropIt.swift).
+        .init("DROP-01", "Drop it", "A pinned COS chat at the top of Messages. Type a thought, an ask or a reminder, and COS files it and texts back. ⌘K's File to Work becomes Drop it.", old: "", group: "work.chat",
+              advanced: false, mount: .group, keywords: ["drop", "drop it", "cos chat", "pinned", "inbox", "file to work", "capture", "quick capture", "note", "reminder"]),
         .init("HUB-CL", "Use classic Settings", "Show the earlier one-page Settings in Activity.", old: "", group: "general.app", advanced: true, mount: .group,
               keywords: ["classic", "old settings", "rollback", "one page"]),
         // 0.5.362 (server API v3, live cues modes): the cue mode, grounding and the general cue limits. They show only for a server
