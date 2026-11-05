@@ -73,6 +73,8 @@ enum DropIt {
 
     /// The server's DROP_LIMITS.text, in code points.
     static let textMax = 2_000
+    /// 0.5.372: a reminder's Done and Snooze buttons, the two "When should I remind you?" choices, and dismiss.
+    static let serverActions: Set<String> = ["reminder_done", "snooze_1h", "snooze_tomorrow", "when:tomorrow_9", "when:monday_9", "dismiss"]
 
     // MARK: The contract's shapes
 
@@ -87,6 +89,8 @@ enum DropIt {
         var label: String
         var isChoice: Bool { id.hasPrefix("choose:") }
         var isOpen: Bool { id.hasPrefix("open_") || id == "send_to_session" }
+        /// 0.5.372 (server Drop it P2): actions the server takes on POST /api/inbox/action (the helper's grammar holds the same list).
+        var isServerAction: Bool { DropIt.serverActions.contains(id) }
     }
     struct Item: Identifiable, Equatable, Sendable {
         var id: String
@@ -1108,6 +1112,24 @@ final class DropItStore: ObservableObject {
     func choose(_ item: DropIt.Item, _ action: DropIt.Action) async -> Bool {
         guard action.isChoice else { return false }
         return await change(thread: item.threadId, DropIt.call("action", ["--item", item.id, "--action", action.id]))
+    }
+
+    /// 0.5.372 (P2): a server action (POST /api/inbox/action). A reminder or a time choice answers the drop and its items;
+    /// dismiss answers only the counts, so the chat reads again.
+    @discardableResult
+    func serverAction(_ item: DropIt.Item, _ action: DropIt.Action) async -> Bool {
+        guard action.isServerAction, !busyThreads.contains(item.threadId) else { return false }
+        busyThreads.insert(item.threadId)
+        defer { busyThreads.remove(item.threadId) }
+        itemLines[item.threadId] = nil
+        let reply = await ask(DropIt.call("action", ["--item", item.id, "--action", action.id]))
+        guard case .ok(let details) = reply else {
+            itemLines[item.threadId] = DropIt.line(reply) ?? DropIt.failedLine
+            return false
+        }
+        if let answer = DropIt.answer(details) { merge(answer) } else { await loadFeed() }
+        await refreshSummary()
+        return true
     }
 
     /// Move (POST /api/drops/:id/move): Undo, then filing where he picked, with no Jev call.

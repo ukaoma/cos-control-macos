@@ -99,7 +99,7 @@ need("try? await Task.sleep(nanoseconds: 30_000_000_000)" in drop_views and "try
 need('static func call(_ op: String, _ extra: [String] = []) -> [String] { ["drop-it", "--op", op] + extra }' in core, "stdin", "every call is the drop-it verb and its op")
 need('return (call("submit"), data)' in core and 'return (call("history"), data)' in core and 'return (call("move", ["--drop", dropId]), data)' in core,
      "stdin", "a drop's words, History's search and Move's target go on stdin, never in the arguments")
-need('let takesStdin: Set<String> = ["submit", "history", "move", "upload"]' in helper and "case \"drop-it\": try emitDropIt(args: args)" in helper,
+need('let takesStdin: Set<String> = ["submit", "history", "move", "upload", "p2-set"]' in helper and "case \"drop-it\": try emitDropIt(args: args)" in helper,
      "stdin", "the helper reads those three on stdin and dispatches the verb")
 helper_drop = between(helper, "    private func emitDropIt(args: [String]) throws {", "\n    }\n")
 need("progress(" not in helper_drop and "print(" not in helper_drop, "no logs", "the helper's verb writes nothing but its answer")

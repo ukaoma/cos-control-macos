@@ -157,7 +157,50 @@ final class MeetingAudioNotifier: NSObject, UNUserNotificationCenterDelegate, @u
             meetingAudioLog.notice("post \(identifier, privacy: .public) error=\(detail, privacy: .public)")
         }
     }
+    /// 0.5.372 (Drop it P2): a COS chat banner or a reminder's local backup. A notice with `fireAt` waits for that time; one
+    /// with the same identifier replaces it (the server's reminder banner and the backup share `reminder-<dropId>`).
+    var onOpenDropIt: (@MainActor @Sendable () -> Void)?
+    func postDropIt(_ notice: DropItP2.Notice) {
+        let content = UNMutableNotificationContent()
+        content.title = notice.title
+        content.body = notice.body
+        content.sound = .default
+        content.userInfo = notice.userInfo
+        content.threadIdentifier = "cos-chat"
+        var trigger: UNNotificationTrigger?
+        if let at = notice.fireAt {
+            let parts = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: at)
+            trigger = UNCalendarNotificationTrigger(dateMatching: parts, repeats: false)
+        }
+        let identifier = notice.identifier
+        center.add(UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)) { error in
+            let detail = error.map { String(describing: $0) } ?? "none"
+            meetingAudioLog.notice("post \(identifier, privacy: .public) error=\(detail, privacy: .public)")
+        }
+    }
+    /// The COS chat notifications in Notification Center now, by identifier.
+    func deliveredDropItIdentifiers() async -> Set<String> {
+        Set(await center.deliveredNotifications().filter { $0.request.content.userInfo["cosChat"] != nil }.map(\.request.identifier))
+    }
+    /// The reminder backups waiting to fire, with their times.
+    func pendingDropItReminders() async -> [String: Date] {
+        var out: [String: Date] = [:]
+        for request in await center.pendingNotificationRequests() where request.identifier.hasPrefix("reminder-") {
+            if let trigger = request.trigger as? UNCalendarNotificationTrigger, let next = trigger.nextTriggerDate() { out[request.identifier] = next }
+        }
+        return out
+    }
+    func removePendingDropIt(_ identifiers: [String]) {
+        guard !identifiers.isEmpty else { return }
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+    }
+
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        if response.notification.request.content.userInfo["cosChat"] != nil {
+            let open = onOpenDropIt
+            await MainActor.run { open?() }
+            return
+        }
         guard let workID = response.notification.request.content.userInfo["workID"] as? String, !workID.isEmpty else { return }
         let open = onOpenWork
         await MainActor.run { open?(workID) }
@@ -639,6 +682,22 @@ final class ControllerModel: ObservableObject {
         }
         return store
     }()
+    /// 0.5.372 (server Drop it P2): COS reaching out. Banners from the server's outbox, the reminders' local backup and the
+    /// P2 settings (DropItP2Store, Sources/DropItP2.swift). Runs only while `status.dropIt.available`.
+    lazy var dropItP2: DropItP2Store = {
+        let store = DropItP2Store()
+        store.run = { [weak self] arguments, input in
+            guard let self else { throw HelperClientError.commandFailed("COS Control is closing.") }
+            return try await self.runHelper(arguments, timeout: 20, stdinData: input)
+        }
+        store.available = { [weak self] in self?.status.dropIt.available ?? false }
+        let notifier = meetingAudioNotifier
+        store.post = { notice in notifier.postDropIt(notice) }
+        store.delivered = { await notifier.deliveredDropItIdentifiers() }
+        store.scheduled = { await notifier.pendingDropItReminders() }
+        store.removePending = { ids in notifier.removePendingDropIt(ids) }
+        return store
+    }()
     let macRecording = MacRecordingStore()
     let dictation = MacDictationStore.shared
     /// 0.5.309: the one COS dictionary (vocabulary and corrections) and what Fix a word taught it.
@@ -1114,6 +1173,9 @@ final class ControllerModel: ObservableObject {
             workLensPlansPump = lens
         }
         meetingAudioNotifier.onOpenWork = { [weak self] workID in self?.openWorkItem(workID) }
+        // 0.5.372 (Drop it P2): a COS chat notification opens Messages on the pinned chat.
+        meetingAudioNotifier.onOpenDropIt = { [weak self] in self?.openDropItFromNotice() }
+        dropItP2.start()
         tracker.start()
     }
     /// Work notifications are on unless you turned them off in Settings.
@@ -3296,6 +3358,13 @@ final class ControllerModel: ObservableObject {
         closeArchiveChat()
         dropItHistoryOpen = false
         dropItChatOpen = true
+    }
+
+    /// 0.5.372: a COS chat banner or reminder was clicked.
+    func openDropItFromNotice() {
+        guard status.dropIt.available else { openActivity?(nil); return }
+        openDropItChat()
+        openActivity?(.messages)
     }
 
     func closeDropItChat() {

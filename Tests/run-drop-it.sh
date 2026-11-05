@@ -54,6 +54,18 @@ if [[ "$LANE" == "all" || "$LANE" == "models" ]]; then
   (( COUNT >= 140 )) || { print -u2 "drop it checks ran only $COUNT (expected at least 140)"; exit 1; }
 fi
 
+if [[ "$LANE" == "all" || "$LANE" == "p2" ]]; then
+  # 0.5.372 Drop it P2: the banner cursor, the reminder backup's plan, the settings paths and the store, against a stand-in.
+  OUT="$(/usr/bin/python3 "$ROOT/Tests/drop-it-p2-pins.py" "$ROOT")" || { print -r -- "$OUT"; exit 1; }
+  print -r -- "$OUT"
+  /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" "${SWIFTC[@]}" -parse-as-library \
+    "$ROOT/Sources/DropIt.swift" "$ROOT/Sources/DropItP2.swift" "$ROOT/Sources/Models.swift" "$ROOT/Tests/DropItP2Checks.swift" -framework AppKit -o "$DIR/drop-it-p2-checks"
+  OUT="$(env "${RUN_ENV[@]}" "$DIR/drop-it-p2-checks")" || { print -r -- "$OUT"; exit 1; }
+  print -r -- "$OUT"
+  COUNT="${${OUT##*checks: }%% passed*}"
+  (( COUNT >= 40 )) || { print -u2 "drop it p2 checks ran only $COUNT (expected at least 40)"; exit 1; }
+fi
+
 if [[ "$LANE" == "all" || "$LANE" == "wiring" ]]; then
   app_binary
   # The last line must be the binary's own: an early exit 0 must never pass for a pass.

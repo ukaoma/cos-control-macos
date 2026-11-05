@@ -18288,7 +18288,9 @@ final class COSControlHelper {
     // chat line go to stdout for the app and in the server's request, and nowhere else: the words arrive on stdin (never argv,
     // where any process on the Mac could read them), and no progress line, log or message carries them.
     static let dropItOps: Set<String> = ["settings", "settings-set", "submit", "history", "get", "undo", "move", "ask", "sent",
-                                         "summary", "feed", "read", "action", "upload"]
+                                         "summary", "feed", "read", "action", "upload",
+                                         // 0.5.372 (server Drop it P2, 6.99.11): the banner outbox, the pending reminders and the P2 settings.
+                                         "banners", "reminders", "p2", "p2-set"]
     static let dropItTextMax = 2_000
     static let dropItDests: Set<String> = ["new_card", "existing_card", "thread", "memory", "session", "note", "reminder", "ask"]
     static let dropItKinds: Set<String> = ["idea", "task", "note", "memory", "file", "reminder", "ask"]
@@ -18319,7 +18321,10 @@ final class COSControlHelper {
     /// The server's link id grammar (cards, threads, sessions, memories).
     static func dropItLinkIdValid(_ value: String) -> Bool { dropItMatches(value, "\\A[A-Za-z0-9][A-Za-z0-9._:@/-]{0,199}\\z") }
     /// The two chat actions the server takes on POST /api/inbox/action.
-    static func dropItActionValid(_ value: String) -> Bool { dropItMatches(value, "\\A(undo|choose:[A-Za-z0-9_-]{1,32})\\z") }
+    /// 0.5.372 (P2): dismiss, the reminder's Done and Snooze buttons, and the two "When should I remind you?" choices.
+    static func dropItActionValid(_ value: String) -> Bool {
+        dropItMatches(value, "\\A(undo|dismiss|reminder_done|snooze_1h|snooze_tomorrow|when:(tomorrow_9|monday_9)|choose:[A-Za-z0-9_-]{1,32})\\z")
+    }
     /// Text without control characters other than tab and newline, at most `max` code points. nil for anything else.
     static func dropItPlain(_ value: Any?, max: Int, newlines: Bool = false) -> String? {
         guard let text = value as? String, text.unicodeScalars.count <= max else { return nil }
@@ -18411,6 +18416,61 @@ final class COSControlHelper {
         return dropItJSON(body)
     }
 
+    // MARK: Drop it P2 settings (0.5.372, server 6.99.11 GET/PUT /api/drops/settings/p2)
+    //
+    // Only these sections and keys cross, each typed. The server clamps numbers into range and answers the saved settings, so the
+    // helper checks shape only: a boolean, a whole number, an HH:MM time, a 300-character steer line, or a set of switches.
+    enum DropItP2Field { case bool, int, time, text, flags([String]) }
+    static let dropItP2Schema: [String: [String: DropItP2Field]] = [
+        "pings": ["on": .bool, "dailyCap": .int, "perSource": .int, "gapMinutes": .int, "quietStart": .time, "quietEnd": .time,
+                  "weekendsQuiet": .bool, "firstBanner": .time, "sources": .flags(["prep", "agent", "followups", "stale", "signals"])],
+        "followUps": ["on": .bool, "kinds": .flags(["card", "handoff", "session", "thread"])],
+        "checkin": ["on": .bool, "weekday": .int, "time": .time],
+        "reminders": ["defaultTime": .time, "snoozeMinutes": .int, "banners": .bool, "lensPush": .bool],
+        "banners": ["reminder": .bool, "resolution": .bool, "prep": .bool, "agent": .bool, "followups": .bool, "stale": .bool, "checkin": .bool],
+        "steer": ["about": .text, "leaveAlone": .text],
+    ]
+    /// One value of the schema, or nil when it is not that type. `strict`: a set of switches may name only its own keys.
+    static func dropItP2Value(_ value: Any?, _ field: DropItP2Field, strict: Bool) -> Any? {
+        switch field {
+        case .bool: return dropItBool(value)
+        case .int: return dropItInt(value).flatMap { (-100_000...100_000).contains($0) ? $0 : nil }
+        case .time: return (value as? String).flatMap { dropItMatches($0, "\\A([01][0-9]|2[0-3]):[0-5][0-9]\\z") ? $0 : nil }
+        case .text: return dropItPlain(value, max: 300)
+        case .flags(let keys):
+            guard let raw = value as? [String: Any], !strict || Set(raw.keys).isSubset(of: Set(keys)) else { return nil }
+            var out: [String: Any] = [:]
+            for key in keys { if let b = dropItBool(raw[key]) { out[key] = b } else if raw[key] != nil, strict { return nil } }
+            return out
+        }
+    }
+    /// The settings as the server answered them (or a change to send): known sections and keys only. With `strict`, anything
+    /// outside the schema refuses the whole change (nil), and an empty change is refused too.
+    static func dropItP2Shape(_ value: Any?, strict: Bool) -> [String: Any]? {
+        guard let raw = value as? [String: Any] else { return nil }
+        if strict, raw.isEmpty || !Set(raw.keys).isSubset(of: Set(dropItP2Schema.keys)) { return nil }
+        var out: [String: Any] = [:]
+        for (section, fields) in dropItP2Schema {
+            guard let given = raw[section] else { continue }
+            guard let given = given as? [String: Any] else { if strict { return nil }; continue }
+            if strict, given.isEmpty || !Set(given.keys).isSubset(of: Set(fields.keys)) { return nil }
+            var part: [String: Any] = [:]
+            for (key, field) in fields {
+                guard given[key] != nil else { continue }
+                if let v = dropItP2Value(given[key], field, strict: strict) { part[key] = v } else if strict { return nil }
+            }
+            out[section] = part
+        }
+        return out
+    }
+    /// The banner outbox cursor: this server boot's id and the last banner seen.
+    static func dropItBannersPath(boot: String?, seq: String?) -> String? {
+        var parts: [String] = []
+        if let boot { guard dropItMatches(boot, "\\A[A-Za-z0-9_-]{1,64}\\z") else { return nil }; parts.append("bootId=" + boot) }
+        if let seq { guard dropItMatches(seq, "\\A[0-9]{1,9}\\z") else { return nil }; parts.append("seq=" + seq) }
+        return "/api/inbox/banners" + (parts.isEmpty ? "" : "?" + parts.joined(separator: "&"))
+    }
+
     /// One op as an HTTP request: method, path and body. nil for an argument outside the grammar (never sent).
     static func dropItRequest(op: String, args: [String], stdin: Data) -> (method: String, path: String, body: String?)? {
         func opt(_ name: String) -> String? {
@@ -18449,6 +18509,13 @@ final class COSControlHelper {
             guard let item = opt("--item"), dropItFeedIdValid(item), let action = opt("--action"), dropItActionValid(action),
                   let body = dropItJSON(["itemId": item, "action": action]) else { return nil }
             return ("POST", "/api/inbox/action", body)
+        case "banners": return dropItBannersPath(boot: opt("--boot"), seq: opt("--seq")).map { ("GET", $0, nil) }
+        case "reminders": return ("GET", "/api/drops/reminders", nil)
+        case "p2": return ("GET", "/api/drops/settings/p2", nil)
+        case "p2-set":
+            guard let object = try? JSONSerialization.jsonObject(with: stdin), let shape = dropItP2Shape(object, strict: true),
+                  let body = dropItJSON(shape) else { return nil }
+            return ("PUT", "/api/drops/settings/p2", body)
         default: return nil
         }
     }
@@ -18484,6 +18551,25 @@ final class COSControlHelper {
         if let title = dropItPlain(raw["title"], max: 200), !title.isEmpty { out["title"] = title }
         if let until = dropItStamp(raw["undoUntil"]) { out["undoUntil"] = until }
         return out
+    }
+
+    /// 0.5.372: one banner from the outbox. Its words are the server's (a ping title and line), shown only in the notification.
+    static func dropItBanner(_ value: Any?) -> [String: Any]? {
+        guard let raw = value as? [String: Any], let seq = dropItInt(raw["seq"]), seq > 0, let at = dropItStamp(raw["at"]),
+              let title = dropItPlain(raw["title"], max: 200), !title.isEmpty, let line = dropItPlain(raw["line"], max: 2_000, newlines: true) else { return nil }
+        let pingSources: Set<String> = ["reminder", "resolution", "prep", "agent", "followups", "stale", "checkin"]
+        var out: [String: Any] = ["seq": seq, "at": at, "title": title, "line": line, "exempt": dropItBool(raw["exempt"]) ?? false,
+                                  "feedIds": ((raw["feedIds"] as? [Any]) ?? []).prefix(20).compactMap { ($0 as? String).flatMap { dropItFeedIdValid($0) ? $0 : nil } },
+                                  "sources": ((raw["sources"] as? [Any]) ?? []).prefix(8).compactMap { ($0 as? String).flatMap { pingSources.contains($0) ? $0 : nil } }]
+        if let id = raw["notifyId"] as? String, dropItMatches(id, "\\Areminder-[0-9a-f-]{36}\\z") { out["notifyId"] = id }
+        return out
+    }
+    /// 0.5.372: one pending reminder (GET /api/drops/reminders), for the Mac's own backup notification.
+    static func dropItReminder(_ value: Any?) -> [String: Any]? {
+        guard let raw = value as? [String: Any], let id = raw["id"] as? String, dropIdValid(id), let at = dropItStamp(raw["at"]),
+              let title = dropItPlain(raw["title"], max: 300), !title.isEmpty,
+              let notify = raw["notifyId"] as? String, notify == "reminder-" + id else { return nil }
+        return ["id": id, "at": at, "title": title, "notifyId": notify]
     }
 
     static func dropItChoice(_ value: Any?) -> [String: Any]? {
@@ -18557,6 +18643,15 @@ final class COSControlHelper {
         case "read":
             out["unread"] = max(0, dropItInt(body["unread"]) ?? 0)
             out["version"] = dropItInt(body["version"]) ?? 0
+        case "banners":
+            if let boot = body["bootId"] as? String, dropItMatches(boot, "\\A[A-Za-z0-9_-]{1,64}\\z") { out["bootId"] = boot }
+            out["seq"] = max(0, dropItInt(body["seq"]) ?? 0)
+            out["banners"] = ((body["banners"] as? [Any]) ?? []).prefix(50).compactMap(dropItBanner)
+        case "reminders":
+            out["reminders"] = ((body["reminders"] as? [Any]) ?? []).prefix(200).compactMap(dropItReminder)
+        case "p2", "p2-set":
+            if let version = dropItInt(body["protocol"]) { out["protocol"] = version }
+            if let settings = dropItP2Shape(body["settings"], strict: false) { out["settings"] = settings }
         default:
             // A DropAnswer: submit, get, undo, move, ask, sent, action.
             guard let drop = dropItView(body["drop"]) else { return out }
@@ -18595,7 +18690,7 @@ final class COSControlHelper {
 
     private func emitDropIt(args: [String]) throws {
         guard let op = option("--op", in: args), Self.dropItOps.contains(op) else { throw HelperError.message("Use --op and one of the Drop it operations") }
-        let takesStdin: Set<String> = ["submit", "history", "move", "upload"]
+        let takesStdin: Set<String> = ["submit", "history", "move", "upload", "p2-set"]
         let input = takesStdin.contains(op) ? try readBoundedStdin(16_384) : Data()
         if op == "upload" { try emitDropItUpload(input); return }
         guard let call = Self.dropItRequest(op: op, args: args, stdin: input) else {

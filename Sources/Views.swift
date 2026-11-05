@@ -4441,6 +4441,10 @@ private extension ControlPanel {
                     .frame(width: 160)
             }
         }
+        // 0.5.372 (server Drop it P2): COS reaching out, only while Drop it is on and the server has its P2 settings.
+        if hubGroupShown("work.reach") {
+            hubCard("work.reach") { DropItReachRows(store: model.dropItP2) }
+        }
         if hubGroupShown("work.background") {
             hubCard("work.background") {
                 toolBackgroundJobs(hub: true).disabled(model.busy)
@@ -7208,6 +7212,7 @@ extension ControlPanel {
     static func hubGroupShown(_ id: String, model: ControllerModel) -> Bool {
         switch id {
         case "ai.keys": return SettingsHubOwnKeyCard.shown(model)
+        case "work.reach": return model.status.dropIt.available && model.dropItP2.settings != nil
         case "glasses.video": return model.status.videoUploadV2Supported
         case "dictation.engine": return model.setupGuide.voice?.dictationSelected != nil
         case "dictation.microphone", "dictation.shortcuts", "dictation.sounds", "dictation.text", "dictation.polish": return model.dictation.enabled

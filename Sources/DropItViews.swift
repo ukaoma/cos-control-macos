@@ -383,7 +383,9 @@ struct DropItChatPane: View {
             moving = item.threadId; movePick = nil; moveSearch = ""
             Task { await store.loadDrop(item.threadId); await hooks.loadMoveOptions() }
         default:
-            if action.isChoice { Task { await store.choose(item, action) } } else { onOpen(item, action) }
+            if action.isChoice { Task { await store.choose(item, action) } }
+            else if action.isServerAction { Task { await store.serverAction(item, action) } }
+            else { onOpen(item, action) }
         }
     }
 

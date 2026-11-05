@@ -81,7 +81,7 @@ mutants = [
  ("P9 Option-Return drops on a server with it off", W, "guard model.status.dropIt.available else { todaySubmitAsk(words); return }", "guard model.status.dropIt.supported else { todaySubmitAsk(words); return }", PINS, "[command action]"),
  ("P10 the switch for every server", VW, "if model.status.dropIt.supported { DropItSettingRow(model: model, store: model.dropIt) }", "DropItSettingRow(model: model, store: model.dropIt)", PINS, "[settings row]"),
  ("P11 Back to the chat shows on the chat", W, ", !showingSettings, !(section == .messages && model.dropItChatRouteActive) {", ", !showingSettings {", PINS, "[deep links]"),
- ("P12 the release build lacks the new files", "scripts/build-release.sh", ' "$ROOT/Sources/DropIt.swift" "$ROOT/Sources/DropItViews.swift"', "", PINS, "[source lists]"),
+ ("P12 the release build lacks the new files", "scripts/build-release.sh", ' "$ROOT/Sources/DropIt.swift" "$ROOT/Sources/DropItViews.swift" "$ROOT/Sources/DropItP2.swift" "$ROOT/Sources/DropItP2Views.swift"', "", PINS, "[source lists]"),
  ("P13 an em dash in the words (pins)", D, 'static let footNothingOut = "A drop never sends anything to anyone."', 'static let footNothingOut = "A drop never sends anything — to anyone."', PINS, "[copy]"),
  ("P15 the rail reads the summary with Drop it off", W, ".task(id: model.status.dropIt.available ? Int(now.timeIntervalSince1970 / 30) : -1) {\n            if model.status.dropIt.available { await model.dropIt.refreshSummary() }",
   ".task(id: Int(now.timeIntervalSince1970 / 30)) {\n            await model.dropIt.refreshSummary()", PINS, "[rail mark]"),
@@ -111,7 +111,7 @@ mutants = [
   '            request.setValue("audio/wav", forHTTPHeaderField: "Content-Type")', HELPER, "a document goes raw"),
  # The helper (Tests/drop-it-helper-checks.py against the compiled helper).
  ("H5 the helper drops waiting", H, '            if let waiting = dropItInt(body["waiting"]) { out["waiting"] = max(0, waiting) }\n', "", HELPER, "summary carries waiting"),
- ("H1 the helper reads no words for a drop", H, 'let takesStdin: Set<String> = ["submit", "history", "move", "upload"]', 'let takesStdin: Set<String> = ["history", "move", "upload"]', HELPER, "submit posts exactly"),
+ ("H1 the helper reads no words for a drop", H, 'let takesStdin: Set<String> = ["submit", "history", "move", "upload", "p2-set"]', 'let takesStdin: Set<String> = ["history", "move", "upload", "p2-set"]', HELPER, "submit posts exactly"),
  ("H2 drop_it_off reads as answered", H, '?["code"] as? String == "drop_it_off" ? "off" : "answered"', '?["code"] as? String == "drop_it_off" ? "answered" : "answered"', HELPER, "drop_it_off is off"),
  ("H3 a drop's route crosses", H, '                                  "canUndo": dropItBool(raw["canUndo"]) ?? false]\n',
   '                                  "canUndo": dropItBool(raw["canUndo"]) ?? false, "route": raw["route"] ?? NSNull()]\n', HELPER, "the drop keeps only the contract keys"),
