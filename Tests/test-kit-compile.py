@@ -51,7 +51,9 @@ class KitBase(unittest.TestCase):
         (self.root / 'Tests/A.swift').write_text('// harness a')
         (self.root / 'Tests/B.swift').write_text('// harness b')
         self.exe('Tests/compile-guard.sh', '#!/bin/sh\nexec "$@"\n')
-        self.exe('bin/swiftc', FAKE_SWIFTC)
+        # Use the running interpreter: Apple's /usr/bin/python3 launcher rejects
+        # synthetic DEVELOPER_DIR values before our fake compiler can run.
+        self.exe('bin/swiftc', FAKE_SWIFTC.replace('#!/usr/bin/env python3', '#!' + sys.executable, 1))
         self.exe('bin/sw_vers', '#!/bin/sh\nprintf "${FAKE_HOST_BUILD:-24A1}"\n')
         self.exe('bin/xcrun', '#!/bin/sh\ncase "$1" in --show-sdk-build-version) echo "${FAKE_SDK_BUILD:-1A1}";; *) echo sdk;; esac\n')
         self.log = self.root / 'calls.jsonl'

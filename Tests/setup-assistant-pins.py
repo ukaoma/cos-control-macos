@@ -436,9 +436,14 @@ _s363 = next((s for s in _all if s["title"] == "0.5.363"), {"title": "", "items"
 _notes = " ".join(_s363["items"])
 _older = " ".join(i for section in _all if section["title"] == "0.5.361" for i in section["items"])
 _sent = "plus the title and first 150 characters of the first prompt from up to 508 recent sessions"
-_summary = _json.loads(read("Resources/WhatsNew.json"))["whatsNew"]["summary"]
-pin("first prompts" in _summary and "sends your words" in _summary and "Settings, Decision models shows and changes your choice for the model that decides search" in _notes and "changes the choice for each model" not in _notes,
-    "the summary and the notes say what leaves, first prompts included, and name the choice truly")
+_release = _json.loads(read("Resources/WhatsNew.json"))
+_summary = _release["whatsNew"]["summary"]
+# Later summaries describe later releases. The detailed 0.5.363 disclosure and
+# the live consent/settings wording below remain mandatory for every release.
+if _release["version"] == "0.5.363":
+    pin("first prompts" in _summary and "sends your words" in _summary, "the 0.5.363 summary says what leaves")
+pin("Settings, Decision models shows and changes your choice for the model that decides search" in _notes and "changes the choice for each model" not in _notes,
+    "the retained disclosure names the model choice truly")
 _blurb = read("Sources/SettingsHubCatalog.swift")
 pin("session titles and the start of first prompts" in _blurb and 'sends your words and session titles' not in _blurb, "Settings' own line for the control says first prompts too")
 pin(_s363["title"] == "0.5.363" and "each search sends the words you type in ⌘K, " + _sent in _notes and "Emails, links, home-folder paths and key-shaped text are removed first. Names and other details are not." in _notes

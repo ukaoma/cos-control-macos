@@ -224,9 +224,10 @@ caught = 0
 for name, key, old, new, expected in MUTANTS:
     if name in ("summary over the cap", "summary chains twice"):
         current_summary = json.loads(sources["whatsnew"])["whatsNew"]["summary"]
-        chain = re.search(r"Plus everything in [0-9.]+: ", current_summary).group(0)
-        old = chain
-        new = chain + "x" * 1201 if name == "summary over the cap" else chain + "Plus everything in 0.5.344: "
+        # Mutate the summary value, independent of punctuation after its release link.
+        old = json.dumps(current_summary, ensure_ascii=False)
+        addition = "x" * 1201 if name == "summary over the cap" else " Plus everything in 0.5.344."
+        new = json.dumps(current_summary + addition, ensure_ascii=False)
     if sources[key].count(old) != 1:
         sys.exit(f"pin self-test: mutant '{name}' lands {sources[key].count(old)} times in {FILES[key]}; it must land exactly once")
     try:

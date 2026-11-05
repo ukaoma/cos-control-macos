@@ -55,7 +55,8 @@ struct WorkSource: Equatable, Sendable {
 /// fence as Work; never turn the suggestion score into blanket merge approval.
 enum MeetingConsolidation {
     static let source = WorkSource(id: "maintenance:meeting-consolidation", title: "Consolidate meetings",
-                                  revision: "2-overruns", project: "COS", context: "")
+                                  revision: "3-resumable", project: "COS", context: "")
+    static let workflow = "meeting-consolidation-v1"
     static let modelIDs = ["opus", "codex-frontier"]
 
     @MainActor static func start(store: WorkHandoffStore, modelID: String) async {
@@ -1457,6 +1458,7 @@ struct WorkRecommendationKey: Equatable {
                 }
                 row.channel = "job"; try save(row)
                 var job: [String: Any] = ["clientJobId": id, "query": sent, "model": model!.id]
+                if source.id == MeetingConsolidation.source.id { job["maintenanceWorkflow"] = MeetingConsolidation.workflow }
                 // 0.5.250: a Claude session is named after its task (server 6.58.2 passes it to `claude -p --name`), so
                 // Claude's sidebar shows the task, not "General coding session". An older server drops the key.
                 if row.provider == "claude", let name = Self.claudeSessionName(source.sessionNameSource) { job["sessionName"] = name }

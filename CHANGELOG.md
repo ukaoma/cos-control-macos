@@ -1,3 +1,9 @@
+## 0.5.370 (build 424), Resumable meeting consolidation
+
+- Consolidate meetings explicitly requests the server's resumable cleanup workflow. Saved passes continue automatically past the former 15-minute limit, with a verified report required for completion.
+- Stop cleanup is available beside the running receipt. Compatible server capability is required before sending; older servers refuse safely before admission.
+- Requires glasses-server 6.99.8 for resumable cleanup. Ordinary Work handoffs retain their existing payload and limits.
+
 ## 0.5.369 (build 423), Meeting consolidation
 
 - Suggested merges gains an explicit agent-assisted Consolidate meetings action, using the durable Work handoff transport and duplicate-run fence.

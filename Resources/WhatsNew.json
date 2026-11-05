@@ -1,8 +1,16 @@
 {
-  "version": "0.5.369",
+  "version": "0.5.370",
   "whatsNew": {
-    "summary": "Suggested merges now has Consolidate meetings: start a tracked AI cleanup of matching G2, Mac and cloud recordings, including overrun captures. Original recordings are preserved; the report lists applied changes and anything still needing review.",
+    "summary": "Meeting consolidation now continues automatically across saved passes, so larger cleanups can finish without restarting the job by hand. Plus everything in 0.5.369.",
     "sections": [
+      {
+        "title": "0.5.370",
+        "items": [
+          "Cleanup keeps its place past the former 15-minute limit and reports completion only after checking the saved inventory and audit.",
+          "Stop cleanup is available beside the running status. Originals and uncertain matches remain preserved.",
+          "Requires a compatible COS server with resumable cleanup support. Older servers refuse before starting."
+        ]
+      },
       {
         "title": "0.5.369",
         "items": [

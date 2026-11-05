@@ -1471,7 +1471,7 @@ assert 'if row.provider == "claude", let name = Self.claudeSessionName(source.se
 assert "var sessionNameSource: String { fullTitle ?? title }" in store, "the name source is the whole title when there is one"
 assert "let data = try JSONSerialization.data(withJSONObject: job)" in submit, "the name rides in the job request"
 new = body(helper, "    private func emitWorkNew() throws {", "    private func emitWorkJob(args: [String]) throws {")
-assert "let sessionName = try Self.workNewSessionName(body)" in new and "messageEra: era, sessionName: sessionName)" in new, "the helper cleans the name and posts it"
+assert "let sessionName = try Self.workNewSessionName(body)" in new and "messageEra: era, sessionName: sessionName, maintenanceWorkflow: workflow)" in new, "the helper cleans the name and posts it"
 fresh = body(helper, "    private func emitFreshClaudeSessions(", "    private func emitSessionList(")
 assert fresh.index("Self.applyClaudeDesktopTitles(peers") < fresh.index("Self.applyClaudeCustomTitles(peers") < fresh.index("peers.removeAll { Self.isWarmUpRow($0) }"), "transcript titles apply after Desktop's, before the warm-up filter"
 assert "Self.isKeepWarmSessionTitle(($0[\"name\"] as? String) ?? \"\") }" not in helper, "no list hides a row as a warm-up by a title someone gave it (isWarmUpRow)"

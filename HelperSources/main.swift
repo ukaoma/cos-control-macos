@@ -19669,7 +19669,7 @@ final class COSControlHelper {
         value.range(of: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", options: .regularExpression) != nil
     }
 
-    private func fetchWorkModels(token: String) throws -> (models: [[String: Any]], serverInstanceId: String?) {
+    private func fetchWorkModels(token: String) throws -> (models: [[String: Any]], serverInstanceId: String?, maintenanceWorkflows: [String]) {
         guard let health = request("/api/health", token: token, timeout: 15), health.status == 200,
               let healthBody = health.body,
               let catalog = request("/api/models", token: token, timeout: 20), catalog.status == 200,
@@ -19679,7 +19679,7 @@ final class COSControlHelper {
         let instance = catalogBody["serverInstanceId"] as? String
         return (Self.workModelCatalog(health: healthBody, catalog: catalogBody), instance.flatMap {
             $0.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil ? $0 : nil
-        })
+        }, Self.workMaintenanceWorkflows(catalogBody))
     }
 
     private func emitWorkModels() throws {
@@ -19724,7 +19724,7 @@ final class COSControlHelper {
     }
 
     static func workNewPayload(clientJobId: String, query: String, model: String, messageEra: String,
-                               sessionName: String? = nil) -> [String: Any] {
+                               sessionName: String? = nil, maintenanceWorkflow: String? = nil) -> [String: Any] {
         // An unknown supplied session ID is NOT a request to create that ID.
         // The coordinator allocates and durably reuses the session for this
         // clientJobId/generation; inventing one causes session_identity_mismatch.
@@ -19733,6 +19733,7 @@ final class COSControlHelper {
         // 0.5.250: server 6.58.2 passes it to `claude -p --name` when it starts a new Claude session; an older server
         // drops keys it does not know.
         if let sessionName { payload["sessionName"] = sessionName }
+        if let maintenanceWorkflow { payload["maintenanceWorkflow"] = maintenanceWorkflow }
         return payload
     }
 
@@ -19981,6 +19982,24 @@ final class COSControlHelper {
         emit(ok: true, message: (200..<300).contains(response.status) ? "Stop sent" : "Stop refused", details: details)
     }
 
+    static func workMaintenanceWorkflows(_ catalog: [String: Any]) -> [String] {
+        guard let capabilities = catalog["capabilities"] as? [String: Any],
+              let jobs = capabilities["durableQueryJobs"] as? [String: Any],
+              jobs["enabled"] as? Bool == true, jobs["protocolVersion"] as? Int == 1 else { return [] }
+        return jobs["maintenanceWorkflows"] as? [String] ?? []
+    }
+
+    static func workMaintenanceWorkflow(_ body: [String: Any], model: String, supported: [String]) throws -> String? {
+        guard let raw = body["maintenanceWorkflow"] else { return nil }
+        guard let value = raw as? String, value == "meeting-consolidation-v1", ["opus", "codex-frontier"].contains(model) else {
+            throw HelperError.message("Unsupported cleanup workflow or model; nothing was started")
+        }
+        guard supported.contains(value) else {
+            throw HelperError.message("Update the COS server to use resumable cleanup; nothing was started")
+        }
+        return value
+    }
+
     private func emitWorkNew() throws {
         try requireLiveWorkTransport()
         var input = Data()
@@ -19998,8 +20017,15 @@ final class COSControlHelper {
         }
         let sessionName = try Self.workNewSessionName(body)
         let token = try readToken()
-        let models = try fetchWorkModels(token: token).models
-        guard models.contains(where: { $0["id"] as? String == model && $0["available"] as? Bool == true }) else {
+        let catalog = try fetchWorkModels(token: token)
+        let workflow: String?
+        do { workflow = try Self.workMaintenanceWorkflow(body, model: model, supported: catalog.maintenanceWorkflows) }
+        catch {
+            emit(ok: true, message: "Cleanup refused before admission", details: ["httpStatus": 422,
+                "error": ["code": "maintenance_workflow_unavailable", "message": error.localizedDescription]])
+            return
+        }
+        guard catalog.models.contains(where: { $0["id"] as? String == model && $0["available"] as? Bool == true }) else {
             throw HelperError.message("The selected model is unavailable; no substitute was sent")
         }
         // Public admission rejects pre-reset clients even when messageEra is
@@ -20009,7 +20035,7 @@ final class COSControlHelper {
               let counterBody = counter.body, let era = Self.workMessageEra(counterBody) else {
             throw HelperError.message("Cannot verify the current conversation era; no handoff was sent")
         }
-        let payload = Self.workNewPayload(clientJobId: id, query: query, model: model, messageEra: era, sessionName: sessionName)
+        let payload = Self.workNewPayload(clientJobId: id, query: query, model: model, messageEra: era, sessionName: sessionName, maintenanceWorkflow: workflow)
         let json = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
         guard let response = request("/api/query-jobs", method: "POST", token: token, body: json, timeout: 30) else {
             throw HelperError.message("Conversation admission timed out; delivery is unknown. Recover the original receipt before trying again")
@@ -20032,6 +20058,26 @@ final class COSControlHelper {
         body["running_active"] is Bool && body["running_stamped"] as? Bool == true && body["runningDegraded"] as? Bool == false
     }
     private func selfTestWork() throws {
+        let workflow = "meeting-consolidation-v1"
+        let cleanupCapability: [String: Any] = ["enabled": true, "protocolVersion": 1, "maintenanceWorkflows": [workflow]]
+        guard Self.workMaintenanceWorkflows(["capabilities": ["durableQueryJobs": cleanupCapability]]) == [workflow],
+              Self.workMaintenanceWorkflows(["durableQueryJobs": cleanupCapability]).isEmpty,
+              Self.workMaintenanceWorkflows([:]).isEmpty,
+              Self.workMaintenanceWorkflows(["capabilities": ["durableQueryJobs": ["enabled": false, "protocolVersion": 1, "maintenanceWorkflows": [workflow]]]]).isEmpty else {
+            throw HelperError.message("Cleanup catalog capability shape failed")
+        }
+        guard try Self.workMaintenanceWorkflow([:], model: "sonnet", supported: []) == nil,
+              try Self.workMaintenanceWorkflow(["maintenanceWorkflow": workflow], model: "opus", supported: [workflow]) == workflow,
+              Self.workNewPayload(clientJobId: "id", query: "q", model: "opus", messageEra: "era", maintenanceWorkflow: workflow)["maintenanceWorkflow"] as? String == workflow else {
+            throw HelperError.message("Resumable cleanup payload failed")
+        }
+        for (body, model, supported) in [(["maintenanceWorkflow": workflow], "opus", []),
+                                        (["maintenanceWorkflow": workflow], "sonnet", [workflow]),
+                                        (["maintenanceWorkflow": "unknown"], "opus", [workflow])] {
+            var refused = false
+            do { _ = try Self.workMaintenanceWorkflow(body, model: model, supported: supported) } catch { refused = true }
+            guard refused else { throw HelperError.message("Cleanup capability fence failed") }
+        }
         // 0.5.316: a planning failure says what the server said; only a 404 is "unavailable on this server".
         let planOK = Self.workChatPlanFailure(status: 200, body: ["protocolVersion": 1], elapsedMs: 900, timeoutSeconds: 190)
         let plan404 = Self.workChatPlanFailure(status: 404, body: ["error": "Not found"], elapsedMs: 40, timeoutSeconds: 190) ?? ""
