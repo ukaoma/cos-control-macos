@@ -93,7 +93,14 @@ need("if store.polishModel != .off, let pause = store.polishPause {" in dictatio
 # W5: Today runs open their session, stop through their job, and come back when finished.
 open_fn = body(win, "    func todayOpen(_ action: TodayHome.OpenAction) {", "\n    func todayOpenNeed(")
 need("TodayHome.workRunSession(id: id, receipts: handoffStore.receipts.map { ($0.id, $0.sessionID) })" in open_fn, "[W5 open] Open goes to the run's session")
-need('todayOpen(.workRun(handoffStore.receipts(for: target).first?.id ?? ""))' in win and 'todayOpen(.workRun(""))' not in win, "[W5 prep] Prep in Sessions names its run")
+prep_buttons = body(win, "    func todayPrepButtons(", "\n    @ViewBuilder\n    func todayMeetingsPanel(")
+prep_store = read("Sources/MeetingPrepStore.swift")
+need('openMeetingPrep(title: event.title, startsAt:' in prep_buttons and 'startRun(' not in prep_buttons,
+     "[W5 prep draft] Prep opens the selected event draft without starting a run")
+settle = prep_store[prep_store.index("    private func settle("):]
+need('job.jobId == jobID, job.clientJobId == accepted.clientJobId, job.generation == 1' in settle
+     and 'accepted.sessionId == nil || accepted.sessionId == job.sessionId' in settle,
+     "[W5 prep receipt] displayed Prep results belong to its accepted job and session")
 stop = body(win, "    func stopRun(job: String, handoff: WorkHandoffStore) async {", "\n    func flash(")
 need('["work-job-cancel", "--job-id", job]' in stop and "(200..<300).contains(http)" in stop, "[W5 stop] Stop is work-job-cancel, and only a 2xx says it stopped")
 need("if let job = row.stopJobID {" in win and 'r.workID.hasPrefix("today:")' in win and 'openLabel: "Open result"' in win, "[W5 rows] Stop on the row; finished runs come back")
@@ -161,7 +168,11 @@ need('"$ROOT/Tests/run-work-board-perf.sh" --gate' in run_sh and "TodayHome.comp
 
 # Notes folded in.
 need("if self?.runNote == note { self?.runNote = nil }" in win, "[N5 note] the Ask box note clears itself")
-need('Text("Prep me is off: Settings, Work runs from Today")' in win, "[N7 prep] Prep me off says where")
+prep_views = read("Sources/MeetingPrepViews.swift")
+need('Text(store.supported ?' in prep_views
+     and 'Plain Ask: context and files go with this question. This server cannot keep Prep with a recording.' in prep_views
+     and 'guard !supported, canSend, let plainAsk, DropIt.askBlock(text: text, files: uploads.attachments) == nil' in prep_store,
+     "[N7 prep] unsupported durable Prep explains plain Ask and guards its explicit send")
 need("From 6 PM to 6 AM and on weekends" in views, "[N8 quiet] the help names the early morning")
 need("if let kept = liveMeetingTitlesKept[sessionId] { return kept }" in model, "[N10 title] a calendar title stays for its meeting")
 need("model.liveMeetingFileInfo(session)" in meetings and "let info = model.liveMeetingFileInfo(session)" in ask, "[N11 files] live files are filed under the meeting's title and day")

@@ -6212,8 +6212,11 @@ if not re.search(r"activityContent\(today: nil, width: 0, now: Date\(\)\)\n(?:\s
 today_frame = body(activity, "    var todayFrameView: some View {", "    func todayTickLoop() async {")
 if not re.search(r"activityContent\(today: frame, width: width, now: timeline\.date\)\n\s*\.frame\(minWidth: 0, maxWidth: \.infinity, minHeight: 0, maxHeight: \.infinity, alignment: \.top\)\n\s*\.clipped\(\)", today_frame):
     fail("the Today frame's content beside the rail must be clamped and clipped the same way")
-if not re.search(r"\} else if let today \{\n\s*todayHomeView\(today, width: width, now: now\)\n\s*\} else \{\n\s*activityHome\n\s*\}\n\s*\}\n\s*\}", activity):
-    fail("the two homes must be the content chain's last two branches")
+content = body(activity, "    private func activityContent(", "    /// Settings opened as the hub")
+if not re.search(r"\} else if let today \{\n\s*todayHomeView\(today, width: width, now: now\)\n\s*\} else \{\n\s*activityHome\n\s*\}\n\s*\}\n\s*\.overlay \{", content):
+    fail("the two homes must be the content chain's last two branches before its overlay")
+if 'if section == .messages, !showingSettings, !isolatedWorkPreview, !model.dropItChatRouteActive {' not in content or 'DetachedMeetingPrepPane(store: model.meetingPrep' not in content:
+    fail("the detached Prep overlay must stay confined to Messages outside Settings, preview and active chat")
 # 0.5.254: the window holds its pinned content minimum itself (ActivityHostWindow), because the hosting view, no longer
 # tracking sizes, writes a zero minimum as it lays out. Behaviour: Tests/run-activity-sizing.sh check.
 if ("static let contentMinSize = NSSize(width: 760, height: 560)" not in activity or "window.contentMinSize = contentMinSize" not in activity
