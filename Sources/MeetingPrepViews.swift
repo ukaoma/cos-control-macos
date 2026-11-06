@@ -1,6 +1,42 @@
 import SwiftUI
 import AppKit
 
+/// Messages can host Prep even when the optional Drop It chat is disabled.
+struct DetachedMeetingPrepPane: View {
+    @ObservedObject var store: MeetingPrepStore
+    let ordinary: DropItStore
+    let wireAsk: () -> Void
+
+    var body: some View {
+        Group {
+            if store.isOpen {
+                ScrollView {
+                    MeetingPrepComposer(store: store, close: close)
+                        .frame(maxWidth: .infinity)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .background(TodayInk.page)
+            } else if store.launch != nil {
+                VStack(spacing: 12) {
+                    ProgressView("Opening meeting prep…")
+                    Button("Close", action: close).buttonStyle(TodayLinkStyle(size: 12))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(TodayInk.page)
+            }
+        }
+        .task(id: store.launch?.id) {
+            guard let launch = store.launch, !store.isOpen, !Task.isCancelled else { return }
+            wireAsk()
+            await store.open(launch, ordinary: .init(text: ordinary.composerDraft, attachments: ordinary.attachments))
+        }
+    }
+
+    private func close() {
+        if let draft = store.close() { ordinary.composerDraft = draft.text }
+    }
+}
+
 /// The normal chat composer stays mounted separately; Prep owns its own words and attachment store.
 struct MeetingPrepComposer: View {
     @ObservedObject var store: MeetingPrepStore
@@ -221,7 +257,7 @@ struct MeetingPrepMeetingSection: View {
                         Button("Open latest editable prep") {
                             Task { await store.openLatestDraft(snapshot.draftId) }
                         }.buttonStyle(TodayLinkStyle(size: 11))
-                        if live, snapshot.removedAt == nil, snapshot.current != false, snapshot.state == "applying" {
+                        if snapshot.removedAt == nil, snapshot.current != false, snapshot.state == "applying" {
                             Button("Retry add prep") { retry(snapshot, to: requested, token: token) }
                                 .buttonStyle(TodayLinkStyle(size: 11)).disabled(busy)
                         }
@@ -233,11 +269,11 @@ struct MeetingPrepMeetingSection: View {
                 }
                 if live {
                     ForEach(suggestions) { draft in
-                        Button("Add prep: " + draft.title) { selected = draft }.buttonStyle(TodayLinkStyle(size: 12)).disabled(busy)
+                        Button("Add prep: " + draftLabel(draft)) { selected = draft }.buttonStyle(TodayLinkStyle(size: 12)).disabled(busy)
                     }
                     if let otherDrafts {
                         ForEach(otherDrafts) { draft in
-                            Button("Add prep: " + draft.title + (draft.startsAt.map { " · " + $0 } ?? "")) { selected = draft }
+                            Button("Add prep: " + draftLabel(draft)) { selected = draft }
                                 .buttonStyle(TodayLinkStyle(size: 12)).disabled(busy)
                         }
                         if otherDrafts.isEmpty {
@@ -252,6 +288,17 @@ struct MeetingPrepMeetingSection: View {
                 if live, let selected {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Add \(selected.title) to \(title)?").font(COSType.body(12, weight: .semibold))
+                        Text(draftDetails(selected)).font(COSType.body(11)).foregroundStyle(.secondary)
+                        let preview = selected.steer.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !preview.isEmpty {
+                            Text("Notes: " + String(preview.prefix(160)) + (preview.count > 160 ? "…" : ""))
+                                .font(COSType.body(11)).foregroundStyle(.secondary).lineLimit(3)
+                        }
+                        let names = selected.files.filter { $0.status == "ready" }.map(\.name)
+                        if !names.isEmpty {
+                            Text("Files: " + names.prefix(4).joined(separator: ", ") + (names.count > 4 ? " and \(names.count - 4) more" : ""))
+                                .font(COSType.body(11)).foregroundStyle(.secondary).lineLimit(2)
+                        }
                         Text("\(selected.files.filter { $0.status == "ready" }.count) ready files and the saved Prep notes will be added to this recording only. Maximum meeting context: 100 files and 500 KB of text.")
                             .font(COSType.body(11)).foregroundStyle(.secondary)
                         HStack {
@@ -280,6 +327,14 @@ struct MeetingPrepMeetingSection: View {
         if snapshot.current == false { return "Earlier bind" }
         if snapshot.state == "applying" { return "Waiting to be added" }
         return "Current meeting context"
+    }
+    private func draftLabel(_ draft: MeetingPrep.Draft) -> String { draft.title + " · " + draftDetails(draft) }
+    private func draftDetails(_ draft: MeetingPrep.Draft) -> String {
+        func display(_ value: String) -> String {
+            DropIt.date(.string(value))?.formatted(date: .abbreviated, time: .shortened) ?? value
+        }
+        let saved = "Updated " + display(draft.updatedAt) + " · revision \(draft.revision)"
+        return draft.startsAt.map { display($0) + " · " + saved } ?? saved
     }
     private func isCurrent(_ requested: Target, token: UUID) -> Bool {
         activeTarget == requested && generation == token
@@ -314,7 +369,7 @@ struct MeetingPrepMeetingSection: View {
         } catch { if !Task.isCancelled, isCurrent(requested, token: token) { self.error = error.localizedDescription } }
     }
     private func bind(_ draft: MeetingPrep.Draft, to requested: Target, token: UUID) {
-        guard selected == draft else { return }
+        guard requested.live, selected == draft else { return }
         applyBinding(to: requested, token: token) { try await store.bind(draft, session: requested.session) }
     }
     private func retry(_ snapshot: MeetingPrep.SessionSnapshot, to requested: Target, token: UUID) {
@@ -323,7 +378,7 @@ struct MeetingPrepMeetingSection: View {
         applyBinding(to: requested, token: token) { try await store.retryBinding(snapshot) }
     }
     private func applyBinding(to requested: Target, token: UUID, _ apply: @escaping () async throws -> Void) {
-        guard requested.live, isCurrent(requested, token: token), !busy else { return }
+        guard isCurrent(requested, token: token), !busy else { return }
         busy = true
         Task {
             guard !Task.isCancelled, isCurrent(requested, token: token) else { return }

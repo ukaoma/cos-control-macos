@@ -1,3 +1,10 @@
+## 0.5.376 (build 430), meeting prep with context and files
+
+- **Prep before a call:** Prep me opens a draft for notes and files. An explicit Prep click starts the brief; follow-ups stay in that prep conversation. The ordinary COS chat draft stays separate, and Prep can open when Drop It is disabled.
+- **Carry into the meeting:** choose a draft and explicitly add its saved notes and files to a specific live recording. The revisioned snapshot remains available in live Meeting Ask and saved review; original file bytes and session identity are checked. Similar calendar titles show dates and a context preview before adding.
+- **Recovery:** interrupted sends keep their request identity for status lookup and explicit retry. File conflicts preserve unsent edits, reopening a draft cancels an earlier Send, and a missing final receipt never silently starts another request.
+- **Private matched candidate:** pairs with server 6.99.19. Includes everything in 0.5.375. Release and installation evidence are tracked separately; this entry does not claim QA or publication has completed.
+
 ## 0.5.375 (build 429), Ask COS proposals for Work review
 
 - **Ask COS → Work review:** Plan for Work lets you choose an existing Work card, prepare a server proposal, and explicitly add it to that card's review. Preparing and importing never send assignments; the existing Work Send controls and receipts remain the execution path.

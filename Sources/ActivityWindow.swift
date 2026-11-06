@@ -823,7 +823,10 @@ struct ActivityWindow: View {
                 } else if section == .messages, model.dropItHistoryRouteActive {
                     DropItHistoryPane(store: model.dropIt, onBack: { model.closeDropItHistory() }, onOpen: dropItOpenDrop)
                 } else if section == .messages, model.dropItChatRouteActive {
-                    DropItChatPane(store: model.dropIt, prep: model.meetingPrep, hooks: dropItHooks, onAllMessages: { model.closeDropItChat() },
+                    DropItChatPane(store: model.dropIt, prep: model.meetingPrep, hooks: dropItHooks, onAllMessages: {
+                        closeMeetingPrepRoute()
+                        model.closeDropItChat()
+                    },
                                    onHistory: { model.openDropItHistory() }, onOpen: dropItOpen)
                 } else if section == .messages, let preview = model.selectedMediaPreview {
                     mediaDetail(preview)
@@ -946,6 +949,11 @@ struct ActivityWindow: View {
                     todayHomeView(today, width: width, now: now)
                 } else {
                     activityHome
+                }
+            }
+            .overlay {
+                if section == .messages, !showingSettings, !isolatedWorkPreview, !model.dropItChatRouteActive {
+                    DetachedMeetingPrepPane(store: model.meetingPrep, ordinary: model.dropIt, wireAsk: wireDropItComposer)
                 }
             }
           }
@@ -1392,6 +1400,9 @@ struct ActivityWindow: View {
         } else if section == .work, workWorkspaceState.selectedID != nil || reviewStore.selectedMeeting != nil || workWorkspaceState.meetingPicker {
             workWorkspaceState.selectedID = nil; handoffStore.selectedWorkID = nil
             reviewStore.selectedMeeting = nil; workWorkspaceState.meetingPicker = false
+        } else if section == .messages, !model.dropItHistoryRouteActive,
+                  model.meetingPrep.isOpen || model.meetingPrep.launch != nil {
+            closeMeetingPrepRoute()
         } else if section == .messages, model.dropItHistoryRouteActive {
             model.closeDropItHistory()
         } else if section == .messages, model.dropItChatRouteActive {
@@ -10320,8 +10331,14 @@ extension ActivityWindow {
     func openMeetingPrep(title: String, startsAt: String?) {
         guard !isolatedWorkPreview else { return }
         select(.messages)
-        model.openDropItChat()
+        guard section == .messages else { return }
+        openDropItChat()
         if !model.meetingPrep.isOpen { model.meetingPrep.launch = .init(title: title, startsAt: startsAt) }
+    }
+
+    private func closeMeetingPrepRoute() {
+        guard model.meetingPrep.isOpen || model.meetingPrep.launch != nil else { return }
+        if let ordinary = model.meetingPrep.close() { model.dropIt.composerDraft = ordinary.text }
     }
 
     func dropItOpen(_ item: DropIt.Item, _ action: DropIt.Action) {

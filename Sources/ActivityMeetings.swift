@@ -2618,7 +2618,7 @@ struct LiveTranscriptPane: View {
             if let session = model.liveTranscriptOpenID {
                 MeetingPrepMeetingSection(store: model.meetingPrep, session: session,
                                           title: model.liveMeetingTitle(session, start: feed?.startTime),
-                                          startedAt: feed?.startTime, live: feed?.ended != true)
+                                          startedAt: feed?.startTime, live: canAddPrep(session, feed: feed))
             }
             // 0.5.339: one collapsed "Files · N" row (hidden with none); open, the list with Quick Look, Show in Finder and
             // Remove, and the note. No drop strip and no buttons of its own: adding is the pane's drop and the bar's Add file.
@@ -2648,6 +2648,13 @@ struct LiveTranscriptPane: View {
     private func canAddFiles(_ session: String) -> Bool {
         guard let files = model.workHandoffStore?.meetingFiles, files.enabled else { return false }
         return WorkCardFiles.meetingID(forKey: LibraryMeeting.captureContextKey(session)) != nil
+    }
+
+    private func canAddPrep(_ session: String, feed: LiveTranscriptFeed?) -> Bool {
+        guard model.liveTranscriptOpenID == session, feed?.ended != true else { return false }
+        if model.macRecording.isRecording, model.macRecording.manifest?.captureId == session { return true }
+        guard let feed, feed.sessionId == session, feed.phase == .live, feed.seenLive else { return false }
+        return model.liveTranscriptRows.contains { $0.sessionId == session && $0.phase == .live && $0.deliveryLabel == nil }
     }
 
     /// Paste screenshot: the clipboard's image or files, through the meeting-files paste (the same path as before).

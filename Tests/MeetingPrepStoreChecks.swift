@@ -176,6 +176,11 @@ private func prepHash(_ data: Data) -> String {
         jobs.removeValue(forKey: id)
     }
 
+    func expireJobWithoutSettlement(_ requestID: String) {
+        guard let id = runs[requestID]?["jobId"] as? String else { preconditionFailure("No admitted fixture job") }
+        jobs.removeValue(forKey: id)
+    }
+
     func run(_ arguments: [String], _ data: Data?) async throws -> HelperResponse {
         precondition(arguments.count == 3 && arguments[0] == "meeting-prep" && arguments[1] == "--op",
                      "Prep must not dispatch Work, start recording, invoke a generic Ask fallback, or use a live helper")
@@ -701,6 +706,19 @@ private func prepHash(_ data: Data) -> String {
             check(h.store.answer == "Frozen Prep answer" && h.store.pending == nil, "Frozen run survives ordinary job retention")
             check(h.fixture.providerStarts == 1, "Expired query-job lookup must not start another provider")
         }
+        do {
+            let h = try await prepHarness(root, "missing-job-without-settlement")
+            await h.store.send()
+            let request = h.store.pending!.clientRequestId
+            h.fixture.expireJobWithoutSettlement(request)
+            await h.store.checkRequest()
+            check(h.store.pending?.clientRequestId == request && !h.store.canSend && !h.store.canRetryRequest
+                  && h.store.notice?.contains("could not confirm") == true,
+                  "An accepted receipt without a job or terminal status stays fenced and explains the uncertainty")
+            await h.store.send()
+            check(h.fixture.count("run") == 1 && h.fixture.providerStarts == 1,
+                  "An unavailable job snapshot never permits another provider dispatch")
+        }
 
         // The status lookup can commit the frozen terminal answer and advance the draft CAS revision.
         do {
@@ -789,6 +807,28 @@ private func prepHash(_ data: Data) -> String {
             check(h.fixture.providerStarts == 1, "Switching during status recovery never launches another provider")
         }
 
+        do {
+            let h = try await prepHarness(root, "late-note-save")
+            h.store.setText("Local context for the first presentation")
+            h.fixture.pauseNext("update")
+            let sending = Task { await h.store.send() }
+            try await eventually("notes PATCH reached transport") { h.fixture.paused }
+            _ = h.store.close()
+            await h.store.open(h.launch, ordinary: h.ordinary)
+            let reopenedRevision = h.store.active!.revision
+            h.fixture.resume()
+            await sending.value
+            check(h.fixture.count("update") == 1 && h.fixture.count("run") == 0 && h.store.pending == nil,
+                  "Closing and reopening the same draft during note save cannot send from the old button")
+            check(h.store.active?.revision == reopenedRevision && h.store.recoveryDrafts.first?.dirty == true
+                  && h.store.text == "Local context for the first presentation",
+                  "Late note-save response cannot rewrite the reopened composer's baseline or clear its recovery notes")
+            await h.store.refreshDraft()
+            await h.store.send()
+            check(h.fixture.admittedSteers == ["Local context for the first presentation"],
+                  "The reopened draft can still send its reviewed notes explicitly")
+        }
+
         // Delayed upload completion from A cannot land in B. A keeps either its pending chip or durable file.
         do {
             let h = try await prepHarness(root, "upload-isolation")
@@ -815,6 +855,40 @@ private func prepHash(_ data: Data) -> String {
             try await eventually("A's original is durably saved") { h.store.active?.currentFiles.contains { $0.name == "Agenda-A.pdf" } == true }
             check(!h.fixture.fileDraftIDs.contains(secondID), "Automatic upload adoption preserves the original draft identity")
             check(!h.fixture.fileOperationIDs.isEmpty, "Files use v1.1 operation identity")
+        }
+
+        do {
+            let h = try await prepHarness(root, "file-save-steer")
+            let file = h.root.appendingPathComponent("Latest agenda.pdf")
+            try Data("fixture current agenda".utf8).write(to: file)
+            let remoteNotes = "New notes saved before uploading the agenda"
+            h.fixture.externalSteer(h.store.active!.id, remoteNotes)
+            h.store.uploads.attach([(url: file, name: file.lastPathComponent)])
+            try await eventually("file and clean steer adopted") { h.store.active?.currentFiles.count == 1 && !h.store.busy }
+            check(h.store.text == remoteNotes && h.store.recoveryDrafts.first?.steer == remoteNotes
+                  && h.store.recoveryDrafts.first?.dirty == false,
+                  "Successful file copy displays and persists the clean steer at the adopted revision")
+            await h.store.send()
+            check(h.fixture.admittedSteers == [remoteNotes] && h.fixture.count("update") == 0,
+                  "Prep runs exactly the visible, clean context without writing it back")
+        }
+        do {
+            let h = try await prepHarness(root, "file-save-dirty-steer")
+            let file = h.root.appendingPathComponent("Draft agenda.pdf")
+            try Data("fixture draft agenda".utf8).write(to: file)
+            h.fixture.externalSteer(h.store.active!.id, "Notes from another client")
+            h.fixture.pauseNext("files")
+            h.store.uploads.attach([(url: file, name: file.lastPathComponent)])
+            try await eventually("file copy reached transport") { h.fixture.paused }
+            let localNotes = "Newer local notes while the file is saving"
+            h.store.setText(localNotes)
+            h.fixture.resume()
+            try await eventually("file adopted with dirty local steer") { h.store.active?.currentFiles.count == 1 && !h.store.busy }
+            check(h.store.text == localNotes && h.store.recoveryDrafts.first?.steer == localNotes
+                  && h.store.recoveryDrafts.first?.dirty == true,
+                  "Successful file copy preserves newer dirty local notes")
+            await h.store.send()
+            check(h.fixture.admittedSteers == [localNotes], "The explicit send saves and runs the preserved local notes")
         }
 
         // A concurrent edit between GET and POST advances CAS without changing the durable upload intent.

@@ -479,6 +479,15 @@ final class MeetingPrepStore: ObservableObject {
               explicit || local.fileOperation == nil else { return }
         let ready = uploadStore.attachments.filter { $0.state == .ready && $0.mediaId != nil }
         guard !ready.isEmpty || !local.files.isEmpty || local.fileOperation != nil else { return }
+        let generation = activeKey == key ? flow.presentation?.generation : nil
+        func isCurrentPresentation() -> Bool {
+            generation != nil && activeKey == key && flow.presentation?.generation == generation
+        }
+        func showSavedDraft() {
+            guard isCurrentPresentation(), let saved = entry, let draft = saved.draft else { return }
+            active = draft
+            if !saved.dirty { _ = flow.edit(.init(text: saved.steer, attachments: uploads.attachments)) }
+        }
         let operation = beginOperation(); defer { endOperation(operation) }
         do {
             var captured: [MeetingPrepJournal.PendingFile] = []
@@ -521,9 +530,14 @@ final class MeetingPrepStore: ObservableObject {
                 }
                 if response["httpStatus"]?.int == 409, response["error"]?.string == "revision_conflict" {
                     let refreshed = try draft(response, expected: current.id)
-                    mutate(key) { $0.fileOperation?.revision = refreshed.revision; $0.draft = refreshed; if !$0.dirty { $0.steer = refreshed.steer } }
+                    mutate(key) {
+                        let baseline = $0.draft.flatMap { $0.revision > refreshed.revision ? $0 : nil } ?? refreshed
+                        $0.fileOperation?.revision = baseline.revision
+                        $0.draft = baseline
+                        if !$0.dirty { $0.steer = baseline.steer }
+                    }
                     guard persist() else { return }
-                    if activeKey == key { active = refreshed; if entry?.dirty == false { _ = flow.edit(.init(text: refreshed.steer, attachments: uploads.attachments)) } }
+                    showSavedDraft()
                     throw Failure(message: "Prep changed elsewhere. Your file batch is kept. Choose Save files to retry adding these same files.")
                 }
                 try checked(response); remote = try draft(response, expected: current.id)
@@ -531,14 +545,20 @@ final class MeetingPrepStore: ObservableObject {
                 mutate(key) { $0.fileOperation = nil }
             }
             let copied = Set((disk.entries.first(where: { $0.id == key })?.files ?? []).filter { wasCopied($0) }.map(\.sourceRef))
-            mutate(key) { $0.draft = remote; $0.files.removeAll { copied.contains($0.sourceRef) } }
+            mutate(key) {
+                if ($0.draft?.revision ?? -1) <= remote.revision {
+                    $0.draft = remote
+                    if !$0.dirty { $0.steer = remote.steer }
+                }
+                $0.files.removeAll { copied.contains($0.sourceRef) }
+            }
             guard persist() else { return }
             for file in uploadStore.attachments where copied.contains(file.id) { uploadStore.removeAttachment(file.id) }
-            if activeKey == key {
-                active = remote
-                notice = remote.files.contains { ["failed", "secret-held", "unsupported"].contains($0.status) } ? "Some files need attention. Review their status before running Prep." : nil
+            if isCurrentPresentation() {
+                showSavedDraft()
+                notice = active?.files.contains { ["failed", "secret-held", "unsupported"].contains($0.status) } == true ? "Some files need attention. Review their status before running Prep." : nil
             }
-        } catch { if activeKey == key { notice = error.localizedDescription } }
+        } catch { if isCurrentPresentation() { notice = error.localizedDescription } }
     }
 
     /// Never cancel an ambiguous admitted batch: first replay its immutable receipt.
@@ -567,7 +587,8 @@ final class MeetingPrepStore: ObservableObject {
     }
 
     private func saveNotesForSend() async -> Bool {
-        guard let key = activeKey, let current = active, let local = entry, !diskFailed else { return false }
+        guard let key = activeKey, let generation = flow.presentation?.generation,
+              let current = active, let local = entry, !diskFailed else { return false }
         draftWriter?.cancel(); draftWriter = nil
         needsRecoveryReview = false
         guard local.dirty else { return persist() }
@@ -576,18 +597,23 @@ final class MeetingPrepStore: ObservableObject {
             let response = try await request("update", fields: ["draftId": current.id, "payload": ["revision": current.revision, "steer": local.steer]])
             try checked(response)
             let remote = try draft(response, expected: current.id)
-            guard activeKey == key, entry?.steer == local.steer else { return false }
+            guard activeKey == key, flow.presentation?.generation == generation, entry?.steer == local.steer else { return false }
             mutate(key) { $0.draft = remote; $0.dirty = false }
             guard persist() else { return false }
             active = remote; return true
-        } catch { notice = error.localizedDescription; return false }
+        } catch {
+            if activeKey == key, flow.presentation?.generation == generation { notice = error.localizedDescription }
+            return false
+        }
     }
 
     /// Only the explicit Prep button creates a run; recovery and polling only look up its existing identity.
     func send() async {
-        guard canSend, supported, pending == nil, uploads.attachments.isEmpty, entry?.files.isEmpty == true else { return }
+        guard canSend, supported, pending == nil, uploads.attachments.isEmpty, entry?.files.isEmpty == true,
+              let key = activeKey, let generation = flow.presentation?.generation else { return }
         let operation = beginOperation(); notice = nil; defer { endOperation(operation) }
-        guard await saveNotesForSend(), let key = activeKey, let current = active, let ticket = flow.beginSend() else { return }
+        guard await saveNotesForSend(), activeKey == key, flow.presentation?.generation == generation,
+              uploads.attachments.isEmpty, !hasQueuedFiles, let current = active, let ticket = flow.beginSend() else { return }
         let requestID = ticket.id.uuidString.lowercased()
         mutate(key) { $0.pending = .init(clientRequestId: requestID, revision: current.revision); $0.answer = nil; $0.jobState = "submitting" }
         guard persist() else { _ = flow.finishSend(ticket, outcome: .uncertain("The recovery record could not be saved.")); return }
@@ -807,7 +833,7 @@ final class MeetingPrepStore: ObservableObject {
                   accepted.sessionId == nil || accepted.sessionId == job.sessionId else { throw Failure(message: "The response did not match this Prep job.") }
             state = job.status; result = job.response ?? result; partial = job.partialText
         }
-        guard let state else { notice = "The answer is no longer available. The saved request is kept; check again before starting another."; return }
+        guard let state else { notice = "The server could not confirm this request’s final status. Check again; no new request will be sent."; return }
         let terminal = ["completed", "failed", "canceled", "interrupted"].contains(state)
         mutate(key) { $0.jobState = state; if let result { $0.answer = result } }
         guard persist() else { return }
