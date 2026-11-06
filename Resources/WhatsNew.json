@@ -1,8 +1,17 @@
 {
-  "version": "0.5.374",
+  "version": "0.5.375",
   "whatsNew": {
-    "summary": "Messages is easier to scan, and with the matching COS server update the COS chat's Ask keeps one thread you can follow up in. Plus everything in 0.5.373 and 0.5.372.",
+    "summary": "Plan for Work turns a request in the COS chat into a proposal for an existing Work card. Review it, then use Work's Send controls when you are ready. Plus everything in 0.5.374.",
     "sections": [
+      {
+        "title": "0.5.375",
+        "items": [
+          "Choose Plan for Work under the COS chat, select an existing Work card, and prepare a proposal. You choose whether to add it to the card's review.",
+          "Preparing a proposal and adding it to Work never send assignments. Work's existing Send controls and delivery receipts handle the next step.",
+          "If the card, its context, or a proposed session changes, COS asks you to prepare a new proposal before continuing.",
+          "Proposals use the task and cached session evidence. They do not read the full COS conversation or local attachment contents. This needs a matching COS server update."
+        ]
+      },
       {
         "title": "0.5.374",
         "items": [
