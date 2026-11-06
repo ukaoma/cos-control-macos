@@ -272,6 +272,9 @@ struct WorkHandoffReceipt: Identifiable, Codable, Sendable {
     /// 0.5.371: the Messages number the server gave this run's answer (`job.globalMsgNum`), for the COS chat's Ask card.
     /// Optional, never a new status: an older journal reads it as absent.
     var messageNumber: Int? = nil
+    /// 0.5.374: the COS conversation id the server ran this job in (`job.sessionId`, not the CLI's own id), which the COS thread
+    /// continues. Optional: an older journal reads it as absent.
+    var conversationID: String? = nil
     /// Server-terminal states never block another handoff: completed, failed, refused, canceled (server job states:
     /// completed | failed | canceled | interrupted; interrupted is recorded as failed).
     nonisolated static let terminalStatuses: Set<String> = ["completed", "failed", "refused", "canceled", "reviewed"]
@@ -1315,7 +1318,7 @@ struct WorkRecommendationKey: Equatable {
     /// `resendAllFiles` (0.5.254, "Send all N again"): a Continue or Fork carries every file on the card, not only new ones.
     func submit(source: WorkSource, mode: WorkHandoffMode, session: WorkSession?, model: WorkModelChoice?, prompt: String, attachmentIds: [String] = [],
                 journalPrompt: String? = nil, origin: WorkRequestOrigin? = nil, replacing: String? = nil, resendAllFiles: Bool = false, orchestrationRunID: String? = nil, intentID suppliedID: String? = nil, recovery: WorkIndependentRecovery? = nil,
-                contextFileIDs: Set<String>? = nil, sessionFence: Bool = false) async {
+                contextFileIDs: Set<String>? = nil, sessionFence: Bool = false, threadSessionID: String? = nil, threadDigest: String? = nil) async {
         guard !busy else { return }
         if mode != .newSession, let line = KeyLanes.refusal(sessionID: session?.nativeID) { error = line; return }
         // 0.5.252: one send at a time. A send for the glasses does not take `busy` (the Agent workspace stays usable).
@@ -1464,6 +1467,11 @@ struct WorkRecommendationKey: Equatable {
                 if source.id == MeetingConsolidation.source.id { job["maintenanceWorkflow"] = MeetingConsolidation.workflow }
                 // 0.5.371: the COS chat's Ask sends its uploaded files with the words (POST /api/query-jobs attachmentIds).
                 if !attachmentIds.isEmpty { job["attachmentIds"] = Array(attachmentIds.prefix(5)) }
+                // 0.5.374: the COS thread's Ask continues the session its last Ask ran in (server 6.99.16 picks it).
+                if mode == .newSession, let threadSessionID { job["sessionId"] = threadSessionID }
+                // A fresh thread Ask's carried summary goes as quoted reference data (server `reference`), so Messages shows
+                // only the question.
+                if mode == .newSession, let threadDigest { job["reference"] = ["query": DropItThreadCopy.referenceQuery, "response": threadDigest] }
                 // 0.5.250: a Claude session is named after its task (server 6.58.2 passes it to `claude -p --name`), so
                 // Claude's sidebar shows the task, not "General coding session". An older server drops the key.
                 if row.provider == "claude", let name = Self.claudeSessionName(source.sessionNameSource) { job["sessionName"] = name }
@@ -2220,6 +2228,9 @@ struct WorkRecommendationKey: Equatable {
         row.status = WorkHandoffReceipt.receiptStatus(forJobState: state)
         row.result = job["response"]?.string ?? job["partialText"]?.string
         if let number = job["globalMsgNum"]?.int, number > 0 { row.messageNumber = number }
+        if let conversation = job["sessionId"]?.string, conversation.range(of: #"\A[A-Za-z0-9-]{8,80}\z"#, options: .regularExpression) != nil {
+            row.conversationID = conversation
+        }
         row.detail = job["error"]?.object?["message"]?.string ?? (row.status == "completed" ? "Response ready for review. Task completion and publication remain separate."
             : WorkHandoffReceipt.terminalStatuses.contains(row.status) ? "The server reports this run \(state)." : "Still \(state). Check status to read it again.")
         // Server 6.62.1 types a provider's own refusal. A usage limit is not fixed by trying the same assistant again.

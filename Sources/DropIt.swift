@@ -765,10 +765,49 @@ extension DropIt {
         var status = "running"
         var answer: String?
         var number: Int?
+        /// 0.5.374: the session the run used (server id, no provider prefix), and whether this Ask is recorded in the COS thread.
+        var session: String?
+        var threaded = false
+        var recorded = false
         var finished: Bool { ["completed", "failed", "canceled", "refused"].contains(status) }
     }
     /// What the window reads back for an Ask (the Work receipt behind it).
-    struct AskState: Equatable, Sendable { var status: String; var answer: String?; var number: Int? }
+    struct AskState: Equatable, Sendable { var status: String; var answer: String?; var number: Int?; var session: String? = nil }
+
+    // MARK: The COS thread (0.5.374, server 6.99.16)
+
+    /// What the next Ask does: continue the thread's session, or start fresh carrying the server's short digest.
+    struct ThreadNext: Equatable, Sendable { var session: String?; var digest: String?; var reason: String; var asks: Int }
+    static func threadNext(_ details: [String: JSONValue]) -> ThreadNext? {
+        guard let next = details["next"]?.object, let mode = next["mode"]?.string, let reason = next["reason"]?.string else { return nil }
+        let asks = details["thread"]?.object?["asks"]?.int ?? 0
+        let session = mode == "continue" ? next["sessionId"]?.string : nil
+        let digest = next["digest"]?.string.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+        return ThreadNext(session: session, digest: mode == "continue" ? nil : digest, reason: reason, asks: asks)
+    }
+    // A fresh Ask's carried summary goes to the server as quoted reference data (query-jobs `reference`), never into the words.
+    /// The line under the chat's header.
+    static func threadLine(_ next: ThreadNext?) -> String? {
+        guard let next else { return nil }
+        switch next.reason {
+        case "continue": return next.asks == 1 ? "Continues your COS thread, 1 ask so far." : "Continues your COS thread, \(next.asks) asks so far."
+        case "size": return "The thread got long, so the next Ask starts fresh with a short summary of it."
+        case "manual": return "New thread. The next Ask starts fresh with a short summary of the last one."
+        case "missing_session": return "The thread's session is gone, so the next Ask starts fresh with a short summary."
+        default: return "Your next Ask starts the COS thread."
+        }
+    }
+    static let threadNew = "New thread"
+    static let referenceQuery = DropItThreadCopy.referenceQuery
+    static let threadBusy = "COS is still answering your last question in this thread. Ask again when it lands, or start a New thread."
+    /// "claude:<id>" from a Work receipt, as the server's bare id.
+    static func nativeSessionID(_ id: String) -> String {
+        guard let colon = id.firstIndex(of: ":") else { return id }
+        return String(id[id.index(after: colon)...])
+    }
+    /// The Work status line a run puts first ("COS-WORK 1a2b3c4d5e6f: done: ..."), without its tracking prefix: the chat and
+    /// the Messages preview show the sentence, Work still reads the whole line.
+    static func withoutWorkStatus(_ text: String) -> String { GlassesTurn.withoutWorkStatus(text) }
 
     /// An Ask as a chat item, so it takes its place among the drops by time (kind "ask" is this Mac's own, never the server's).
     static func askItem(_ ask: Ask) -> Item {
@@ -831,7 +870,12 @@ final class DropItStore: ObservableObject {
     /// What starting an Ask came to: the run's clientJobId, or the line that says why it did not start.
     enum AskStart: Equatable, Sendable { case started(String), refused(String) }
     /// The composer's Ask: the same Today Work run (its guard, its switch, its model pick) with the words and the media ids.
-    var askJob: (@MainActor (_ target: String, _ prompt: String, _ attachmentIds: [String]) async -> AskStart)?
+    var askJob: (@MainActor (_ target: String, _ prompt: String, _ attachmentIds: [String], _ session: String?, _ digest: String?) async -> AskStart)?
+    /// 0.5.374: whether the server keeps the COS thread (6.99.16). Off: every Ask starts fresh, as before.
+    var threadOn: () -> Bool = { false }
+    /// The line under the chat's header about the thread, nil while the server has none.
+    @Published private(set) var threadLine: String?
+    @Published private(set) var threadBusy = false
     /// Reads the runs behind this Mac's Asks back (their receipts), by clientJobId.
     var askState: (@MainActor (_ ids: [String]) async -> [String: DropIt.AskState])?
     /// The files on the composer, in the order they were added.
@@ -961,9 +1005,21 @@ final class DropItStore: ObservableObject {
         let words = text.replacingOccurrences(of: "\r\n", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         let ids = DropIt.readyIDs(attachments)
         let sent = attachments.filter { ids.contains($0.mediaId ?? "") }
-        switch await askJob("cos:ask:" + DropIt.newDropID(), words, ids) {
+        // 0.5.374: the COS thread. One Ask at a time continues its session (two writers on one session would collide).
+        var next: DropIt.ThreadNext?
+        let threaded = threadOn()
+        if threaded {
+            if asks.contains(where: { $0.threaded && !$0.finished }) { line = DropIt.threadBusy; return false }
+            if case .ok(let details) = await ask(DropIt.call("thread")) { next = DropIt.threadNext(details); threadLine = DropIt.threadLine(next) }
+        }
+        var start = await askJob("cos:ask:" + DropIt.newDropID(), words, ids, next?.session, next?.digest)
+        // A session the server no longer takes: the same Ask once more, fresh, so the question is never lost to the thread.
+        if case .refused = start, next?.session != nil { start = await askJob("cos:ask:" + DropIt.newDropID(), words, ids, nil, nil) }
+        switch start {
         case .started(let job):
-            asks.append(DropIt.Ask(id: job, words: words, files: sent.map { DropIt.Ask.File(name: $0.name, kind: $0.kind, thumb: $0.thumb) }, at: now()))
+            var made = DropIt.Ask(id: job, words: words, files: sent.map { DropIt.Ask.File(name: $0.name, kind: $0.kind, thumb: $0.thumb) }, at: now())
+            made.threaded = threaded
+            asks.append(made)
             // The files went with the words; their copies stay for the thumbnails under his bubble.
             attachments.removeAll { ids.contains($0.mediaId ?? "") }
             return true
@@ -981,9 +1037,41 @@ final class DropItStore: ObservableObject {
         for index in asks.indices {
             guard let state = states[asks[index].id] else { continue }
             asks[index].status = state.status
-            if let answer = state.answer, !answer.isEmpty { asks[index].answer = answer }
+            if let answer = state.answer, !answer.isEmpty { asks[index].answer = DropIt.withoutWorkStatus(answer) }
             if let number = state.number { asks[index].number = number }
+            if let session = state.session { asks[index].session = session }
         }
+        await recordThreadTurns()
+    }
+
+    /// 0.5.374: each finished threaded Ask, once, into the server's COS thread (its session, words and answer), so the next Ask
+    /// continues it and the thread is kept and searchable. Failed runs are never recorded.
+    func recordThreadTurns() async {
+        for index in asks.indices where asks[index].threaded && !asks[index].recorded && asks[index].status == "completed" {
+            guard let session = asks[index].session else { continue }
+            var body: [String: Any] = ["clientId": asks[index].id, "sessionId": session, "query": String(asks[index].words.prefix(4_000)),
+                                       "provider": "claude"]
+            if let answer = asks[index].answer { body["answer"] = String(answer.prefix(2_000)) }
+            if let number = asks[index].number, number > 0 { body["messageNo"] = number }
+            guard let data = DropIt.json(body) else { continue }
+            if case .ok(let details) = await ask(DropIt.call("thread-turn"), data) {
+                asks[index].recorded = true
+                threadLine = DropIt.threadLine(DropIt.threadNext(details))
+            }
+        }
+    }
+    /// The thread's state for the line under the header (the chat calls it when it opens).
+    func refreshThread() async {
+        guard threadOn() else { threadLine = nil; return }
+        if case .ok(let details) = await ask(DropIt.call("thread")) { threadLine = DropIt.threadLine(DropIt.threadNext(details)) }
+    }
+    /// New thread: the server closes this one (kept, with its summary) and the next Ask starts fresh.
+    func newThread() async {
+        guard threadOn(), !threadBusy else { return }
+        threadBusy = true
+        defer { threadBusy = false }
+        if case .ok(let details) = await ask(DropIt.call("thread-new")) { threadLine = DropIt.threadLine(DropIt.threadNext(details)) }
+        else { line = "The thread did not reset. Try again." }
     }
 
     /// Files from a drop, a paste or Add. Each goes up at once; past five, or a kind COS cannot read, it is refused with a line

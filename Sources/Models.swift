@@ -173,6 +173,10 @@ struct DropItCapability: Equatable, Sendable {
     /// 0.5.371 (server 6.99.13): `capabilities.dropIt.attachments`, how many files a drop takes. nil on an older server: a drop
     /// there takes words only, and Ask carries the files.
     var attachments: Int? = nil
+    /// 0.5.374 (server 6.99.16): `capabilities.dropIt.thread.protocol`, the COS thread the chat's Ask continues. nil on an older
+    /// server: each Ask starts a fresh session there, as before.
+    var thread: Int? = nil
+    var threaded: Bool { available && thread == 1 }
 
     /// The server has the Drop it routes this build speaks (protocol 1).
     var supported: Bool { protocolVersion == 1 }
@@ -180,13 +184,15 @@ struct DropItCapability: Equatable, Sendable {
     /// server, Messages and ⌘K are exactly as before.
     var available: Bool { supported && enabled }
 
-    init(protocolVersion: Int? = nil, enabled: Bool = false, source: String? = nil, attachments: Int? = nil) {
+    init(protocolVersion: Int? = nil, enabled: Bool = false, source: String? = nil, attachments: Int? = nil, thread: Int? = nil) {
         self.protocolVersion = protocolVersion; self.enabled = enabled; self.source = source; self.attachments = attachments
+        self.thread = thread
     }
     /// The helper's status keys (HelperSources/main.swift dropItStatusFields). A key the server did not send stays off.
     init(statusDetails details: [String: JSONValue]) {
         self.init(protocolVersion: details["dropItProtocol"]?.int, enabled: details["dropItEnabled"]?.bool == true,
-                  source: details["dropItSource"]?.string, attachments: details["dropItAttachments"]?.int)
+                  source: details["dropItSource"]?.string, attachments: details["dropItAttachments"]?.int,
+                  thread: details["dropItThread"]?.int)
     }
 }
 
@@ -4055,7 +4061,13 @@ struct GlassesTurn: Identifiable, Sendable, Equatable {
     /// A preview of an answer whose progress lines were joined with no space ("now.Reading the tax"): one space after a
     /// sentence's end when the next sentence starts at once. Previews only; the reader shows the answer as written.
     static func previewSpacing(_ text: String) -> String {
-        text.replacingOccurrences(of: #"([a-z0-9)][.!?])([A-Z][a-z])"#, with: "$1 $2", options: .regularExpression)
+        withoutWorkStatus(text).replacingOccurrences(of: #"([a-z0-9)][.!?])([A-Z][a-z])"#, with: "$1 $2", options: .regularExpression)
+    }
+    /// 0.5.374 the Work status line a run puts first ("COS-WORK 1a2b3c4d5e6f: done: ..."), without its tracking prefix. The
+    /// chat and the Messages preview show the sentence; Work still reads the whole line.
+    static func withoutWorkStatus(_ text: String) -> String {
+        text.replacingOccurrences(of: #"\A\s*COS-WORK [0-9a-f]{6,40}: (done|needs input|blocked): "#, with: "",
+                                  options: [.regularExpression, .caseInsensitive])
     }
 
     var previewQuery: String {
@@ -15136,7 +15148,8 @@ struct COSBuildUpTune: Equatable, Sendable {
     static let memories = COSBuildUpTune(top: 1, spacing: 7, rowHeight: 78)
     /// 0.5.353: 78 pt, a thread row with its meetings and topics line (the realistic row; 0.5.343 measured a name-only 60).
     static let threads = COSBuildUpTune(top: 1, spacing: 7, rowHeight: 78)
-    static let messages = COSBuildUpTune(top: 21, spacing: 1, rowHeight: 79)
+    /// 0.5.374: no legend line above the rows (top 0); the measured row is 58 pt (Tests/BuildUpGeometry.swift), real rows 58 to 77.
+    static let messages = COSBuildUpTune(top: 0, spacing: 1, rowHeight: 58)
     /// The voice directory: its column header (about 32 pt), then 62 pt rows with a 1 pt rule (from the row's code), in the
     /// speaker lists' 980 pt column.
     static let voices = COSBuildUpTune(top: 32, leading: 0, trailing: 0, spacing: 1, rowHeight: 62, column: .speakers)
@@ -15800,4 +15813,10 @@ struct COSBuildUpMachine: Equatable, Sendable {
         phase = next
         since = t
     }
+}
+
+/// 0.5.374: the COS thread's words that more than one file needs (WorkHandoffStore compiles without DropIt.swift in some lanes).
+enum DropItThreadCopy {
+    /// The label on a fresh thread Ask's carried summary, sent as query-jobs `reference.query` (server 6.99.16 uses the same).
+    static let referenceQuery = "Summary carried over from earlier in this COS thread"
 }

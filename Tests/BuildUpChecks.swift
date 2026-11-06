@@ -188,7 +188,7 @@ import Foundation
         // 0.5.353 adds the speaker lists, learning, a session's turns, a meeting's body and Today's two cards, measured on the
         // real rows by Tests/BuildUpGeometry.swift (and held on the pixels by the layout lane of Tests/BuildUpViewChecks.swift).
         for (tune, top, row, spacing, first) in [(COSBuildUpTune.sessions, 0.0, 62.0, 6.0, 62.0), (.tasks, 0, 62, 6, 62), (.memories, 1, 78, 7, 78),
-                                                 (.threads, 1, 78, 7, 78), (.messages, 21, 79, 1, 79), (.voices, 32, 62, 1, 62),
+                                                 (.threads, 1, 78, 7, 78), (.messages, 0, 58, 1, 58), (.voices, 32, 62, 1, 62),
                                                  (.reviewMeetings, 0, 76, 1, 76), (.learning, 0, 74, 1, 74), (.sessionTurns, 24, 70, 14, 65),
                                                  (.meetingBody, 24, 79, 0, 101), (.needsYou, 0, 150, 0, 150), (.running, 0, 61, 0, 61)] {
             let l = P.layout(.rows(4), tune), i = P.items(.rows(4), tune)

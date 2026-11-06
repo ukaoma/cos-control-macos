@@ -18317,7 +18317,9 @@ final class COSControlHelper {
     static let dropItOps: Set<String> = ["settings", "settings-set", "submit", "history", "get", "undo", "move", "ask", "sent",
                                          "summary", "feed", "read", "action", "upload",
                                          // 0.5.372 (server Drop it P2, 6.99.11): the banner outbox, the pending reminders and the P2 settings.
-                                         "banners", "reminders", "p2", "p2-set"]
+                                         "banners", "reminders", "p2", "p2-set",
+                                         // 0.5.374 (server 6.99.16): the COS thread, one size-capped session the chat's Ask continues.
+                                         "thread", "thread-new", "thread-turn"]
     static let dropItTextMax = 2_000
     static let dropItDests: Set<String> = ["new_card", "existing_card", "thread", "memory", "session", "note", "reminder", "ask"]
     static let dropItKinds: Set<String> = ["idea", "task", "note", "memory", "file", "reminder", "ask"]
@@ -18490,6 +18492,44 @@ final class COSControlHelper {
         }
         return out
     }
+    /// 0.5.374: one Ask recorded in the COS thread. Its words arrive on stdin like a drop's, typed and bounded here; anything
+    /// outside the grammar is refused before the server.
+    static let dropItThreadTurnKeys: Set<String> = ["clientId", "sessionId", "query", "answer", "messageNo", "provider"]
+    static func dropItThreadTurnBody(_ stdin: Data) -> String? {
+        guard let raw = (try? JSONSerialization.jsonObject(with: stdin)) as? [String: Any], Set(raw.keys).isSubset(of: dropItThreadTurnKeys),
+              let client = raw["clientId"] as? String, dropItMatches(client, "\\A[A-Za-z0-9:_-]{8,80}\\z"),
+              let session = raw["sessionId"] as? String, dropItMatches(session, "\\A[A-Za-z0-9-]{8,80}\\z"),
+              let query = raw["query"] as? String, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, query.count <= 4_000
+        else { return nil }
+        var out: [String: Any] = ["clientId": client, "sessionId": session, "query": query]
+        if let answer = raw["answer"] { guard let text = answer as? String, text.count <= 2_000 else { return nil }; out["answer"] = text }
+        if let number = raw["messageNo"] { guard let n = dropItInt(number), n > 0 else { return nil }; out["messageNo"] = n }
+        if let provider = raw["provider"] { guard let p = provider as? String, dropItMatches(p, "\\A[a-z0-9-]{1,32}\\z") else { return nil }; out["provider"] = p }
+        return dropItJSON(out)
+    }
+    /// The thread's state and what the next Ask should do, contract keys only.
+    static func dropItThreadView(_ body: [String: Any]) -> [String: Any] {
+        var out: [String: Any] = [:]
+        if let version = dropItInt(body["protocol"]) { out["protocol"] = version }
+        if let cap = dropItInt(body["capTokens"]) { out["capTokens"] = cap }
+        func session(_ v: Any?) -> Any { (v as? String).flatMap { dropItMatches($0, "\\A[A-Za-z0-9-]{8,80}\\z") ? $0 : nil } ?? NSNull() }
+        if let t = body["thread"] as? [String: Any], let id = t["id"] as? String, dropItMatches(id, "\\A[A-Za-z0-9_-]{1,80}\\z") {
+            out["thread"] = ["id": id, "asks": max(0, dropItInt(t["asks"]) ?? 0), "segments": max(0, dropItInt(t["segments"]) ?? 0),
+                             "sessionId": session(t["sessionId"]), "contextTokens": dropItInt(t["contextTokens"]).map { $0 as Any } ?? NSNull(),
+                             "startedAt": dropItStamp(t["startedAt"]).map { $0 as Any } ?? NSNull()] as [String: Any]
+        }
+        let reasons: Set<String> = ["continue", "empty", "size", "missing_session", "manual"]
+        if let n = body["next"] as? [String: Any], let mode = n["mode"] as? String, mode == "continue" || mode == "fresh",
+           let reason = n["reason"] as? String, reasons.contains(reason) {
+            var next: [String: Any] = ["mode": mode, "reason": reason, "sessionId": session(n["sessionId"])]
+            next["digest"] = dropItPlain(n["digest"], max: 6_000, newlines: true).map { $0 as Any } ?? NSNull()
+            // A continue with no session to continue is not a continue.
+            if mode == "continue", next["sessionId"] is NSNull { next["mode"] = "fresh" }
+            out["next"] = next
+        }
+        return out
+    }
+
     /// The banner outbox cursor: this server boot's id and the last banner seen.
     static func dropItBannersPath(boot: String?, seq: String?) -> String? {
         var parts: [String] = []
@@ -18543,6 +18583,9 @@ final class COSControlHelper {
             guard let object = try? JSONSerialization.jsonObject(with: stdin), let shape = dropItP2Shape(object, strict: true),
                   let body = dropItJSON(shape) else { return nil }
             return ("PUT", "/api/drops/settings/p2", body)
+        case "thread": return ("GET", "/api/cos-thread", nil)
+        case "thread-new": return ("POST", "/api/cos-thread/new", "{}")
+        case "thread-turn": return dropItThreadTurnBody(stdin).map { ("POST", "/api/cos-thread/turn", $0) }
         default: return nil
         }
     }
@@ -18679,6 +18722,8 @@ final class COSControlHelper {
         case "p2", "p2-set":
             if let version = dropItInt(body["protocol"]) { out["protocol"] = version }
             if let settings = dropItP2Shape(body["settings"], strict: false) { out["settings"] = settings }
+        case "thread", "thread-new", "thread-turn":
+            out.merge(dropItThreadView(body)) { _, new in new }
         default:
             // A DropAnswer: submit, get, undo, move, ask, sent, action.
             guard let drop = dropItView(body["drop"]) else { return out }
@@ -18712,12 +18757,14 @@ final class COSControlHelper {
         return ["dropItProtocol": dropItInt(block?["protocol"]).map { $0 as Any } ?? NSNull(),
                 "dropItEnabled": dropItBool(block?["enabled"]) ?? false,
                 "dropItSource": source.map { $0 as Any } ?? NSNull(),
-                "dropItAttachments": files.map { $0 as Any } ?? NSNull()]
+                "dropItAttachments": files.map { $0 as Any } ?? NSNull(),
+                // 0.5.374 (server 6.99.16): the COS thread's protocol; absent on an older server, whose Asks each start fresh.
+                "dropItThread": dropItInt((block?["thread"] as? [String: Any])?["protocol"]).map { $0 as Any } ?? NSNull()]
     }
 
     private func emitDropIt(args: [String]) throws {
         guard let op = option("--op", in: args), Self.dropItOps.contains(op) else { throw HelperError.message("Use --op and one of the Drop it operations") }
-        let takesStdin: Set<String> = ["submit", "history", "move", "upload", "p2-set"]
+        let takesStdin: Set<String> = ["submit", "history", "move", "upload", "p2-set", "thread-turn"]
         let input = takesStdin.contains(op) ? try readBoundedStdin(16_384) : Data()
         if op == "upload" { try emitDropItUpload(input); return }
         guard let call = Self.dropItRequest(op: op, args: args, stdin: input) else {
@@ -20261,7 +20308,7 @@ final class COSControlHelper {
     }
 
     static func workNewPayload(clientJobId: String, query: String, model: String, messageEra: String,
-                               sessionName: String? = nil, maintenanceWorkflow: String? = nil) -> [String: Any] {
+                               sessionName: String? = nil, maintenanceWorkflow: String? = nil, sessionId: String? = nil) -> [String: Any] {
         // An unknown supplied session ID is NOT a request to create that ID.
         // The coordinator allocates and durably reuses the session for this
         // clientJobId/generation; inventing one causes session_identity_mismatch.
@@ -20271,7 +20318,25 @@ final class COSControlHelper {
         // drops keys it does not know.
         if let sessionName { payload["sessionName"] = sessionName }
         if let maintenanceWorkflow { payload["maintenanceWorkflow"] = maintenanceWorkflow }
+        // 0.5.374: the COS thread continues the session the server already ran for its last Ask (server 6.99.16 names it). It is
+        // always a session this server started, never an invented one; a stale one is refused by the server and the app retries
+        // the Ask fresh.
+        if let sessionId { payload["sessionId"] = sessionId }
         return payload
+    }
+    /// 0.5.374: `{ query, response }`, a label of at most 200 characters and a summary of at most 6,000, both non-empty.
+    static func workThreadReference(_ value: Any) -> [String: String]? {
+        guard let raw = value as? [String: Any], Set(raw.keys) == ["query", "response"],
+              let query = raw["query"] as? String, let response = raw["response"] as? String,
+              !query.isEmpty, query.count <= 200, !response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, response.count <= 6_000
+        else { return nil }
+        return ["query": query, "response": response]
+    }
+    /// 0.5.374: the COS thread's session id, as the server writes Claude session ids.
+    static func workThreadSessionID(_ value: Any?) -> String?? {
+        guard let value else { return .some(nil) }
+        guard let id = value as? String, id.range(of: "\\A[A-Za-z0-9-]{8,80}\\z", options: .regularExpression) != nil else { return nil }
+        return .some(id)
     }
 
     /// 0.5.250: the name for a Work New session, cleaned again here exactly as server 6.58.2 cleans it: C0 and C1
@@ -20578,7 +20643,16 @@ final class COSControlHelper {
             guard let ids = Self.dropItMediaIds(raw), workflow == nil else { throw HelperError.message("attachmentIds must be one to five media ids") }
             files = ids
         }
-        var payload = Self.workNewPayload(clientJobId: id, query: query, model: model, messageEra: era, sessionName: sessionName, maintenanceWorkflow: workflow)
+        guard let threadSession = Self.workThreadSessionID(body["sessionId"]), threadSession == nil || workflow == nil else {
+            throw HelperError.message("sessionId must be a server session id")
+        }
+        var payload = Self.workNewPayload(clientJobId: id, query: query, model: model, messageEra: era, sessionName: sessionName,
+                                          maintenanceWorkflow: workflow, sessionId: threadSession)
+        // 0.5.374: a fresh COS thread Ask's carried summary, as the server's quoted reference data (never the words).
+        if let raw = body["reference"] {
+            guard workflow == nil, let reference = Self.workThreadReference(raw) else { throw HelperError.message("reference must be a short label and a summary") }
+            payload["reference"] = reference
+        }
         if !files.isEmpty { payload["attachmentIds"] = files }
         let json = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
         guard let response = request("/api/query-jobs", method: "POST", token: token, body: json, timeout: 30) else {

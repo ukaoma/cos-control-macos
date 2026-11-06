@@ -203,11 +203,20 @@ struct DropItChatPane: View {
                     Image(systemName: "pin").font(.system(size: 11)).foregroundStyle(TodayInk.accent).accessibilityLabel("Pinned")
                 }
                 Text(DropIt.chatLine).font(COSType.body(13)).foregroundStyle(TodayInk.sub).lineLimit(2)
+                // 0.5.374: where the COS thread stands (only on a server that keeps one).
+                if let threadLine = store.threadLine {
+                    Text(threadLine).font(COSType.body(12)).foregroundStyle(TodayInk.grey).lineLimit(2)
+                }
             }
             Spacer(minLength: 12)
             HStack(spacing: 18) {
                 Button(DropIt.allMessages, action: onAllMessages).buttonStyle(TodayLinkStyle(color: TodayInk.grey, size: 13))
                 Button(DropIt.historyLink, action: onHistory).buttonStyle(TodayLinkStyle(size: 13))
+                if store.threadLine != nil {
+                    Button(DropIt.threadNew) { Task { await store.newThread() } }.buttonStyle(TodayLinkStyle(color: TodayInk.grey, size: 13))
+                        .disabled(store.threadBusy || store.asks.contains { $0.threaded && !$0.finished })
+                        .help("Start a fresh COS thread. This one is kept and stays searchable.")
+                }
                 Button(DropIt.markAllRead) { Task { await store.markAllRead() } }.buttonStyle(TodayLinkStyle(color: TodayInk.grey, size: 13))
                     .disabled(store.items.isEmpty)
             }
@@ -216,6 +225,7 @@ struct DropItChatPane: View {
         }
         .padding(.horizontal, 28).padding(.vertical, 16)
         .background(TodayInk.rail.opacity(0.6))
+        .task { await store.refreshThread() }
     }
 
     private var thread: some View {

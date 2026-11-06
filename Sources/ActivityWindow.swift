@@ -8135,7 +8135,8 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
     /// matched by its own id. Returns whether the run was accepted. runNote says so for the page, but an earlier "Started" note
     /// outlives this call by 20 seconds, so a caller that must know cannot read the note.
     @discardableResult
-    func startRun(target: String, title: String, prompt: String, context: String, handoff: WorkHandoffStore, attachmentIds: [String] = []) async -> Bool {
+    func startRun(target: String, title: String, prompt: String, context: String, handoff: WorkHandoffStore, attachmentIds: [String] = [],
+                  threadSessionID: String? = nil, threadDigest: String? = nil) async -> Bool {
         guard !runBusy else { return false }
         let guardrail = TodayRunGuard(defaults: .standard)
         let admission = guardrail.admission(target: target, inFlight: Self.inFlightTargets(handoff.receipts),
@@ -8160,7 +8161,8 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
         }
         let id = UUID().uuidString.lowercased()
         let source = WorkSource(id: target, title: title, revision: ActivityHome.dayKey(Date()), project: "today", context: context)
-        await handoff.submit(source: source, mode: .newSession, session: nil, model: handoff.models[index], prompt: prompt, attachmentIds: attachmentIds, intentID: id)
+        await handoff.submit(source: source, mode: .newSession, session: nil, model: handoff.models[index], prompt: prompt, attachmentIds: attachmentIds, intentID: id,
+                             threadSessionID: threadSessionID, threadDigest: threadDigest)
         let receipt = handoff.receipts.first { $0.id == id }
         let outcome = TodayRunGuard.outcome(receiptStatus: receipt?.status, error: handoff.error)
         let before = guardrail.pausedUntil(now: Date())
@@ -10272,10 +10274,11 @@ extension ActivityWindow {
 
     /// 0.5.371 option A: the composer's Ask, the same Today Work run as a drop routed to a question, with the uploaded files.
     /// A refusal is the run guard's own line (Work busy, the switch, the breaker, no model).
-    var dropItAskJob: @MainActor (String, String, [String]) async -> DropItStore.AskStart {
-        { [today, handoffStore] target, prompt, files in
+    var dropItAskJob: @MainActor (String, String, [String], String?, String?) async -> DropItStore.AskStart {
+        { [today, handoffStore] target, prompt, files, session, digest in
             let accepted = await today.startRun(target: target, title: String(prompt.prefix(60)), prompt: prompt,
-                                                context: "Asked in the COS chat on \(TodayHome.headerDate(Date())).", handoff: handoffStore, attachmentIds: files)
+                                                context: "Asked in the COS chat on \(TodayHome.headerDate(Date())).", handoff: handoffStore, attachmentIds: files,
+                                                threadSessionID: session, threadDigest: digest)
             guard accepted, let id = today.lastStartedRunID else { return .refused(today.runNote ?? DropIt.askHeldLine) }
             return .started(id)
         }
@@ -10287,7 +10290,8 @@ extension ActivityWindow {
             await handoffStore.refreshReceipts()
             var out: [String: DropIt.AskState] = [:]
             for receipt in handoffStore.receipts where ids.contains(receipt.id) {
-                out[receipt.id] = DropIt.AskState(status: receipt.status, answer: receipt.result, number: receipt.messageNumber)
+                out[receipt.id] = DropIt.AskState(status: receipt.status, answer: receipt.result, number: receipt.messageNumber,
+                                                  session: receipt.conversationID)
             }
             return out
         }
@@ -10299,6 +10303,8 @@ extension ActivityWindow {
         model.dropIt.askRun = dropItAskRun
         model.dropIt.askJob = dropItAskJob
         model.dropIt.askState = dropItAskState
+        // 0.5.374: the COS thread, only on a server that has it (6.99.16); an older one starts every Ask fresh, as before.
+        model.dropIt.threadOn = { [model] in model.status.dropIt.threaded }
         model.dropIt.dropTakes = model.status.dropIt.attachments
         model.dropIt.isSecret = { WorkCardFiles.looksSecret(name: $0) }
     }

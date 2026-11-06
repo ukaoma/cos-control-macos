@@ -385,7 +385,7 @@ struct StandDown: Error {}
               && files.attachments.isEmpty, "[submit files] Drop on a server that takes files sends their ids and clears them")
         // Ask with files: the words and the ids, through the existing run.
         var jobs: [(target: String, prompt: String, ids: [String])] = []
-        files.askJob = { target, prompt, ids in jobs.append((target, prompt, ids)); return .started("7a1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b") }
+        files.askJob = { target, prompt, ids, _, _ in jobs.append((target, prompt, ids)); return .started("7a1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b") }
         stand.answers["upload"] = answered(200, #""mediaId":"\#(mediaB)""#)
         stand.holding = ["upload"]
         files.attach([(pdf, "Q4 deck.pdf")])
@@ -402,8 +402,51 @@ struct StandDown: Error {}
               "[ask answer] the answer lands under his words with its Messages number")
         let merged = DropIt.merged([DropIt.item(details("{\"x\":" + item(feedID(11), kind: "drop", at: "2099-01-01T00:00:00.000Z", source: "mac") + "}")["x"]!)!], asks: files.asks)
         check(merged.map(\.kind) == ["ask", "drop"] && merged[0].countsUnread == false, "[asks in the chat] an Ask takes its place by time and is never unread")
-        files.askJob = { _, _, _ in .refused("Work is busy. Try again in a minute.") }
+        files.askJob = { _, _, _, _, _ in .refused("Work is busy. Try again in a minute.") }
         check(await files.ask("again?") == false && files.line == "Work is busy. Try again in a minute.", "[ask refused] a run that did not start says why, and the words stay")
+        // 0.5.374: the COS thread (server 6.99.16). Continue sends the thread's session; one threaded Ask at a time; a finished
+        // Ask is recorded once with its session, number and answer (without the Work status prefix); fresh carries the digest
+        // after the question; a session the server refuses is retried fresh once.
+        files.threadOn = { true }
+        var threadSessions: [String?] = [], threadPrompts: [String] = [], threadDigests: [String?] = []
+        let threadJob = "9a1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b"
+        files.askJob = { _, prompt, _, session, digest in threadSessions.append(session); threadPrompts.append(prompt); threadDigests.append(digest); return .started(threadJob) }
+        stand.answers["thread"] = answered(200, #""protocol":1,"thread":{"id":"t1","asks":3,"segments":1,"sessionId":"aaaaaaaa-1111"},"next":{"mode":"continue","reason":"continue","sessionId":"aaaaaaaa-1111","digest":null}"#)
+        check(await files.ask("and the other one?") && threadSessions == ["aaaaaaaa-1111"] && threadPrompts == ["and the other one?"]
+              && files.threadLine == "Continues your COS thread, 3 asks so far.", "[thread continue] the Ask continues the thread's session with the bare question")
+        check(await files.ask("and one more") == false && files.line == DropIt.threadBusy && threadSessions.count == 1,
+              "[thread one at a time] a second Ask waits for the first: two writers on one session would collide")
+        files.askState = { ids in Dictionary(uniqueKeysWithValues: ids.map { ($0, DropIt.AskState(status: "completed", answer: "COS-WORK 1a2b3c4d5e6f: done: It is the Q4 deck.", number: 216, session: "aaaaaaaa-1111")) }) }
+        stand.answers["thread-turn"] = answered(200, #""protocol":1,"thread":{"id":"t1","asks":4,"segments":1,"sessionId":"aaaaaaaa-1111"},"next":{"mode":"continue","reason":"continue","sessionId":"aaaaaaaa-1111","digest":null}"#)
+        await files.refreshAsks()
+        let turn = stdinObject(stand.log.last { stand.op($0.args) == "thread-turn" }?.stdin)
+        check(turn["sessionId"] as? String == "aaaaaaaa-1111" && turn["clientId"] as? String == threadJob && turn["messageNo"] as? Int == 216
+              && turn["query"] as? String == "and the other one?" && turn["answer"] as? String == "It is the Q4 deck." && files.asks.last?.recorded == true
+              && files.asks.last?.answer == "It is the Q4 deck." && files.threadLine == "Continues your COS thread, 4 asks so far.",
+              "[thread turn] a finished Ask is recorded in the thread with its session, number and answer, without the Work status prefix")
+        let turnsBefore = stand.calls("thread-turn").count
+        await files.recordThreadTurns()
+        check(stand.calls("thread-turn").count == turnsBefore, "[thread turn once] a recorded Ask is never sent again")
+        stand.answers["thread"] = answered(200, #""protocol":1,"thread":{"id":"t1","asks":24,"segments":1,"sessionId":"aaaaaaaa-1111"},"next":{"mode":"fresh","reason":"size","sessionId":null,"digest":"Earlier in this COS thread: the Q4 deck."}"#)
+        check(await files.ask("what's next?") && threadSessions.last == .some(nil) && threadPrompts.last == "what's next?" && threadDigests.last == .some("Earlier in this COS thread: the Q4 deck.")
+              && files.threadLine == "The thread got long, so the next Ask starts fresh with a short summary of it.", "[thread fresh] a long thread starts fresh: the words alone, the digest beside them as reference data")
+        files.askState = { ids in Dictionary(uniqueKeysWithValues: ids.map { ($0, DropIt.AskState(status: "completed", answer: nil, number: nil)) }) }
+        await files.refreshAsks()
+        stand.answers["thread"] = answered(200, #""protocol":1,"thread":{"id":"t1","asks":25,"segments":2,"sessionId":"bbbbbbbb-2222"},"next":{"mode":"continue","reason":"continue","sessionId":"bbbbbbbb-2222","digest":null}"#)
+        threadSessions = []
+        files.askJob = { _, _, _, session, _ in threadSessions.append(session); return session == nil ? .started("8c1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b") : .refused("That session is gone.") }
+        check(await files.ask("still there?") && threadSessions == ["bbbbbbbb-2222", nil], "[thread stale session] a session the server refuses is retried fresh once")
+        stand.answers["thread-new"] = answered(200, #""protocol":1,"thread":{"id":"t2","asks":0,"segments":0,"sessionId":null},"next":{"mode":"fresh","reason":"manual","sessionId":null,"digest":null}"#)
+        files.askState = { ids in Dictionary(uniqueKeysWithValues: ids.map { ($0, DropIt.AskState(status: "completed", answer: nil, number: nil)) }) }
+        await files.refreshAsks()
+        await files.newThread()
+        check(stand.calls("thread-new").count == 1 && files.threadLine == "New thread. The next Ask starts fresh with a short summary of the last one.", "[thread new] New thread asks the server and says so")
+        files.threadOn = { false }
+        threadSessions = []
+        let threadCalls = stand.calls("thread").count
+        check(await files.ask("plain") && threadSessions == [nil] && stand.calls("thread").count == threadCalls, "[thread off] an older server: every Ask starts fresh and the thread is never asked")
+        check(DropIt.withoutWorkStatus("COS-WORK d3a0702768fa: needs input: I can't tell which one.") == "I can't tell which one."
+              && DropIt.withoutWorkStatus("Plain answer. COS-WORK abcdef: done: x") == "Plain answer. COS-WORK abcdef: done: x", "[work status] only a leading status line loses its prefix")
         stand.answers["submit"] = dropAnswer([], next: #"{"kind":"ask","prompt":"what is in this?","attachmentIds":["\#(mediaA)"]}"#)
         askedFiles = []
         store.askRun = { _, _, ids in askedFiles.append(ids); return "6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b" }

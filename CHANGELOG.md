@@ -1,4 +1,17 @@
-## 0.5.374 (build 428), Messages cleanup
+## 0.5.374 (build 428), the COS thread and the Messages cleanup
+
+Thread added 2026-11-05 23:00 on Miles's go ("As long as we're storing so we can easily recover and search for them, I like this plan let's build and deploy"). Needs server 6.99.16 for the thread; with an older server every Ask starts fresh, exactly as in 0.5.373.
+
+Why size-capped, measured from tonight's two chat Asks (Claude Code session logs): a fresh Ask already starts at about 100K tokens of context (101,720 and 103,116 on the first call). Continuing a warm session reuses that from cache; what makes a forever-thread expensive is its size. So the server keeps one thread and continues its session until the context passes 150,000 tokens (about 50K of conversation), then the next Ask starts fresh carrying a short mechanical digest.
+
+- The chat's Ask (`DropItStore.ask`): on a server advertising `dropIt.thread`, it reads `GET /api/cos-thread` (helper op `thread`), continues `next.sessionId` through the same Today Work run (`startRun(threadSessionID:)`, `WorkHandoffStore.submit(threadSessionID:)`, helper `work-new` `sessionId` and `reference`, POST /api/query-jobs), or starts fresh with the server's digest sent beside the words as quoted reference data (query-jobs `reference`, label "Summary carried over from earlier in this COS thread"), so Messages shows only the question. The thread continues by the COS conversation id the server ran the job in (`job.sessionId`, kept on the Work receipt as `conversationID`), not the CLI's own session id. One threaded Ask at a time (two writers on one session would collide): a second says so and waits. A session the server refuses is retried fresh once, so a question is never lost to the thread.
+- Each finished Ask is recorded once (`thread-turn`: its session, words, first 2,000 characters of the answer, Messages number). Failed runs are not recorded.
+- New thread in the chat header (helper `thread-new`); a line under the header says where the thread stands. Threads are kept by the server (`cos-thread/ledger.jsonl`) and searchable (`/api/cos-thread/search`).
+- Answers in the chat and Messages previews lose the leading `COS-WORK <tag>: <status>: ` prefix (`DropIt.withoutWorkStatus`); Work still reads the whole line.
+- Tests: `Tests/DropItChecks.swift` (continue, one at a time, recorded once, fresh with digest, stale session retried fresh, New thread, older server untouched, the prefix); `Tests/drop-it-p2-helper-checks.py` (the three ops' routes, contract keys only, every refusal before the server).
+
+### The Messages cleanup
+
 
 Built on 0.5.373 (build 427). Plus everything in 0.5.373 and 0.5.372. Pairs with server 6.99.15 (the pinned row's line and COS Control Web's matching list), but needs nothing from it. Asked for by Miles 2026-11-05 21:15 ("clean up the UI/UX on this, make sure it's clean on the browser and the desktop version").
 

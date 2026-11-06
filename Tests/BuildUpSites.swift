@@ -204,7 +204,7 @@ import SwiftUI
                     }
                 } else { m.threadRecordsLoading = true }
             }))
-        list.append(Site(name: "messages-list", kind: "list", rows: .divided, ruleInset: 46, view: window(.messages) { m, loaded in
+        list.append(Site(name: "messages-list", kind: "list", rows: .divided, ruleInset: 0, view: window(.messages) { m, loaded in
                 if loaded {
                     // Realistic turns: a question of one or two lines and its answer's preview (two lines), one without an answer.
                     m.recentMessages = (0..<16).map { (i: Int) -> GlassesTurn in

@@ -93,7 +93,7 @@ mutants = [
  ("A3 a sixth file is taken", D, "            guard attachments.count < DropIt.maxAttachments else {", "            guard attachments.count < 6 else {", MODELS, "[attach cap]"),
  ("A4 a secrets file is attached", D, '        if secret { return .failure(FileRefusal(name + " looks like a secrets file, so it was not attached.")) }\n', "", MODELS, "[classify secret]"),
  ("A5 the file's path in the arguments", D, '        return (call("upload"), data)', '        return (call("upload", [file.source.path]), data)', MODELS, "[upload stdin]"),
- ("A6 Ask leaves the files behind", D, '        switch await askJob("cos:ask:" + DropIt.newDropID(), words, ids) {', '        switch await askJob("cos:ask:" + DropIt.newDropID(), words, []) {', MODELS, "[ask files]"),
+ ("A6 Ask leaves the files behind", D, '        var start = await askJob("cos:ask:" + DropIt.newDropID(), words, ids, next?.session, next?.digest)', '        var start = await askJob("cos:ask:" + DropIt.newDropID(), words, [], next?.session, next?.digest)', MODELS, "[ask files]"),
  ("A7 a refused drop loses its files", D, "            line = DropIt.line(reply) ?? DropIt.failedLine\n            return nil\n",
   "            line = DropIt.line(reply) ?? DropIt.failedLine\n            attachments = []\n            return nil\n", MODELS, "[drop files refused]"),
  ("A8 a drop's files do not reach its Ask", D, "                      askAttachmentIds: Array(files.prefix(maxAttachments)))", "                      askAttachmentIds: [])", MODELS, "[ask link files]"),

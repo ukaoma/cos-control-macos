@@ -108,6 +108,29 @@ with tempfile.TemporaryDirectory(prefix='cos-drop-it-p2-', dir='/tmp') as tmp:
         for action in ['snooze', 'when:friday', 'reminder_done ', 'dismiss;x', 'when:2026-11-05T15:00:00Z']:
             check(not run('--op', 'action', '--item', ITEM, '--action', action)['ok'], f'action refuses {action}')
         check(len(requests) == prior, 'a refused action never reaches the server')
+        # ── 0.5.374: the COS thread (server 6.99.16)
+        SID = 'aaaaaaaa-1111-2222'
+        state['body'] = {'protocol': 1, 'capTokens': 150000, 'thread': {'id': 't1', 'asks': 3, 'segments': 1, 'sessionId': SID, 'contextTokens': 120000,
+                         'startedAt': '2026-11-05T22:00:00.000Z', 'secret': 'x'},
+                         'next': {'mode': 'continue', 'reason': 'continue', 'sessionId': SID, 'digest': None, 'extra': 1}, 'ledger': 'SECRET'}
+        d = run('--op', 'thread')['details']
+        check(requests[-1][:3] == ('GET', '/api/cos-thread', True), 'thread reads GET /api/cos-thread')
+        check(d['next'] == {'mode': 'continue', 'reason': 'continue', 'sessionId': SID, 'digest': None} and 'secret' not in d['thread']
+              and 'ledger' not in d and d['thread']['asks'] == 3 and d['capTokens'] == 150000, 'thread keeps only the contract keys: ' + json.dumps(d)[:200])
+        state['body'] = {'protocol': 1, 'thread': {'id': 't1', 'asks': 3}, 'next': {'mode': 'continue', 'reason': 'continue', 'sessionId': 'bad id'}}
+        check(run('--op', 'thread')['details']['next']['mode'] == 'fresh', 'a continue with no valid session is not a continue')
+        state['body'] = {'protocol': 1, 'thread': {'id': 't2', 'asks': 0}, 'next': {'mode': 'fresh', 'reason': 'manual', 'sessionId': None, 'digest': 'Earlier: x'}}
+        d = run('--op', 'thread-new')['details']
+        check(requests[-1][:3] == ('POST', '/api/cos-thread/new', True) and body() == {} and d['next']['digest'] == 'Earlier: x', 'thread-new posts {} and keeps the digest')
+        turn = {'clientId': '9a1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b', 'sessionId': SID, 'query': 'and the other one?', 'answer': 'It is the Q4 deck.',
+                'messageNo': 216, 'provider': 'claude'}
+        run('--op', 'thread-turn', stdin=json.dumps(turn).encode())
+        check(requests[-1][:3] == ('POST', '/api/cos-thread/turn', True) and body() == turn, 'thread-turn sends exactly the turn')
+        prior = len(requests)
+        for bad in [{}, dict(turn, clientId='short'), dict(turn, sessionId='a b c d e f g h'), dict(turn, query=' '), dict(turn, query='x' * 4001),
+                    dict(turn, answer='x' * 2001), dict(turn, messageNo=0), dict(turn, provider='Claude!'), dict(turn, extra=1), []]:
+            check(not run('--op', 'thread-turn', stdin=json.dumps(bad).encode())['ok'], f'thread-turn refuses {str(bad)[:60]}')
+        check(len(requests) == prior, 'a refused turn never reaches the server')
     finally:
         server.shutdown()
     print(f'drop it p2 helper checks: {checks} passed')

@@ -256,7 +256,7 @@ struct SettingsRowCard: View {
             try render(DropItChatPane(store: dragging, onAllMessages: {}, onHistory: {}, onOpen: { _, _ in }, polls: false,
                                       initialDraft: "What should the price test page say to stores switching from Clover?", initialTargeted: true), width: 1000, height: 760, name: "3-composer-drag-over", out: composerOut)
             let asked = await composerStore()
-            asked.askJob = { _, _, _ in .started("8b1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b") }
+            asked.askJob = { _, _, _, _, _ in .started("8b1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b") }
             asked.askState = { ids in [ids[0]: DropIt.AskState(status: "completed", answer: "Lead with the switch, not the discount. The photo shows a counter built for Clover's terminal, so open with *we move your items and history for you*. The brief's $10 offer works as the second line. Use the two store stories Gina is pulling.", number: 216)] }
             _ = await asked.ask("What should the price test page say to stores switching from Clover?")
             await asked.refreshAsks()
