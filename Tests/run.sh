@@ -525,17 +525,22 @@ assert 'let idBase = [no.map(String.init) ?? "x", sessionId, object["timestamp"]
 assert 'var originLabel: String?' in turn and 'var modelLabel: String?' in turn
 assert 'originKinds: Set<String> = ["routine", "task"]' in turn
 activity = (root / 'Sources/ActivityWindow.swift').read_text()
-row = activity.split('private func messageRow(', 1)[1].split('\n    }', 1)[0]
-# Each segment is GUARDED, never rendered empty: an unstamped row (any server
-# before 6.43.4) must carry neither. Label before model.
-assert 'if let origin = turn.originLabel {' in row and 'if let modelLabel = turn.modelLabel {' in row, 'messageRow lost a guarded segment'
-assert row.index('if let origin = turn.originLabel {') < row.index('if let modelLabel = turn.modelLabel {'), 'label must precede model'
-assert 'turn.sessionId.prefix(8)' not in row, 'the session chunk would appear on every row from any server'
+row = activity.split('private func messageRow(', 1)[1].split('private func messageFacts(', 1)[0]
+facts = activity.split('private func messageFacts(', 1)[1].split('\n    }\n', 1)[0]
+# 0.5.374: the label and the model live in the row's facts line, in sentence case (originName "Routine", modelName
+# "Opus", derived from the contract's originLabel/modelLabel). Each segment is GUARDED, never rendered empty: an
+# unstamped row (any server before 6.43.4) must carry neither. Label before model.
+assert 'messageFacts(turn)' in row, 'messageRow lost its facts line'
+assert 'if let origin = turn.originName {' in facts and 'if let name = turn.modelName {' in facts, 'messageRow lost a guarded segment'
+assert facts.index('if let origin = turn.originName {') < facts.index('if let name = turn.modelName {'), 'label must precede model'
+assert '.help(turn.originTitle' in facts, 'the label lost the hover that explains it'
+assert 'var originName: String? { originLabel.map' in turn and 'var modelName: String?' in turn and 'guard let m = modelLabel' in turn
+assert 'turn.sessionId.prefix(8)' not in row + facts, 'the session chunk would appear on every row from any server'
 detail = activity.split('private func messageDetail(', 1)[1].split('\n    }', 1)[0]
 assert 'turn.detailMetaLine' in detail
-# The legend is a positive claim, above the list, and the panel has no message list at all.
-assert 'ROUTINE and TASK mark a run your Mac started.' in activity, 'Activity window legend missing'
-assert activity.index('ROUTINE and TASK mark a run your Mac started.') < activity.index('ForEach(visibleRecentMessages)'), 'legend must sit above the list'
+# 0.5.374 removed the legend line: the labels explain themselves on hover (originTitle). It must not come back as a
+# sentence about unlabeled rows either.
+assert 'ROUTINE and TASK mark a run your Mac started.' not in activity, 'the legend line came back'
 # No sentence about UNLABELED rows in either voice: on a pre-6.43.4 server the
 # Mac's own brief is unlabeled, so both "were started by you" and "runs your
 # Mac started are labeled" are false there.
@@ -7255,7 +7260,8 @@ if 'messageBlock(label: "You", text: turn.query,\n                             t
 chat = body(activity, "@ViewBuilder private func archiveChatDetail(")
 if 'markdownID: "archive:\\(date)/\\(index)/\\(message.id)")' not in chat:
     fail("[messages] an archived chat's COS card renders as Markdown, keyed by day, chat and position")
-if 'Text(COSMarkdownInlineCache.plain(turn.text))' not in body(activity, "private func messageRow("):
+# 0.5.374: the preview also gets a space between progress sentences that ran together (previewSpacing), then renders.
+if 'GlassesTurn.previewSpacing(COSMarkdownInlineCache.plain(turn.text))' not in body(activity, "private func messageRow(") or 'Text(preview)' not in body(activity, "private func messageRow("):
     fail("[messages] the row preview shows the answer's words, not its markers")
 if "openURL" in md or "NSWorkspace" in md or "openURL" in card:
     fail("[messages] links open through SwiftUI's default action; the renderer adds no open path of its own")
