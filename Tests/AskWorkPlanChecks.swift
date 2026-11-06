@@ -24,6 +24,8 @@ private actor AskPlanFixture {
     private var answerWork = askWorkID
     private var sessionState = "recent"
     private var assignmentMode: String?
+    private var explicitSendEnabled = false
+    private var sentTurns: [(id: String, prompt: String)] = []
     private var gateCommand: String?
     private var gate: CheckedContinuation<Void, Never>?
     func setServer(_ value: String) { server = value }
@@ -34,6 +36,8 @@ private actor AskPlanFixture {
     func setAnswerWork(_ value: String) { answerWork = value }
     func setSessionState(_ value: String) { sessionState = value }
     func setMode(_ value: String?) { assignmentMode = value }
+    func enableExplicitSend() { explicitSendEnabled = true }
+    func sent() -> [(id: String, prompt: String)] { sentTurns }
     func pauseNext(_ command: String) { gateCommand = command }
     func paused() -> Bool { gate != nil }
     func resume() { let saved = gate; gate = nil; saved?.resume() }
@@ -60,6 +64,19 @@ private actor AskPlanFixture {
                 "requiresExistingWork": .bool(true), "controlSnapshot": .number(1)] : ["available": .bool(false)]
         case "work-chat-capabilities":
             out = ["references": .bool(true), "contextItems": .bool(true), "queueRounds": .bool(true)]
+        case "session-chat-attachability":
+            precondition(explicitSendEnabled, "Prepare/import must never contact the sender")
+            out = ["attachable": .bool(true)]
+        case "session-chat-attach":
+            precondition(explicitSendEnabled)
+            out = ["state": .string("attached"), "bindingId": .string("fixture-binding"),
+                   "epoch": .number(1), "boundTo": .string("fixture-session")]
+        case "session-chat-send":
+            precondition(explicitSendEnabled)
+            guard let index = args.firstIndex(of: "--client-turn-id"), index + 1 < args.count,
+                  let data, let prompt = String(data: data, encoding: .utf8) else { preconditionFailure("Send contract missing") }
+            sentTurns.append((args[index + 1], prompt))
+            out = ["state": .string("completed")]
         case "work-context":
             out = ["contextText": .string(context), "workRevision": .string(revision), "task": askTaskValue()]
         case "drop-it":
@@ -209,6 +226,20 @@ private actor AskPlanFixture {
             precondition(imported, work.error ?? "An unchanged reference-bearing proposal must survive the Work capability transition")
             precondition(work.record!.rounds[0].state == "Ready to send" && h.handoff.receipts.isEmpty)
             precondition(work.record!.rounds[0].assignments.map(\.receiptID) == round.assignments.map(\.receiptID))
+            // Explicit existing Work Send is the only operation allowed to reach the closed fake sender.
+            await h.fixture.enableExplicitSend()
+            let identity = round.assignments[0].receiptID
+            await work.sendAssignment(roundID: round.id, assignmentID: identity, source: h.source, handoff: h.handoff)
+            let sent = await h.fixture.sent()
+            precondition(sent.count == 1 && sent[0].id == identity, work.error ?? h.handoff.error ?? "Explicit Send must preserve the reviewed identity")
+            precondition(sent[0].prompt.contains(askQuestion) && sent[0].prompt.contains("design-notes.md"), "Reviewed reference context must reach Send")
+            let receipt = h.handoff.receipts.first { $0.id == identity }
+            precondition(receipt?.status == "delivered" && receipt?.orchestrationRunID == round.id && receipt?.workID == h.source.id)
+            let reopenedHandoff = WorkHandoffStore(storageURL: h.journal, transport: { args, data in try await h.fixture.run(args, data) })
+            precondition(reopenedHandoff.receipts.contains { $0.id == identity && $0.status == "delivered" }, "The existing Work journal must retain the delivery receipt")
+            await work.sendAssignment(roundID: round.id, assignmentID: identity, source: h.source, handoff: h.handoff)
+            let afterRepeat = await h.fixture.sent()
+            precondition(afterRepeat.count == 1 && h.handoff.receipts.count == 1, "A repeat explicit Send must not dispatch twice")
         }
 
         // The same canonical revision with different local context must not silently import a stale proposal.
