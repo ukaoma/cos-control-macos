@@ -1,3 +1,16 @@
+## 0.5.374 (build 428), Messages cleanup
+
+Built on 0.5.373 (build 427). Plus everything in 0.5.373 and 0.5.372. Pairs with server 6.99.15 (the pinned row's line and COS Control Web's matching list), but needs nothing from it. Asked for by Miles 2026-11-05 21:15 ("clean up the UI/UX on this, make sure it's clean on the browser and the desktop version").
+
+What is new by default: the Messages list looks different. Nothing it does changes.
+
+- Rows (`messageRow`, `messageFacts` in `Sources/ActivityWindow.swift`): the ask is the title, one line cut by the row's width (`GlassesTurn.rowTitle`, up to 240 characters, was 57), with its time on the same line in the body font. The answer's two-line preview sits under it. One quiet facts line carries `#442`, Routine or Task in sentence case (`originName`, gold, hover explains it), the model by name (`modelName`: Opus, Sonnet; an unknown id as written) and the attachments as their tinted icon plus "1 video". The same bubble glyph on every row is gone, and so is the full-width monospace metadata line.
+- Answer previews put one space after a sentence that ran into the next ("now.Reading" to "now. Reading", `GlassesTurn.previewSpacing`). The reader shows the answer as written.
+- The header says "30 messages, newest first" (was "Newest first · 30 turn(s)"). The view switch has no visible "Message view" label (VoiceOver keeps it), the search box is 360 pt (was 260) and Meaning sits beside it instead of at the far right.
+- The "ROUTINE and TASK mark a run your Mac started." line is gone; the labels explain themselves on hover, as before.
+- The pinned COS row: the note under it ("Your drops, what COS did with them...") is gone (`DropIt.pinNote` removed), the unread count and the arrow sit side by side, and its time is in the body font.
+- Tests: `ModelsContract` covers `rowTitle`, `originName`, `modelName` and `previewSpacing` (a run-together sentence gets a space; `claude-bridge.ts`, `U.S. Bank` and `tax.SKILL` do not). `Tests/run.sh` media pins now require the facts line to show the typed, tinted icon and summary, and refuse the per-row glyph coming back (both mutation-checked). `Tests/drop-it-pins.py` re-hashes the recent list and the message row on purpose.
+
 ## 0.5.373 (build 427), the update swap asks COS Control to quit
 
 Built on 0.5.372 (build 426). Plus everything in 0.5.372. No server change. Approved by Miles 2026-11-05 11:39.

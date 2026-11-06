@@ -77,13 +77,13 @@ need('c = Case("asked")' in read("Tests/app-update-escalation-checks.py"), "lane
 
 # Version touchpoints.
 plist = read("Resources/Info.plist")
-need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.373</string>", plist) is not None
-     and re.search(r"<key>CFBundleVersion</key>\s*<string>427</string>", plist) is not None, "version", "Info.plist is 0.5.373 (build 427)")
+need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.374</string>", plist) is not None
+     and re.search(r"<key>CFBundleVersion</key>\s*<string>428</string>", plist) is not None, "version", "Info.plist is 0.5.374 (build 428), the Messages cleanup on top of the quit fix")
 whats = json.loads(read("Resources/WhatsNew.json"))
-need(whats.get("version") == "0.5.373" and whats["whatsNew"]["sections"][0]["title"] == "0.5.373", "version",
-     "What's New is 0.5.373 and leads with its section")
+need(whats.get("version") == "0.5.374" and [s["title"] for s in whats["whatsNew"]["sections"][:2]] == ["0.5.374", "0.5.373"], "version",
+     "What's New is 0.5.374 and keeps 0.5.373's section right under it")
 log = read("CHANGELOG.md")
-need(log.startswith("## 0.5.373 (build 427)") and "\n## 0.5.372 (build 426)" in log, "version",
+need(log.startswith("## 0.5.374 (build 428)") and log.index("\n## 0.5.373 (build 427)") < log.index("\n## 0.5.372 (build 426)"), "version",
      "the changelog's 0.5.373 entry sits above 0.5.372's")
 
 print(f"app update quit request pins: {passed} passed")

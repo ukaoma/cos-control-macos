@@ -3241,8 +3241,8 @@ struct ActivityWindow: View {
             // history that nothing in Control could reach before 0.5.72.
             HStack(spacing: 12) {
                 COSViewSwitch("Message view", selection: $messagesSubview,
-                              options: MessagesSubview.allCases.map { COSViewOption($0, $0.title) }, showsLabel: true)
-                .frame(maxWidth: 260, alignment: .leading)
+                              options: MessagesSubview.allCases.map { COSViewOption($0, $0.title) }, showsLabel: false)
+                .fixedSize()
                 .onChange(of: messagesSubview) { _, next in
                     selectedTurnID = nil
                     // Switching Recent/Archive must also unwind the archive drill-
@@ -3264,14 +3264,13 @@ struct ActivityWindow: View {
                 TextField("Search recent and archive", text: $model.archiveQuery)
                     .textFieldStyle(.plain)
                     .cosField()
-                    .frame(maxWidth: 260)
+                    .frame(maxWidth: 360)
                     .onSubmit { Task { await model.runArchiveSearch() } }
                 if model.archiveSearching { ProgressView().controlSize(.small) }
                 if !model.archiveQuery.isEmpty {
                     Button("Clear") { model.clearArchiveSearch() }
                         .buttonStyle(COSTextButtonStyle())
                 }
-                Spacer()
                 // The one control in Control that spends model tokens. It
                 // lives beside the search it governs rather than in the
                 // toolbar, and it carries its cost in its own tooltip.
@@ -3288,8 +3287,9 @@ struct ActivityWindow: View {
                       + "Off is keyword only, with no model calls. "
                       + "On, Control offers it when a search comes up thin, "
                       + "and only asks when you tap. Up to 25 a day.")
+                Spacer(minLength: 0)
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 22)
             messageSearchCrossing
                 .padding(.horizontal, 12)
                 .padding(.top, 6)
@@ -3315,16 +3315,7 @@ struct ActivityWindow: View {
             } else if visibleRecentMessages.isEmpty {
                 emptyState(.messages, text: recentMissCopy)
             } else {
-                // 0.5.185 — the legend explains the two labels and says NOTHING
-                // about a row that carries none: on a server that does not stamp
-                // (before 6.43.4) the Mac's own brief is unlabeled, so any sentence
-                // about unlabeled rows, positive or negative, would be false there.
-                Text("ROUTINE and TASK mark a run your Mac started.")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 22)
-                    .padding(.top, 8)
+                // 0.5.374: no legend line. Routine and Task explain themselves on hover (originTitle).
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(visibleRecentMessages) { turn in
@@ -3334,7 +3325,7 @@ struct ActivityWindow: View {
                                 messageRow(turn)
                             }
                             .buttonStyle(.plain)
-                            Divider().padding(.leading, 46)
+                            Divider()
                         }
                     }
                     .padding(.horizontal, 22)
@@ -5172,30 +5163,6 @@ struct ActivityWindow: View {
         }
     }
 
-    /// The message bubble wearing a filled type mark on its corner.
-    ///
-    /// The glyph grows 16 -> 20pt INSIDE the existing 32pt frame, so the badge
-    /// has room without any row moving. The mark sits over a background-colored
-    /// halo so it reads against the bubble stroke rather than merging with it.
-    private func messageGlyph(_ turn: GlassesTurn) -> some View {
-        ZStack(alignment: .bottomTrailing) {
-            SectionGlyph(section: .messages)
-                .stroke(style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
-                .foregroundStyle(.secondary)
-                .frame(width: turn.attachmentCategory == nil ? 16 : 20,
-                       height: turn.attachmentCategory == nil ? 16 : 20)
-            if let category = turn.attachmentCategory {
-                AttachmentMark(category: category)
-                    .fill(attachmentTint(category))
-                    .frame(width: 11, height: 11)
-                    .padding(1.7)
-                    .background(Circle().fill(COSPalette.panel))
-                    .offset(x: 5, y: 5)
-            }
-        }
-        .frame(width: 32, height: 32)
-    }
-
     private func sectionGlyph(_ item: ActivitySection, large: Bool = false) -> some View {
         SectionGlyph(section: item)
             .stroke(style: StrokeStyle(lineWidth: large ? 1.6 : 1.4, lineCap: .round, lineJoin: .round))
@@ -5298,58 +5265,70 @@ struct ActivityWindow: View {
         return "\(person.name), \(person.embeddings) training samples, \(confidence), \(person.assertedSegments) attributed segments in \(person.meetingCount) meetings"
     }
 
+    /// 0.5.374: the ask is the row's title with its time beside it, the answer under it, then one quiet line of facts
+    /// (number, Routine or Task, model, attachments). No glyph per row: every row wore the same bubble. The attachment
+    /// TYPE still reads before you click, as its tinted icon and "1 video" in the facts line.
     private func messageRow(_ turn: GlassesTurn) -> some View {
-        HStack(alignment: .top, spacing: 13) {
-            messageGlyph(turn)
-            VStack(alignment: .leading, spacing: 5) {
-                HStack {
-                    Text(turn.no.map { "Message #\($0)" } ?? "Message")
-                        .font(.system(size: 11.5, weight: .semibold))
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(turn.rowTitle)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 8)
                     Text(turn.timeLabel)
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
-                    // 0.5.185 — two tertiary segments, each omitted when unknown.
-                    // The label comes first: it is the one thing that changes
-                    // what the row IS. A row with no label says nothing on a
-                    // server that does not stamp; nothing is inferred from it.
-                    if let origin = turn.originLabel {
-                        Text(origin)
-                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                            .tracking(0.6)
-                            .foregroundStyle(.tertiary)
-                            .help(turn.originTitle ?? "")
-                    }
-                    if let modelLabel = turn.modelLabel {
-                        Text(modelLabel)
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.tertiary)
-                    }
-                    if let glyph = turn.attachmentGlyph {
-                        Label("\(turn.attachments.count)", systemImage: glyph)
-                            .font(.system(size: 9.5))
-                            .foregroundStyle(.secondary)
-                            .help(turn.attachmentSummary ?? "")
-                    }
+                        .fixedSize()
                 }
-                Text(turn.previewQuery)
-                    .font(.system(size: 12.5))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
                 // The answer is Markdown; a two-line preview shows its words, not its markers.
-                Text(COSMarkdownInlineCache.plain(turn.text))
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
+                let preview = GlassesTurn.previewSpacing(COSMarkdownInlineCache.plain(turn.text))
+                if !preview.isEmpty {
+                    Text(preview)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+                messageFacts(turn)
             }
-            Spacer()
             Image(systemName: "chevron.right")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.tertiary)
                 .padding(.top, 3)
         }
-        .padding(.vertical, 13)
+        .padding(.vertical, 11)
         .contentShape(Rectangle())
+    }
+
+    @ViewBuilder private func messageFacts(_ turn: GlassesTurn) -> some View {
+        let hasFacts = turn.no != nil || turn.originName != nil || turn.modelName != nil || turn.attachmentSummary != nil
+        if hasFacts {
+            HStack(spacing: 12) {
+                if let no = turn.no {
+                    Text("#\(no)").font(.system(size: 11, weight: .medium)).foregroundStyle(.tertiary)
+                }
+                // 0.5.185: the label is the one fact that changes what the row IS; each segment is omitted when unknown.
+                if let origin = turn.originName {
+                    Text(origin).font(.system(size: 11, weight: .medium)).foregroundStyle(COSPalette.gold)
+                        .help(turn.originTitle ?? "")
+                }
+                if let name = turn.modelName {
+                    Text(name).font(.system(size: 11)).foregroundStyle(.tertiary)
+                }
+                if let summary = turn.attachmentSummary, let glyph = turn.attachmentGlyph {
+                    HStack(spacing: 4) {
+                        Image(systemName: glyph)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(attachmentTint(turn.attachmentCategory ?? ""))
+                        Text(summary).font(.system(size: 11)).foregroundStyle(.tertiary)
+                    }
+                    .help(summary)
+                }
+            }
+            .padding(.top, 2)
+        }
     }
 
     // MARK: - Details
@@ -6187,8 +6166,8 @@ struct ActivityWindow: View {
     private var messagesStatus: String {
         switch model.recentGlassesStatus {
         case .loading: "Loading…"
-        case .ready: "Newest first · \(model.recentMessages.count) turn(s)"
-        case .empty: "No turns today"
+        case .ready: "\(model.recentMessages.count) \(model.recentMessages.count == 1 ? "message" : "messages"), newest first"
+        case .empty: "No messages today"
         case .serverStopped: "Server stopped"
         case .unauthorized: "Pairing token rejected"
         case .error: "Could not load messages"

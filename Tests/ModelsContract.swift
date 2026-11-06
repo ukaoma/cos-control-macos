@@ -4883,6 +4883,16 @@ struct ModelsContract {
         // A rendered identifier never carries whitespace or a control character.
         precondition(GlassesTurn(["query": .string("q"), "text": .string("a"), "modelPreference": .string("opus\nsonnet")])?.modelLabel == nil)
         precondition(GlassesTurn(["query": .string("q"), "text": .string("a"), "modelPreference": .string("codex-frontier")])?.modelLabel == "codex-frontier")
+        // 0.5.374 Messages row: sentence-case label and model name, the contract values unchanged under them.
+        precondition(stamped?.originName == "Routine" && taskTurn?.originName == "Task" && turn?.originName == nil)
+        precondition(stamped?.modelName == "Opus", "opus reads as Opus on the row")
+        precondition(GlassesTurn(["query": .string("q"), "text": .string("a"), "modelPreference": .string("codex-frontier")])?.modelName == "codex-frontier")
+        let longAsk = String(repeating: "word ", count: 80)
+        precondition(GlassesTurn(["query": .string("line one\nline two"), "text": .string("a")])?.rowTitle == "line one line two")
+        precondition(GlassesTurn(["query": .string(longAsk), "text": .string("a")])?.rowTitle.count == 240, "the title is cut by width, not at 57")
+        precondition(GlassesTurn(["query": .string("  "), "text": .string("a")])?.rowTitle == "(empty query)")
+        precondition(GlassesTurn.previewSpacing("Pulling now.Reading the tax.SKILL done") == "Pulling now. Reading the tax.SKILL done")
+        precondition(GlassesTurn.previewSpacing("claude-bridge.ts and U.S. Bank") == "claude-bridge.ts and U.S. Bank")
         // Single-fault id fixtures: each breaks exactly ONE rule of the alphabet,
         // so a widened head, a widened body, or a dropped first-char rule each
         // turns one of these green on its own.

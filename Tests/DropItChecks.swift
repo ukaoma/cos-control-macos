@@ -425,7 +425,7 @@ struct StandDown: Error {}
         try? FileManager.default.removeItem(at: scratch)
 
         // Words: no em dash, en dash or arrow in anything the chat says.
-        for text in [DropIt.pinNote, DropIt.chatLine, DropIt.placeholder, DropIt.footReturn, DropIt.footNothingOut, DropIt.historyLine, DropIt.moveNote,
+        for text in [DropIt.chatLine, DropIt.placeholder, DropIt.footReturn, DropIt.footNothingOut, DropIt.historyLine, DropIt.moveNote,
                      DropIt.offLine, DropIt.oldServerLine, DropIt.unreachableLine, DropIt.askHeldLine, DropIt.sendSessionLine, DropIt.settingDetail,
                      DropIt.settingEnvLine, DropIt.cameBackCard, DropIt.cameBackThread, DropIt.cameBackMemory, DropIt.historyEmpty, DropIt.historyMiss, DropIt.chatEmpty,
                      DropIt.dropWordsOnlyLine, DropIt.filesWaitLine, DropIt.fileFailedLine, DropIt.askWaiting, DropIt.askFailedLine, DropIt.dropZoneLine,

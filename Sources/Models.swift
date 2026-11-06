@@ -4030,6 +4030,34 @@ struct GlassesTurn: Identifiable, Sendable, Equatable {
         [timeLabel, sourceLabel, modelLabel, originLabel].compactMap { $0 }.joined(separator: " · ")
     }
 
+    /// 0.5.374 list row: the ask on one line, cut by the row's width (SwiftUI truncates), not at 57 characters.
+    var rowTitle: String {
+        let flat = query.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        if flat.isEmpty { return "(empty query)" }
+        return flat.count > 240 ? String(flat.prefix(239)) + "…" : flat
+    }
+
+    /// The row's label in sentence case ("Routine", "Task"); `originLabel` stays the contract's capitals.
+    var originName: String? { originLabel.map { String($0.prefix(1)) + $0.dropFirst().lowercased() } }
+
+    /// The row's model name: "Opus" for opus; a model id it does not know stays as the server wrote it.
+    var modelName: String? {
+        guard let m = modelLabel else { return nil }
+        switch m {
+        case "opus": return "Opus"
+        case "sonnet": return "Sonnet"
+        case "fable": return "Fable"
+        case "haiku": return "Haiku"
+        default: return m
+        }
+    }
+
+    /// A preview of an answer whose progress lines were joined with no space ("now.Reading the tax"): one space after a
+    /// sentence's end when the next sentence starts at once. Previews only; the reader shows the answer as written.
+    static func previewSpacing(_ text: String) -> String {
+        text.replacingOccurrences(of: #"([a-z0-9)][.!?])([A-Z][a-z])"#, with: "$1 $2", options: .regularExpression)
+    }
+
     var previewQuery: String {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.count <= 60 { return trimmed.isEmpty ? "(empty query)" : trimmed }

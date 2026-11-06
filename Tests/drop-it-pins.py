@@ -39,15 +39,17 @@ helper = code("HelperSources/main.swift")
 run_sh = read("Tests/run.sh")
 
 # ── Messages as it was: the Recent list, its rows and the filter, hashed from 0.5.368 (cbdae28).
+# 0.5.374 re-hashed the recent list and the message row on purpose (Messages cleanup: no legend, no per-row glyph, the
+# facts line). Drop it still must not touch them; any other change to these blocks fails here.
 UNCHANGED = {
     "recent list": ("            // 0.5.343: the turns build in place on first load", "    private var speakersList: some View {",
-                    "d2da94b31b584a5917c8293f94b6945d4f7e358765d28c0fb4f91eb062524baf"),
-    "message row": ("    private func messageRow(", "\n    }\n", "ccda596447db218e6d14e67490afa9f3822dad82d06c1377a56c53a1b97df07e"),
+                    "67b5a888d8df1d1fddcd65e756bc67b4762b30d451aa61c3324ec5413831ea66"),
+    "message row": ("    private func messageRow(", "\n    }\n", "78fdf5a1a9c2218dbc89219e5bfdb44fff096abce7302aa0f8e61113b3d0bcf1"),
     "visible recent": ("    private var visibleRecentMessages: [GlassesTurn] {", "\n    }\n", "20d627041c6cdb5dc1baae9e560eec74efa42154da1fb42cc3859e8fb20bee3d"),
     "file to work": ("    func todaySubmitAsk(_ words: String) {", "\n    }\n", "02a481d5b6cebebc15f8a89af5f8e51a335f4f5cba68d697dd165fe2866f4581"),
 }
 for name, (a, b, digest) in UNCHANGED.items():
-    need(a in window_raw and sha(between(window_raw, a, b)) == digest, "messages unchanged", f"{name} is byte-for-byte as in 0.5.368")
+    need(a in window_raw and sha(between(window_raw, a, b)) == digest, "messages unchanged", f"{name} is byte-for-byte as in 0.5.374")
 
 # ── The pinned row: above the list, Recent only, only while Drop it is on.
 mount = '            if messagesSubview == .recent, model.status.dropIt.available {\n                DropItPinnedRow(store: model.dropIt, open: openDropItChat)'
@@ -182,11 +184,11 @@ for script in list((root / "Tests").glob("*.sh")) + list((root / "scripts").glob
 
 # ── Version touchpoints and the lanes.
 plist = read("Resources/Info.plist")
-need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.373</string>", plist) and re.search(r"<key>CFBundleVersion</key>\s*<string>427</string>", plist),
-     "version", "Info.plist is 0.5.373 (build 427), the quit fix on top of P2 and Drop it")
+need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.374</string>", plist) and re.search(r"<key>CFBundleVersion</key>\s*<string>428</string>", plist),
+     "version", "Info.plist is 0.5.374 (build 428), the Messages cleanup on top of the quit fix, P2 and Drop it")
 whats = json.loads(read("Resources/WhatsNew.json"))
 sec = [s for s in whats["whatsNew"]["sections"] if s["title"] == "0.5.371"]
-need(whats.get("version") == "0.5.373" and len(sec) == 1 and any("Drop it" in i for i in sec[0]["items"]), "version", "What's New has one 0.5.371 section naming Drop it")
+need(whats.get("version") == "0.5.374" and len(sec) == 1 and any("Drop it" in i for i in sec[0]["items"]), "version", "What's New has one 0.5.371 section naming Drop it")
 need("\n## 0.5.371 (build 425)" in "\n" + read("CHANGELOG.md"), "version", "the changelog has its 0.5.371 (build 425) entry")
 need('python3 "$ROOT/Tests/drop-it-helper-checks.py" "$TMP/cos-control-helper"' in run_sh, "lanes wired", "Tests/run.sh runs the helper checks")
 for lane in ("pins", "models", "wiring"):

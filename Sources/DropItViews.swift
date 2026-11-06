@@ -91,13 +91,13 @@ struct DropItPinnedRow: View {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Text(DropIt.rowName).font(COSType.body(15, weight: .semibold)).foregroundStyle(TodayInk.ink)
                             Image(systemName: "pin").font(.system(size: 11)).foregroundStyle(TodayInk.accent).accessibilityLabel("Pinned")
-                            Text(DropIt.rowTime(store.summary.lastAt, now: now)).font(COSType.mono(11.5)).foregroundStyle(TodayInk.grey)
+                            Text(DropIt.rowTime(store.summary.lastAt, now: now)).font(COSType.body(11.5)).foregroundStyle(TodayInk.grey)
                         }
                         Text(DropIt.rowLine(store.summary)).font(COSType.body(13.5)).foregroundStyle(TodayInk.sub)
                             .lineLimit(1).truncationMode(.tail)
                     }
                     Spacer(minLength: 8)
-                    VStack(alignment: .trailing, spacing: 7) {
+                    HStack(alignment: .center, spacing: 10) {
                         if let count = DropIt.unreadLabel(store.summary.unread) {
                             Text(count).font(COSType.body(12, weight: .semibold)).foregroundStyle(TodayInk.panel)
                                 .padding(.horizontal, 7).frame(minWidth: 22, minHeight: 22)
@@ -115,7 +115,6 @@ struct DropItPinnedRow: View {
             .buttonStyle(.plain)
             .accessibilityLabel("COS, pinned chat")
             .accessibilityHint("Opens your drops and what COS did with them")
-            Text(DropIt.pinNote).font(COSType.body(12)).foregroundStyle(DropInk.tertiary).fixedSize(horizontal: false, vertical: true)
         }
         .task {
             await store.refreshSummary()

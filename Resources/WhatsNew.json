@@ -1,8 +1,17 @@
 {
-  "version": "0.5.373",
+  "version": "0.5.374",
   "whatsNew": {
-    "summary": "COS Control closes cleanly for an update started outside the app: the installer now asks it to quit, instead of closing it by force after 20 seconds. Plus everything in 0.5.372: with Drop it on, reminders and follow-ups on your drops notify you on this Mac, and a Settings card decides what COS may interrupt you about.",
+    "summary": "Messages is easier to scan: each row shows your ask and its time, the answer under it, and one quiet line with the message number, model and attachments. Plus everything in 0.5.373 and 0.5.372.",
     "sections": [
+      {
+        "title": "0.5.374",
+        "items": [
+          "Messages: each row leads with what you asked, with its time on the same line, the answer under it, and one quiet line with the message number, Routine or Task, the model and any attachments.",
+          "Long asks use the row's full width instead of stopping at 57 characters, and answers whose progress lines ran together read as separate sentences.",
+          "The search box is wider and Meaning sits right beside it. The pinned COS chat lost the note under it, and its unread count and arrow share one line.",
+          "Nothing else changes: the same rows open the same messages."
+        ]
+      },
       {
         "title": "0.5.373",
         "items": [

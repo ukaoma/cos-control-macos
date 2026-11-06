@@ -3858,15 +3858,17 @@ need("attachment.fileExtension" in model, "the temp file does not carry a mime-d
 need("attachment.label" not in model.split("func openExternally")[1].split("func ")[0],
      "the external opener must not build a filename from the untrusted label")
 
-# The left glyph wears the type. A row that renders the bare section glyph
-# cannot tell a video from a text-only turn, which is the whole point.
-need("messageGlyph(turn)" in activity, "the message row does not use the badged glyph")
-need("AttachmentMark(category:" in activity, "the corner badge is not drawn")
+# The row shows the attachment TYPE before a click. 0.5.374 dropped the per-row bubble glyph with its corner badge
+# (every row wore the same bubble); the type now reads in the facts line as its tinted icon plus "1 video". A row
+# that showed only a count could not tell a video from a photo, which is the whole point.
+row_src = activity.split("private func messageRow(")[1].split("private func messageFacts(")[0]
+facts = activity.split("private func messageFacts(")[1].split("\n    }\n")[0] if "private func messageFacts(" in activity else ""
+need("messageFacts(turn)" in row_src, "the message row does not render its facts line")
+need("turn.attachmentGlyph" in facts and "turn.attachmentSummary" in facts and "attachmentTint(" in facts,
+     "the facts line does not show the typed, tinted icon and the attachment summary")
+need("messageGlyph(" not in activity, "the per-row bubble glyph came back")
 mark_shape = (root / "Sources/COSMotion.swift").read_text()
 need("struct AttachmentMark" in mark_shape, "the AttachmentMark shape is missing")
-# FILLED, not stroked: a 1.15pt outline at 11pt collapses into a speck, which
-# is exactly what the first design pass proved.
-need(".fill(attachmentTint(" in activity, "the badge must be filled, never stroked")
 
 # The list badge names the TYPE. A hardcoded photo glyph over a video is
 # the same lie one layer out from the strip.

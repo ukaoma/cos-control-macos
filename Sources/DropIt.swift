@@ -21,7 +21,6 @@ enum DropIt {
 
     static let rowName = "COS"
     static let rowEmpty = "Text COS a thought, an ask or a reminder."
-    static let pinNote = "Your drops, what COS did with them, and its pings live in the pinned chat. Everything below works as it always has."
     static let chatLine = "Text it anything: a thought, an ask, a reminder. It texts back."
     static let allMessages = "All messages"
     static let historyLink = "History"
