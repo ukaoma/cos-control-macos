@@ -2389,7 +2389,7 @@ if /usr/bin/grep -q '\.sheet(' "$ROOT/Sources/Views.swift"; then
   echo 'COS Control: FAIL — a .sheet reappeared in Views.swift; MenuBarExtra panels must route overlays inline' >&2
   exit 1
 fi
-# Activity now has its own persistent NSWindow. Its sole meeting-link sheet is safe there;
+# Activity has its own persistent NSWindow. Its meeting-link and explicit Ask Work review sheets are safe there;
 # keep sheets forbidden in the transient MenuBarExtra and reject unrelated new Activity sheets.
 python3 - "$ROOT" <<'ACTIVITY_SHEET'
 from pathlib import Path
@@ -2401,9 +2401,10 @@ assert 'NSHostingController(rootView: ActivityWindow.live(model: model))' in act
 assert 'let window = ActivityHostWindow(contentViewController: hostingController)' in activity
 assert 'final class ActivityHostWindow: NSWindow' in activity
 assert 'ActivityWindow(' not in views and 'ActivityWindow.live(' not in views
-assert activity.count('.sheet(') == 1
+assert activity.count('.sheet(') == 2
+assert '.sheet(item: $askWorkPlanRequest) { request in\n            AskWorkPlanSheet(model: model, handoff: handoffStore, request: request, onOpenWork: { id in\n                openHandoffWork(id)' in activity
 assert '.sheet(item: $meetingTaskLink) { meeting in\n            MeetingTaskLinkSheet(model: model, meeting: meeting, onOpenWork: openConnectedWork, initiallyCreating: meetingTaskCreate)' in activity
-print('PASS: the meeting-link sheet belongs to the persistent Activity window; the menu-bar panel remains sheet-free')
+print('PASS: the meeting-link and Ask Work review sheets belong to the persistent Activity window; the menu-bar panel remains sheet-free')
 ACTIVITY_SHEET
 /usr/bin/grep -q 'struct SpeakerReviewPane' "$ROOT/Sources/Views.swift"
 /usr/bin/grep -q 'struct MediaPreviewPane' "$ROOT/Sources/Views.swift"
