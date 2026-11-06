@@ -199,7 +199,7 @@ private actor AskPlanFixture {
             await h.prepare()
             precondition(h.chat.error == nil, h.chat.error ?? "Reference preparation failed")
             let round = h.chat.record!.rounds[0]
-            precondition(h.chat.referencesOffered && round.contextItems?.contains(where: { $0.id.contains(reference) }) == true,
+            precondition(h.chat.referencesOffered && round.contextItems?.contains(where: { $0.note == "read-only reference" && $0.text?.contains("design-notes.md") == true }) == true,
                          "Ask must snapshot the existing Work reference items")
             let work = h.reopened()
             work.referenceFacts = h.chat.referenceFacts
