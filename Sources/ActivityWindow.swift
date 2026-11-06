@@ -528,6 +528,7 @@ struct ActivityWindow: View {
     @State private var voiceParentName: String?
     @State private var speakerSubview: SpeakerSubview = .meetings
     @State private var messagesSubview: MessagesSubview = .recent
+    @State private var showDetachedPrepDrafts = false
     @State private var askWorkPlanRequest: AskWorkPlan.Request?
     /// The default stays .allMemories in 0.5.190; the flip to Recent learning
     /// is 0.5.191 (open decision 1), so today's Memories tab renders as before.
@@ -953,7 +954,8 @@ struct ActivityWindow: View {
             }
             .overlay {
                 if section == .messages, !showingSettings, !isolatedWorkPreview, !model.dropItChatRouteActive {
-                    DetachedMeetingPrepPane(store: model.meetingPrep, ordinary: model.dropIt, wireAsk: wireDropItComposer)
+                    DetachedMeetingPrepPane(store: model.meetingPrep, ordinary: model.dropIt, wireAsk: wireDropItComposer,
+                                            showDrafts: $showDetachedPrepDrafts)
                 }
             }
           }
@@ -1403,6 +1405,8 @@ struct ActivityWindow: View {
         } else if section == .messages, !model.dropItHistoryRouteActive,
                   model.meetingPrep.isOpen || model.meetingPrep.launch != nil {
             closeMeetingPrepRoute()
+        } else if section == .messages, showDetachedPrepDrafts {
+            showDetachedPrepDrafts = false
         } else if section == .messages, model.dropItHistoryRouteActive {
             model.closeDropItHistory()
         } else if section == .messages, model.dropItChatRouteActive {
@@ -1519,6 +1523,7 @@ struct ActivityWindow: View {
         model.closeCueReview()
         // 0.5.371: the COS chat and History are Messages routes; a tab switch closes them like any detail.
         model.closeDropItChat()
+        showDetachedPrepDrafts = false
     }
 
     /// From the cue review rail back to the Memories page, open on one of its own views ("review", "recent").
@@ -3306,6 +3311,10 @@ struct ActivityWindow: View {
                       + "On, Control offers it when a search comes up thin, "
                       + "and only asks when you tap. Up to 25 a day.")
                 Spacer(minLength: 0)
+                if !model.status.dropIt.available {
+                    Button("Prep drafts") { showDetachedPrepDrafts = true }
+                        .buttonStyle(TodayLinkStyle(size: 12))
+                }
             }
             .padding(.horizontal, 22)
             messageSearchCrossing

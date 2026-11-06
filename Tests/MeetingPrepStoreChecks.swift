@@ -53,13 +53,17 @@ private func prepHash(_ data: Data) -> String {
     private var frozenSteers: [String: String] = [:]
     private var snapshotsBySession: [String: [[String: Any]]] = [:]
     private var heldOperation: String?
-    private var held: CheckedContinuation<Void, Never>?
+    private var held: [String: CheckedContinuation<Void, Never>] = [:]
     private var filesSerial = 0
     private var media: [String: (uploadHash: String, stored: Data, photo: Bool)] = [:]
     init(root: URL) { self.root = root }
-    var paused: Bool { held != nil }
+    var paused: Bool { !held.isEmpty }
+    func isPaused(_ operation: String) -> Bool { held[operation] != nil }
     func pauseNext(_ operation: String) { heldOperation = operation }
-    func resume() { let saved = held; held = nil; saved?.resume() }
+    func resume(_ operation: String? = nil) {
+        guard let key = operation ?? held.keys.first else { return }
+        held.removeValue(forKey: key)?.resume()
+    }
     func count(_ operation: String) -> Int { calls.filter { $0 == operation }.count }
 
     private func reply(_ values: [String: Any] = [:], status: Int = 200) throws -> HelperResponse {
@@ -154,17 +158,18 @@ private func prepHash(_ data: Data) -> String {
         jobs[id] = job
     }
 
-    private func recordSettlement(_ requestID: String, status: String, answer: String) {
+    private func recordSettlement(_ requestID: String, status: String?, answer: String?, outcome: String? = nil) {
         guard var run = runs[requestID] else { preconditionFailure("No run") }
         guard run["settledAt"] == nil else { return }
-        run["status"] = status; run["answer"] = answer; run["settledAt"] = prepFixtureStamp
+        run["status"] = status; run["answer"] = answer as Any? ?? NSNull(); run["settledAt"] = prepFixtureStamp
+        if let outcome { run["outcome"] = outcome }
         runs[requestID] = run
         for key in Array(drafts.keys) {
             var value = drafts[key]!
             var saved = value["runs"] as! [[String: Any]]
             if let index = saved.firstIndex(where: { $0["clientRequestId"] as? String == requestID }) {
                 saved[index] = run; value["runs"] = saved
-                value["revision"] = (value["revision"] as! Int) + 1
+                if outcome == nil { value["revision"] = (value["revision"] as! Int) + 1 }
                 drafts[key] = value
             }
         }
@@ -181,6 +186,11 @@ private func prepHash(_ data: Data) -> String {
         jobs.removeValue(forKey: id)
     }
 
+    func expireJobAsUnavailable(_ requestID: String, copiedAnswer: String? = nil) {
+        recordSettlement(requestID, status: nil, answer: copiedAnswer, outcome: "unavailable")
+        expireJobWithoutSettlement(requestID)
+    }
+
     func run(_ arguments: [String], _ data: Data?) async throws -> HelperResponse {
         precondition(arguments.count == 3 && arguments[0] == "meeting-prep" && arguments[1] == "--op",
                      "Prep must not dispatch Work, start recording, invoke a generic Ask fallback, or use a live helper")
@@ -188,7 +198,7 @@ private func prepHash(_ data: Data) -> String {
         let input = try data.map { try JSONSerialization.jsonObject(with: $0) as! [String: Any] } ?? [:]
         if op == heldOperation {
             heldOperation = nil
-            await withCheckedContinuation { held = $0 }
+            await withCheckedContinuation { held[op] = $0 }
         }
         if op == "capabilities" {
             return try reply(["available": available,
@@ -719,6 +729,47 @@ private func prepHash(_ data: Data) -> String {
             check(h.fixture.count("run") == 1 && h.fixture.providerStarts == 1,
                   "An unavailable job snapshot never permits another provider dispatch")
         }
+        do {
+            let h = try await prepHarness(root, "terminal-evicted-job")
+            await h.store.send()
+            let request = h.store.pending!.clientRequestId
+            h.fixture.runLookup = .unknown
+            await h.store.checkRequest()
+            check(h.store.pending?.clientRequestId == request && !h.store.canRetryRequest && !h.store.canSend,
+                  "A failed lookup keeps the accepted request fenced")
+            h.fixture.expireJobAsUnavailable(request)
+            h.fixture.runLookup = .normal
+            _ = h.store.close()
+            let restarted = h.freshStore()
+            await restarted.open(h.launch, ordinary: h.ordinary)
+            await restarted.checkRequest()
+            check(restarted.pending == nil && restarted.canSend && restarted.jobState == "unavailable"
+                  && restarted.answer == nil && restarted.notice?.contains("no longer has the answer") == true
+                  && restarted.recoveryDrafts.first?.draft?.runs.first?.unavailable == true
+                  && h.fixture.providerStarts == 1,
+                  "Durable terminal eviction releases the fence after restart without claiming an answer or redispatching")
+
+            h.fixture.nextAdmission = .loseBeforeAdmission
+            await restarted.send()
+            let attempted = restarted.pending?.clientRequestId
+            await restarted.checkRequest()
+            check(attempted != nil && attempted != request && restarted.pending == nil && restarted.canSend
+                  && h.fixture.providerStarts == 1,
+                  "An authoritative 404 for a newer attempt does not reopen the evicted earlier run")
+            restarted.setText("New context after retention")
+            await restarted.send()
+            check(h.fixture.providerStarts == 2 && h.fixture.admittedSteers.last == "New context after retention",
+                  "Only another explicit Prep sends a new turn after eviction")
+        }
+        do {
+            let h = try await prepHarness(root, "terminal-evicted-job-with-answer")
+            await h.store.send()
+            h.fixture.expireJobAsUnavailable(h.store.pending!.clientRequestId, copiedAnswer: "Previously copied response")
+            await h.store.checkRequest()
+            check(h.store.canSend && h.store.jobState == "unavailable" && h.store.answer == "Previously copied response"
+                  && h.store.notice?.contains("saved response") == true,
+                  "Terminal eviction retains an already copied response without reporting completion")
+        }
 
         // The status lookup can commit the frozen terminal answer and advance the draft CAS revision.
         do {
@@ -855,6 +906,52 @@ private func prepHash(_ data: Data) -> String {
             try await eventually("A's original is durably saved") { h.store.active?.currentFiles.contains { $0.name == "Agenda-A.pdf" } == true }
             check(!h.fixture.fileDraftIDs.contains(secondID), "Automatic upload adoption preserves the original draft identity")
             check(!h.fixture.fileOperationIDs.isEmpty, "Files use v1.1 operation identity")
+        }
+
+        do {
+            let h = try await prepHarness(root, "upload-ready-while-busy")
+            let file = h.root.appendingPathComponent("Restart agenda.pdf")
+            let bytes = Data("fixture late upload".utf8)
+            try bytes.write(to: file)
+            let draftA = h.store.active!
+            let uploadsA = h.store.uploads
+            h.fixture.pauseNext("upload")
+            uploadsA.attach([(url: file, name: file.lastPathComponent)])
+            try await eventually("A's upload reached transport") { h.fixture.isPaused("upload") }
+            let chipID = uploadsA.attachments.first!.id
+            _ = h.store.close()
+            h.fixture.pauseNext("create")
+            let draftB = MeetingPrepStore.Launch(title: "Draft B during upload")
+            let opening = Task { await h.store.open(draftB, ordinary: h.ordinary) }
+            try await eventually("B's create overlaps A's upload") { h.fixture.isPaused("create") }
+            h.fixture.resume("upload")
+            try await eventually("A's ready reference is journaled while B is busy") {
+                h.store.recoveryDrafts.first(where: { $0.id == draftA.clientDraftId })?.files.count == 1
+            }
+            let journal = MeetingPrepJournal(root: h.root.appendingPathComponent("journal"), server: h.fixture.server)
+            let saved = try journal.read().entries.first { $0.id == draftA.clientDraftId }!
+            let queued = saved.files.first!
+            check(queued.id == uploadsA.attachments.first?.mediaId && queued.sourceRef == chipID
+                  && queued.sha256 == prepHash(bytes) && queued.name == file.lastPathComponent,
+                  "The exact uploaded media reference is durable under A before reopening")
+            check(h.store.busy && h.fixture.isPaused("create") && h.fixture.count("files") == 0 && saved.fileOperation == nil,
+                  "Journaling A's upload does not start a server copy while B is busy")
+            h.fixture.resume("create")
+            await opening.value
+            let idB = h.store.active!.id
+            check(h.store.queuedFiles.isEmpty && h.store.uploads.attachments.isEmpty && h.fixture.count("files") == 0,
+                  "Draft B never inherits A's queued file")
+
+            let restarted = h.freshStore()
+            await restarted.open(h.launch, ordinary: h.ordinary)
+            try await eventually("a fresh store recovers and copies A's queued original") {
+                restarted.active?.currentFiles.first?.mediaId == queued.id && !restarted.busy
+            }
+            check(restarted.active?.id == draftA.id && restarted.active?.currentFiles.first?.name == queued.name
+                  && restarted.active?.currentFiles.count == 1 && restarted.queuedFiles.isEmpty
+                  && h.fixture.count("upload") == 1 && h.fixture.fileDraftIDs == [draftA.id]
+                  && !h.fixture.fileDraftIDs.contains(idB),
+                  "Restart adopts the original media once under A without reuploading or attaching to B")
         }
 
         do {

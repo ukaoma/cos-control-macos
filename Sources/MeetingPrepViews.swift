@@ -6,6 +6,10 @@ struct DetachedMeetingPrepPane: View {
     @ObservedObject var store: MeetingPrepStore
     let ordinary: DropItStore
     let wireAsk: () -> Void
+    @Binding var showDrafts: Bool
+    @State private var remoteDrafts: [MeetingPrep.Draft] = []
+    @State private var loadingDrafts = false
+    @State private var draftsError: String?
 
     var body: some View {
         Group {
@@ -23,6 +27,8 @@ struct DetachedMeetingPrepPane: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(TodayInk.page)
+            } else if showDrafts {
+                draftPicker
             }
         }
         .task(id: store.launch?.id) {
@@ -34,6 +40,56 @@ struct DetachedMeetingPrepPane: View {
 
     private func close() {
         if let draft = store.close() { ordinary.composerDraft = draft.text }
+    }
+
+    private var draftPicker: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Prep drafts").font(COSType.body(16, weight: .semibold))
+                    Spacer()
+                    Button("Close", action: { showDrafts = false }).buttonStyle(TodayLinkStyle(size: 12))
+                }
+                let local = store.recoveryDrafts
+                let remote = remoteDrafts.filter { draft in !local.contains { $0.id == draft.clientDraftId } }
+                ForEach(local) { saved in
+                    let state = saved.pending != nil ? " · Request pending" : (saved.files.isEmpty ? "" : " · Files waiting")
+                    Button(draftLabel(saved.title, startsAt: saved.startsAt) + state) {
+                        store.launch = .init(id: saved.id, title: saved.title, startsAt: saved.startsAt, resume: saved.draft)
+                    }.buttonStyle(TodayLinkStyle(size: 12))
+                }
+                ForEach(remote) { draft in
+                    Button(draftLabel(draft.title, startsAt: draft.startsAt)) {
+                        store.launch = .init(id: draft.clientDraftId, title: draft.title, startsAt: draft.startsAt, resume: draft)
+                    }.buttonStyle(TodayLinkStyle(size: 12))
+                }
+                if loadingDrafts {
+                    ProgressView("Reading Prep drafts…").controlSize(.small)
+                } else if let draftsError {
+                    Text(draftsError).font(COSType.body(12)).foregroundStyle(COSPalette.amber)
+                } else if local.isEmpty, remote.isEmpty {
+                    Text("No saved Prep drafts.").font(COSType.body(12)).foregroundStyle(.secondary)
+                }
+            }
+            .padding(18).frame(maxWidth: 760, alignment: .leading).frame(maxWidth: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(TodayInk.page)
+        .task {
+            loadingDrafts = true; draftsError = nil; remoteDrafts = []
+            defer { loadingDrafts = false }
+            do {
+                let drafts = try await store.availableDrafts()
+                if !Task.isCancelled { remoteDrafts = drafts }
+            }
+            catch { if !Task.isCancelled { draftsError = error.localizedDescription } }
+        }
+    }
+
+    private func draftLabel(_ title: String, startsAt: String?) -> String {
+        guard let startsAt else { return title }
+        let date = DropIt.date(.string(startsAt))?.formatted(date: .abbreviated, time: .shortened) ?? startsAt
+        return title + " · " + date
     }
 }
 

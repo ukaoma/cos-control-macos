@@ -271,9 +271,14 @@ enum MeetingPrep {
         var model: String? = nil
         var effort: String? = nil
         var continueRun: Bool? = nil
+        var outcome: String? = nil
+        var settledAt: String? = nil
+
+        var unavailable: Bool { state == "accepted" && outcome == "unavailable" && settledAt?.isEmpty == false }
+        var terminal: Bool { state == "accepted" && (unavailable || Job.isTerminalStatus(status)) }
 
         enum CodingKeys: String, CodingKey {
-            case clientRequestId, clientJobId, jobId, sessionId, draftRevision, createdAt, state, status, answer, model, effort
+            case clientRequestId, clientJobId, jobId, sessionId, draftRevision, createdAt, state, status, answer, model, effort, outcome, settledAt
             case continueRun = "continue"
         }
     }
@@ -367,6 +372,10 @@ enum MeetingPrep {
         let sessionId: String
         let partialText: String
         let response: String?
-        var terminal: Bool { ["completed", "failed", "canceled", "interrupted"].contains(status) }
+        static func isTerminalStatus(_ status: String?) -> Bool {
+            guard let status else { return false }
+            return ["completed", "failed", "canceled", "interrupted"].contains(status)
+        }
+        var terminal: Bool { Self.isTerminalStatus(status) }
     }
 }

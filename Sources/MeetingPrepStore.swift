@@ -184,6 +184,7 @@ final class MeetingPrepStore: ObservableObject {
     private func validatedRun(_ receipt: MeetingPrep.Run, draftID: String) throws -> MeetingPrep.Run {
         guard receipt.clientRequestId.range(of: "\\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\z", options: .regularExpression) != nil,
               receipt.draftRevision >= 0, ["submitting", "accepted", "failed"].contains(receipt.state),
+              receipt.outcome != "unavailable" || receipt.unavailable,
               (receipt.state == "accepted" ? receipt.jobId?.isEmpty == false : receipt.jobId == nil) else {
             throw Failure(message: "The Prep receipt did not contain a valid request identity.")
         }
@@ -473,12 +474,40 @@ final class MeetingPrepStore: ObservableObject {
         guard let key = activeKey else { return }
         await saveUploadedFiles(key: key, explicit: true)
     }
+
+    /// A ready media reference belongs to its upload draft even while another draft is using the server.
+    private func journalReadyUploads(key: String, uploadStore: DropItStore) async throws {
+        var captureError: Error?
+        for file in uploadStore.attachments where file.state == .ready {
+            guard let mediaID = file.mediaId, !diskFailed,
+                  let local = disk.entries.first(where: { $0.id == key }),
+                  !local.files.contains(where: { $0.sourceRef == file.id }) else { continue }
+            func chipIsCurrent() -> Bool {
+                uploadStore.attachments.contains { $0.id == file.id && $0.mediaId == mediaID && $0.state == .ready && $0.source == file.source }
+            }
+            let source = file.source
+            let hash: String
+            do {
+                hash = try await Task.detached(priority: .utility) {
+                    let data = try Data(contentsOf: source, options: .mappedIfSafe)
+                    return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                }.value
+            } catch {
+                if chipIsCurrent() { captureError = error }
+                continue
+            }
+            // A remove or another successful capture/copy may have landed while hashing.
+            guard chipIsCurrent(), !diskFailed,
+                  let latest = disk.entries.first(where: { $0.id == key }),
+                  !latest.files.contains(where: { $0.sourceRef == file.id }) else { continue }
+            mutate(key) { $0.files.append(.init(id: mediaID, name: file.name, sourceRef: file.id, sha256: hash)) }
+            guard persist() else { return }
+        }
+        if let captureError { throw captureError }
+    }
+
     private func saveUploadedFiles(key: String, explicit: Bool = false) async {
-        guard !busy, supported, !diskFailed, let uploadStore = uploadStores[key],
-              let local = disk.entries.first(where: { $0.id == key }), let current = local.draft,
-              explicit || local.fileOperation == nil else { return }
-        let ready = uploadStore.attachments.filter { $0.state == .ready && $0.mediaId != nil }
-        guard !ready.isEmpty || !local.files.isEmpty || local.fileOperation != nil else { return }
+        guard supported, !diskFailed, let uploadStore = uploadStores[key] else { return }
         let generation = activeKey == key ? flow.presentation?.generation : nil
         func isCurrentPresentation() -> Bool {
             generation != nil && activeKey == key && flow.presentation?.generation == generation
@@ -488,21 +517,13 @@ final class MeetingPrepStore: ObservableObject {
             active = draft
             if !saved.dirty { _ = flow.edit(.init(text: saved.steer, attachments: uploads.attachments)) }
         }
-        let operation = beginOperation(); defer { endOperation(operation) }
         do {
-            var captured: [MeetingPrepJournal.PendingFile] = []
-            for file in ready where !local.files.contains(where: { $0.sourceRef == file.id }) {
-                let source = file.source
-                let hash = try await Task.detached(priority: .utility) {
-                    let data = try Data(contentsOf: source, options: .mappedIfSafe)
-                    return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-                }.value
-                captured.append(.init(id: file.mediaId!, name: file.name, sourceRef: file.id, sha256: hash))
-            }
-            mutate(key) { value in
-                for file in captured where !value.files.contains(where: { $0.sourceRef == file.sourceRef }) { value.files.append(file) }
-            }
-            guard persist() else { return }
+            try await journalReadyUploads(key: key, uploadStore: uploadStore)
+            guard !busy, !diskFailed,
+                  let local = disk.entries.first(where: { $0.id == key }), let current = local.draft,
+                  explicit || local.fileOperation == nil,
+                  !local.files.isEmpty || local.fileOperation != nil else { return }
+            let operation = beginOperation(); defer { endOperation(operation) }
             let fresh = try await request("get", fields: ["draftId": current.id]); try checked(fresh)
             var remote = try draft(fresh, expected: current.id)
             func wasCopied(_ file: MeetingPrepJournal.PendingFile) -> Bool {
@@ -623,7 +644,7 @@ final class MeetingPrepStore: ObservableObject {
                   flow.presentation?.generation == ticket.generation else { return }
             if response["httpStatus"]?.int == 409, response["error"]?.string == "run_in_progress" {
                 let blocking = try runReceipt(response["run"], draftID: current.id)
-                guard blocking.clientRequestId != requestID, ["submitting", "accepted"].contains(blocking.state) else {
+                guard blocking.clientRequestId != requestID, ["submitting", "accepted"].contains(blocking.state), !blocking.terminal else {
                     throw Failure(message: "The blocking Prep receipt did not identify an earlier request.")
                 }
                 let remote = try await readPendingDraft(key: key, requestID: requestID)
@@ -708,7 +729,7 @@ final class MeetingPrepStore: ObservableObject {
                     throw Failure(message: "The Prep draft still references this request. Check it again before sending.")
                 }
                 let unresolved = remote.runs.filter {
-                    $0.state == "submitting" || ($0.state == "accepted" && !["completed", "failed", "canceled", "interrupted"].contains($0.status ?? ""))
+                    $0.state == "submitting" || ($0.state == "accepted" && !$0.terminal)
                 }
                 if let earlier = unresolved.first(where: { $0.state == "submitting" }) ?? unresolved.last {
                     let verified = try validatedRun(earlier, draftID: remote.id)
@@ -823,6 +844,19 @@ final class MeetingPrepStore: ObservableObject {
         if flow.presentation?.phase == .awaitingConfirmation, let check = flow.beginPreparation(), let id = UUID(uuidString: accepted.clientRequestId) {
             _ = flow.finishPreparation(check, confirmation: .init(requestID: id, outcome: .accepted(job: jobID)))
         }
+        if accepted.unavailable {
+            guard let value, case .null = value else {
+                throw Failure(message: "The server returned conflicting job details for this Prep request. Check again before sending.")
+            }
+            try await refreshSettledDraft(key: key)
+            mutate(key) { $0.jobState = "unavailable"; $0.answer = accepted.answer }
+            jobState = "unavailable"; answer = accepted.answer
+            let message = accepted.answer?.isEmpty == false
+                ? "The server no longer has the job details. The saved response and your Prep context are kept."
+                : "The server no longer has the answer for this Prep request. Your context is kept; choose Prep to send again."
+            releasePending(key: key, message: message)
+            return
+        }
         var state = accepted.status
         var result = accepted.answer
         var partial = ""
@@ -834,7 +868,7 @@ final class MeetingPrepStore: ObservableObject {
             state = job.status; result = job.response ?? result; partial = job.partialText
         }
         guard let state else { notice = "The server could not confirm this request’s final status. Check again; no new request will be sent."; return }
-        let terminal = ["completed", "failed", "canceled", "interrupted"].contains(state)
+        let terminal = MeetingPrep.Job.isTerminalStatus(state)
         mutate(key) { $0.jobState = state; if let result { $0.answer = result } }
         guard persist() else { return }
         jobState = state; partialText = partial; if let result { answer = result }
