@@ -669,6 +669,26 @@ final class ControllerModel: ObservableObject {
     }
 
     let meetingAsk = MeetingAskStore()
+    lazy var meetingPrep: MeetingPrepStore = {
+        let store = MeetingPrepStore()
+        store.run = { [weak self] arguments, input in
+            guard let self else { throw HelperClientError.commandFailed("COS Control is closing.") }
+            return try await self.runHelper(arguments, timeout: 220, stdinData: input)
+        }
+        store.plainAsk = { [weak self] words, files in
+            guard let self else { return false }
+            return await self.dropIt.ask(words, files: files)
+        }
+        store.plainUpload = { [weak self] arguments, input in
+            guard let self else { throw CancellationError() }
+            return try await self.runHelper(arguments, timeout: 220, stdinData: input)
+        }
+        store.revealComposer = { [weak self] in
+            self?.openDropItChat()
+            self?.openActivity?(.messages)
+        }
+        return store
+    }()
     /// 0.5.366 (server 6.99.0): renaming a live recording (TitleSteerStore, Sources/MeetingAskCore.swift).
     let titleSteer = TitleSteerStore()
     /// 0.5.371 (server Drop it P1): the pinned COS chat in Messages, its composer, History and the Settings switch

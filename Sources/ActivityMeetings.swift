@@ -624,6 +624,7 @@ struct MeetingLibraryDetailPane: View {
                             let keys = row.resolvedContextKeys(detail: detail)
                             if row.sourceSessionId != nil { Text("Ask history covers the whole original capture, including its other split pieces.").font(COSType.body(12)).foregroundStyle(.secondary) }
                             ForEach(Array(row.meetingAskSessions(keys: keys).enumerated()), id: \.element) { captureIndex, session in
+                                MeetingPrepMeetingSection(store: model.meetingPrep, session: session, title: row.title)
                                 // 0.5.327: a saved glasses recording shows its cues beside Meeting Ask (the server keeps them 30 days).
                                 // 0.5.337 (loop audit W10): a saved Mac recording the server cued shows its Cues tab too.
                                 MeetingSidePanel(store: model.meetingAsk.cueVerdicts, model: model, session: session,
@@ -2613,6 +2614,11 @@ struct LiveTranscriptPane: View {
                 if MacRecordingNoMeeting.endsHandoff(sessionId: feed.sessionId, noMeeting: model.macRecording.noMeetingCaptureIDs) {
                     Text(MacRecordingNoMeeting.line).font(COSType.body(11.5)).foregroundStyle(.secondary)
                 } else { handoffLine(feed) }
+            }
+            if let session = model.liveTranscriptOpenID {
+                MeetingPrepMeetingSection(store: model.meetingPrep, session: session,
+                                          title: model.liveMeetingTitle(session, start: feed?.startTime),
+                                          startedAt: feed?.startTime, live: feed?.ended != true)
             }
             // 0.5.339: one collapsed "Files · N" row (hidden with none); open, the list with Quick Look, Show in Finder and
             // Remove, and the note. No drop strip and no buttons of its own: adding is the pane's drop and the bar's Add file.

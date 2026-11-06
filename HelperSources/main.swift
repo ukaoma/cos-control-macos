@@ -674,6 +674,7 @@ final class COSControlHelper {
         case "session-chat-queue-cancel": try emitSessionChatQueueCancel(args: args)
         case "work-chat": try emitWorkChat()
         case "work-chat-capabilities": try emitWorkChatCapabilities()
+        case "meeting-prep": try emitMeetingPrep(args: args)
         case "ask-work-plan-capabilities": try emitAskWorkPlanCapabilities()
         case "ask-work-plan": try emitAskWorkPlan()
         case "ask-work-snapshot": try emitAskWorkSnapshot()
@@ -2262,7 +2263,8 @@ final class COSControlHelper {
         headers: [String: String] = [:],
         timeout: Int = 5,
         deadlineUptime: TimeInterval? = nil,
-        reviewCandidatePort: Int? = nil
+        reviewCandidatePort: Int? = nil,
+        refuseRedirects: Bool = false
     ) -> HTTPResponse? {
         let port = reviewCandidatePort ?? Self.loopbackAPIPort(environment: ProcessInfo.processInfo.environment)
         guard let url = URL(string: "http://127.0.0.1:\(port)\(path)") else { return nil }
@@ -2287,6 +2289,25 @@ final class COSControlHelper {
             // 0.5.371: a caller that names its own type (the COS chat's file upload) keeps it; every other raw body is audio.
             if request.value(forHTTPHeaderField: "Content-Type") == nil { request.setValue("audio/wav", forHTTPHeaderField: "Content-Type") }
             request.httpBody = rawBody
+        }
+        if refuseRedirects {
+            let delegate = BoundedMediaRequestDelegate(maximumBytes: 4_000_000, refuseRedirects: true)
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.timeoutIntervalForRequest = requestTimeout
+            configuration.timeoutIntervalForResource = requestTimeout + 2
+            let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+            let task = session.dataTask(with: request)
+            task.resume()
+            guard let (data, response, tooLarge, failed) = delegate.wait(timeout: requestTimeout + 2) else {
+                task.cancel(); session.invalidateAndCancel(); return nil
+            }
+            session.finishTasksAndInvalidate()
+            guard let http = response as? HTTPURLResponse, !failed else { return nil }
+            if tooLarge { return HTTPResponse(status: 413, body: nil) }
+            var headers: [String: String] = [:]
+            for (key, value) in http.allHeaderFields { headers[String(describing: key).lowercased()] = String(describing: value) }
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            return HTTPResponse(status: http.statusCode, body: object, data: data, headers: headers)
         }
         let box = HTTPResultBox()
         let completion = DispatchSemaphore(value: 0)
@@ -2422,13 +2443,15 @@ final class COSControlHelper {
         _ path: String,
         token: String,
         timeout: Int,
-        maximumBytes: Int
+        maximumBytes: Int,
+        reviewCandidatePort: Int? = nil,
+        refuseRedirects: Bool = false
     ) -> HTTPResponse? {
-        let port = Self.loopbackAPIPort(environment: ProcessInfo.processInfo.environment)
+        let port = reviewCandidatePort ?? Self.loopbackAPIPort(environment: ProcessInfo.processInfo.environment)
         guard let url = URL(string: "http://127.0.0.1:\(port)\(path)") else { return nil }
         var request = URLRequest(url: url, timeoutInterval: TimeInterval(timeout))
         request.setValue(token, forHTTPHeaderField: "X-COS-Token")
-        let delegate = BoundedMediaRequestDelegate(maximumBytes: maximumBytes)
+        let delegate = BoundedMediaRequestDelegate(maximumBytes: maximumBytes, refuseRedirects: refuseRedirects)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = TimeInterval(timeout)
         configuration.timeoutIntervalForResource = TimeInterval(timeout + 2)
@@ -20369,6 +20392,158 @@ final class COSControlHelper {
         case let value as String: return workSessionName(value)
         default: throw HelperError.message("sessionName must be text")
         }
+    }
+
+    /// Prep uses fixed routes and stdin only. Discovering/opening a draft never starts a query job.
+    private func emitMeetingPrep(args: [String]) throws {
+        try requireLiveWorkTransport()
+        func integer(_ value: Any?) -> Int? {
+            guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+            return Int(number.stringValue)
+        }
+        func optionalText(_ object: [String: Any], _ key: String, max: Int) -> Bool {
+            guard let value = object[key] else { return true }
+            guard let text = value as? String else { return false }
+            return text.utf8.count <= max && !text.contains("\u{0}")
+        }
+        guard let op = option("--op", in: args),
+              ["capabilities", "list", "create", "get", "update", "upload", "files", "remove-file", "run", "run-status", "session", "suggest", "bind", "unbind", "download"].contains(op) else {
+            throw HelperError.message("Unknown meeting Prep operation.")
+        }
+        let candidate = try reviewCandidateTransport(), token = try candidate?.token ?? readToken()
+        guard let health = request("/api/health", token: token, timeout: 5, reviewCandidatePort: candidate?.port, refuseRedirects: true), health.status == 200,
+              let server = health.body?["serverInstanceId"] as? String, !server.isEmpty else {
+            throw HelperError.message("The COS server did not answer Prep discovery.")
+        }
+        let caps = (health.body?["capabilities"] as? [String: Any])?["prep"] as? [String: Any]
+        let available = integer(caps?["protocol"]) == 1
+        if op == "capabilities" {
+            emit(ok: true, message: "Prep capability", details: ["available": available, "serverInstanceId": server, "capability": caps as Any? ?? NSNull()]); return
+        }
+        guard available else { throw HelperError.message("This server does not support meeting Prep. Use a plain Ask instead.") }
+        let bytes = try FileHandle.standardInput.read(upToCount: 128_001) ?? Data()
+        guard bytes.count <= 128_000, let input = try JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+              Set(input.keys).isSubset(of: ["serverInstanceId", "draftId", "fileId", "sessionId", "clientRequestId", "startedAt", "payload", "sha256", "bytes"]),
+              input["serverInstanceId"] as? String == server else {
+            throw HelperError.message("Prep belongs to a different server or its request is invalid. Refresh it before continuing.")
+        }
+        let envelope: [String: Set<String>] = [
+            "list": [], "create": ["payload"], "get": ["draftId"], "update": ["draftId", "payload"],
+            "upload": ["payload"], "files": ["draftId", "payload"], "remove-file": ["draftId", "fileId", "payload"],
+            "run": ["draftId", "payload"], "run-status": ["draftId", "clientRequestId"], "session": ["sessionId"], "suggest": ["sessionId", "startedAt"],
+            "bind": ["draftId", "payload"], "unbind": ["draftId", "sessionId"], "download": ["draftId", "fileId", "sha256", "bytes"]
+        ]
+        guard let expected = envelope[op], Set(input.keys) == expected.union(["serverInstanceId"]),
+              input["payload"] == nil || input["payload"] is [String: Any] else {
+            throw HelperError.message("Invalid fields for this Prep operation.")
+        }
+        func identifier(_ key: String, _ pattern: String) throws -> String {
+            guard let value = input[key] as? String, value.range(of: pattern, options: .regularExpression) != nil else {
+                throw HelperError.message("Invalid Prep identifier.")
+            }
+            return value
+        }
+        let draftPattern = "\\Aprep_[a-z2-7]{26}\\z"
+        let sessionPattern = "\\A[A-Za-z0-9_-]{1,200}\\z"
+        let uuidPattern = "\\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\z"
+        let filePattern = "\\Apf_[a-f0-9]{16}\\z"
+        let payload = input["payload"] as? [String: Any] ?? [:]
+        func body(_ allowed: Set<String>, revision: Bool = false) throws -> String {
+            guard Set(payload.keys).isSubset(of: allowed), !revision || (integer(payload["revision"]) ?? -1) >= 0 else {
+                throw HelperError.message("Invalid Prep fields or revision.")
+            }
+            return String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
+        }
+        var path: String, method = "GET", requestBody: String?
+        switch op {
+        case "list": path = "/api/prep/drafts?state=active&limit=20"
+        case "create":
+            guard let client = payload["clientDraftId"] as? String, client.range(of: uuidPattern, options: .regularExpression) != nil else { throw HelperError.message("Invalid Prep draft identity.") }
+            guard optionalText(payload, "title", max: 1000), payload["startsAt"] == nil || payload["startsAt"] is NSNull || optionalText(payload, "startsAt", max: 64),
+                  payload["occurrence"] == nil || payload["occurrence"] is NSNull || payload["occurrence"] is [String: Any] else { throw HelperError.message("Invalid Prep event details.") }
+            path = "/api/prep/drafts"; method = "POST"
+            requestBody = try body(["clientDraftId", "title", "startsAt", "occurrence"])
+        case "get": path = "/api/prep/drafts/\(try identifier("draftId", draftPattern))"
+        case "update":
+            guard optionalText(payload, "steer", max: 16_000), optionalText(payload, "title", max: 1000),
+                  payload["startsAt"] == nil || payload["startsAt"] is NSNull || optionalText(payload, "startsAt", max: 64),
+                  payload["occurrence"] == nil || payload["occurrence"] is NSNull || payload["occurrence"] is [String: Any] else { throw HelperError.message("Invalid Prep notes or event details.") }
+            if let steer = payload["steer"] as? String, steer.count > 4000 { throw HelperError.message("Prep notes are limited to 4,000 characters.") }
+            path = "/api/prep/drafts/\(try identifier("draftId", draftPattern))"; method = "PATCH"
+            requestBody = try body(["revision", "title", "startsAt", "steer", "occurrence"], revision: true)
+        case "files":
+            guard let operation = payload["operationId"] as? String, operation.range(of: uuidPattern, options: .regularExpression) != nil,
+                  let media = payload["media"] as? [[String: Any]], (1...10).contains(media.count), media.allSatisfy({ item in
+                Set(item.keys).isSubset(of: ["id", "name", "sourceRef", "sha256"])
+                    && (item["sha256"] as? String)?.range(of: "\\A[a-f0-9]{64}\\z", options: .regularExpression) != nil
+                    && (item["id"] as? String)?.range(of: "\\Am_[a-f0-9]{24}\\z", options: .regularExpression) != nil
+                    && optionalText(item, "name", max: 1000)
+                    && optionalText(item, "sourceRef", max: 200)
+            }), Set(media.compactMap { $0["id"] as? String }).count == media.count,
+                  Set(media.compactMap { $0["sourceRef"] as? String }).count == media.compactMap({ $0["sourceRef"] as? String }).count else { throw HelperError.message("Choose 1 to 10 distinct uploaded Prep files.") }
+            path = "/api/prep/drafts/\(try identifier("draftId", draftPattern))/files"; method = "POST"
+            requestBody = try body(["operationId", "revision", "media"], revision: true)
+        case "remove-file":
+            guard let revision = integer(payload["revision"]), revision >= 0, payload.count == 1 else { throw HelperError.message("Invalid Prep revision.") }
+            path = "/api/prep/drafts/\(try identifier("draftId", draftPattern))/files/\(try identifier("fileId", filePattern))?revision=\(revision)"; method = "DELETE"
+        case "run":
+            guard let id = payload["clientRequestId"] as? String,
+                  id.range(of: uuidPattern, options: .regularExpression) != nil,
+                  optionalText(payload, "model", max: 200), optionalText(payload, "effort", max: 32),
+                  payload["continue"] == nil || (payload["continue"] as? NSNumber).map({ CFGetTypeID($0) == CFBooleanGetTypeID() }) == true else { throw HelperError.message("Invalid Prep request identity or run options.") }
+            path = "/api/prep/drafts/\(try identifier("draftId", draftPattern))/run"; method = "POST"
+            requestBody = try body(["clientRequestId", "revision", "model", "effort", "continue"], revision: true)
+        case "run-status": path = "/api/prep/drafts/\(try identifier("draftId", draftPattern))/runs/\(try identifier("clientRequestId", uuidPattern))"
+        case "session": path = "/api/prep/by-session/\(try identifier("sessionId", sessionPattern))"
+        case "suggest":
+            guard let start = integer(input["startedAt"]), start > 0 else { throw HelperError.message("The recording start time is unavailable.") }
+            path = "/api/prep/suggest?sessionId=\(try identifier("sessionId", sessionPattern))&startedAt=\(start)"
+        case "bind":
+            guard let session = payload["sessionId"] as? String, session.range(of: sessionPattern, options: .regularExpression) != nil,
+                  payload["serverInstanceId"] as? String == server, payload["surface"] as? String == "control" else { throw HelperError.message("Choose a recording on this server.") }
+            path = "/api/prep/drafts/\(try identifier("draftId", draftPattern))/bind"; method = "POST"
+            requestBody = try body(["sessionId", "serverInstanceId", "surface", "revision"], revision: true)
+        case "unbind":
+            path = "/api/prep/drafts/\(try identifier("draftId", draftPattern))/bind/\(try identifier("sessionId", sessionPattern))"; method = "DELETE"
+        case "upload":
+            let uploadInput = try JSONSerialization.data(withJSONObject: payload)
+            guard let upload = Self.dropItUploadRequest(uploadInput, read: { try? Data(contentsOf: URL(fileURLWithPath: $0), options: .mappedIfSafe) }) else {
+                throw HelperError.message("That Prep upload is not valid.")
+            }
+            let response = upload.json
+                ? request(upload.path, method: "POST", token: token, body: String(decoding: upload.body, as: UTF8.self), timeout: 60, reviewCandidatePort: candidate?.port, refuseRedirects: true)
+                : request(upload.path, method: "POST", token: token, rawBody: upload.body, headers: upload.headers, timeout: 180, reviewCandidatePort: candidate?.port, refuseRedirects: true)
+            guard let response else { throw HelperError.message("The Prep file upload did not answer. Retry the file.") }
+            if let returned = response.body?["serverInstanceId"] as? String, returned != server {
+                throw HelperError.message("The server changed during the Prep upload. Check the draft before trying again.")
+            }
+            var details = Self.dropItUploadAnswer(status: response.status, body: response.body)
+            details["transport"] = "answered"; details["httpStatus"] = response.status; details["serverInstanceId"] = server
+            emit(ok: true, message: "Prep upload answered", details: details); return
+        case "download":
+            path = "/api/prep/drafts/\(try identifier("draftId", draftPattern))/files/\(try identifier("fileId", filePattern))"
+            guard let hash = input["sha256"] as? String, hash.range(of: "\\A[a-f0-9]{64}\\z", options: .regularExpression) != nil,
+                  let size = integer(input["bytes"]), (0...100 * 1024 * 1024).contains(size) else { throw HelperError.message("Invalid Prep download metadata.") }
+            guard let response = boundedMediaRequest(path, token: token, timeout: 60, maximumBytes: 100 * 1024 * 1024, reviewCandidatePort: candidate?.port, refuseRedirects: true),
+                  response.status == 200, response.headers["x-cos-server-instance"] == server, let data = response.data, data.count == size,
+                  SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == hash else { throw HelperError.message("The Prep file did not match its saved original. Nothing was opened.") }
+            let root = candidate == nil ? mediaTransferRoot : FileManager.default.temporaryDirectory.appendingPathComponent("cos-prep-download-\(UUID().uuidString)")
+            try ensurePrivateDirectory(root)
+            let destination = root.appendingPathComponent("\(UUID().uuidString.lowercased()).bin")
+            try atomicWriteData(data, to: destination, permissions: 0o600)
+            emit(ok: true, message: "Prep original downloaded", details: ["path": destination.path, "bytes": size, "sha256": hash, "serverInstanceId": server]); return
+        default: throw HelperError.message("Unknown Prep operation.")
+        }
+        guard let response = request(path, method: method, token: token, body: requestBody, headers: method == "GET" ? [:] : ["X-COS-Expected-Server-Instance": server], timeout: 60, reviewCandidatePort: candidate?.port, refuseRedirects: true) else {
+            // An unknown POST outcome must remain unknown to the native journal; never imply that nothing ran.
+            throw HelperError.message("The Prep request did not answer. Check its status before sending again.")
+        }
+        var details = response.body ?? [:]
+        guard let returned = details["serverInstanceId"] as? String, returned == server else {
+            throw HelperError.message("The server changed during this Prep request. Check its status before sending again.")
+        }
+        details["httpStatus"] = response.status
+        emit(ok: true, message: "Prep request answered", details: details)
     }
 
     /// Ask is a separate plan-only contract. An older server is never replaced with a Work send or a generic query.

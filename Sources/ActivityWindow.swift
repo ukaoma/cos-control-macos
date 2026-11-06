@@ -823,7 +823,7 @@ struct ActivityWindow: View {
                 } else if section == .messages, model.dropItHistoryRouteActive {
                     DropItHistoryPane(store: model.dropIt, onBack: { model.closeDropItHistory() }, onOpen: dropItOpenDrop)
                 } else if section == .messages, model.dropItChatRouteActive {
-                    DropItChatPane(store: model.dropIt, hooks: dropItHooks, onAllMessages: { model.closeDropItChat() },
+                    DropItChatPane(store: model.dropIt, prep: model.meetingPrep, hooks: dropItHooks, onAllMessages: { model.closeDropItChat() },
                                    onHistory: { model.openDropItHistory() }, onOpen: dropItOpen)
                 } else if section == .messages, let preview = model.selectedMediaPreview {
                     mediaDetail(preview)
@@ -9161,27 +9161,9 @@ extension ActivityWindow {
     @ViewBuilder
     func todayPrepButtons(_ event: TodayHome.NextEvent, target: String, admission: TodayRunGuard.Admission) -> some View {
         HStack(spacing: 8) {
-            switch admission {
-            case .allowed:
-                Button("Prep me") {
-                    let when = TodayHome.clock(event.start)
-                    Task {
-                        await today.startRun(target: target, title: "Prep: " + event.title,
-                                             prompt: "Prep me for \u{201C}\(event.title)\u{201D} at \(when) today. Use what COS already holds: earlier meetings with these people, open Work and tasks, and recent decisions. Give me a short brief: what it is about, what is still open, and two or three things to raise. Do not send or publish anything.",
-                                             context: "Meeting: \(event.title), today at \(when).", handoff: handoffStore)
-                    }
-                }
-                .buttonStyle(TodayButtonStyle(primary: true, small: true)).disabled(today.runBusy)
-            case .inFlight:
-                Button("Prep in Sessions") { todayOpen(.workRun(handoffStore.receipts(for: target).first?.id ?? "")) }.buttonStyle(TodayLinkStyle(size: 13))
-            case .switchOff:
-                // 0.5.337 (loop audit N7): the switch off says where it is, rather than Prep me vanishing.
-                if !TodayHome.workRunsOn(.standard) {
-                    Text("Prep me is off: Settings, Work runs from Today").font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).lineLimit(2)
-                }
-            default:
-                if let line = TodayRunGuard.line(admission) { Text(line).font(COSType.body(12.5)).foregroundStyle(TodayInk.sub).lineLimit(2) }
-            }
+            Button("Prep me") {
+                openMeetingPrep(title: event.title, startsAt: ISO8601DateFormatter().string(from: event.start))
+            }.buttonStyle(TodayButtonStyle(primary: true, small: true)).disabled(isolatedWorkPreview)
             Button("Open meeting") { select(.meetings) }.buttonStyle(TodayLinkStyle(size: 13))
         }
     }
@@ -10335,7 +10317,16 @@ extension ActivityWindow {
 
     /// An open action on a chat item: Work with the card selected, the session, Threads, Memories To review, or Messages. Each
     /// leaves "Back to the chat" on the pane it opened.
+    func openMeetingPrep(title: String, startsAt: String?) {
+        guard !isolatedWorkPreview else { return }
+        select(.messages)
+        model.openDropItChat()
+        if !model.meetingPrep.isOpen { model.meetingPrep.launch = .init(title: title, startsAt: startsAt) }
+    }
+
     func dropItOpen(_ item: DropIt.Item, _ action: DropIt.Action) {
+        if let prep = action.prep { openMeetingPrep(title: prep.title, startsAt: prep.startsAt); return }
+        if action.id == "prep" { openMeetingPrep(title: item.title ?? "Meeting prep", startsAt: nil); return }
         dropItFollow(action.id, link: DropIt.link(for: action, in: item))
     }
 

@@ -1,8 +1,18 @@
 {
-  "version": "0.5.375",
+  "version": "0.5.376",
   "whatsNew": {
-    "summary": "Plan for Work turns a request in the COS chat into a proposal for an existing Work card. Review it, then use Work's Send controls when you are ready. Plus everything in 0.5.374.",
+    "summary": "Prepare for a call with your notes and files, keep the prep conversation going, then explicitly add that context to the live meeting. Includes everything in 0.5.375.",
     "sections": [
+      {
+        "title": "0.5.376",
+        "items": [
+          "Prep me opens a draft where you can add context and files before asking. Leave the notes empty to use the standard prep brief.",
+          "Follow up in the same prep conversation. Your ordinary COS chat draft stays separate.",
+          "Choose Add prep to this meeting to copy the saved notes and files into a specific live recording. That snapshot stays available when you review the saved meeting.",
+          "If saving or sending is interrupted, COS keeps the request and its files available for status checks and an explicit retry.",
+          "Requires a matching COS server with meeting prep support. Files are attached to a recording only when you choose to add the prep."
+        ]
+      },
       {
         "title": "0.5.375",
         "items": [

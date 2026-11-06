@@ -145,6 +145,7 @@ struct DropItComposerHooks {
 
 struct DropItChatPane: View {
     @ObservedObject var store: DropItStore
+    @ObservedObject var prep = MeetingPrepStore()
     var hooks = DropItComposerHooks()
     let onAllMessages: () -> Void
     let onHistory: () -> Void
@@ -158,6 +159,7 @@ struct DropItChatPane: View {
     /// The renders' drag in progress over the box (false in the app until a drag enters).
     var initialTargeted = false
     @State private var draft = ""
+    @State private var showPrepDrafts = false
     @State private var moving: String?
     @State private var movePick: String?
     @State private var moveSearch = ""
@@ -168,7 +170,15 @@ struct DropItChatPane: View {
             header
             Divider()
             thread
-            composer
+            if prep.isOpen {
+                ScrollView { MeetingPrepComposer(store: prep) {
+                    if let ordinary = prep.close() { draft = ordinary.text; store.composerDraft = ordinary.text }
+                } }
+                .frame(minHeight: 260, idealHeight: 440, maxHeight: 560)
+            } else {
+                if showPrepDrafts { prepDrafts }
+                composer
+            }
         }
         .background(TodayInk.page)
         .task {
@@ -189,11 +199,39 @@ struct DropItChatPane: View {
                 }
             }
         }
-        .onDisappear { store.closed() }
+        .task(id: prep.launch?.id) {
+            if let launch = prep.launch, !prep.isOpen {
+                store.composerDraft = draft
+                await prep.open(launch, ordinary: .init(text: draft, attachments: store.attachments))
+            }
+        }
+        .onChange(of: draft) { _, value in store.composerDraft = value }
+        .onDisappear { store.composerDraft = draft; store.closed() }
         .onAppear {
-            if draft.isEmpty, !initialDraft.isEmpty { draft = initialDraft }
+            if draft.isEmpty { draft = initialDraft.isEmpty ? store.composerDraft : initialDraft }
             if initialTargeted { dropTargeted = true }
         }
+    }
+
+    private var prepDrafts: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Prep drafts").font(COSType.body(14, weight: .semibold))
+                Spacer()
+                Button("New prep") { prep.launch = .init(title: "Meeting prep", startsAt: nil) }.buttonStyle(TodayLinkStyle(size: 12))
+                Button("Close") { showPrepDrafts = false }.buttonStyle(TodayLinkStyle(size: 12))
+            }
+            ForEach(prep.recoveryDrafts) { saved in
+                Button(saved.title + (saved.pending == nil ? "" : " · Request pending")) {
+                    prep.launch = .init(id: saved.id, title: saved.title, startsAt: saved.startsAt, resume: saved.draft)
+                }.buttonStyle(TodayLinkStyle(size: 12))
+            }
+            ForEach(prep.recent.filter { remote in !prep.recoveryDrafts.contains { $0.id == remote.clientDraftId } }) { remote in
+                Button(remote.title) { prep.launch = .init(title: remote.title, startsAt: remote.startsAt, resume: remote) }.buttonStyle(TodayLinkStyle(size: 12))
+            }
+            if let notice = prep.notice { Text(notice).font(COSType.body(12)).foregroundStyle(COSPalette.amber) }
+        }.padding(18).frame(maxWidth: 760)
+        .task { try? await prep.discover(); await prep.refreshRecent() }
     }
 
     private var header: some View {
@@ -526,6 +564,8 @@ struct DropItChatPane: View {
                     .disabled(store.attachments.count >= DropIt.maxAttachments)
                 Text(DropIt.footReturn)
                 Spacer(minLength: 12)
+                Button("Prep drafts") { showPrepDrafts.toggle() }
+                    .buttonStyle(TodayLinkStyle(color: TodayInk.grey, size: 12)).disabled(store.asking || store.sending)
                 if let plan = hooks.planForWork {
                     Button("Plan for Work") { plan(draft) }
                         .buttonStyle(TodayLinkStyle(color: TodayInk.grey, size: 12))

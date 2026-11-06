@@ -83,9 +83,14 @@ enum DropIt {
         var label: String
         var domain: String?
     }
+    struct PrepAction: Equatable, Hashable, Sendable {
+        let title: String
+        let startsAt: String?
+    }
     struct Action: Equatable, Hashable, Sendable {
         var id: String
         var label: String
+        var prep: PrepAction? = nil
         var isChoice: Bool { id.hasPrefix("choose:") }
         var isOpen: Bool { id.hasPrefix("open_") || id == "send_to_session" }
         /// 0.5.372 (server Drop it P2): actions the server takes on POST /api/inbox/action (the helper's grammar holds the same list).
@@ -184,7 +189,13 @@ enum DropIt {
                     title: o["title"]?.string, line: line, links: (o["links"]?.array ?? []).compactMap(link),
                     actions: (o["actions"]?.array ?? []).compactMap { a in
                         guard let id = a.object?["id"]?.string, let label = a.object?["label"]?.string else { return nil }
-                        return Action(id: id, label: label)
+                        var prep: PrepAction?
+                        if let metadata = a.object?["prep"]?.object, let title = metadata["title"]?.string,
+                           !title.isEmpty, title.count <= 300, !title.contains("\u{0}") {
+                            let startsAt = metadata["startsAt"]?.string
+                            if startsAt == nil || date(metadata["startsAt"]) != nil { prep = PrepAction(title: title, startsAt: startsAt) }
+                        }
+                        return Action(id: id, label: label, prep: prep)
                     },
                     live: o["state"]?.string == "live", undoUntil: date(o["undoUntil"]))
     }
@@ -847,6 +858,8 @@ final class DropItStore: ObservableObject {
     @Published private(set) var busyThreads: Set<String> = []
     /// The line under the composer: why something did not go. Cleared by the next change.
     @Published var line: String?
+    /// Ordinary chat words survive navigation into a separate Prep composer.
+    @Published var composerDraft = ""
     /// The line on one chat item (why its Undo or Move did not go), by thread.
     @Published var itemLines: [String: String] = [:]
     /// History.
@@ -995,16 +1008,17 @@ final class DropItStore: ObservableObject {
     /// Ask: the words and the files that are up, as one Today Work run (`work-new`, POST /api/query-jobs), so the answer lands
     /// in Messages with its number and here under his words. True when it started (the composer clears).
     @discardableResult
-    func ask(_ text: String) async -> Bool {
+    func ask(_ text: String, files separateFiles: [DropIt.Attachment]? = nil) async -> Bool {
         guard !asking, !sending else { return false }
-        if let block = DropIt.askBlock(text: text, files: attachments) { if !block.isEmpty { line = block }; return false }
+        let selectedFiles = separateFiles ?? attachments
+        if let block = DropIt.askBlock(text: text, files: selectedFiles) { if !block.isEmpty { line = block }; return false }
         guard let askJob else { line = DropIt.askHeldLine; return false }
         asking = true
         defer { asking = false }
         line = nil
         let words = text.replacingOccurrences(of: "\r\n", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        let ids = DropIt.readyIDs(attachments)
-        let sent = attachments.filter { ids.contains($0.mediaId ?? "") }
+        let ids = DropIt.readyIDs(selectedFiles)
+        let sent = selectedFiles.filter { ids.contains($0.mediaId ?? "") }
         // 0.5.374: the COS thread. One Ask at a time continues its session (two writers on one session would collide).
         var next: DropIt.ThreadNext?
         let threaded = threadOn()
@@ -1021,7 +1035,7 @@ final class DropItStore: ObservableObject {
             made.threaded = threaded
             asks.append(made)
             // The files went with the words; their copies stay for the thumbnails under his bubble.
-            attachments.removeAll { ids.contains($0.mediaId ?? "") }
+            if separateFiles == nil { attachments.removeAll { ids.contains($0.mediaId ?? "") } }
             return true
         case .refused(let reason):
             line = reason
@@ -1130,6 +1144,9 @@ final class DropItStore: ObservableObject {
         attachments.remove(at: index)
         if line == DropIt.fileFailedLine || line == DropIt.filesWaitLine || line == DropIt.dropWordsOnlyLine { line = nil }
     }
+
+    /// An accepted Ask owns these thumbnails now; remove chips without deleting their backing copies.
+    func consumeAttachments(_ ids: Set<String>) { attachments.removeAll { ids.contains($0.id) } }
 
     func retryAttachment(_ id: String) {
         guard let index = attachments.firstIndex(where: { $0.id == id }), attachments[index].state == .failed else { return }
