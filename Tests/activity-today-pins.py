@@ -146,7 +146,7 @@ need(start.count("handoff.submit(") == 1, "[cost guards] one Work run per tap")
 need(in_order(start, "guardrail.admission(", "TodayRunGuard.preflight(", "handoff.submit(", "guardrail.account(outcome"),
      "[cost guards] admission, then the busy and open-run check, then the one submit, then the accounting")
 need("guard admission == .allowed else {" in start, "[cost guards] nothing starts unless the guard allows it")
-need("intentID: id)" in start and "handoff.receipts.first { $0.id == id }" in start, "[cost guards] the new receipt is matched by its own id")
+need(("intentID: id)" in start or "intentID: id,\n" in start) and "handoff.receipts.first { $0.id == id }" in start, "[cost guards] the new receipt is matched by its own id")
 need("guard !runBusy else { return false }" in start and 'switchOn: TodayHome.workRunsOn(.standard)' in start, "[cost guards] the switch and one at a time")
 need("-> Bool {" in start and start.count("return false") == 4 and "return accepted" in start and "accepted = true" in start,
      "[cost guards] startRun says whether the run was accepted, so no caller reads a note that may be 20 seconds old")

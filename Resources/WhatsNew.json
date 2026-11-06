@@ -1,7 +1,7 @@
 {
   "version": "0.5.374",
   "whatsNew": {
-    "summary": "Messages is easier to scan, and with server 6.99.16 the COS chat's Ask keeps one thread you can follow up in. Plus everything in 0.5.373 and 0.5.372.",
+    "summary": "Messages is easier to scan, and with the matching COS server update the COS chat's Ask keeps one thread you can follow up in. Plus everything in 0.5.373 and 0.5.372.",
     "sections": [
       {
         "title": "0.5.374",
@@ -11,7 +11,7 @@
           "Answers in the chat and in Messages no longer start with the \"COS-WORK\" tracking line.",
           "Messages: each row leads with what you asked, with its time on the same line, the answer under it, and one quiet line with the message number, Routine or Task, the model and any attachments.",
           "Long asks use the row's full width instead of stopping at 57 characters, and answers whose progress lines ran together read as separate sentences. The search box is wider and Meaning sits right beside it.",
-          "The thread needs server 6.99.16. With an older server every Ask starts fresh, as before."
+          "The thread needs the matching COS server update. With an older server every Ask starts fresh, as before."
         ]
       },
       {
