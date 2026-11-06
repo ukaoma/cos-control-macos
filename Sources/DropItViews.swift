@@ -139,6 +139,8 @@ struct DropItComposerHooks {
     var domains: () -> [(name: String, label: String)] = { [] }
     var threads: () -> [(id: String, title: String)] = { [] }
     var loadMoveOptions: () async -> Void = {}
+    /// Explicit planning for an existing Work card; normal Ask/Drop continue through their original paths.
+    var planForWork: ((String) -> Void)? = nil
 }
 
 struct DropItChatPane: View {
@@ -524,6 +526,12 @@ struct DropItChatPane: View {
                     .disabled(store.attachments.count >= DropIt.maxAttachments)
                 Text(DropIt.footReturn)
                 Spacer(minLength: 12)
+                if let plan = hooks.planForWork {
+                    Button("Plan for Work") { plan(draft) }
+                        .buttonStyle(TodayLinkStyle(color: TodayInk.grey, size: 12))
+                        .disabled(store.asking || store.sending || !store.attachments.isEmpty)
+                        .help("Choose an existing Work card and review a proposal. Uploaded chat files stay in this composer; add them to the Work card before planning.")
+                }
                 Text(DropIt.footNothingOut)
             }
             .lineLimit(1)

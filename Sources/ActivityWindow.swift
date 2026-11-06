@@ -528,6 +528,7 @@ struct ActivityWindow: View {
     @State private var voiceParentName: String?
     @State private var speakerSubview: SpeakerSubview = .meetings
     @State private var messagesSubview: MessagesSubview = .recent
+    @State private var askWorkPlanRequest: AskWorkPlan.Request?
     /// The default stays .allMemories in 0.5.190; the flip to Recent learning
     /// is 0.5.191 (open decision 1), so today's Memories tab renders as before.
     @State private var memoriesSubview: MemoriesSubview = .allMemories
@@ -973,6 +974,12 @@ struct ActivityWindow: View {
         .background(COSPalette.panel)
         // 0.5.251: GOTCOS progress, disclosure and tint for every control in the window.
         .cosControlTheme()
+        .sheet(item: $askWorkPlanRequest) { request in
+            AskWorkPlanSheet(model: model, handoff: handoffStore, request: request, onOpenWork: { id in
+                openHandoffWork(id)
+                dropItCameBack = DropIt.cameBackCard
+            })
+        }
         .sheet(item: $meetingTaskLink) { meeting in
             MeetingTaskLinkSheet(model: model, meeting: meeting, onOpenWork: openConnectedWork, initiallyCreating: meetingTaskCreate)
         }
@@ -10320,7 +10327,10 @@ extension ActivityWindow {
             loadMoveOptions: {
                 await model.loadDomains()
                 if model.threadRecords.isEmpty { await model.loadContextRecords(kind: "thread") }
-            })
+            },
+            planForWork: workConnectionsEnabled && !isolatedWorkPreview ? { words in
+                askWorkPlanRequest = AskWorkPlan.Request(question: words)
+            } : nil)
     }
 
     /// An open action on a chat item: Work with the card selected, the session, Threads, Memories To review, or Messages. Each

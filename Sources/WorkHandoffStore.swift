@@ -489,7 +489,7 @@ struct WorkRecommendationKey: Equatable {
         self.cardFiles = cardFiles ?? (isolated ? .preview() : storageURL == nil ? WorkCardFileStore(root: ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"].map { URL(fileURLWithPath: $0).appendingPathComponent("work-context") } ?? WorkCardFiles.defaultRoot()) : WorkCardFileStore(root: nil))
         let helper = HelperClient()
         self.transport = transport ?? { args, data in
-            try await helper.run(args, timeout: args.first == "session-chat-fork" ? 310 : (args.first == "work-new" ? 85 : (args.first == "work-chat" ? 200 : (args.first == "work-orchestrator-input" ? 60 : 45))), stdinData: data)
+            try await helper.run(args, timeout: args.first == "ask-work-plan" ? 260 : (args.first == "ask-work-snapshot" ? 60 : (args.first == "session-chat-fork" ? 310 : (args.first == "work-new" ? 85 : (args.first == "work-chat" ? 200 : (args.first == "work-orchestrator-input" ? 60 : 45))))), stdinData: data)
         }
         let base: URL
         if isolated {

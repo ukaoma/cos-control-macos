@@ -674,6 +674,9 @@ final class COSControlHelper {
         case "session-chat-queue-cancel": try emitSessionChatQueueCancel(args: args)
         case "work-chat": try emitWorkChat()
         case "work-chat-capabilities": try emitWorkChatCapabilities()
+        case "ask-work-plan-capabilities": try emitAskWorkPlanCapabilities()
+        case "ask-work-plan": try emitAskWorkPlan()
+        case "ask-work-snapshot": try emitAskWorkSnapshot()
         case "work-orchestrator-input": try emitWorkOrchestratorInput()
         case "work-lens-inbox": try emitWorkLensInbox(args: args)
         case "work-lens-history": try emitWorkLensHistory(args: args)
@@ -20366,6 +20369,69 @@ final class COSControlHelper {
         case let value as String: return workSessionName(value)
         default: throw HelperError.message("sessionName must be text")
         }
+    }
+
+    /// Ask is a separate plan-only contract. An older server is never replaced with a Work send or a generic query.
+    private func emitAskWorkPlanCapabilities() throws {
+        try requireLiveWorkTransport()
+        guard let response = request("/api/ask/work-plan", token: try readToken(), timeout: 5) else {
+            throw HelperError.message("Work proposal discovery could not reach the server.")
+        }
+        if response.status == 404 {
+            emit(ok: true, message: "Work proposals unavailable", details: ["available": false]); return
+        }
+        guard response.status == 200, let body = response.body, body["protocolVersion"] as? Int == 1,
+              body["planOnly"] as? Bool == true, body["dispatch"] as? Bool == false,
+              body["requiresExistingWork"] as? Bool == true else {
+            throw HelperError.message("The server did not return a compatible Work proposal contract.")
+        }
+        emit(ok: true, message: "Work proposals available", details: body)
+    }
+
+    private func emitAskWorkPlan() throws {
+        try requireLiveWorkTransport()
+        let data = try FileHandle.standardInput.read(upToCount: 12_001) ?? Data()
+        guard data.count <= 12_000, let body = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(body.keys).isSubset(of: ["workID", "revision", "question", "planner", "effort"]),
+              let workID = body["workID"] as? String, let revision = body["revision"] as? String,
+              let question = body["question"] as? String, !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              question.utf16.count <= 2000 else { throw HelperError.message("Choose a Work card and ask in 2,000 characters or fewer.") }
+        let task = try roundtripTask(workID)
+        guard task.row["workRevision"] as? String == revision else { throw HelperError.message("The task changed. Refresh it before preparing a proposal.") }
+        let start = ProcessInfo.processInfo.systemUptime
+        let response = request("/api/ask/work-plan", method: "POST", token: try readToken(),
+                               body: String(decoding: data, as: UTF8.self), timeout: 220)
+        if let failure = Self.workChatPlanFailure(status: response?.status, body: response?.body,
+            elapsedMs: Int((ProcessInfo.processInfo.systemUptime - start) * 1000), timeoutSeconds: 220) {
+            throw HelperError.message(failure)
+        }
+        guard let answer = response?.body, answer["planOnly"] as? Bool == true,
+              answer["workID"] as? String == workID, answer["revision"] as? String == revision else {
+            throw HelperError.message("The proposal did not match this task. Nothing was sent.")
+        }
+        emit(ok: true, message: "Work proposal ready", details: answer)
+    }
+
+    /// Upload the real Control snapshot without invoking the legacy input route's usage probes.
+    private func emitAskWorkSnapshot() throws {
+        try requireLiveWorkTransport()
+        let data = try FileHandle.standardInput.read(upToCount: 4_000_001) ?? Data()
+        guard data.count <= 4_000_000, let body = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              Set(body.keys) == Set(["workID", "revision", "serverInstanceId", "snapshot"]),
+              let workID = body["workID"] as? String, let revision = body["revision"] as? String,
+              let server = body["serverInstanceId"] as? String, !server.isEmpty, body["snapshot"] is [String: Any] else {
+            throw HelperError.message("Invalid Work proposal snapshot.")
+        }
+        let task = try roundtripTask(workID)
+        guard task.row["workRevision"] as? String == revision else { throw HelperError.message("The task changed before the snapshot was uploaded.") }
+        guard let response = request("/api/work/orchestrator/snapshot", method: "POST", token: try readToken(),
+                                     body: String(decoding: data, as: UTF8.self), timeout: 15),
+              response.status == 200, let result = response.body, result["protocolVersion"] as? Int == 1,
+              result["accepted"] as? Bool == true, result["workID"] as? String == workID,
+              result["revision"] as? String == revision, result["serverInstanceId"] as? String == server else {
+            throw HelperError.message("The Work snapshot was not accepted by this server. Refresh the card and try again.")
+        }
+        emit(ok: true, message: "Work proposal snapshot ready", details: result)
     }
 
     private func emitWorkChat() throws {
