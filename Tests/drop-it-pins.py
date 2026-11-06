@@ -73,7 +73,7 @@ need(window.index("} else if section == .messages, model.dropItHistoryRouteActiv
 need("} else if section == .messages, model.dropItHistoryRouteActive {\n            model.closeDropItHistory()\n        } else if section == .messages, model.dropItChatRouteActive {\n            model.closeDropItChat()" in window,
      "back", "Back closes History to the chat, then the chat to the list")
 need("|| model.dropItChatRouteActive || model.dropItHistoryRouteActive" in window, "back", "the chat counts as a Messages detail, so Back shows")
-need("        model.closeDropItChat()\n    }\n" in between(window, "    private func clearDetail() {", "\n    }\n") + "\n    }\n", "tab switch", "a tab switch closes the chat like any detail")
+need("\n        model.closeDropItChat()\n" in between(window, "    private func clearDetail() {", "\n    }\n") + "\n", "tab switch", "a tab switch closes the chat like any detail")
 need("    func setDropItEnabled(_ on: Bool) async {" in model and "if !now { closeDropItChat() }" in model, "settings off", "turning it off in Settings closes the chat")
 
 # ── The Messages rail mark (plan section 12): on the Today rail only for Messages, gated inside the mark, read on the rail's clock.
@@ -184,11 +184,11 @@ for script in list((root / "Tests").glob("*.sh")) + list((root / "scripts").glob
 
 # ── Version touchpoints and the lanes.
 plist = read("Resources/Info.plist")
-need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.375</string>", plist) and re.search(r"<key>CFBundleVersion</key>\s*<string>429</string>", plist),
-     "version", "Info.plist is 0.5.375 (build 429), Ask Work review on top of the Messages cleanup, quit fix, P2 and Drop it")
+need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.376</string>", plist) and re.search(r"<key>CFBundleVersion</key>\s*<string>430</string>", plist),
+     "version", "Info.plist is 0.5.376 (build 430), Meeting Prep on top of Ask Work review, the Messages cleanup, quit fix, P2 and Drop it")
 whats = json.loads(read("Resources/WhatsNew.json"))
 sec = [s for s in whats["whatsNew"]["sections"] if s["title"] == "0.5.371"]
-need(whats.get("version") == "0.5.375" and len(sec) == 1 and any("Drop it" in i for i in sec[0]["items"]), "version", "What's New has one 0.5.371 section naming Drop it")
+need(whats.get("version") == "0.5.376" and len(sec) == 1 and any("Drop it" in i for i in sec[0]["items"]), "version", "What's New has one 0.5.371 section naming Drop it")
 need("\n## 0.5.371 (build 425)" in "\n" + read("CHANGELOG.md"), "version", "the changelog has its 0.5.371 (build 425) entry")
 need('python3 "$ROOT/Tests/drop-it-helper-checks.py" "$TMP/cos-control-helper"' in run_sh, "lanes wired", "Tests/run.sh runs the helper checks")
 for lane in ("pins", "models", "wiring"):
