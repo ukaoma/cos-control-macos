@@ -58,6 +58,8 @@ private actor AskPlanFixture {
         case "ask-work-plan-capabilities":
             out = offered ? ["protocolVersion": .number(1), "planOnly": .bool(true), "dispatch": .bool(false),
                 "requiresExistingWork": .bool(true), "controlSnapshot": .number(1)] : ["available": .bool(false)]
+        case "work-chat-capabilities":
+            out = ["references": .bool(true), "contextItems": .bool(true), "queueRounds": .bool(true)]
         case "work-context":
             out = ["contextText": .string(context), "workRevision": .string(revision), "task": askTaskValue()]
         case "drop-it":
@@ -184,6 +186,29 @@ private actor AskPlanFixture {
             precondition(requests.count == 2)
             let sent = try JSONDecoder().decode([String: JSONValue].self, from: requests[0])
             precondition(sent["revision"]?.string == askRevision && sent["workID"]?.string == askWorkID)
+        }
+
+        // A reference-bearing proposal captures the same context in Ask and a newly opened Work store.
+        // This exercises the actual capability transition rather than presetting the private flag.
+        do {
+            let h = await askHarness(root: root, name: "reference-work-reopen")
+            let reference = "claude:abcdefab-0000-4000-8000-000000000002"
+            precondition(h.handoff.addReference(sessionID: reference, source: h.source))
+            h.chat.referenceFacts = { _, _ in (["design-notes.md"], "1 file, +8 -2") }
+            precondition(!h.chat.referencesOffered)
+            await h.prepare()
+            precondition(h.chat.error == nil, h.chat.error ?? "Reference preparation failed")
+            let round = h.chat.record!.rounds[0]
+            precondition(h.chat.referencesOffered && round.contextItems?.contains(where: { $0.id.contains(reference) }) == true,
+                         "Ask must snapshot the existing Work reference items")
+            let work = h.reopened()
+            work.referenceFacts = h.chat.referenceFacts
+            precondition(!work.referencesOffered)
+            await work.loadPlanners(handoff: h.handoff)
+            let imported = await work.importAskProposal(roundID: round.id, source: h.source, handoff: h.handoff)
+            precondition(imported, work.error ?? "An unchanged reference-bearing proposal must survive the Work capability transition")
+            precondition(work.record!.rounds[0].state == "Ready to send" && h.handoff.receipts.isEmpty)
+            precondition(work.record!.rounds[0].assignments.map(\.receiptID) == round.assignments.map(\.receiptID))
         }
 
         // The same canonical revision with different local context must not silently import a stale proposal.

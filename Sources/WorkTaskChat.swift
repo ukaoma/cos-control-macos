@@ -623,6 +623,10 @@ enum WorkChatPreflight {
             try Task.checkCancellation()
             await handoff.refresh(); try Task.checkCancellation()
             guard handoff.taskChatServerID == current.serverID else { throw WorkSessionLinks.Failure.conflict }
+            // Ask and Work must capture the same reference-session context, including after reopening the card.
+            await loadPlanners(handoff: handoff)
+            try Task.checkCancellation()
+            guard discovery == .loaded else { throw HelperClientError.commandFailed(WorkChatPolicy.plannerUnavailable) }
             if let prepare = handoff.cardFiles.prepareMeetingGroups { await prepare(source.id) }
             let fresh = try await handoff.taskChatCall(["work-context", "--work-id", source.id])
             guard let value = fresh["task"], let task = TaskRow(value), !task.checked,
@@ -700,6 +704,9 @@ enum WorkChatPreflight {
         busy = true; error = nil; phase = "Checking the proposal before Work review…"
         defer { busy = false; phase = "" }
         do {
+            await loadPlanners(handoff: handoff)
+            try Task.checkCancellation()
+            guard discovery == .loaded else { throw HelperClientError.commandFailed(WorkChatPolicy.plannerUnavailable) }
             await handoff.refreshActivity(); await handoff.refreshReceipts()
             guard let data = round.askEvidence,
                   let proposal = try? JSONDecoder().decode(AskWorkPlan.Proposal.self, from: data),
