@@ -102,10 +102,11 @@ struct AskWorkPlanSheet: View {
             }
             Text("Choose an existing card. COS proposes assignments; you review them in Work before sending.")
                 .font(COSType.body(13)).foregroundStyle(COSPalette.muted)
-            Picker("Work card", selection: $selectedID) {
-                Text("Choose a card…").tag("")
-                ForEach(tasks, id: \.workSourceID) { row in Text(row.title + " · " + row.domain).tag(row.workSourceID) }
-            }.disabled(chat.busy || discovering || !model.workTasksComplete)
+            COSDropdown("Work card", selection: $selectedID,
+                options: [COSDropdownOption("", "Choose a card…")] + tasks.map {
+                    COSDropdownOption($0.workSourceID, $0.title + " · " + $0.domain)
+                }, showsLabel: true)
+                .disabled(chat.busy || discovering || !model.workTasksComplete)
             TextEditor(text: $question).font(COSType.body(13)).frame(height: 80)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(COSPalette.line))
                 .disabled(chat.busy)

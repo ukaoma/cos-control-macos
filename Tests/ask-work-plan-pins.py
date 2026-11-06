@@ -43,7 +43,9 @@ pin('result["serverInstanceId"] as? String == server' in snapshot and 'task.row[
 pin('requireLiveWorkTransport()' in plan and 'requireLiveWorkTransport()' in snapshot, 'existing live transport gate remains')
 pin('askWorkPlanRequest = AskWorkPlan.Request(question: words)' in window and '.sheet(item: $askWorkPlanRequest)' in window, 'COS composer opens native proposal sheet')
 pin('Button("Plan for Work")' in composer and '!store.attachments.isEmpty' in composer, 'chat files cannot silently become Work evidence')
-pin('Picker("Work card"' in sheet and '@State private var selectedID = ""' in sheet, 'explicit card selection without guessed identity')
+pin('COSDropdown("Work card"' in sheet and '@State private var selectedID = ""' in sheet
+    and 'COSDropdownOption("", "Choose a card…")' in sheet and 'COSDropdownOption($0.workSourceID,' in sheet,
+    'themed explicit card selection without guessed identity')
 pin('operation?.cancel()' in sheet and '.interactiveDismissDisabled(chat.busy)' in sheet, 'pending requests retain cancellation ownership')
 
 for folder in ('Tests', 'scripts'):
