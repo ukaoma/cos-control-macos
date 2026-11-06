@@ -20374,7 +20374,8 @@ final class COSControlHelper {
     /// Ask is a separate plan-only contract. An older server is never replaced with a Work send or a generic query.
     private func emitAskWorkPlanCapabilities() throws {
         try requireLiveWorkTransport()
-        guard let response = request("/api/ask/work-plan", token: try readToken(), timeout: 5) else {
+        let candidate = try reviewCandidateTransport(), token = try candidate?.token ?? readToken()
+        guard let response = request("/api/ask/work-plan", token: token, timeout: 5, reviewCandidatePort: candidate?.port) else {
             throw HelperError.message("Work proposal discovery could not reach the server.")
         }
         if response.status == 404 {
@@ -20398,9 +20399,10 @@ final class COSControlHelper {
               question.utf16.count <= 2000 else { throw HelperError.message("Choose a Work card and ask in 2,000 characters or fewer.") }
         let task = try roundtripTask(workID)
         guard task.row["workRevision"] as? String == revision else { throw HelperError.message("The task changed. Refresh it before preparing a proposal.") }
+        let candidate = try reviewCandidateTransport(), token = try candidate?.token ?? readToken()
         let start = ProcessInfo.processInfo.systemUptime
-        let response = request("/api/ask/work-plan", method: "POST", token: try readToken(),
-                               body: String(decoding: data, as: UTF8.self), timeout: 220)
+        let response = request("/api/ask/work-plan", method: "POST", token: token,
+                               body: String(decoding: data, as: UTF8.self), timeout: 220, reviewCandidatePort: candidate?.port)
         if let failure = Self.workChatPlanFailure(status: response?.status, body: response?.body,
             elapsedMs: Int((ProcessInfo.processInfo.systemUptime - start) * 1000), timeoutSeconds: 220) {
             throw HelperError.message(failure)
@@ -20424,8 +20426,9 @@ final class COSControlHelper {
         }
         let task = try roundtripTask(workID)
         guard task.row["workRevision"] as? String == revision else { throw HelperError.message("The task changed before the snapshot was uploaded.") }
-        guard let response = request("/api/work/orchestrator/snapshot", method: "POST", token: try readToken(),
-                                     body: String(decoding: data, as: UTF8.self), timeout: 15),
+        let candidate = try reviewCandidateTransport(), token = try candidate?.token ?? readToken()
+        guard let response = request("/api/work/orchestrator/snapshot", method: "POST", token: token,
+                                     body: String(decoding: data, as: UTF8.self), timeout: 15, reviewCandidatePort: candidate?.port),
               response.status == 200, let result = response.body, result["protocolVersion"] as? Int == 1,
               result["accepted"] as? Bool == true, result["workID"] as? String == workID,
               result["revision"] as? String == revision, result["serverInstanceId"] as? String == server else {

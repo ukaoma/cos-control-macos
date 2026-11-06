@@ -1,3 +1,9 @@
+## 0.5.375 (build 429), Ask COS proposals for Work review
+
+- **Ask COS → Work review:** Plan for Work lets you choose an existing Work card, prepare a server proposal, and explicitly add it to that card's review. Preparing and importing never send assignments; the existing Work Send controls and receipts remain the execution path.
+- **Context and identity checks:** proposals retain canonical task revision, original and revalidated session evidence, local context, and stable assignment identities. A changed task, server, attachment, reference, or unavailable target stops review import. The planner uses the task and cached session evidence; it does not read the full COS conversation or local file contents.
+- **Candidate validation:** adds real-store proposal/import regression fixtures and isolated helper HTTP checks. This entry reserves the candidate version; release and installation receipts are tracked separately.
+
 ## 0.5.374 (build 428), the COS thread and the Messages cleanup
 
 Thread added 2026-11-05 23:00 on Miles's go ("As long as we're storing so we can easily recover and search for them, I like this plan let's build and deploy"). Needs server 6.99.16 for the thread; with an older server every Ask starts fresh, exactly as in 0.5.373.

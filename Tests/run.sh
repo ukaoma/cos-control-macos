@@ -224,6 +224,7 @@ python3 "$ROOT/Tests/server-update-guard-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/session-usage-helper-checks.py" "$TMP/cos-control-helper"
 # Work helper transports against loopback fixtures (never the live service): reviews and Intake.
 python3 "$ROOT/Tests/work-review-helper-checks.py" "$TMP/cos-control-helper"
+python3 "$ROOT/Tests/ask-work-plan-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-roundtrip-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/work-session-meter-helper-checks.py" "$TMP/cos-control-helper"
 python3 "$ROOT/Tests/hardening-helper-checks.py" "$TMP/cos-control-helper"
