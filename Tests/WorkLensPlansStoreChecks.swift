@@ -315,10 +315,15 @@ private func lensObject(_ d: Data) -> [String: Any] { (try? JSONSerialization.js
     let dedupRoot = root.appendingPathComponent("media-dedup")
     let dedupFiles = WorkCardFileStore(root: dedupRoot, isolated: true)
     var downloadCount = 0
+    let transferHome = URL(fileURLWithPath: ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"]!)
+    let transferFolder = transferHome.appendingPathComponent("Library/Caches/com.gotcos.COSControl/MediaTransfers", isDirectory: true)
+    try FileManager.default.createDirectory(at: transferFolder, withIntermediateDirectories: true)
+    var downloaded: [URL] = []
     func transfer() throws -> URL {
         downloadCount += 1
-        let url = root.appendingPathComponent(UUID().uuidString + ".txt")
+        let url = transferFolder.appendingPathComponent(UUID().uuidString.lowercased() + ".txt")
         try Data("same uploaded evidence".utf8).write(to: url)
+        downloaded.append(url)
         return url
     }
     let importedA = try await dedupFiles.importWebMedia([mediaA], source: source, serverID: "server-a", stillCurrent: { true }) { _ in try transfer() }
@@ -343,5 +348,54 @@ private func lensObject(_ d: Data) -> [String: Any] { (try? JSONSerialization.js
         }
     } catch { switchRefused = true }
     precondition(switchRefused && switchedFiles.files(for: card).isEmpty, "identity change during download prevents a card commit")
+    precondition(downloaded.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) }, "successful imports and identity-change refusals remove only their disposable transfers")
+
+    let safetyFiles = WorkCardFileStore(root: root.appendingPathComponent("media-ownership"), isolated: true)
+    let original = root.appendingPathComponent("original-user-file.txt")
+    let originalBytes = Data("user-owned evidence must survive".utf8)
+    try originalBytes.write(to: original)
+    var originalRefused = false
+    do { _ = try await safetyFiles.importWebMedia([mediaA], source: source, serverID: "server-a", stillCurrent: { true }) { _ in original } }
+    catch { originalRefused = true }
+    let originalAfterRefusal = try Data(contentsOf: original)
+    precondition(originalRefused && originalAfterRefusal == originalBytes && safetyFiles.files(for: card).isEmpty, "an arbitrary callback URL is refused without reading into the card or deleting the user's original")
+
+    let linked = transferFolder.appendingPathComponent(UUID().uuidString.lowercased() + ".txt")
+    try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: original)
+    var linkRefused = false
+    do { _ = try await safetyFiles.importWebMedia([mediaA], source: source, serverID: "server-a", stillCurrent: { true }) { _ in linked } }
+    catch { linkRefused = true }
+    let linkDestination = try FileManager.default.destinationOfSymbolicLink(atPath: linked.path)
+    let originalAfterLink = try Data(contentsOf: original)
+    precondition(linkRefused && linkDestination == original.path && originalAfterLink == originalBytes && safetyFiles.files(for: card).isEmpty, "a helper-shaped symlink is refused and both link and user file are preserved")
+
+    // Replace a previously validated transfer during the identity check: cleanup must revalidate too.
+    let replaced = try transfer()
+    var currentChecks = 0, replacedRefused = false
+    do {
+        _ = try await safetyFiles.importWebMedia([mediaA], source: source, serverID: "server-a", stillCurrent: {
+            currentChecks += 1
+            if currentChecks == 3 {
+                try! FileManager.default.removeItem(at: replaced)
+                try! FileManager.default.createSymbolicLink(at: replaced, withDestinationURL: original)
+                return false
+            }
+            return true
+        }) { _ in replaced }
+    } catch { replacedRefused = true }
+    let replacedDestination = try FileManager.default.destinationOfSymbolicLink(atPath: replaced.path)
+    let originalAfterReplacement = try Data(contentsOf: original)
+    precondition(replacedRefused && replacedDestination == original.path && originalAfterReplacement == originalBytes, "cleanup revalidates and preserves a transfer replaced by a symlink")
+
+    let canceledTransfer = try transfer()
+    let canceledImport = Task { @MainActor in
+        try await safetyFiles.importWebMedia([mediaA], source: source, serverID: "server-a", stillCurrent: { true }) { _ in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return canceledTransfer
+        }
+    }
+    var canceledRefused = false
+    do { _ = try await canceledImport.value } catch { canceledRefused = true }
+    precondition(canceledRefused && !FileManager.default.fileExists(atPath: canceledTransfer.path) && safetyFiles.files(for: card).isEmpty, "cancellation after fetch removes its owned disposable without committing")
     print("PASS work lens plans store: older server polls nothing, round lands once in history as a WorkChatRound (From glasses, time, checks), history reaches the planner, confirmed send through submit with receipts and results, lens Stop through Stop, Auto-send off refuses, Auto-send on re-reported and queued behind earlier work, recording never sends, a Mac Send of a lens round reported through mac-send")
 }

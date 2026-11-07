@@ -2545,6 +2545,8 @@ extension WorkCardFiles {
         guard let root, policy == .work, Self.accepts(source), WorkLensPlans.validAttachmentIDs(ids),
               !serverID.isEmpty, stillCurrent() else { throw WorkCardRefusal.store("Web attachments are unavailable for this card.") }
         let workID = source.id
+        let transferHome = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"].map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser
         begin(workID, 1)
         defer { end(workID) }
         var imported: [WorkContextFile] = []
@@ -2554,10 +2556,20 @@ extension WorkCardFiles {
             reload(workID)
             var file = manifests[workID]?.files.first { ($0.webMedia ?? []).contains(origin) }
             if file == nil {
-                let transfer = try await fetch(mediaID)
-                // fetch returns a helper-owned disposable copy; never a user's original or a server filesystem path.
-                defer { try? FileManager.default.removeItem(at: transfer) }
+                let fetched = try await fetch(mediaID)
+                guard fetched.isFileURL, let transfer = WorkLensPlans.ownedTransfer(fetched.path, home: transferHome) else {
+                    throw WorkCardRefusal.store("This web attachment is not a helper-owned transfer.")
+                }
+                // The callback is not an ownership boundary. Check again after suspension before deleting anything.
+                defer {
+                    if let disposable = WorkLensPlans.ownedTransfer(transfer.path, home: transferHome) {
+                        try? FileManager.default.removeItem(at: disposable)
+                    }
+                }
                 guard stillCurrent(), !Task.isCancelled else { throw WorkCardRefusal.store("The server changed while saving web attachments.") }
+                guard WorkLensPlans.ownedTransfer(transfer.path, home: transferHome) != nil else {
+                    throw WorkCardRefusal.store("This web attachment changed before it could be saved.")
+                }
                 let folder = try WorkCardFiles.locked(root: root) { try WorkCardFiles.preparedFolder(root: root, workID: workID) }
                 let staged = WorkCardFiles.stagingURL(folder)
                 defer { try? FileManager.default.removeItem(at: staged) }

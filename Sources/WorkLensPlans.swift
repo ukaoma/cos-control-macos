@@ -72,9 +72,15 @@ enum WorkLensPlans {
     static func ownedTransfer(_ path: String, home: URL) -> URL? {
         let root = home.appendingPathComponent("Library/Caches/com.gotcos.COSControl/MediaTransfers", isDirectory: true)
         let url = URL(fileURLWithPath: path)
+        // Permit the system's /tmp alias at the home boundary, but no redirected directory beneath it.
+        let expectedRoot = home.resolvingSymlinksInPath().standardizedFileURL
+            .appendingPathComponent("Library/Caches/com.gotcos.COSControl/MediaTransfers", isDirectory: true)
         guard path.hasPrefix("/"), url.deletingLastPathComponent().standardizedFileURL == root.standardizedFileURL,
               url.lastPathComponent.range(of: "\\A[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\.(jpg|png|mov|mp4|pdf|json|md|csv|txt)\\z", options: .regularExpression) != nil,
-              url.resolvingSymlinksInPath() == root.resolvingSymlinksInPath().appendingPathComponent(url.lastPathComponent) else { return nil }
+              root.resolvingSymlinksInPath().standardizedFileURL == expectedRoot,
+              url.resolvingSymlinksInPath().standardizedFileURL == expectedRoot.appendingPathComponent(url.lastPathComponent),
+              let attributes = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+              attributes.isRegularFile == true, attributes.isSymbolicLink != true else { return nil }
         return url
     }
 

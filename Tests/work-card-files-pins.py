@@ -140,10 +140,26 @@ need("var context: [WorkContextRef]?" in store, "the receipt's optional context 
 
 # 6b. Fix pass 1 (QA round 1).
 # B1: nothing is deleted, opened or written from a manifest name except through the guards.
+web_import = strip(body(files, "    func importWebMedia(", "    /// Files chosen with Add files"))
+owned_before_use = "guard fetched.isFileURL, let transfer = WorkLensPlans.ownedTransfer(fetched.path, home: transferHome) else {"
+guarded_cleanup = """defer {
+                    if let disposable = WorkLensPlans.ownedTransfer(transfer.path, home: transferHome) {
+                        try? FileManager.default.removeItem(at: disposable)
+                    }
+                }"""
+disposable_delete = "try? FileManager.default.removeItem(at: disposable)"
+need(owned_before_use in web_import and guarded_cleanup in web_import,
+     "web import must validate ownership before use and revalidate the exact disposable in deferred cleanup")
+need(web_import.index(owned_before_use) < web_import.index(guarded_cleanup) < web_import.index("transfer.resourceValues(") < web_import.index("WorkCardFiles.snapshot(from: transfer"),
+     "web transfer validation precedes cleanup registration, metadata reads and copying")
+need("guard WorkLensPlans.ownedTransfer(transfer.path, home: transferHome) != nil else {" in web_import,
+     "web import revalidates after the identity callback before reading")
+need(files_code.count(disposable_delete) == web_import.count(disposable_delete) == 1,
+     "the disposable deletion exists only in the guarded web import cleanup")
 for line in files_code.split("\n"):
     if "removeItem(at:" in line:
         arg = line.split("removeItem(at:", 1)[1].split(")", 1)[0].strip()
-        need(arg in ("target", "staging", "staged", "movedTo", "folder"), "a delete takes a path that is not a guarded target, a generated staging name or a guarded folder: " + line.strip())
+        need(arg in ("target", "staging", "staged", "movedTo", "folder") or (arg == "disposable" and line.strip() == disposable_delete), "a delete takes a path that is not a guarded target, a generated staging name or a guarded folder: " + line.strip())
         need("appendingPathComponent" not in arg, "a delete joins a name itself: " + line.strip())
 dc = body(files, "    nonisolated static func deleteCopies(", "    /// Cleanup over every card's folder")
 need("guard !file.isLink, WorkCardFiles.validEntry(file) else { return }" in dc and "try? WorkCardFiles.guardTarget(root: root, folder: folder, name: name)" in dc,

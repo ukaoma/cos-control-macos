@@ -4,7 +4,7 @@ import Foundation
 @main struct WorkLensPlansChecks {
     static func check(_ ok: Bool, _ name: String) { if !ok { print("FAIL " + name); exit(1) }; passed += 1 }
     nonisolated(unsafe) static var passed = 0
-    static func main() {
+    static func main() throws {
         let sbu = "claude:32386d7e-f751-41c5-a185-a0d731416a01"
         func round(_ assignments: [WorkLensPlans.Assignment], id: String = "lr_0123456789abcdef", question: String = "Ship it") -> WorkLensPlans.Round {
             .init(roundId: id, workID: "task:quilt:420a0114f1a9", question: question, answer: "Plan", planner: "opus", effort: "high", orchestrator: true,
@@ -43,11 +43,21 @@ import Foundation
         check(!WorkLensPlans.validAttachmentIDs(["m_" + String(repeating: "a", count: 24) + "\n"]), "media ids reject trailing newlines")
         check(!WorkLensPlans.validAttachmentIDs(Array(repeating: "m_" + String(repeating: "a", count: 24), count: 2)), "duplicate media ids rejected")
         check(!WorkLensPlans.validAttachmentIDs((0..<6).map { "m_" + String(repeating: String($0), count: 24) }), "six media ids rejected")
-        let home = URL(fileURLWithPath: "/tmp/cos-web-media-validation")
+        let home = URL(fileURLWithPath: "/tmp/cos-web-media-validation-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
         let transfer = home.appendingPathComponent("Library/Caches/com.gotcos.COSControl/MediaTransfers/00000000-0000-4000-8000-000000000001.pdf")
+        try FileManager.default.createDirectory(at: transfer.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("fixture".utf8).write(to: transfer)
         check(WorkLensPlans.ownedTransfer(transfer.path, home: home) != nil, "a helper-owned UUID transfer is allowed")
         check(WorkLensPlans.ownedTransfer("/tmp/private.pdf", home: home) == nil, "arbitrary local files cannot be removed as transfers")
         check(WorkLensPlans.ownedTransfer(transfer.deletingLastPathComponent().appendingPathComponent("secret.pdf").path, home: home) == nil, "non-helper filenames rejected")
+        let linked = transfer.deletingLastPathComponent().appendingPathComponent("00000000-0000-4000-8000-000000000002.pdf")
+        try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: transfer)
+        check(WorkLensPlans.ownedTransfer(linked.path, home: home) == nil, "a UUID-named symlink is not an owned transfer")
+        let parked = home.appendingPathComponent("parked-transfers")
+        try FileManager.default.moveItem(at: transfer.deletingLastPathComponent(), to: parked)
+        try FileManager.default.createSymbolicLink(at: transfer.deletingLastPathComponent(), withDestinationURL: parked)
+        check(WorkLensPlans.ownedTransfer(transfer.path, home: home) == nil, "a redirected transfer directory is refused even with a regular UUID file")
         check(WorkLensPlans.chatMode("continue") == nil && WorkLensPlans.chatMode("fork") == "fork" && WorkLensPlans.chatMode("newSession") == "newSession", "a lens Continue is a nil mode, as every Mac Continue")
 
         // The cursor moves only when every round of the answer is in history.
