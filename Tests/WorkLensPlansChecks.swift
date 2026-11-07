@@ -35,6 +35,19 @@ import Foundation
         check(!WorkLensPlans.valid(round((1...4).map { a("a\($0)", "continue", session: sbu) })), "at most three assignments")
         check(!WorkLensPlans.valid(round([], id: "lr_x")), "a round id is lr_ and 16 hex")
         check(!WorkLensPlans.valid(round([], question: "  ")), "a blank question is never written")
+        var web = round([])
+        web.source = "web"; web.attachmentIds = ["m_" + String(repeating: "a", count: 24)]
+        check(WorkLensPlans.valid(web), "web media is an additive round field")
+        web.source = nil
+        check(!WorkLensPlans.valid(web), "media never silently attaches to a legacy lens round")
+        check(!WorkLensPlans.validAttachmentIDs(["m_" + String(repeating: "a", count: 24) + "\n"]), "media ids reject trailing newlines")
+        check(!WorkLensPlans.validAttachmentIDs(Array(repeating: "m_" + String(repeating: "a", count: 24), count: 2)), "duplicate media ids rejected")
+        check(!WorkLensPlans.validAttachmentIDs((0..<6).map { "m_" + String(repeating: String($0), count: 24) }), "six media ids rejected")
+        let home = URL(fileURLWithPath: "/tmp/cos-web-media-validation")
+        let transfer = home.appendingPathComponent("Library/Caches/com.gotcos.COSControl/MediaTransfers/00000000-0000-4000-8000-000000000001.pdf")
+        check(WorkLensPlans.ownedTransfer(transfer.path, home: home) != nil, "a helper-owned UUID transfer is allowed")
+        check(WorkLensPlans.ownedTransfer("/tmp/private.pdf", home: home) == nil, "arbitrary local files cannot be removed as transfers")
+        check(WorkLensPlans.ownedTransfer(transfer.deletingLastPathComponent().appendingPathComponent("secret.pdf").path, home: home) == nil, "non-helper filenames rejected")
         check(WorkLensPlans.chatMode("continue") == nil && WorkLensPlans.chatMode("fork") == "fork" && WorkLensPlans.chatMode("newSession") == "newSession", "a lens Continue is a nil mode, as every Mac Continue")
 
         // The cursor moves only when every round of the answer is in history.

@@ -19,7 +19,7 @@ pin('workLensPost("/api/work/chat/lens-rounds/\\(id)/history", data)' in helper,
 pin('workLensPost("/api/work/chat/lens-send/\\(id)/result", data)' in helper, "a result is POST /api/work/chat/lens-send/:sendRequestId/result")
 pin('raw["state"] as? String == "in_history"' in helper, "history always says in_history")
 inbox = helper[helper.index("    private func emitWorkLensInbox(args: [String]) throws {"):helper.index("    private func emitWorkLensHistory(args: [String]) throws {")]
-pin('request(path, token: try readToken(), timeout: 10)' in inbox and 'method: "POST"' not in inbox, "the inbox poll is a GET")
+pin('request(path, token: try readToken(), headers: ["X-COS-Work-Attachment-Import": "1"], timeout: 10)' in inbox and 'method: "POST"' not in inbox, "the inbox poll is a GET and advertises the bounded import contract")
 
 # App: the pump starts with the queue pump (Work chat enabled), and polls only a server that advertises lensPlans.
 start = model[model.index('if Bundle.main.object(forInfoDictionaryKey: "COSWorkChatEnabled") as? Bool == true\n            || ProcessInfo'):]
@@ -39,6 +39,12 @@ pin("submit(" not in ext and "submit(" not in pump, "nothing in lens plans calls
 pin(send.index("WorkLensPlans.maySend(confirm: send.confirm, cardAutoSend: cardAutoSend)") < send.index("await dispatch("), "the per-card rule is checked before any send")
 record = ext[ext.index("    func recordLensRound("):ext.index("    func lensResults(")]
 pin("dispatch(" not in record and "submit(" not in record and "sendAll(" not in record, "recording a lens round never sends it, whatever the card's Auto-send")
+pin(record.index("importWebMedia(") < record.index("attachmentSnapshot(") < record.index("guard persist()"), "web media import completes before snapshot and durable history")
+pin('w.contextItemIDs = WorkContextMeter.selection(a.contextItemIDs, items: items)' in record, "import preserves explicit context selection")
+media = helper[helper.index("    private func emitWorkLensMedia("):helper.index("    static func workLensInboxPath(")]
+pin('caps.body?["workAttachments"]' in media and media.index('caps.body?["workAttachments"]') < media.index("boundedMediaRequest("), "download requires separate Work attachment capability")
+pin('"/api/media/' not in media and "Self.workLensMediaPath" in media, "Work media never falls back to an unscoped media download")
+pin(media.count("refuseRedirects: true") == 2 and 'response.headers["x-cos-work-id"] == workID' in media and 'response.headers["x-cos-media-id"] == mediaID' in media, "both requests reject redirects and content is bound to card and media")
 pin('case "work-lens-mac-send": try emitWorkLensMacSend(args: args)' in helper and 'workLensPost("/api/work/chat/lens-rounds/\\(id)/mac-send", data)' in helper, "a Mac send of a lens round goes to POST /api/work/chat/lens-rounds/:roundId/mac-send")
 pin("if !lensDispatching, let lensRound = self.record?.rounds[index].lensRoundID { Self.onLensMacSend?(record.workID, lensRound) }" in chat, "Miles's own Send of a lens round is reported, a lens send is not reported twice")
 stop = ext[ext.index("    func stopLensAssignments("):]

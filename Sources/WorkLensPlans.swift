@@ -24,6 +24,9 @@ enum WorkLensPlans {
         let roundId: String; let workID: String; let question: String; let answer: String
         let planner: String?; let effort: String?; let orchestrator: Bool?; let createdAt: String; let recordedAt: String?
         let assignments: [Assignment]
+        /// Additive web contract. Old rounds remain words-only. Media must be imported before history is acknowledged.
+        var source: String? = nil
+        var attachmentIds: [String]? = nil
     }
     struct SendRequest: Decodable, Equatable, Sendable {
         let sendRequestId: String; let roundId: String; let workID: String; let assignmentIds: [String]
@@ -43,7 +46,10 @@ enum WorkLensPlans {
     /// A round Control may write: ids a1..aN in answer order, at most three, each kind well formed.
     static func valid(_ round: Round) -> Bool {
         guard validRoundID(round.roundId), validWorkID(round.workID), !round.question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              round.question.count <= 4000, round.answer.count <= 6000, round.assignments.count <= 3 else { return false }
+              round.question.count <= 4000, round.answer.count <= 6000, round.assignments.count <= 3,
+              round.source == nil || ["lens", "web"].contains(round.source!),
+              validAttachmentIDs(round.attachmentIds ?? []),
+              (round.attachmentIds ?? []).isEmpty || round.source == "web" else { return false }
         for (i, a) in round.assignments.enumerated() {
             guard a.id == "a\(i + 1)", a.prompt.count <= 6000 else { return false }
             switch a.mode {
@@ -53,6 +59,23 @@ enum WorkLensPlans {
             }
         }
         return true
+    }
+
+    static let attachmentMaxBytes = 100 * 1024 * 1024
+    static func validAttachmentIDs(_ ids: [String]) -> Bool {
+        ids.count <= 5 && Set(ids).count == ids.count && ids.allSatisfy {
+            $0.range(of: "\\Am_[a-f0-9]{24}\\z", options: .regularExpression) != nil
+        }
+    }
+
+    /// Only the helper's UUID-named disposable transfers may be copied and removed. No arbitrary path from a response.
+    static func ownedTransfer(_ path: String, home: URL) -> URL? {
+        let root = home.appendingPathComponent("Library/Caches/com.gotcos.COSControl/MediaTransfers", isDirectory: true)
+        let url = URL(fileURLWithPath: path)
+        guard path.hasPrefix("/"), url.deletingLastPathComponent().standardizedFileURL == root.standardizedFileURL,
+              url.lastPathComponent.range(of: "\\A[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\\.(jpg|png|mov|mp4|pdf|json|md|csv|txt)\\z", options: .regularExpression) != nil,
+              url.resolvingSymlinksInPath() == root.resolvingSymlinksInPath().appendingPathComponent(url.lastPathComponent) else { return nil }
+        return url
     }
 
     /// The inbox, from the helper's JSON. A round that is not `valid` is never written (WorkTaskChatStore.recordLensRound).

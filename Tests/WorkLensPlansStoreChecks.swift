@@ -18,6 +18,9 @@ private actor LensFixture {
     private(set) var turns: [String] = []
     private(set) var newJobs: [String] = []
     private(set) var cancels: [[String]] = []
+    private var failedMedia: Set<String> = []
+    private(set) var mediaFetches: [String] = []
+    private let transferHome = URL(fileURLWithPath: ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"]!)
     init(sbu: String, lensPlans: Bool) { self.sbu = sbu; self.lensPlans = lensPlans }
     func addRound(_ json: String) {
         let v = try! JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))
@@ -26,6 +29,7 @@ private actor LensFixture {
     func addSend(_ json: String) { sends.append(try! JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))) }
     func addStop(_ json: String) { stops.append(try! JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))) }
     func setJob(_ state: String) { jobState = state }
+    func failMedia(_ ids: Set<String>) { failedMedia = ids }
     func run(_ args: [String], _ data: Data?) async throws -> HelperResponse {
         let name = args.first ?? ""; calls.append(name)
         func arg(_ k: String) -> String { args.firstIndex(of: k).map { args[$0 + 1] } ?? "" }
@@ -38,6 +42,15 @@ private actor LensFixture {
         }
         var out: [String: JSONValue] = [:]
         switch name {
+        case "work-lens-media":
+            let id = arg("--media-id"); mediaFetches.append(id)
+            if failedMedia.contains(id) { throw HelperClientError.commandFailed("Fixture media unavailable") }
+            let folder = transferHome.appendingPathComponent("Library/Caches/com.gotcos.COSControl/MediaTransfers", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let file = folder.appendingPathComponent(UUID().uuidString.lowercased() + ".txt")
+            try Data(("Private fixture " + id).utf8).write(to: file)
+            out = ["state": .string("ready"), "path": .string(file.path), "serverInstanceId": .string("lens-fixture"),
+                   "roundId": .string(arg("--round-id")), "workID": .string(arg("--work-id")), "mediaId": .string(id)]
         case "work-models": out = ["serverInstanceId": .string("lens-fixture"), "models": .array([
             .object(["id": .string("claude-opus"), "provider": .string("claude"), "title": .string("Claude Opus"), "available": .bool(true)])])]
         case "claude-sessions": out = ["sessions": .array([session(sbu, "2026 SBU /XBU")])]
@@ -92,10 +105,11 @@ private func lensObject(_ d: Data) -> [String: Any] { (try? JSONSerialization.js
     let task = TaskRow(.object(["id": .string("420a0114f1a9"), "workIdentity": .string("420a0114f1a9"), "domain": .string("quilt"), "title": .string("Toadstone review"), "text": .string("Toadstone review"), "source": .string("Fixture evidence")]))!
     let source = WorkSource.taskSnapshot(task)
     precondition(source.id == card)
-    func setup(_ name: String, lensPlans: Bool) async -> (LensFixture, WorkHandoffStore, WorkLensPlansPump, UserDefaults, () -> WorkTaskChatStore, (Double) -> Void) {
+    func setup(_ name: String, lensPlans: Bool, withFiles: Bool = false) async -> (LensFixture, WorkHandoffStore, WorkLensPlansPump, UserDefaults, () -> WorkTaskChatStore, (Double) -> Void) {
         setenv("COS_CONTROL_TEST_HOME", root.appendingPathComponent("lens-home-" + name).path, 1)
         let fixture = LensFixture(sbu: sbu, lensPlans: lensPlans)
-        let store = WorkHandoffStore(storageURL: root.appendingPathComponent("lens-" + name + ".json"), transport: { args, data in try await fixture.run(args, data) })
+        let files = withFiles ? WorkCardFileStore(root: root.appendingPathComponent("files-" + name), isolated: true) : nil
+        let store = WorkHandoffStore(storageURL: root.appendingPathComponent("lens-" + name + ".json"), transport: { args, data in try await fixture.run(args, data) }, cardFiles: files)
         precondition(store.confirmSessionCard(sessionID: sbu, source: source))
         await store.refresh()
         let defaults = UserDefaults(suiteName: "cos-lens-check-" + UUID().uuidString)!
@@ -247,5 +261,87 @@ private func lensObject(_ d: Data) -> [String: Any] { (try? JSONSerialization.js
                  "Miles's own Send of a lens round is reported on the round: \(macSends.map(\.id)) \(macRows)")
     let lensResultsAfter = await lensResults(fixture).count
     precondition(lensResultsAfter == lensResultsBefore, "a Mac send is never reported as a lens send's result")
+
+    // Web media: a partial import cannot acknowledge history. Durable provenance survives a store reopen and the
+    // next pass fetches only the missing media. Explicit planner selection remains explicit; nil means all context.
+    let (webFixture, webHandoff, webPump, _, webChat, _) = await setup("web-media", lensPlans: true, withFiles: true)
+    let mediaA = "m_" + String(repeating: "a", count: 24), mediaB = "m_" + String(repeating: "b", count: 24)
+    var webObject = lensObject(Data(round1.utf8))
+    webObject["source"] = "web"; webObject["attachmentIds"] = [mediaA, mediaB]
+    let webJSON = String(decoding: try JSONSerialization.data(withJSONObject: webObject), as: UTF8.self)
+    await webFixture.failMedia([mediaB]); await webFixture.addRound(webJSON); await webPump.pass()
+    let partialHistory = await webFixture.history.count
+    precondition(partialHistory == 0 && webPump.cursor == 0 && webChat().record!.rounds.isEmpty, "partial media import never acknowledges or saves a text-only round")
+    let firstFiles = webHandoff.cardFiles.files(for: card)
+    precondition(firstFiles.count == 1 && firstFiles[0].webMedia == [WorkContextMediaOrigin(serverID: "lens-fixture", mediaID: mediaA)], "first imported copy and identity survive partial failure")
+    let reopened = WorkCardFileStore(root: webHandoff.cardFiles.root, isolated: true)
+    reopened.reload(card)
+    precondition(reopened.files(for: card) == firstFiles, "remote media provenance survives a real manifest reopen")
+    await webFixture.failMedia([]); await webPump.pass()
+    let webHistory = await webFixture.history.count, fetches = await webFixture.mediaFetches
+    precondition(webHistory == 1 && fetches == [mediaA, mediaB, mediaB], "retry fetches only missing media and acknowledges after both copies exist")
+    let savedWeb = webChat().record!.rounds[0]
+    precondition(savedWeb.webAttachmentIDs == [mediaA, mediaB] && savedWeb.attachmentNames?.count == 2, "round retains its imported media proof and file snapshot")
+    let fileItems = savedWeb.contextItems!.filter { $0.fileID != nil }.map(\.id)
+    precondition(fileItems.count == 2 && savedWeb.assignments.allSatisfy { Set($0.contextItemIDs ?? []).isDisjoint(with: fileItems) }, "explicit assignment selection is not silently widened")
+    let decodedWeb = try JSONDecoder().decode(WorkLensPlans.Round.self, from: Data(webJSON.utf8))
+    let replayChat = webChat()
+    let replaySaved = await replayChat.recordLensRound(decodedWeb, source: source, handoff: webHandoff)
+    precondition(replaySaved, "same imported round is replay safe")
+    var changedWeb = decodedWeb; changedWeb.attachmentIds = [mediaA]
+    let changedSaved = await replayChat.recordLensRound(changedWeb, source: source, handoff: webHandoff)
+    precondition(!changedSaved, "same round cannot change its media list")
+    let changedSend = WorkLensPlans.SendRequest(sendRequestId: "ls_00000000000000b1", roundId: decodedWeb.roundId,
+        workID: card, assignmentIds: ["a1"], confirm: "two-step", autoSend: false, round: changedWeb)
+    let changedResults = await replayChat.sendLensRequest(changedSend, source: source, handoff: webHandoff, cardAutoSend: true)
+    precondition(changedResults?.allSatisfy { $0.state == "refused" } == true && webHandoff.receipts.isEmpty, "send fallback refuses a different attachment list even when history already exists")
+    var allWeb = webObject
+    allWeb["roundId"] = "lr_00000000000000b2"
+    allWeb["assignments"] = [["id": "a1", "mode": "newSession", "provider": "claude", "prompt": "Read the attached evidence"]]
+    let allRound = try JSONDecoder().decode(WorkLensPlans.Round.self, from: JSONSerialization.data(withJSONObject: allWeb))
+    let allSaved = await replayChat.recordLensRound(allRound, source: source, handoff: webHandoff)
+    precondition(allSaved, "another round reuses retained media")
+    precondition(Set(fileItems).isSubset(of: Set(replayChat.record!.rounds.last!.assignments[0].contextItemIDs!)), "nil selection keeps the existing all-context semantics")
+    let noRefetch = await webFixture.mediaFetches
+    precondition(noRefetch == fetches, "same media does not download again for another round")
+    let localFiles = webHandoff.cardFiles.files(for: card)
+    webHandoff.cardFiles.remove(localFiles[0].id, workID: card)
+    var removedRound = allRound; removedRound = WorkLensPlans.Round(roundId: "lr_00000000000000b3", workID: removedRound.workID,
+        question: removedRound.question, answer: removedRound.answer, planner: nil, effort: nil, orchestrator: nil,
+        createdAt: removedRound.createdAt, recordedAt: nil, assignments: removedRound.assignments, source: "web", attachmentIds: [mediaA])
+    let removedSaved = await replayChat.recordLensRound(removedRound, source: source, handoff: webHandoff)
+    precondition(!removedSaved, "removed retained media cannot be silently resurrected")
+    precondition(webHandoff.receipts.isEmpty, "web media recording never dispatches work")
+    let dedupRoot = root.appendingPathComponent("media-dedup")
+    let dedupFiles = WorkCardFileStore(root: dedupRoot, isolated: true)
+    var downloadCount = 0
+    func transfer() throws -> URL {
+        downloadCount += 1
+        let url = root.appendingPathComponent(UUID().uuidString + ".txt")
+        try Data("same uploaded evidence".utf8).write(to: url)
+        return url
+    }
+    let importedA = try await dedupFiles.importWebMedia([mediaA], source: source, serverID: "server-a", stillCurrent: { true }) { _ in try transfer() }
+    let importedB = try await dedupFiles.importWebMedia([mediaB], source: source, serverID: "server-a", stillCurrent: { true }) { _ in try transfer() }
+    precondition(importedA[0].id == importedB[0].id && dedupFiles.files(for: card).count == 1 && importedB[0].webMedia?.count == 2, "same bytes under two media IDs atomically share one copy")
+    let restartedFiles = WorkCardFileStore(root: dedupRoot, isolated: true)
+    _ = try await restartedFiles.importWebMedia([mediaA, mediaB], source: source, serverID: "server-a", stillCurrent: { true }) { _ in try transfer() }
+    precondition(downloadCount == 2, "real reopened store retries both IDs without downloading")
+    _ = try await restartedFiles.importWebMedia([mediaA], source: source, serverID: "server-b", stillCurrent: { true }) { _ in try transfer() }
+    precondition(downloadCount == 3, "same media ID on another server must be fetched and verified")
+    let retained = restartedFiles.folder(for: card)!.appendingPathComponent(importedA[0].stored)
+    try Data("changed retained evidence".utf8).write(to: retained)
+    var corruptRefused = false
+    do { _ = try await restartedFiles.importWebMedia([mediaA], source: source, serverID: "server-a", stillCurrent: { true }) { _ in try transfer() } }
+    catch { corruptRefused = true }
+    precondition(corruptRefused && downloadCount == 3, "changed retained bytes fail closed without silently fetching a replacement")
+    let switchedFiles = WorkCardFileStore(root: root.appendingPathComponent("media-switch"), isolated: true)
+    var sameServer = true, switchRefused = false
+    do {
+        _ = try await switchedFiles.importWebMedia([mediaA], source: source, serverID: "server-a", stillCurrent: { sameServer }) { _ in
+            let result = try transfer(); sameServer = false; return result
+        }
+    } catch { switchRefused = true }
+    precondition(switchRefused && switchedFiles.files(for: card).isEmpty, "identity change during download prevents a card commit")
     print("PASS work lens plans store: older server polls nothing, round lands once in history as a WorkChatRound (From glasses, time, checks), history reaches the planner, confirmed send through submit with receipts and results, lens Stop through Stop, Auto-send off refuses, Auto-send on re-reported and queued behind earlier work, recording never sends, a Mac Send of a lens round reported through mac-send")
 }

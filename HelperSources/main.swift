@@ -680,6 +680,7 @@ final class COSControlHelper {
         case "ask-work-snapshot": try emitAskWorkSnapshot()
         case "work-orchestrator-input": try emitWorkOrchestratorInput()
         case "work-lens-inbox": try emitWorkLensInbox(args: args)
+        case "work-lens-media": try emitWorkLensMedia(args: args)
         case "work-lens-history": try emitWorkLensHistory(args: args)
         case "work-lens-result": try emitWorkLensResult(args: args)
         case "work-lens-mac-send": try emitWorkLensMacSend(args: args)
@@ -20730,6 +20731,56 @@ final class COSControlHelper {
     /// has not written into the card's Work chat history, send requests and stop requests. Polling is what the server
     /// reports as COS Control being connected. A failure is an answer (`available: false` and why), never a throw.
     static let workLensRoundID = "^lr_[a-f0-9]{16}$", workLensSendID = "^ls_[a-f0-9]{16}$"
+    /// Staged web attachment contract; only round-scoped routes can prove reservation ownership.
+    static func workLensMediaPath(roundID: String, workID: String, mediaID: String) -> String? {
+        guard roundID.range(of: "\\Alr_[a-f0-9]{16}\\z", options: .regularExpression) != nil,
+              workID.range(of: "\\Atask:[a-z_]+:[a-f0-9]{12}\\z", options: .regularExpression) != nil,
+              mediaID.range(of: "\\Am_[a-f0-9]{24}\\z", options: .regularExpression) != nil else { return nil }
+        return "/api/work/chat/lens-rounds/\(roundID)/attachments/\(mediaID)?workID=\(workID)"
+    }
+    private func emitWorkLensMedia(args: [String]) throws {
+        try requireLiveWorkTransport()
+        guard let roundID = option("--round-id", in: args), let workID = option("--work-id", in: args),
+              let mediaID = option("--media-id", in: args), let serverID = option("--server-id", in: args),
+              serverID.range(of: "\\A[A-Za-z0-9._:-]{1,200}\\z", options: .regularExpression) != nil,
+              let path = Self.workLensMediaPath(roundID: roundID, workID: workID, mediaID: mediaID) else {
+            throw HelperError.message("Invalid Work attachment identity.")
+        }
+        let candidate = try reviewCandidateTransport(), token = try candidate?.token ?? readToken()
+        guard let caps = request("/api/work/chat/web-plans", token: token, timeout: 5, reviewCandidatePort: candidate?.port, refuseRedirects: true),
+              caps.status == 200, let version = caps.body?["protocolVersion"] as? NSNumber,
+              CFGetTypeID(version) != CFBooleanGetTypeID(), version == 1,
+              caps.body?["serverInstanceId"] as? String == serverID,
+              let protocolNumber = (caps.body?["workAttachments"] as? [String: Any])?["protocol"] as? NSNumber,
+              CFGetTypeID(protocolNumber) != CFBooleanGetTypeID(), protocolNumber == 1 else {
+            throw HelperError.message("This server does not support safe Work attachment import. Nothing was saved or sent.")
+        }
+        let maximumBytes = 100 * 1024 * 1024
+        // Discovery (5 s) + transfer (20 s + delegate grace) stay below Work's existing 45 s helper budget.
+        guard let response = boundedMediaRequest(path, token: token, timeout: 20, maximumBytes: maximumBytes,
+                                                reviewCandidatePort: candidate?.port, refuseRedirects: true),
+              response.status == 200, response.headers["x-cos-work-attachment"] == "1",
+              response.headers["x-cos-server-instance"] == serverID, response.headers["x-cos-work-id"] == workID,
+              response.headers["x-cos-round-id"] == roundID, response.headers["x-cos-media-id"] == mediaID,
+              let data = response.data, !data.isEmpty, data.count <= maximumBytes,
+              let length = response.headers["content-length"].flatMap(Int.init), length == data.count,
+              let declared = response.headers["content-type"]?.lowercased().split(separator: ";").first.map(String.init),
+              let mime = verifiedMediaMIME(data, declared: declared) else {
+            throw HelperError.message("The Work attachment could not be verified. Nothing was saved or sent.")
+        }
+        let transferRoot: URL
+        if candidate != nil {
+            transferRoot = FileManager.default.temporaryDirectory.appendingPathComponent("cos-work-media-download-\(UUID().uuidString)")
+            try ensurePrivateDirectory(transferRoot)
+        } else {
+            try pruneMediaTransfers()
+            transferRoot = mediaTransferRoot
+        }
+        let destination = transferRoot.appendingPathComponent("\(UUID().uuidString.lowercased()).\(mediaFileExtension(for: mime))")
+        try atomicWriteData(data, to: destination, permissions: 0o600)
+        emit(ok: true, message: "Work attachment ready", details: ["state": "ready", "path": destination.path,
+            "mime": mime, "bytes": data.count, "serverInstanceId": serverID, "workID": workID, "roundId": roundID, "mediaId": mediaID])
+    }
     static func workLensInboxPath(since: String, autoSend: String) -> String? {
         guard since.range(of: "^[0-9]{1,12}$", options: .regularExpression) != nil, ["0", "1"].contains(autoSend) else { return nil }
         return "/api/work/chat/lens-inbox?since=\(since)&autoSend=\(autoSend)"
@@ -20739,7 +20790,7 @@ final class COSControlHelper {
         guard let path = Self.workLensInboxPath(since: option("--since", in: args) ?? "0", autoSend: option("--auto-send", in: args) ?? "0") else {
             throw HelperError.message("--since is a cursor and --auto-send is 0 or 1")
         }
-        guard let response = request(path, token: try readToken(), timeout: 10) else {
+        guard let response = request(path, token: try readToken(), headers: ["X-COS-Work-Attachment-Import": "1"], timeout: 10) else {
             emit(ok: true, message: "Lens plans are unreachable", details: ["available": false, "reason": "unreachable"]); return
         }
         guard response.status == 200, let body = response.body, body["v"] as? Int == 1 else {

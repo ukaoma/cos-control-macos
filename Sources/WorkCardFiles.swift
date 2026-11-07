@@ -54,6 +54,12 @@ struct WorkContextCompanion: Codable, Equatable, Sendable {
     var count: Int? = nil
 }
 
+/// A server media identity, committed in the same manifest transaction as its retained local copy.
+struct WorkContextMediaOrigin: Codable, Equatable, Sendable {
+    var serverID: String
+    var mediaID: String
+}
+
 /// One file (or link) on a card, as its manifest keeps it.
 struct WorkContextFile: Codable, Equatable, Sendable, Identifiable {
     var id: String
@@ -86,6 +92,8 @@ struct WorkContextFile: Codable, Equatable, Sendable, Identifiable {
     var seq: Int
     /// QA round 2: a quiet note for the row (the card's identity was not saved when this file came).
     var note: String? = nil
+    /// Absent on local files and old manifests. Multiple uploads of the same bytes share the local copy.
+    var webMedia: [WorkContextMediaOrigin]? = nil
     var isLink: Bool { kind == "folder" || kind == "link" }
     var ref: WorkContextRef { WorkContextRef(id: id, sha256: sha256) }
 }
@@ -1724,7 +1732,8 @@ extension WorkCardFiles {
     /// A copy already in the card's folder (a Finder file, a promise, image data): checked, hashed and committed under
     /// the lock, or removed. A refusal leaves no entry and no file.
     nonisolated static func commit(staged: URL, display: String, realName: String? = nil, source: String, original: String?, root: URL, workID: String,
-                                   identity: @escaping IdentityGate = { true }, ocr: Bool = false) async -> Result<WorkContextFile, WorkCardRefusal> {
+                                   identity: @escaping IdentityGate = { true }, ocr: Bool = false,
+                                   webMedia: WorkContextMediaOrigin? = nil) async -> Result<WorkContextFile, WorkCardRefusal> {
         var movedTo: URL?
         var staged = staged
         defer { if movedTo == nil { try? FileManager.default.removeItem(at: staged) } }
@@ -1741,6 +1750,26 @@ extension WorkCardFiles {
         let stamped = await identity()
         do {
             let file = try update(root: root, workID: workID) { manifest, folder -> WorkContextFile in
+                if let webMedia {
+                    // A replay cannot replace the bytes already bound to a remote identity, including a hidden file.
+                    if let bound = manifest.files.first(where: { ($0.webMedia ?? []).contains(webMedia) }), bound.sha256 != sha || bound.hiddenAt != nil {
+                        throw WorkCardRefusal.store("This web attachment changed or was removed. Add it again in a new plan.")
+                    }
+                    if let index = manifest.files.firstIndex(where: { $0.hiddenAt == nil && !$0.isLink && $0.sha256 == sha }) {
+                        let existing = manifest.files[index]
+                        let copy = try guardTarget(root: root, folder: folder, name: existing.stored)
+                        guard validEntry(existing), fileType(copy) == S_IFREG, try sha256(of: copy) == sha else {
+                            throw WorkCardRefusal.store("The retained web attachment is missing or changed. Add it again in a new plan.")
+                        }
+                        var origins = existing.webMedia ?? []
+                        if !origins.contains(webMedia) {
+                            guard origins.count < 100 else { throw WorkCardRefusal.store("This file has too many web references. Start a new card.") }
+                            origins.append(webMedia)
+                        }
+                        manifest.files[index].webMedia = origins
+                        return manifest.files[index]
+                    }
+                }
                 if let refusal = admission(manifest, bytes: size, sha256: sha) { throw refusal }
                 let seq = (manifest.files.map(\.seq).max() ?? 0) + 1
                 let stored = storedName(seq: seq, display: display, ext: sniffed.ext)
@@ -1754,7 +1783,8 @@ extension WorkCardFiles {
                     source: source, original: original, addedAt: Date().timeIntervalSince1970,
                     companions: companionPlan(kind: sniffed.kind, width: meta.width, height: meta.height, ocr: ocr, spreadsheet: ocr && sniffed.mime == xlsxMime)
                         .map { WorkContextCompanion(kind: $0, stored: companionName($0, base: base, mime: sniffed.mime), state: "preparing") },
-                    state: "ready", seq: seq, note: stamped ? nil : unstampedNote)
+                    state: "ready", seq: seq, note: stamped ? nil : unstampedNote,
+                    webMedia: webMedia.map { [$0] })
                 manifest.files.append(file)
                 return file
             }
@@ -2505,6 +2535,68 @@ extension WorkCardFiles {
     }
 
     // MARK: Adding
+
+    /// Import only helper-owned, authenticated transfers. The caller holds the card's chat busy gate and supplies a
+    /// server-identity check before and after every suspension. Partial success is durable; replay skips those copies.
+    /// Preparing companions deliberately leave the round unacknowledged until a later inbox pass.
+    func importWebMedia(_ ids: [String], source: WorkSource, serverID: String,
+                        stillCurrent: @MainActor () -> Bool,
+                        fetch: @MainActor (String) async throws -> URL) async throws -> [WorkContextFile] {
+        guard let root, policy == .work, Self.accepts(source), WorkLensPlans.validAttachmentIDs(ids),
+              !serverID.isEmpty, stillCurrent() else { throw WorkCardRefusal.store("Web attachments are unavailable for this card.") }
+        let workID = source.id
+        begin(workID, 1)
+        defer { end(workID) }
+        var imported: [WorkContextFile] = []
+        for (ordinal, mediaID) in ids.enumerated() {
+            guard stillCurrent(), !Task.isCancelled else { throw WorkCardRefusal.store("The server changed while saving web attachments.") }
+            let origin = WorkContextMediaOrigin(serverID: serverID, mediaID: mediaID)
+            reload(workID)
+            var file = manifests[workID]?.files.first { ($0.webMedia ?? []).contains(origin) }
+            if file == nil {
+                let transfer = try await fetch(mediaID)
+                // fetch returns a helper-owned disposable copy; never a user's original or a server filesystem path.
+                defer { try? FileManager.default.removeItem(at: transfer) }
+                guard stillCurrent(), !Task.isCancelled else { throw WorkCardRefusal.store("The server changed while saving web attachments.") }
+                let folder = try WorkCardFiles.locked(root: root) { try WorkCardFiles.preparedFolder(root: root, workID: workID) }
+                let staged = WorkCardFiles.stagingURL(folder)
+                defer { try? FileManager.default.removeItem(at: staged) }
+                let attrs = try transfer.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+                guard attrs.isRegularFile == true, attrs.isSymbolicLink != true,
+                      let size = attrs.fileSize, size > 0, size <= WorkLensPlans.attachmentMaxBytes else {
+                    throw WorkCardRefusal.store("This web attachment is not a supported file or exceeds 100 MiB.")
+                }
+                try WorkCardFiles.snapshot(from: transfer, to: staged)
+                let result = await WorkCardFiles.commit(staged: staged, display: "Web attachment \(ordinal + 1)." + transfer.pathExtension,
+                    source: "web", original: nil, root: root, workID: workID, webMedia: origin)
+                guard stillCurrent(), !Task.isCancelled else { throw WorkCardRefusal.store("The server changed while saving web attachments.") }
+                switch result {
+                case .success(let saved): file = saved; reload(workID); startCompanions(workID: workID, file: saved)
+                case .failure(let refusal): throw refusal
+                }
+            }
+            guard let saved = file, saved.hiddenAt == nil, !saved.isLink, WorkCardFiles.validEntry(saved) else {
+                throw WorkCardRefusal.store("A web attachment was removed or is invalid. Add it again in a new plan.")
+            }
+            let folder = WorkCardFiles.folder(root: root, workID: workID)
+            let copy = try WorkCardFiles.guardTarget(root: root, folder: folder, name: saved.stored)
+            let expectedSHA = saved.sha256
+            let intact = await Task.detached {
+                WorkCardFiles.fileType(copy) == S_IFREG && (try? WorkCardFiles.sha256(of: copy)) == expectedSHA
+            }.value
+            guard stillCurrent(), !Task.isCancelled else { throw WorkCardRefusal.store("The server changed while saving web attachments.") }
+            guard intact else {
+                throw WorkCardRefusal.store("A retained web attachment is missing or changed. Add it again in a new plan.")
+            }
+            startCompanions(workID: workID, file: saved)
+            reload(workID)
+            guard let ready = manifests[workID]?.files.first(where: { $0.id == saved.id }), ready.hiddenAt == nil, ready.state == "ready" else {
+                throw WorkCardRefusal.store("Web attachments are still preparing or need attention. Nothing was sent.")
+            }
+            imported.append(ready)
+        }
+        return imported
+    }
 
     /// Files chosen with Add files…, and Finder URLs.
     func intake(urls: [URL], source: WorkSource) async {

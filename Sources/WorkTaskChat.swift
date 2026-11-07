@@ -61,6 +61,8 @@ struct WorkChatRound: Codable, Identifiable {
     var summaryDigest: String? = nil
     var attachmentNames: [String]? = nil
     var attachmentDigest: String? = nil
+    /// Proof that this web round's exact media list was retained before history acknowledgement. Nil on old rounds.
+    var webAttachmentIDs: [String]? = nil
     /// 0.5.308: the planner this round asked for ("sonnet" or "opus"); nil on rounds planned before the choice existed.
     var planner: String? = nil
     /// 0.5.310: the server's report of the model that ran. Only this may be shown as "planned with".
@@ -1996,12 +1998,31 @@ extension WorkTaskChatStore {
         syncFromDisk()
         guard !busy, !refreshing, WorkLensPlans.valid(lens), lens.workID == source.id, let current = record, current.workID == source.id,
               current.serverID == (handoff.taskChatServerID ?? "unverified") else { return false }
-        if current.rounds.contains(where: { $0.lensRoundID == lens.roundId }) { return true }
+        let mediaIDs = lens.attachmentIds ?? []
+        if let saved = current.rounds.first(where: { $0.lensRoundID == lens.roundId }) {
+            return (saved.webAttachmentIDs ?? []) == mediaIDs
+        }
         guard !WorkLensPlans.isFull(rounds: current.rounds.count) else { workChatLog.error("lens round not saved: this card's Work chat history is full"); return false }
         busy = true; phase = "Saving a plan from the glasses…"
         defer { busy = false; phase = "" }
         do {
             await handoff.refreshActivity()
+            if !mediaIDs.isEmpty {
+                _ = try await handoff.cardFiles.importWebMedia(mediaIDs, source: source, serverID: current.serverID,
+                    stillCurrent: { handoff.taskChatServerID == current.serverID && self.record?.workID == source.id }) { mediaID in
+                    let reply = try await handoff.taskChatCall(["work-lens-media", "--round-id", lens.roundId,
+                        "--work-id", source.id, "--media-id", mediaID, "--server-id", current.serverID])
+                    let home = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"].map { URL(fileURLWithPath: $0) }
+                        ?? FileManager.default.homeDirectoryForCurrentUser
+                    guard reply["state"]?.string == "ready", reply["serverInstanceId"]?.string == current.serverID,
+                          reply["roundId"]?.string == lens.roundId, reply["workID"]?.string == source.id,
+                          reply["mediaId"]?.string == mediaID, let path = reply["path"]?.string,
+                          let transfer = WorkLensPlans.ownedTransfer(path, home: home) else {
+                        throw HelperClientError.commandFailed("This server could not provide the web attachment safely. Nothing was sent.")
+                    }
+                    return transfer
+                }
+            }
             let attachments = try attachmentSnapshot(source: source, handoff: handoff)
             let fresh = try await handoff.taskChatCall(["work-context", "--work-id", source.id])
             guard handoff.taskChatServerID == current.serverID else { throw WorkSessionLinks.Failure.conflict }
@@ -2015,11 +2036,14 @@ extension WorkTaskChatStore {
             round.planner = lens.planner.flatMap { WorkChatPolicy.planners.contains($0) ? $0 : nil }
             round.revision = revision; round.linkDigest = try WorkChatPolicy.linksDigest(handoff.confirmedSessionCards, workID: source.id)
             round.attachmentNames = attachments.names; round.attachmentDigest = attachments.digest
+            round.webAttachmentIDs = mediaIDs.isEmpty ? nil : mediaIDs
             round.contextItems = items; round.contextChosen = lens.assignments.allSatisfy { $0.contextItemIDs != nil }
             round.assignments = lens.assignments.map { a in
                 var w = WorkChatAssignment(sessionID: a.sessionID ?? "", prompt: a.prompt)
                 w.mode = WorkLensPlans.chatMode(a.mode); w.provider = a.provider; w.lensID = a.id
                 if a.mode == "newSession", let p = a.provider { w.sessionID = WorkOrchestrator.newSessionID(provider: p, receiptID: w.receiptID) }
+                // Preserve explicit context selection. Nil retains the established all-context behavior; this bridge
+                // does not claim that the earlier web planner saw local file ids or inspected these files.
                 w.contextItemIDs = WorkContextMeter.selection(a.contextItemIDs, items: items)
                 if !WorkChatPolicy.validPrompt(a.prompt) {
                     w.state = "Skipped"; w.detail = "COS Control cannot send this assignment: keep it under 2,000 characters, without a COS-WORK line."
@@ -2076,6 +2100,12 @@ extension WorkTaskChatStore {
         let refuse = { (why: String) -> [WorkLensPlans.Result] in
             self.lensResults(lensRoundID: send.roundId, lensIDs: send.assignmentIds, handoff: handoff).map {
                 WorkLensPlans.final.contains($0.state) || $0.state == "sent" ? $0 : WorkLensPlans.Result(id: $0.id, state: "refused", receiptId: $0.receiptId, detail: why, sessionID: $0.sessionID)
+            }
+        }
+        if let incoming = send.round {
+            guard WorkLensPlans.valid(incoming), incoming.roundId == send.roundId, incoming.workID == source.id,
+                  (incoming.attachmentIds ?? []) == (current.rounds[index].webAttachmentIDs ?? []) else {
+                return refuse("This request's attachments do not match its saved plan. Nothing was sent.")
             }
         }
         guard WorkLensPlans.maySend(confirm: send.confirm, cardAutoSend: cardAutoSend) else {
