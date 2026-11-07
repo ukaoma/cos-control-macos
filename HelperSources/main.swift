@@ -13679,8 +13679,15 @@ final class COSControlHelper {
             let modified = (try? fm.attributesOfItem(atPath: locksDir.appendingPathComponent(name).path)[.modificationDate] as? Date) ?? .distantPast
             found.append((id, modified))
         }
-        return found.sorted { $0.modified > $1.modified }.prefix(limit).map(\.id)
+        return found.sorted {
+            $0.modified == $1.modified ? $0.id < $1.id : $0.modified > $1.modified
+        }.prefix(max(0, limit)).map(\.id)
     }
+
+    // Discovery can look past delegated locks without increasing the existing activity-tail set.
+    // At most 96 metadata heads (256 KiB each) are checked to admit up to 24 uncached parents.
+    static let codexPetDiscoveryCandidateLimit = 96
+    static let codexPetDiscoveryRowLimit = 24
 
     /// New discovery must prove a readable top-level session. A writer lock also exists for every delegated child.
     /// Keep the lock UUID as row identity: copied rollouts may carry another valid metadata id.
@@ -13688,6 +13695,14 @@ final class COSControlHelper {
         guard let rollout = codexRolloutURL(threadId: threadId, sessionsRoot: sessionsRoot, calendar: calendar),
               let meta = peekCodexMeta(in: rollout), UUID(uuidString: meta.id) != nil else { return false }
         return !meta.subagent
+    }
+
+    /// Cached rows may predate child filtering. Unknown metadata preserves historical availability;
+    /// only positive delegated-session evidence removes a cached live row.
+    static func codexPetIsDelegated(threadId: String, sessionsRoot: URL, calendar: Calendar = .current) -> Bool {
+        guard let rollout = codexRolloutURL(threadId: threadId, sessionsRoot: sessionsRoot, calendar: calendar),
+              let meta = peekCodexMeta(in: rollout) else { return false }
+        return meta.subagent
     }
 
     /// 0.5.238: rows the pet should see that the cache has never listed: Codex threads a
@@ -13704,7 +13719,8 @@ final class COSControlHelper {
     ) -> [[String: Any]] {
         var rows: [[String: Any]] = []
         var seen = Set(existingIds.map { $0.lowercased() })
-        for id in codexOpenIds where !seen.contains(id.lowercased()) {
+        for id in codexOpenIds.prefix(codexPetDiscoveryCandidateLimit) where !seen.contains(id.lowercased()) {
+            if rows.count >= codexPetDiscoveryRowLimit { break }
             guard codexEligible(id) else { continue }
             seen.insert(id.lowercased())
             rows.append([
@@ -13900,6 +13916,7 @@ final class COSControlHelper {
         composerActivity: [String: CursorComposerActivity] = [:],
         codexActivity: (String) -> CodexThreadActivity? = { _ in nil },
         discovered: [[String: Any]] = [],
+        codexIsDelegated: (String) -> Bool = { _ in false },
         transcriptTitle: ((String) -> String?)? = nil,
         now: Date = Date()
     ) -> [[String: Any]] {
@@ -13920,7 +13937,12 @@ final class COSControlHelper {
             rows = rows.map { row in (row["id"] as? String).flatMap { byID[$0] } ?? row }
         }
         rows.removeAll { isWarmUpRow($0) }
-        return rows.filter { isPetLiveRow($0) }
+        return rows.filter { row in
+            guard isPetLiveRow(row) else { return false }
+            guard (row["provider"] as? String ?? "").lowercased() == "codex",
+                  let id = row["id"] as? String else { return true }
+            return !codexIsDelegated(id)
+        }
     }
 
     static func loadCursorComposerMeta(from db: URL) -> CursorComposerMeta {
@@ -14244,8 +14266,12 @@ final class COSControlHelper {
         // 0.5.238: Codex threads a Codex process has open, and Cursor composers active now,
         // that the cache has never listed. Names only when there is something to name.
         let existing = Set(peers.compactMap { ($0["id"] as? String)?.lowercased() })
-        let openCodex = Self.codexOpenThreadIds(locksDir: home.appendingPathComponent(".codex/thread-writer-locks", isDirectory: true))
-        let unseenCodex = openCodex.filter { !existing.contains($0) }
+        let codexCandidates = Self.codexOpenThreadIds(locksDir: home.appendingPathComponent(".codex/thread-writer-locks", isDirectory: true),
+            limit: Self.codexPetDiscoveryCandidateLimit
+        )
+        // Preserve the existing 24-lock activity evidence; the larger window is discovery-only.
+        let openCodex = Array(codexCandidates.prefix(24))
+        let unseenCodex = codexCandidates.filter { !existing.contains($0) }
         let discovered = Self.discoveredPetRows(
             existingIds: existing,
             codexOpenIds: unseenCodex,
@@ -14264,6 +14290,7 @@ final class COSControlHelper {
                 }
             },
             discovered: discovered,
+            codexIsDelegated: { Self.codexPetIsDelegated(threadId: $0, sessionsRoot: codexSessions) },
             transcriptTitle: { id in
                 // 0.5.250: a Work New session shows on the pet under its task's name from the start.
                 Self.claudeTranscript(id, in: transcripts).flatMap(Self.lastCustomTitle(in:))
@@ -21032,6 +21059,43 @@ final class COSControlHelper {
         try expect(cached.isEmpty, "cached parent is not duplicated, ignoring case")
         let repeated = Self.discoveredPetRows(existingIds: [], codexOpenIds: [parent, parent.uppercased()], codexNames: [:], codexEligible: eligible, cursorMeta: emptyCursor)
         try expect(repeated.count == 1 && repeated[0]["id"] as? String == parent, "discovery preserves the first exact UUID and deduplicates case variants")
+        // Twenty-four newer delegated locks must not crowd an older, uncached root out.
+        // Equal child mtimes also exercise the stable UUID tie-breaker.
+        let burstLocks = root.appendingPathComponent("burst-locks")
+        try ensurePrivateDirectory(burstLocks)
+        let burstChildren = (100..<124).map { String(format: "01a00da5-8026-7bf3-a9cb-%012d", $0) }
+        for id in burstChildren { try metadata(id, subagent: true) }
+        for id in [parent] + Array(burstChildren.reversed()) {
+            let lock = burstLocks.appendingPathComponent(id + ".lock")
+            try Data().write(to: lock)
+            try fm.setAttributes([.modificationDate: started.addingTimeInterval(id == parent ? 1 : 2)], ofItemAtPath: lock.path)
+        }
+        let activityOpen = Self.codexOpenThreadIds(locksDir: burstLocks)
+        try expect(activityOpen == burstChildren.sorted(), "existing activity window remains the newest 24 locks in stable order")
+        let candidates = Self.codexOpenThreadIds(locksDir: burstLocks, limit: Self.codexPetDiscoveryCandidateLimit)
+        try expect(candidates == burstChildren.sorted() + [parent], "discovery scans past 24 newer child locks")
+        let burstFound = Self.discoveredPetRows(existingIds: [], codexOpenIds: candidates, codexNames: [parent: "Parent work"], codexEligible: eligible, cursorMeta: emptyCursor)
+        try expect(burstFound.count == 1 && burstFound[0]["id"] as? String == parent, "older uncached clone survives 24 newer delegated children with its own lock UUID")
+        // Synthetic callbacks prove both budgets without creating more files or reading transcripts.
+        let budgetIDs = (0..<120).map { "budget-\($0)" }
+        var eligibilityReads = 0
+        let rejected = Self.discoveredPetRows(existingIds: [], codexOpenIds: budgetIDs, codexNames: [:], codexEligible: { _ in eligibilityReads += 1; return false }, cursorMeta: emptyCursor)
+        try expect(rejected.isEmpty && eligibilityReads == Self.codexPetDiscoveryCandidateLimit, "discovery bounds metadata checks even when every candidate is rejected")
+        eligibilityReads = 0
+        let accepted = Self.discoveredPetRows(existingIds: [], codexOpenIds: budgetIDs, codexNames: [:], codexEligible: { _ in eligibilityReads += 1; return true }, cursorMeta: emptyCursor)
+        try expect(accepted.compactMap { $0["id"] as? String } == Array(budgetIDs.prefix(Self.codexPetDiscoveryRowLimit)) && eligibilityReads == Self.codexPetDiscoveryRowLimit, "discovery admits at most 24 eligible parents and stops reading")
+        let delegated = { (id: String) in Self.codexPetIsDelegated(threadId: id, sessionsRoot: sessions, calendar: calendar) }
+        try expect(children.allSatisfy(delegated) && !delegated(parent), "cached metadata distinguishes delegated children from cloned parents")
+        try expect(!delegated(noMeta) && !delegated(unreadable) && !delegated(absent), "missing cached metadata does not hide a previously listed parent")
+        let liveCache = ([parent, noMeta, unreadable, absent] + children).map { id -> [String: Any] in
+            ["id": id, "provider": "codex", "name": "Cached work", "state": "running", "alive": true, "updatedAt": Self.isoString(from: Date())]
+        }
+        let visible = Self.petLiveRows(cached: liveCache, livePeers: nil, transcriptActivity: { _ in nil },
+                                      codexIsDelegated: delegated)
+        try expect(Set(visible.compactMap { $0["id"] as? String }) == Set([parent, noMeta, unreadable, absent]),
+                   "refresh removes cached children while preserving parents and unavailable metadata")
+        let unchanged = Self.petLiveRows(cached: liveCache, livePeers: nil, transcriptActivity: { _ in nil })
+        try expect(unchanged.count == liveCache.count, "cached-child regression fixture starts with all live rows visible")
         emit(ok: true, message: "Pet discovery checks passed", details: ["passed": passed])
     }
 

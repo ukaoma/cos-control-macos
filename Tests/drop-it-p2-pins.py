@@ -33,6 +33,6 @@ whats = json.loads(read("Resources/WhatsNew.json")); plist = read("Resources/Inf
 # 0.5.373 (the quit fix) sits on top: P2's own section, entry and order still hold; app-update-quit-request-pins pins the bump.
 p2 = [s for s in whats["whatsNew"]["sections"] if s["title"] == "0.5.372"]
 need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.37[2-9]</string>", plist) is not None and whats.get("version", "").startswith("0.5.37"), "[version] Info.plist and What's New are 0.5.372 or a later 0.5.37x")
-need(len(p2) == 1 and any("COS reaching out" in i for i in p2[0]["items"]) and whats["whatsNew"]["sections"].index(p2[0]) <= 4, "[version] What's New has its 0.5.372 section naming COS reaching out, within the first five (0.5.376 through 0.5.373 sit above it)")
+need(len(p2) == 1 and any("COS reaching out" in i for i in p2[0]["items"]) and whats["whatsNew"]["sections"].index(p2[0]) <= 5, "[version] What's New has its 0.5.372 section naming COS reaching out, within the first six (0.5.377 through 0.5.373 sit above it)")
 need("\n## 0.5.372 (build 426)" in "\n" + log and log.index("## 0.5.372 (build 426)") < log.index("\n## 0.5.371 (build 425)"), "[version] the changelog's 0.5.372 entry sits above 0.5.371's")
 print(f"drop it p2 pins: {passed} passed")

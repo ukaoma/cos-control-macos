@@ -218,6 +218,19 @@ if not value.get("ok") or value.get("details", {}).get("checks", 0) < 62:
     sys.exit("helper self-test-work FAILED: " + str(value)[:2000])
 ' "$WORK_SELF_TEST"
 
+# Pet discovery uses private metadata fixtures only; delegated locks must not inflate or crowd out parent chats.
+if ! PET_SELF_TEST="$(COS_CONTROL_TEST_HOME="$TMP/home" "$TMP/cos-control-helper" self-test-pet-discovery 2>&1)"; then
+  print -u2 "helper self-test-pet-discovery FAILED (helper exited non-zero):"
+  print -u2 -r -- "$PET_SELF_TEST"
+  exit 1
+fi
+/usr/bin/python3 -c '
+import json, sys
+value = json.loads(sys.argv[1])
+if not value.get("ok") or value.get("details", {}).get("passed", 0) < 17:
+    sys.exit("helper self-test-pet-discovery FAILED: " + str(value)[:2000])
+' "$PET_SELF_TEST"
+
 python3 "$ROOT/Tests/HeldNamingTransport.py" "$TMP/cos-control-helper"
 # Update Server only moves forward: the real resolve and refusal path, against a stand-in npm and a loopback fixture.
 python3 "$ROOT/Tests/server-update-guard-checks.py" "$TMP/cos-control-helper"
