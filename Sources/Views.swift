@@ -4121,6 +4121,8 @@ private extension ControlPanel {
                 }
             }
             .disabled(model.busy)
+            // CAL-01 (PH plan P1): never behind Today home, since prep and pings read it too.
+            CalendarSettingsBlock(store: model.calendarSource)
         }
         hubCard("general.guide") {
             // SG-01, which opens the whole guide in place (SG-02 to SG-14 inside it).

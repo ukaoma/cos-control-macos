@@ -148,6 +148,10 @@ enum SettingsHubCatalog {
 
     /// Rows the hub adds that the inventory does not list (it is the hub's own rollback).
     static let extras: [SettingsHubItem] = [
+        // PH plan P1 (2026-11-07): macOS Calendar through EventKit, for prep, Today and Drop it pings. Off until Connect is
+        // tapped; nothing is picked after the grant (Sources/CalendarSource.swift). A hub row, not an inventory row.
+        .init("CAL-01", "Calendars", "Read the calendars on this Mac (Exchange, iCloud, Google, subscribed) for prep, Today and pings. Stays on this Mac. You pick which count.", old: "", group: "general.home",
+              advanced: false, mount: .group, keywords: ["calendar", "calendars", "eventkit", "google calendar", "exchange", "icloud", "ics", "meetings", "prep"]),
         .init("JV-13", "Find sessions by meaning", "After you say yes, each ⌘K search sends your words, plus session titles and the start of first prompts, to the model that decides search. Emails, links, home-folder paths and key-shaped text are removed first. Shown with Today home on and a server that supports it.", old: "", group: "ai.decision", advanced: false, mount: .group,
               keywords: ["meaning", "command k", "sessions", "consent", "jev", "subq"]),
         // 0.5.367 (server 6.99.3): Open COS on your phone, the QR and code that sign the phone's browser in to Control Web. The

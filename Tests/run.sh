@@ -341,7 +341,7 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
   "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/KeyLanes.swift" "$ROOT/Sources/KeyLanesViews.swift" "$ROOT/Sources/WorkSessionLinks.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/Sources/AskWorkPlan.swift" "$ROOT/Sources/MeetingPrep.swift" "$ROOT/Sources/MeetingPrepStore.swift" "$ROOT/Sources/MeetingPrepViews.swift" "$ROOT/Sources/WorkOrchestrator.swift" "$ROOT/Sources/WorkLensPlans.swift" "$ROOT/Sources/WorkLensPlansPump.swift" "$ROOT/Sources/WorkChatQueue.swift" "$ROOT/Sources/WorkReferences.swift" "$ROOT/Sources/WorkTaskContext.swift" "$ROOT/Sources/WorkContextMeter.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" "$ROOT/Sources/MeetingSpeakerPolicy.swift" "$ROOT/Sources/MeetingAskCore.swift" "$ROOT/Sources/MeetingAsk.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
-  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" "$ROOT/Sources/DropIt.swift" "$ROOT/Sources/DropItViews.swift" "$ROOT/Sources/DropItP2.swift" "$ROOT/Sources/DropItP2Views.swift" \
+  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" "$ROOT/Sources/DropIt.swift" "$ROOT/Sources/DropItViews.swift" "$ROOT/Sources/DropItP2.swift" "$ROOT/Sources/DropItP2Views.swift" "$ROOT/Sources/CalendarSource.swift" "$ROOT/Sources/CalendarSnapshotCore.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/ControlSetup.swift" \
   "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift" \
@@ -436,6 +436,11 @@ zsh "$ROOT/Tests/run-transcription-settings.sh"
   "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Tests/SessionLiveFeedContract.swift" \
   -o "$TMP/session-live-feed-contract"
 "$TMP/session-live-feed-contract" "$ROOT"
+# PH plan P1: the calendar snapshot Control writes for the server (links, domains, selection, tombstone, keys, 0600).
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
+  "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/CalendarSnapshotCore.swift" "$ROOT/Tests/CalendarSnapshotContract.swift" \
+  -o "$TMP/calendar-snapshot-contract"
+"$TMP/calendar-snapshot-contract" "$ROOT"
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediUpgradeContract.swift" \
   -framework AppKit -o "$TMP/jedi-upgrade-contract"
@@ -460,7 +465,7 @@ zsh "$ROOT/Tests/run-illustrated-pet.sh"
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/KeyLanes.swift" "$ROOT/Sources/KeyLanesViews.swift" "$ROOT/Sources/WorkSessionLinks.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/Sources/AskWorkPlan.swift" "$ROOT/Sources/MeetingPrep.swift" "$ROOT/Sources/MeetingPrepStore.swift" "$ROOT/Sources/MeetingPrepViews.swift" "$ROOT/Sources/WorkOrchestrator.swift" "$ROOT/Sources/WorkLensPlans.swift" "$ROOT/Sources/WorkLensPlansPump.swift" "$ROOT/Sources/WorkChatQueue.swift" "$ROOT/Sources/WorkReferences.swift" "$ROOT/Sources/WorkTaskContext.swift" "$ROOT/Sources/WorkContextMeter.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" "$ROOT/Sources/MeetingSpeakerPolicy.swift" "$ROOT/Sources/MeetingAskCore.swift" "$ROOT/Sources/MeetingAsk.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
-  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" "$ROOT/Sources/DropIt.swift" "$ROOT/Sources/DropItViews.swift" "$ROOT/Sources/DropItP2.swift" "$ROOT/Sources/DropItP2Views.swift" \
+  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" "$ROOT/Sources/DropIt.swift" "$ROOT/Sources/DropItViews.swift" "$ROOT/Sources/DropItP2.swift" "$ROOT/Sources/DropItP2Views.swift" "$ROOT/Sources/CalendarSource.swift" "$ROOT/Sources/CalendarSnapshotCore.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/ControlSetup.swift" "$ROOT/Sources/ControlInstance.swift" \
   "$ROOT/Tests/JediIdleContract.swift" -framework AppKit -framework SwiftUI -o "$TMP/jedi-idle-contract"
@@ -936,9 +941,12 @@ need('check-release-entitlements.py" "$VERIFY_DIR/COS Control.app"' in rel,
 info = plistlib.loads((root / "Resources/Info.plist").read_bytes())
 need(str(info.get("NSAppleEventsUsageDescription", "")).strip(), "Info.plist lost NSAppleEventsUsageDescription")
 need(str(info.get("NSMicrophoneUsageDescription", "")).strip(), "Info.plist lost NSMicrophoneUsageDescription")
+for key in ("NSCalendarsFullAccessUsageDescription", "NSCalendarsUsageDescription"):
+    need(str(info.get(key, "")).strip(), f"Info.plist lost {key} (PH plan P1: EventKit refuses without a prompt)")
 ents = plistlib.loads((root / "Resources/COSControl.entitlements").read_bytes())
-need(ents == {"com.apple.security.automation.apple-events": True, "com.apple.security.device.audio-input": True},
-     f"COSControl.entitlements must be exactly Apple Events and microphone audio input, found {ents!r}")
+need(ents == {"com.apple.security.automation.apple-events": True, "com.apple.security.device.audio-input": True,
+              "com.apple.security.personal-information.calendars": True},
+     f"COSControl.entitlements must be exactly Apple Events, microphone audio input and calendars, found {ents!r}")
 print("PASS: Apple Events and microphone signing pins (Developer ID app + executable, helper bare, usage strings)")
 ENTCHK
 
@@ -3000,7 +3008,7 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
   "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/KeyLanes.swift" "$ROOT/Sources/KeyLanesViews.swift" "$ROOT/Sources/WorkSessionLinks.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/Sources/AskWorkPlan.swift" "$ROOT/Sources/MeetingPrep.swift" "$ROOT/Sources/MeetingPrepStore.swift" "$ROOT/Sources/MeetingPrepViews.swift" "$ROOT/Sources/WorkOrchestrator.swift" "$ROOT/Sources/WorkLensPlans.swift" "$ROOT/Sources/WorkLensPlansPump.swift" "$ROOT/Sources/WorkChatQueue.swift" "$ROOT/Sources/WorkReferences.swift" "$ROOT/Sources/WorkTaskContext.swift" "$ROOT/Sources/WorkContextMeter.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" "$ROOT/Sources/MeetingSpeakerPolicy.swift" "$ROOT/Sources/MeetingAskCore.swift" "$ROOT/Sources/MeetingAsk.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
-  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" "$ROOT/Sources/DropIt.swift" "$ROOT/Sources/DropItViews.swift" "$ROOT/Sources/DropItP2.swift" "$ROOT/Sources/DropItP2Views.swift" \
+  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/LiveTranscript.swift" "$ROOT/Sources/DropIt.swift" "$ROOT/Sources/DropItViews.swift" "$ROOT/Sources/DropItP2.swift" "$ROOT/Sources/DropItP2Views.swift" "$ROOT/Sources/CalendarSource.swift" "$ROOT/Sources/CalendarSnapshotCore.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/ControlSetup.swift" \
   "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift" \

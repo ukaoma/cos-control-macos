@@ -691,6 +691,8 @@ final class ControllerModel: ObservableObject {
     }()
     /// 0.5.366 (server 6.99.0): renaming a live recording (TitleSteerStore, Sources/MeetingAskCore.swift).
     let titleSteer = TitleSteerStore()
+    /// PH plan P1: macOS Calendar through EventKit, written as the server's calendar snapshot (Sources/CalendarSource.swift).
+    let calendarSource = CalendarSourceStore()
     /// 0.5.371 (server Drop it P1): the pinned COS chat in Messages, its composer, History and the Settings switch
     /// (DropItStore, Sources/DropIt.swift). Every new piece shows only while `status.dropIt.available`.
     lazy var dropIt: DropItStore = {

@@ -24,6 +24,8 @@ struct COSControlApp: App {
         // routed to the same presenter the chips use.
         HotKeyCenter.shared.onFire = { activityWindow.show(model: model, section: nil) }
         HotKeyCenter.shared.register(model.activityHotKey)
+        // PH plan P1: picks a connected calendar back up. Never prompts; only Settings' Connect does.
+        model.calendarSource.resume()
         model.dictation.bridge = { [weak model] audio in
             guard let model else { throw HelperClientError.commandFailed("COS Control is closing.") }
             // 0.5.328: the helper's refusal (no speech, an engine missing, the server busy) comes back with its details, so

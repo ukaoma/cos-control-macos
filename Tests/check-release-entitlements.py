@@ -4,7 +4,7 @@
 0.5.267: the notarized 0.5.266 shipped with hardened runtime and ZERO entitlements, so every Apple Event the app sent
 (the jump-to-session reopen through NSAppleScript, Guided Setup's Terminal script through an osascript child) was
 refused without a prompt. A signed build passes only when:
-  - the bundle and its main executable carry exactly Apple Events and microphone audio-input entitlements;
+  - the bundle and its main executable carry exactly Apple Events, microphone audio-input and calendars entitlements;
   - Info.plist names why (Apple Events and Microphone usage descriptions, non-empty);
   - the helper carries no entitlements at all;
   - bundled node, when present, carries exactly allow-jit and disable-library-validation. 0.5.266's node had only
@@ -20,7 +20,8 @@ import sys
 from pathlib import Path
 
 APPLE_EVENTS = "com.apple.security.automation.apple-events"
-APP_WANT = {APPLE_EVENTS: True, "com.apple.security.device.audio-input": True}
+CALENDARS = "com.apple.security.personal-information.calendars"
+APP_WANT = {APPLE_EVENTS: True, "com.apple.security.device.audio-input": True, CALENDARS: True}
 NODE_WANT = {"com.apple.security.cs.allow-jit": True, "com.apple.security.cs.disable-library-validation": True}
 
 
@@ -63,6 +64,11 @@ def problems(app: Path) -> list:
         found.append("Info.plist has no NSAppleEventsUsageDescription")
     if not str(info.get("NSMicrophoneUsageDescription", "")).strip():
         found.append("Info.plist has no NSMicrophoneUsageDescription")
+    # PH plan P1: EventKit under the hardened runtime needs the calendars entitlement AND both usage strings (macOS 14+
+    # reads the full-access one; older systems read the other). A missing string makes the request fail without a prompt.
+    for key in ("NSCalendarsFullAccessUsageDescription", "NSCalendarsUsageDescription"):
+        if not str(info.get(key, "")).strip():
+            found.append(f"Info.plist has no {key}")
     return found
 
 
@@ -84,7 +90,7 @@ def selftest(scratch: Path, binary: Path) -> int:
     dlv = scratch / "app-with-dlv.entitlements"
     dlv.write_bytes(plistlib.dumps({APPLE_EVENTS: True, "com.apple.security.cs.disable-library-validation": True}))
 
-    def make(name, app_ents=True, exe_ents=True, helper_ents=False, usage=True, app_dlv=False, microphone_usage=True, microphone_entitlement=True, cli_ents=None) -> Path:
+    def make(name, app_ents=True, exe_ents=True, helper_ents=False, usage=True, app_dlv=False, microphone_usage=True, microphone_entitlement=True, cli_ents=None, calendar_usage=True, calendar_entitlement=True) -> Path:
         app = scratch / name / "COS Control.app"
         (app / "Contents/MacOS").mkdir(parents=True)
         (app / "Contents/Resources").mkdir(parents=True)
@@ -93,6 +99,8 @@ def selftest(scratch: Path, binary: Path) -> int:
             info.pop("NSAppleEventsUsageDescription", None)
         if not microphone_usage:
             info.pop("NSMicrophoneUsageDescription", None)
+        if not calendar_usage:
+            info.pop("NSCalendarsFullAccessUsageDescription", None)
         (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
         main = app / "Contents/MacOS/COS Control"
         helper = app / "Contents/Resources/cos-control-helper"
@@ -115,6 +123,10 @@ def selftest(scratch: Path, binary: Path) -> int:
         if app_dlv:
             subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--entitlements", str(dlv), str(app)],
                            check=True, capture_output=True)
+        elif not calendar_entitlement:
+            cal_missing = scratch / (name + ".entitlements")
+            cal_missing.write_bytes(plistlib.dumps({APPLE_EVENTS: True, "com.apple.security.device.audio-input": True}))
+            subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--entitlements", str(cal_missing), str(app)], check=True, capture_output=True)
         elif not microphone_entitlement:
             mic_missing = scratch / (name + ".entitlements")
             mic_missing.write_bytes(plistlib.dumps({APPLE_EVENTS: True}))
@@ -133,6 +145,8 @@ def selftest(scratch: Path, binary: Path) -> int:
         ("no-usage-string", {"usage": False}, 1),
         ("no-microphone-usage", {"microphone_usage": False}, 1),
         ("no-microphone-entitlement", {"microphone_entitlement": False}, 1),
+        ("no-calendar-usage", {"calendar_usage": False}, 1),
+        ("no-calendar-entitlement", {"calendar_entitlement": False}, 1),
         ("app-disables-library-validation", {"app_dlv": True}, 1),
         ("cli-without-entitlements", {"cli_ents": False}, 0),
         ("cli-with-entitlements", {"cli_ents": True}, 1),
@@ -143,7 +157,7 @@ def selftest(scratch: Path, binary: Path) -> int:
         if got != want:
             bad.append(f"{name}: expected {'a failure' if want else 'a pass'}")
     if not ents.exists() or plistlib.loads(ents.read_bytes()) != APP_WANT:
-        bad.append("Resources/COSControl.entitlements is not exactly Apple Events + audio input")
+        bad.append("Resources/COSControl.entitlements is not exactly Apple Events + audio input + calendars")
     if plistlib.loads((repo / "Resources/Node.entitlements").read_bytes()) != NODE_WANT:
         bad.append("Resources/Node.entitlements is not exactly allow-jit + disable-library-validation")
     for line in bad:

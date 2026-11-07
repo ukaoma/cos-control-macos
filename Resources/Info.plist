@@ -36,6 +36,10 @@
 	<string>When you click Start recording, COS records the audio this Mac plays (every app, or one app you choose) so it can transcribe that meeting on this Mac. It does not record your microphone.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>COS reads the calendars you pick (Exchange, iCloud, Google, subscribed) on this Mac for meeting prep, Today and reminders. Nothing leaves this Mac except what you ask about.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>COS reads the calendars you pick (Exchange, iCloud, Google, subscribed) on this Mac for meeting prep, Today and reminders. Nothing leaves this Mac except what you ask about.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>When you use your dictation shortcut, COS records your selected microphone and transcribes it on this Mac with Parakeet Ultra or Whisper and your COS dictionary to enter text into your chosen app.</string>
 	<key>UTExportedTypeDeclarations</key>
