@@ -1,8 +1,14 @@
 {
-  "version": "0.5.376",
+  "version": "0.5.377",
   "whatsNew": {
-    "summary": "Prepare for a call with your notes and files, keep the prep conversation going, then explicitly add that context to the live meeting. Plus everything in 0.5.375.",
+    "summary": "The desktop pet counts top-level Codex sessions without adding a separate session for each delegated child. Plus everything in 0.5.376: prepare for a call with notes and files, then add the saved context to the meeting.",
     "sections": [
+      {
+        "title": "0.5.377",
+        "items": [
+          "The desktop pet no longer adds delegated Codex child sessions as extra running sessions. Its session list follows the parent conversations you work in."
+        ]
+      },
       {
         "title": "0.5.376",
         "items": [

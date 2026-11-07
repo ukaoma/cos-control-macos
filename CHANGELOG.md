@@ -1,3 +1,10 @@
+## 0.5.377 (build 431), pet session counts and staged Work file intake
+
+- **Pet session counts:** newly discovered Codex writer locks require readable parent-session metadata. Delegated child sessions no longer inflate the desktop pet count. Lock UUIDs and cached-row deduplication are preserved; normal session-cache ingress already filters children, and live pet discovery does not write that cache.
+- **Staged Work file intake:** adds a capability-gated, round-scoped helper and durable card-file import before history acknowledgement. Partial retries reuse verified copies, and changed attachment lists or retained files stop the request. Explicit assignment context selection is preserved.
+- **Availability:** the Work bridge remains inactive until the matching server implements ownership, retention and importer-capability checks. It does not provide pre-planner file access or claim end-to-end browser Work attachment support. Initial contract: five files, 100 MiB each; XLSX is not supported.
+- **Candidate:** includes everything in 0.5.376. Full QA, signing, installation and publication evidence are recorded separately.
+
 ## 0.5.376 (build 430), meeting prep with context and files
 
 - **Prep before a call:** Prep me opens a draft for notes and files. An explicit Prep click starts the brief; follow-ups stay in that prep conversation. The ordinary COS chat draft stays separate, and Prep can open when Drop It is disabled.
