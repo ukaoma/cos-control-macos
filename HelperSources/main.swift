@@ -693,6 +693,7 @@ final class COSControlHelper {
         case "work-request-claim": try emitWorkRequestClaim(args: args)
         case "work-request-result": try emitWorkRequestResult(args: args)
         case "self-test-work": try selfTestWork()
+        case "self-test-pet-discovery": try selfTestPetDiscovery()
         case "session-chat-turn": try emitSessionChatTurn(args: args)
         case "session-context": try emitSessionContext(args: args)
         case "work-session-meter": try emitWorkSessionMeter(args: args)
@@ -13681,6 +13682,14 @@ final class COSControlHelper {
         return found.sorted { $0.modified > $1.modified }.prefix(limit).map(\.id)
     }
 
+    /// New discovery must prove a readable top-level session. A writer lock also exists for every delegated child.
+    /// Keep the lock UUID as row identity: copied rollouts may carry another valid metadata id.
+    static func codexPetDiscoveryEligible(threadId: String, sessionsRoot: URL, calendar: Calendar = .current) -> Bool {
+        guard let rollout = codexRolloutURL(threadId: threadId, sessionsRoot: sessionsRoot, calendar: calendar),
+              let meta = peekCodexMeta(in: rollout), UUID(uuidString: meta.id) != nil else { return false }
+        return !meta.subagent
+    }
+
     /// 0.5.238: rows the pet should see that the cache has never listed: Codex threads a
     /// Codex process has open, and Cursor composers active right now. Ids already present
     /// are skipped, so a cached row always wins. State comes later, from the same rules as
@@ -13689,13 +13698,15 @@ final class COSControlHelper {
         existingIds: Set<String>,
         codexOpenIds: [String],
         codexNames: [String: String],
+        codexEligible: (String) -> Bool,
         cursorMeta: CursorComposerMeta,
         now: Date = Date()
     ) -> [[String: Any]] {
         var rows: [[String: Any]] = []
         var seen = Set(existingIds.map { $0.lowercased() })
-        for id in codexOpenIds where !seen.contains(id) {
-            seen.insert(id)
+        for id in codexOpenIds where !seen.contains(id.lowercased()) {
+            guard codexEligible(id) else { continue }
+            seen.insert(id.lowercased())
             rows.append([
                 "id": id, "provider": "codex", "name": codexNames[id] ?? "Codex session", "workspace": "",
                 "state": "recent", "status": "", "waitingFor": "", "alive": false, "reachable": false, "pinned": false,
@@ -14239,6 +14250,7 @@ final class COSControlHelper {
             existingIds: existing,
             codexOpenIds: unseenCodex,
             codexNames: unseenCodex.isEmpty ? [:] : Self.loadCodexThreadNames(sessionsRoot: codexSessions),
+            codexEligible: { Self.codexPetDiscoveryEligible(threadId: $0, sessionsRoot: codexSessions) },
             cursorMeta: composerMeta
         )
         peers = Self.petLiveRows(
@@ -20970,6 +20982,59 @@ final class COSControlHelper {
     private static func recentActivityVerified(_ body: [String: Any]) -> Bool {
         body["running_active"] is Bool && body["running_stamped"] as? Bool == true && body["runningDegraded"] as? Bool == false
     }
+    /// Bounded discovery regression only: private files, no server, provider, keychain or GUI.
+    private func selfTestPetDiscovery() throws {
+        guard let isolated = ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"], isolated.hasPrefix("/tmp/") else {
+            throw HelperError.message("Pet discovery checks require an isolated /tmp/ home.")
+        }
+        let root = URL(fileURLWithPath: isolated).appendingPathComponent("pet-discovery-" + UUID().uuidString)
+        try ensurePrivateDirectory(root)
+        defer { try? fm.removeItem(at: root) }
+        let sessions = root.appendingPathComponent("sessions"), locks = root.appendingPathComponent("thread-writer-locks")
+        try ensurePrivateDirectory(sessions); try ensurePrivateDirectory(locks)
+        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let parent = "01a00da5-8026-7bf3-a9cb-000000000001"
+        let children = (2...4).map { "01a00da5-8026-7bf3-a9cb-00000000000\($0)" }
+        let noMeta = "01a00da5-8026-7bf3-a9cb-000000000005"
+        let unreadable = "01a00da5-8026-7bf3-a9cb-000000000006"
+        let absent = "01a00da5-8026-7bf3-a9cb-000000000007"
+        let started = Date(timeIntervalSince1970: Double(UInt64("01a00da58026", radix: 16)!) / 1000)
+        let parts = calendar.dateComponents([.year, .month, .day], from: started)
+        let day = sessions.appendingPathComponent(String(format: "%04d/%02d/%02d", parts.year!, parts.month!, parts.day!))
+        try ensurePrivateDirectory(day)
+        func file(_ id: String) -> URL { day.appendingPathComponent("rollout-fixture-\(id).jsonl") }
+        func metadata(_ id: String, subagent: Bool, metaID: String? = nil) throws {
+            let row: [String: Any] = ["type": "session_meta", "payload": ["id": metaID ?? id, "thread_source": subagent ? "subagent" : "user", "source": "vscode"]]
+            try JSONSerialization.data(withJSONObject: row).write(to: file(id))
+        }
+        // A cloned rollout's metadata id must not replace the lock's exact UUID.
+        try metadata(parent, subagent: false, metaID: "11111111-2222-4333-8444-555555555555")
+        for id in children { try metadata(id, subagent: true) }
+        for id in [parent] + children { try Data().write(to: locks.appendingPathComponent(id + ".lock")) }
+        try Data("{\"type\":\"event_msg\",\"payload\":{}}".utf8).write(to: file(noMeta))
+        try Data([0xff, 0xfe, 0xff]).write(to: file(unreadable))
+        var passed = 0
+        func expect(_ condition: Bool, _ reason: String) throws {
+            guard condition else { throw HelperError.message("Pet discovery check failed: " + reason) }; passed += 1
+        }
+        let emptyCursor = CursorComposerMeta(names: [:], activity: [:])
+        let eligible = { (id: String) in Self.codexPetDiscoveryEligible(threadId: id, sessionsRoot: sessions, calendar: calendar) }
+        let open = Self.codexOpenThreadIds(locksDir: locks)
+        try expect(Set(open) == Set([parent] + children), "fixture has one parent and three child locks")
+        let found = Self.discoveredPetRows(existingIds: [], codexOpenIds: open, codexNames: [parent: "Parent work"], codexEligible: eligible, cursorMeta: emptyCursor)
+        try expect(found.count == 1 && found[0]["id"] as? String == parent, "one parent plus three delegated children produces one pet row")
+        try expect(found[0]["name"] as? String == "Parent work", "a valid uncached parent retains its title")
+        try expect(eligible(parent) && !children.contains(where: eligible), "bounded metadata proves parent eligibility")
+        try expect(!eligible(noMeta) && !eligible(unreadable) && !eligible(absent), "missing metadata, unreadable metadata and missing rollout fail closed for new discovery")
+        let unknown = Self.discoveredPetRows(existingIds: [], codexOpenIds: [noMeta, unreadable, absent], codexNames: [:], codexEligible: eligible, cursorMeta: emptyCursor)
+        try expect(unknown.isEmpty, "unproven locks add no new rows")
+        let cached = Self.discoveredPetRows(existingIds: [parent.uppercased()], codexOpenIds: open, codexNames: [:], codexEligible: eligible, cursorMeta: emptyCursor)
+        try expect(cached.isEmpty, "cached parent is not duplicated, ignoring case")
+        let repeated = Self.discoveredPetRows(existingIds: [], codexOpenIds: [parent, parent.uppercased()], codexNames: [:], codexEligible: eligible, cursorMeta: emptyCursor)
+        try expect(repeated.count == 1 && repeated[0]["id"] as? String == parent, "discovery preserves the first exact UUID and deduplicates case variants")
+        emit(ok: true, message: "Pet discovery checks passed", details: ["passed": passed])
+    }
+
     private func selfTestWork() throws {
         let workflow = "meeting-consolidation-v1"
         let cleanupCapability: [String: Any] = ["enabled": true, "protocolVersion": 1, "maintenanceWorkflows": [workflow]]
@@ -24416,6 +24481,7 @@ final class COSControlHelper {
                 existingIds: ["c-cached", codexThread],
                 codexOpenIds: [codexThread, "01a0b9c5-0271-7bd0-9072-3e29e33bd6d4"],
                 codexNames: ["01a0b9c5-0271-7bd0-9072-3e29e33bd6d4": "Voice Chat Title Request"],
+                codexEligible: { _ in true }, // Activity-state fixture; the separate discovery check reads real metadata.
                 cursorMeta: meta, now: petNow)
             let discoveredIds = Set(discovered.compactMap { $0["id"] as? String })
             try expect(discoveredIds == ["01a0b9c5-0271-7bd0-9072-3e29e33bd6d4", "c-live"],
