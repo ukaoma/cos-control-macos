@@ -21,9 +21,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.5.377</string>
+	<string>0.5.378</string>
 	<key>CFBundleVersion</key>
-	<string>431</string>
+	<string>432</string>
 	<key>COSWorkChatEnabled</key>
 	<true/>
 	<key>LSMinimumSystemVersion</key>
@@ -34,12 +34,12 @@
 	<string>COS Control brings your Claude, Cursor or Terminal session to the front when you jump to it, and opens Terminal on the exact command when you choose Sign in or Run in Terminal during setup.</string>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>When you click Start recording, COS records the audio this Mac plays (every app, or one app you choose) so it can transcribe that meeting on this Mac. It does not record your microphone.</string>
-	<key>NSHighResolutionCapable</key>
-	<true/>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>COS reads the calendars you pick (Exchange, iCloud, Google, subscribed) on this Mac for meeting prep, Today and reminders. Nothing leaves this Mac except what you ask about.</string>
 	<key>NSCalendarsUsageDescription</key>
 	<string>COS reads the calendars you pick (Exchange, iCloud, Google, subscribed) on this Mac for meeting prep, Today and reminders. Nothing leaves this Mac except what you ask about.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>When you use your dictation shortcut, COS records your selected microphone and transcribes it on this Mac with Parakeet Ultra or Whisper and your COS dictionary to enter text into your chosen app.</string>
 	<key>UTExportedTypeDeclarations</key>

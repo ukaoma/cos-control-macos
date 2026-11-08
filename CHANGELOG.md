@@ -1,3 +1,11 @@
+## 0.5.378 (build 432), calendars through EventKit (PH plan P1)
+
+- **Calendars:** Settings, Activity home, Calendars reads macOS Calendar through EventKit (Exchange, iCloud, every Google account, subscribed ICS). Access is asked for only on Connect, never at launch; nothing is picked after the grant. Only picked calendars are written.
+- **Snapshot:** `~/.cos-glasses/data/calendar/snapshot.json` (or `COS_DATA_DIR`): folder 0700, file 0600, atomic, class C. Written on connect, every 5 minutes and 2 s after a calendar change. Notes are scanned in memory for a Zoom, Teams or Meet link and never stored; attendees keep names and email domains only. Losing access writes an access-denied tombstone; Turn off deletes the file.
+- **Signing:** + `com.apple.security.personal-information.calendars`, both calendar usage strings, release entitlement gate and its selftest updated. EventKit linked.
+- **Server:** pairs with 6.99.34 (`calendar-source.ts`). Older servers ignore the file.
+- **Candidate:** includes everything in 0.5.377.
+
 ## 0.5.377 (build 431), pet session counts and staged Work file intake
 
 - **Pet session counts:** newly discovered Codex writer locks require readable parent-session metadata. Delegated child sessions no longer inflate the desktop pet count. Lock UUIDs and cached-row deduplication are preserved; normal session-cache ingress already filters children, and live pet discovery does not write that cache.

@@ -1,8 +1,17 @@
 {
-  "version": "0.5.377",
+  "version": "0.5.378",
   "whatsNew": {
-    "summary": "The desktop pet counts top-level Codex sessions without adding a separate session for each delegated child. Plus everything in 0.5.376: prepare for a call with notes and files, then add the saved context to the meeting.",
+    "summary": "Calendars: COS can read the calendars on this Mac (Exchange, iCloud, Google, subscribed) for Next up, Today and prep. Off until you choose Connect in Settings, and you pick which calendars count. Plus everything in 0.5.377.",
     "sections": [
+      {
+        "title": "0.5.378",
+        "items": [
+          "Settings, Activity home, Calendars: choose Connect and allow calendar access, then tick the calendars that count. None are ticked until you do.",
+          "Next up and Today use your real day from every account in macOS Calendar. Declined meetings, all-day items and shared family travel are left out.",
+          "The calendar stays on this Mac in a file only you can read. Meeting notes are never saved. Turn it off any time; COS stops using it at once.",
+          "Today's calendar needs the matching COS server update."
+        ]
+      },
       {
         "title": "0.5.377",
         "items": [
