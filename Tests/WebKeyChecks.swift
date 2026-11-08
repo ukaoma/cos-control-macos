@@ -676,6 +676,13 @@ struct WebKeyChecks {
         fake.answers["pending"] = (200, ["ok": true, "pending": pending])
         fake.listeners = ["servicePID": 4242, "ports": ["3141": [["pid": 4243, "underService": true]], "3143": [["pid": 4243, "underService": true]], "3144": [["pid": 66, "underService": false]]]]
         fake.listeners = audited(fake.listeners)
+        // Registration's genuine audit is still fresh at this fixed clock. Observe the new listener before testing
+        // the negative-audit card gate; changing the adapter alone does not invalidate the 60-second cached proof.
+        let listenerCallsBeforeForeignAudit = fake.count("listeners")
+        await state.runAudit()
+        check(fake.count("listeners") == listenerCallsBeforeForeignAudit + 1
+              && state.audit?.genuine == false && state.audit?.reason == "port_3144_foreign_listener",
+              "W9 observed foreign listener", "an explicit audit observes the changed listener and fails closed")
         await state.refresh()
         check(state.pendingWithoutAudit && state.card == nil && state.cardRefusal == nil, "W9 no card without the audit", "a foreign listener on 3144")
         // The audit passes: the card, from the bytes.
