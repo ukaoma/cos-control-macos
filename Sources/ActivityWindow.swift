@@ -6475,6 +6475,8 @@ struct ClaudeSessionDetailPane: View {
                                 } else {
                                     COSMarkdownView(text: turn.text)
                                 }
+                                // 0.5.380: the files and images this turn made, as cards that open with Quick Look.
+                                SessionPreviewTurnCards(store: model.sessionPreviews, turnID: turn.id)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(16)
@@ -6484,6 +6486,8 @@ struct ClaudeSessionDetailPane: View {
                                     .stroke((turn.isUser ? ActivitySection.sessions.tint : COSPalette.green).opacity(0.22), lineWidth: 1)
                             )
                         }
+                        // Cards whose reply is not among the turns shown (no time to place them by, or older).
+                        SessionPreviewUnplacedCards(store: model.sessionPreviews)
                     }
                     .padding(24)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -6548,6 +6552,8 @@ struct ClaudeSessionDetailPane: View {
                 SessionChatComposer(model: model)
             }
         }
+        // 0.5.380: Quick Look on the private copy; closing it deletes the copy (SessionPreviewStore.quickLookURL).
+        .background(SessionPreviewQuickLook(store: model.sessionPreviews))
         .cosConfirm(
             "Send into an open session?",
             isPresented: Binding(
@@ -6568,6 +6574,198 @@ struct ClaudeSessionDetailPane: View {
         case "cursor": Color(red: 0.42, green: 0.38, blue: 0.86)
         default: Color(red: 0.78, green: 0.45, blue: 0.22)
         }
+    }
+}
+
+// MARK: - Session file and image cards (0.5.380, preview engine phase 1)
+
+/// The cards placed on one turn of the Sessions pane.
+struct SessionPreviewTurnCards: View {
+    @ObservedObject var store: SessionPreviewStore
+    let turnID: String
+
+    var body: some View {
+        if let groups = store.placement.byTurn[turnID], !groups.isEmpty {
+            SessionPreviewGroups(store: store, groups: groups)
+                .padding(.top, 2)
+        }
+    }
+}
+
+/// Cards the pane could not put beside a turn on screen, after the conversation.
+struct SessionPreviewUnplacedCards: View {
+    @ObservedObject var store: SessionPreviewStore
+
+    var body: some View {
+        if !store.placement.unplaced.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("From recent replies")
+                    .font(COSType.body(12.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                SessionPreviewGroups(store: store, groups: store.placement.unplaced)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+            .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 13))
+            .overlay(RoundedRectangle(cornerRadius: 13).stroke(COSPalette.line, lineWidth: 1))
+        }
+    }
+}
+
+/// Hosts Quick Look for the pane. A zero-size view that lives as long as the pane does.
+struct SessionPreviewQuickLook: View {
+    @ObservedObject var store: SessionPreviewStore
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .quickLookPreview($store.quickLookURL)
+            .onDisappear { store.quickLookURL = nil }
+    }
+}
+
+struct SessionPreviewGroups: View {
+    @ObservedObject var store: SessionPreviewStore
+    let groups: [SessionPreviewTurn]
+
+    var body: some View {
+        let items = groups.flatMap(\.items)
+        let pictures = items.filter(\.isPicture)
+        let files = items.filter { !$0.isPicture }
+        let more = groups.reduce(0) { $0 + $1.more }
+        VStack(alignment: .leading, spacing: 10) {
+            if groups.contains(where: \.previewsOff) {
+                Text(SessionPreviewStore.offLine)
+                    .font(COSType.body(11.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !pictures.isEmpty || more > 0 {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 132, maximum: 132), spacing: 10, alignment: .topLeading)],
+                          alignment: .leading, spacing: 10) {
+                    ForEach(pictures) { item in SessionPreviewPictureCard(store: store, item: item) }
+                    if more > 0 {
+                        Text("+\(more) more")
+                            .font(COSType.body(12))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 88, height: 88)
+                            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(COSPalette.line, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                            .help(more == 1 ? "One more image in this step is not shown here." : "\(more) more images in this step are not shown here.")
+                    }
+                }
+            }
+            ForEach(files) { item in SessionPreviewFileCard(store: store, item: item) }
+        }
+    }
+}
+
+/// A picture: its thumbnail, fetched when the card first appears, or its state in words.
+struct SessionPreviewPictureCard: View {
+    @ObservedObject var store: SessionPreviewStore
+    let item: SessionPreviewItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button { store.open(item) } label: {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10).fill(COSPalette.raised)
+                    if let image = store.thumbnails[item.id] {
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: 132, height: 88, alignment: .top)
+                            .clipped()
+                    } else if let line = item.unavailableLine {
+                        Text(line)
+                            .font(COSType.body(10.5))
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(8)
+                    } else {
+                        Image(systemName: "photo")
+                            .font(.system(size: 18))
+                            .foregroundStyle(.tertiary)
+                    }
+                    if store.opening == item.id { ProgressView().controlSize(.small) }
+                }
+                .frame(width: 132, height: 88)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line, lineWidth: 1))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!item.opens)
+            .help(item.opens ? "Quick Look" : (item.unavailableLine ?? ""))
+            .accessibilityLabel(item.opens ? "Quick Look \(item.title)" : "\(item.title). \(item.unavailableLine ?? "")")
+            .task(id: item.id) { await store.loadThumbnail(item) }
+            Text(item.title)
+                .font(COSType.body(11.5))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(width: 132, alignment: .leading)
+            if let note = store.notes[item.id] {
+                Text(note)
+                    .font(COSType.body(10.5))
+                    .foregroundStyle(COSPalette.danger)
+                    .frame(width: 132, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+/// A file or a link: its type, name and size, opened with Quick Look on a private copy.
+struct SessionPreviewFileCard: View {
+    @ObservedObject var store: SessionPreviewStore
+    let item: SessionPreviewItem
+
+    var body: some View {
+        Button { store.open(item) } label: {
+            HStack(alignment: .center, spacing: 12) {
+                Text(item.badge)
+                    .font(COSType.mono(10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 44, height: 44)
+                    .background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(COSPalette.line, lineWidth: 1))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.title)
+                        .font(COSType.body(13, weight: .medium))
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                    Text(item.meta)
+                        .font(COSType.body(11.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let line = store.notes[item.id] ?? item.unavailableLine {
+                        Text(line)
+                            .font(COSType.body(11.5))
+                            .foregroundStyle(store.notes[item.id] != nil ? COSPalette.danger : .secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 8)
+                if store.opening == item.id {
+                    ProgressView().controlSize(.small)
+                } else if item.opens {
+                    Image(systemName: "eye")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: 560, alignment: .leading)
+            .background(COSPalette.raised.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(COSPalette.line, lineWidth: 1))
+            .opacity(item.opens ? 1 : 0.8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!item.opens)
+        .help(item.opens ? "Quick Look" : (item.unavailableLine ?? ""))
+        .accessibilityLabel(item.opens ? "Quick Look \(item.title)" : "\(item.title). \(item.unavailableLine ?? "")")
     }
 }
 
