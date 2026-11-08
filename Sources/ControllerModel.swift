@@ -755,6 +755,12 @@ final class ControllerModel: ObservableObject {
         return { input in try await helper.run([verb], timeout: timeout, stdinData: input, answers: true) }
     }
     private let mediaFetchGate = MediaFetchGate()
+    /// 0.5.380 (preview engine phase 1): the open session's file and image cards (Sources/SessionPreviews.swift), fetched
+    /// through the helper into a private copy that Quick Look shows.
+    lazy var sessionPreviews: SessionPreviewStore = {
+        let helper = self.helper
+        return SessionPreviewStore { arguments, stdin in try await helper.run(arguments, timeout: 45, stdinData: stdin).details }
+    }()
     private var refreshTask: Task<Void, Never>?
     private var updateCheckTask: Task<Void, Never>?
     private var speakerReviewTask: Task<Void, Never>?
@@ -855,6 +861,8 @@ final class ControllerModel: ObservableObject {
         whatsNewSeen = WhatsNewSeenStore(defaults: .standard)
         beginPostUpdateWhatsNew()
         try? Self.pruneMediaHandoffs()
+        // 0.5.380: preview copies a quit or a crash left behind (each is deleted when Quick Look closes).
+        SessionPreviewStore.sweep()
         observeScreenState()
         refreshTask = Task { [weak self] in
             await self?.refresh()
@@ -7330,11 +7338,14 @@ final class ControllerModel: ObservableObject {
         // 0.5.229: a scheduled job keeps no transcript and nothing to continue; the pane shows its facts.
         guard !session.isScheduledJob else {
             claudeSessionDetailLoading = false
+            sessionPreviews.clear()
             return
         }
         claudeSessionDetailTask = Task { [weak self] in
             await self?.fetchClaudeSessionDetail(session)
         }
+        // 0.5.380: the session's file and image cards, from the server's own descriptors (no cards on an older server).
+        sessionPreviews.load(provider: session.provider, sessionID: session.sessionId)
         prepareSessionChat(session)
         startSessionStream(session)
     }
@@ -7450,6 +7461,7 @@ final class ControllerModel: ObservableObject {
                 return
             }
             claudeSessionDetail = detail
+            sessionPreviews.noteLocalTurns(detail.turns.map { .init(id: $0.id, role: $0.role, timestamp: $0.timestamp) })
         } catch {
             guard !Task.isCancelled, openClaudeRow?.id == session.id else { return }
             claudeSessionDetailError = error.localizedDescription
@@ -7458,6 +7470,7 @@ final class ControllerModel: ObservableObject {
 
     func closeClaudeSession() {
         stopSessionStream()
+        sessionPreviews.clear()
         claudeSessionDetailTask?.cancel()
         claudeSessionDetailTask = nil
         claudeSessionDetailLoading = false
@@ -7789,6 +7802,7 @@ final class ControllerModel: ObservableObject {
         claudeSessionDetailTask = Task { [weak self] in
             await self?.fetchClaudeSessionDetail(session)
         }
+        sessionPreviews.reload()
     }
 
     static func bindingKey(_ session: ClaudeSession) -> String {

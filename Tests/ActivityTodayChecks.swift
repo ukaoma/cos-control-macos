@@ -1137,7 +1137,7 @@ import Foundation
         let env = TodaySummary.Settings(.object(["enabled": .bool(false), "source": .string("env"), "saved": .null]))
         check(env?.locked == true && env?.detail == "Set on the Mac by the server environment.", "COS_TODAY_BRIEF_LLM locks it")
         let capped = TodaySummary.Settings(.object(["enabled": .bool(true), "source": .string("settings"), "status": .object(["kind": .string("daily_cap"), "count": .number(60)])]))
-        check(capped?.statusLine() == "Today\u{2019}s 60 are used. It writes again tomorrow.", "the daily cap line", capped?.statusLine() ?? "nil")
+        check(capped?.statusLine() == "Today\u{2019}s 60 summaries are used. It writes again tomorrow.", "the daily cap line (0.5.380 copy; an older server sends only the count)", capped?.statusLine() ?? "nil")
         let paused = TodaySummary.Settings(.object(["enabled": .bool(true), "source": .string("settings"), "status": .object(["kind": .string("paused"), "until": .string(iso(at("2026-10-21 15:47")))])]))
         check(paused?.statusLine(calendar: calendar) == "Paused after three failed tries. It tries again at 3:47 PM.", "the paused line", paused?.statusLine(calendar: calendar) ?? "nil")
         let timedOut = TodaySummary.Settings(.object(["enabled": .bool(true), "source": .string("settings"), "status": .object(["kind": .string("failed"), "at": .string(iso(at("2026-10-21 14:40"))), "code": .string("timeout")])]))

@@ -8,7 +8,7 @@ TodayBriefView. Control restates them in Sources/Models.swift (TodaySummary, its
 
     today-brief-parity-pins.py <control root> [<server today-brief.ts>]
 
-The server file is the second argument, else COS_SERVER_TODAY_BRIEF, else the first that exists of the 7.0.4 release
+The server file is the second argument, else COS_SERVER_TODAY_BRIEF, else the first that exists of the 7.0.5 release (0.5.380 pairs with 7.0.5)
 worktree and the server checkout. None found is a failure, never a skip: a pin that cannot read the server proves nothing.
 """
 import json, os, pathlib, re, sys
@@ -23,7 +23,7 @@ for h in (pathlib.Path.home(), pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)):
 candidates = [sys.argv[2]] if len(sys.argv) > 2 else []
 candidates.append(os.environ.get("COS_SERVER_TODAY_BRIEF", ""))
 for home in homes:
-    candidates += [str(home / "cos-worktrees/server-tool-images-release-7.0.4/server/lib/today-brief.ts"),
+    candidates += [str(home / "cos-worktrees/server-preview-705/server/lib/today-brief.ts"),
                    str(home / "Documents/GitHub/cos-glasses-app/server/lib/today-brief.ts")]
 server_path = next((pathlib.Path(c) for c in candidates if c and pathlib.Path(c).is_file()), None)
 if server_path is None:
@@ -64,8 +64,15 @@ body_bytes = ts_number("TODAY_BRIEF_BODY_MAX_BYTES")
 blurb = re.search(r'static let blurb = "([^"\n]*)"', models)
 blurb = blurb.group(1) if blurb else ""
 need(interval_ms is not None and f"at most every {interval_ms // 60000} minutes" in blurb, "the blurb's interval is the server's TODAY_BRIEF_MIN_INTERVAL_MS")
-need(cap is not None and f"{cap} times a day" in blurb, "the blurb's daily count is the server's TODAY_BRIEF_DAILY_CAP")
-need(cap is not None and f"statusCount ?? {cap}" in models, "the daily-cap line's fallback is the server's TODAY_BRIEF_DAILY_CAP")
+# 0.5.380: the count is a setting now, so the blurb names it instead of a number (no stale "60 times a day").
+need("no more than Summaries per day allows" in blurb and 'static let label = "Summaries per day"' in models and not re.search(r"\d+ times a day", blurb),
+     "the blurb names the Summaries per day setting, never a fixed daily count")
+# 0.5.380: "Summaries per day" (server 7.0.5). The default, the range and the copy all follow the server.
+cap_min, cap_max = ts_number("TODAY_BRIEF_DAILY_CAP_MIN"), ts_number("TODAY_BRIEF_DAILY_CAP_MAX")
+need(cap is not None and f"static let defaultCap = {cap}" in models, "Cap.defaultCap is the server's TODAY_BRIEF_DAILY_CAP")
+need(cap_min is not None and cap_max is not None and f'o["min"]?.int ?? {cap_min}' in models and f'Swift.min({cap_max}, o["max"]?.int ?? {cap_max})' in models,
+     "the cap's range fallbacks are the server's TODAY_BRIEF_DAILY_CAP_MIN and _MAX")
+need(cap_min is not None and cap_max is not None and f"{cap_min} to {cap_max}." in models, "the Summaries per day copy names the server's range")
 need(force_ms is not None and f"at most every {force_ms // 1000} seconds" in blurb, "the blurb's refresh floor is the server's TODAY_BRIEF_FORCE_MIN_MS")
 need(force_ms is not None and swift_int("refreshFloorSeconds") == force_ms // 1000, "refreshFloorSeconds is the server's TODAY_BRIEF_FORCE_MIN_MS")
 need(body_bytes is not None and swift_int("bodyMaxBytes") == body_bytes, "TodaySummary.bodyMaxBytes is the server's TODAY_BRIEF_BODY_MAX_BYTES")

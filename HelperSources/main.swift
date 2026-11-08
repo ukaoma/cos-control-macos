@@ -581,6 +581,7 @@ final class COSControlHelper {
         case "work-your-move": try emitWorkYourMove()
         case "today-brief": try emitTodayBrief()
         case "today-brief-settings": try emitTodayBriefSettings(args: args)
+        case "today-brief-cap": try emitTodayBriefCap(args: args)
         case "activity-today": try emitActivityToday(args: args)
         case "work-set-stage":
             if args.count > 1 { try emitWorkStage(args: args) } else { try emitWorkUpdate(action: "stage") }
@@ -703,6 +704,8 @@ final class COSControlHelper {
         case "session-chat-fork-status": try emitSessionChatForkStatus(args: args)
         case "session-chat-reply": try emitSessionChatReply(args: args)
         case "session-recent-replies": try emitSessionRecentReplies(args: args)
+        case "session-previews": try emitSessionPreviews(args: args)
+        case "session-preview-fetch": try emitSessionPreviewFetch()
         case "meeting-stranded-save": try emitMeetingStrandedSave(args: args)
         case "meeting-stop-request": try emitMeetingStopRequest(args: args)
         case "live-cues-settings": try emitLiveCuesSettings(args: args)
@@ -5253,14 +5256,16 @@ final class COSControlHelper {
     static let todayBriefBodyMaxBytes = 48 * 1024
 
     /// The today-brief exchange apart from its transport, so the self-test drives it with a stub (`ask` nil: nothing
-    /// answered). A 7.0.0 server's 400 invalid_today_brief to the unknown `force` is asked again without it; a 404 is an
-    /// older server; anything else that is not a 200 body is a failed ask with its status.
+    /// answered). A server that refuses a field it does not know (400 invalid_today_brief) is asked again without it:
+    /// 0.5.380 drops `reason` first (a server before 7.0.5), then `force` (a 7.0.0 server). A 404 is an older server;
+    /// anything else that is not a 200 body is a failed ask with its status.
     static func todayBriefExchange(_ request: [String: Any], ask: ([String: Any]) throws -> HTTPResponse?) throws -> (message: String, details: [String: Any]) {
         var body = request
         let unreachable: (message: String, details: [String: Any]) = ("Today summary unavailable", ["available": false, "reason": "unreachable"])
         guard var response = try ask(body) else { return unreachable }
-        if response.status == 400, body["force"] != nil, ((response.body?["error"] as? [String: Any])?["code"] as? String) == "invalid_today_brief" {
-            body.removeValue(forKey: "force")
+        for key in ["reason", "force"] where response.status == 400 && body[key] != nil
+            && ((response.body?["error"] as? [String: Any])?["code"] as? String) == "invalid_today_brief" {
+            body.removeValue(forKey: key)
             guard let again = try ask(body) else { return unreachable }
             response = again
         }
@@ -5295,6 +5300,38 @@ final class COSControlHelper {
         }
         body["available"] = true
         emit(ok: true, message: change == nil ? "Today summary setting" : (change == "on" ? "Today summary on" : "Today summary off"), details: body)
+    }
+
+    /// 0.5.380 (Miles 2026-11-08, server 7.0.5): "Summaries per day", the server's daily cap for the Today summary. GET
+    /// /api/today/brief/settings/cap, or with `--set N` PUT { dailyCap: N } (the server clamps to 1 to 100 and answers what it
+    /// saved). A 404 is a server without the setting: `available: false`, and Settings shows no row.
+    static func todayBriefCapValue(_ raw: String?) -> Int? {
+        guard let raw, raw.count <= 3, let n = Int(raw), (1...100).contains(n) else { return nil }
+        return n
+    }
+
+    private func emitTodayBriefCap(args: [String]) throws {
+        let change = option("--set", in: args)
+        let value = Self.todayBriefCapValue(change)
+        if change != nil, value == nil { throw HelperError.message("Choose a number from 1 to 100.") }
+        let candidate = try reviewCandidateTransport()
+        let token = try candidate?.token ?? readToken()
+        let response: HTTPResponse?
+        if let value {
+            response = request("/api/today/brief/settings/cap", method: "PUT", token: token, body: "{\"dailyCap\":\(value)}",
+                               timeout: 8, reviewCandidatePort: candidate?.port)
+        } else {
+            response = request("/api/today/brief/settings/cap", token: token, timeout: 8, reviewCandidatePort: candidate?.port)
+        }
+        guard let response else { throw HelperError.message("Server stopped") }
+        if response.status == 404 { emit(ok: true, message: "Not available on this server", details: ["available": false]); return }
+        guard response.status == 200, let body = response.body, let cap = body["dailyCap"] as? Int else {
+            let message = (response.body?["error"] as? [String: Any])?["message"] as? String
+            throw HelperError.message(message ?? "Summaries per day could not be \(value == nil ? "read" : "saved").")
+        }
+        var details: [String: Any] = ["available": true, "dailyCap": cap]
+        for key in ["min", "max", "default", "usedToday"] { if let n = body[key] as? Int { details[key] = n } }
+        emit(ok: true, message: value == nil ? "Summaries per day" : "Summaries per day saved", details: details)
     }
 
     private func emitWorkTasks() throws {
@@ -21767,6 +21804,258 @@ final class COSControlHelper {
         ])
     }
 
+    // MARK: Session previews (0.5.380, preview engine phase 1, plan item 6)
+    //
+    // The Sessions pane draws its cards from the server's own descriptors, the ones Control Web draws: `recent_turns` of
+    // GET /api/agent-sessions/:provider/:id?turns=40 carries, per message, toolImages (ti_), outputImages (ai_),
+    // outputFiles (af_) and, from the preview engine, outputLinks (al_). Only opaque ids, base names and types cross,
+    // never a path. Opening a card fetches its bytes through the same routes the web uses, where the server
+    // re-authorizes the id (plan decision 8a: one authorization path, the server's; Control is never handed the real
+    // path), into a private copy, SessionPreviews/<uuid>/<name> under Control's cache (folder 0700, file 0600). The app
+    // opens that copy with Quick Look and deletes it when Quick Look closes, and sweeps the folder at launch.
+    static let sessionPreviewTurns = 40
+    static let sessionPreviewRawMax = 32 * 1024 * 1024
+    static let sessionPreviewThumbMax = 8 * 1024 * 1024
+    static let sessionPreviewReasons: Set<String> = ["outside_workspace", "missing", "unavailable", "too_large", "blocked_name", "secret_file"]
+    static let sessionPreviewSecretReasons: Set<String> = ["blocked_name", "secret_file"]
+    static let sessionPreviewToolLabels: Set<String> = ["Read", "Screenshot", "Image", "Attached"]
+    static let sessionPreviewKinds: Set<String> = ["image", "pdf", "html", "markdown", "text", "code", "table", "document", "slides",
+                                                   "sheet", "audio", "video", "folder", "archive", "artifact_link", "file"]
+    /// Each source and the id prefix it must carry.
+    static let sessionPreviewPrefixes: [String: String] = ["image": "ai_", "file": "af_", "link": "al_", "tool": "ti_"]
+
+    static func sessionPreviewSource(_ id: String) -> String? {
+        sessionPreviewPrefixes.first { id.hasPrefix($0.value) }?.key
+    }
+
+    static func sessionPreviewID(_ raw: Any?, source: String) -> String? {
+        guard let id = raw as? String, let prefix = sessionPreviewPrefixes[source], id.hasPrefix(prefix), id.utf8.count == 67,
+              id.utf8.dropFirst(3).allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return nil }
+        return id
+    }
+
+    static func sessionPreviewInt(_ raw: Any?) -> Int? {
+        guard let number = raw as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let value = number.doubleValue
+        guard value.isFinite, value == value.rounded(), abs(value) < 1e12 else { return nil }
+        return Int(value)
+    }
+
+    /// Words for people: no control characters, at most `max` characters, nil when empty.
+    static func sessionPreviewPlain(_ raw: Any?, max: Int) -> String? {
+        guard let text = raw as? String else { return nil }
+        let clean = String(String.UnicodeScalarView(text.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }))
+            .trimmingCharacters(in: .whitespaces)
+        return clean.isEmpty ? nil : String(clean.prefix(max))
+    }
+
+    /// A base name, for people and for the copy's file name: the last path component only, no control characters, no
+    /// leading dots, a colon as a hyphen, at most 120 characters with the extension kept.
+    static func sessionPreviewName(_ raw: Any?) -> String? {
+        guard let text = raw as? String else { return nil }
+        let last = text.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init) ?? ""
+        var clean = String(String.UnicodeScalarView(last.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }))
+            .replacingOccurrences(of: ":", with: "-")
+        while clean.hasPrefix(".") || clean.hasPrefix(" ") { clean.removeFirst() }
+        clean = clean.trimmingCharacters(in: .whitespaces)
+        guard !clean.isEmpty else { return nil }
+        if clean.count > 120 {
+            let ext = (clean as NSString).pathExtension
+            let keep = ext.isEmpty || ext.count > 10 ? "" : "." + ext
+            clean = String(clean.prefix(120 - keep.count)) + keep
+        }
+        return clean
+    }
+
+    /// One descriptor, checked key by key. Nothing else crosses: no path, no server notice text (the app has its own
+    /// words). A name the server says may hold secrets is never available, whatever its state says.
+    static func sessionPreviewItem(_ raw: Any?, source: String) -> [String: Any]? {
+        guard let o = raw as? [String: Any], let id = sessionPreviewID(o["id"], source: source) else { return nil }
+        let state = o["state"] as? String
+        guard state == "available" || state == "unavailable" else { return nil }
+        var reason = (o["reason"] as? String).flatMap { sessionPreviewReasons.contains($0) ? $0 : nil }
+        if state == "unavailable", reason == nil { reason = "unavailable" }
+        let secret = reason.map { sessionPreviewSecretReasons.contains($0) } ?? false
+        let available = state == "available" && !secret
+        var item: [String: Any] = ["id": id, "source": source, "available": available]
+        if !available, let reason { item["reason"] = reason }
+        switch source {
+        case "image":
+            item["name"] = sessionPreviewName(o["label"]) ?? "Image"
+            item["kind"] = "image"; item["type"] = "Image"
+        case "tool":
+            let tool = (o["tool"] as? String).flatMap { sessionPreviewToolLabels.contains($0) ? $0 : nil } ?? "Image"
+            item["name"] = tool; item["kind"] = "image"; item["type"] = "Image"
+            if let index = sessionPreviewInt(o["index"]), let total = sessionPreviewInt(o["total"]),
+               index >= 1, total >= index, total <= 99 {
+                item["index"] = index; item["total"] = total
+            }
+        case "file", "link":
+            guard let name = sessionPreviewName(o["name"]) else { return nil }
+            item["name"] = name
+            let kind = o["kind"] as? String ?? "file"
+            item["kind"] = sessionPreviewKinds.contains(kind) ? kind : "file"
+            item["type"] = sessionPreviewPlain(o["type"], max: 40) ?? "File"
+            if source == "link" {
+                if let label = sessionPreviewPlain(o["label"], max: 200), label != name { item["label"] = label }
+                if let line = sessionPreviewInt(o["line"]), line >= 1, line <= 10_000_000 { item["line"] = line }
+            }
+        default:
+            return nil
+        }
+        if let size = sessionPreviewInt(o["size"]), size >= 0 { item["size"] = size }
+        return item
+    }
+
+    /// The pane's cards, per message, from a detail answer. `absent`: the server sent no recent turns (older than 6.50.0),
+    /// so there is nothing to show and nothing is wrong. A message marked `previewsOff` carries no ids and no names, and
+    /// nothing it might still carry is read.
+    static func sessionPreviewsAnswer(_ body: [String: Any]?) -> [String: Any] {
+        guard let turns = body?["recent_turns"] as? [Any] else { return ["state": "absent", "turns": [], "previewsOff": false] }
+        var out: [[String: Any]] = []
+        var off = false
+        var seen = Set<String>()
+        for raw in turns.prefix(sessionPreviewTurns) {
+            guard let turn = raw as? [String: Any] else { continue }
+            let role = turn["role"] as? String == "assistant" ? "assistant" : "user"
+            let at = sessionPreviewPlain(turn["at"], max: 40) ?? ""
+            if turn["previewsOff"] as? Bool == true {
+                off = true
+                out.append(["role": role, "at": at, "items": [], "more": 0, "previewsOff": true])
+                continue
+            }
+            var items: [[String: Any]] = []
+            for (key, source) in [("toolImages", "tool"), ("outputImages", "image"), ("outputFiles", "file"), ("outputLinks", "link")] {
+                for rawItem in ((turn[key] as? [Any]) ?? []).prefix(25) {
+                    guard let item = sessionPreviewItem(rawItem, source: source), let id = item["id"] as? String,
+                          seen.insert(id).inserted else { continue }
+                    items.append(item)
+                }
+            }
+            let more = sessionPreviewInt(turn["toolImagesMore"]).map { min(max($0, 0), 999) } ?? 0
+            guard !items.isEmpty || more > 0 else { continue }
+            out.append(["role": role, "at": at, "items": items, "more": more, "previewsOff": false])
+        }
+        return ["state": "ready", "turns": out, "previewsOff": off]
+    }
+
+    /// The route a card's bytes come from: the one Control Web uses for that id. A thumbnail exists only for pictures.
+    static func sessionPreviewRoute(provider: String, session: String, id: String, part: String) -> String? {
+        let base = "/api/agent-sessions/\(provider)/\(session)"
+        switch (String(id.prefix(3)), part) {
+        case ("ai_", "raw"): return base + "/output-images/\(id)/content?variant=phone"
+        case ("ai_", "thumb"): return base + "/output-images/\(id)/content?variant=thumb"
+        case ("ti_", "raw"), ("ti_", "thumb"): return base + "/tool-images/\(id)/content"
+        case ("af_", "raw"): return base + "/output-files/\(id)/content"
+        case ("al_", "raw"), ("al_", "thumb"): return "/api/preview/agent-sessions/\(provider)/\(session)/\(id)/content?part=\(part)"
+        default: return nil
+        }
+    }
+
+    /// A refusal in the pane's words. A 404 that is not JSON is a server without the route (`absent`), not a missing file.
+    static func sessionPreviewRefusal(status: Int, body: [String: Any]?) -> String {
+        let code = body?["error"] as? String
+        switch status {
+        case 401: return "unauthorized"
+        case 403:
+            if code == "previews_off" { return "off" }
+            if code == "secret_file_denied" || code == "blocked_name" { return "secret" }
+            return "unauthorized"
+        case 404: return body == nil ? "absent" : "missing"
+        case 413: return "too_large"
+        default: return "unavailable"
+        }
+    }
+
+    static func sessionPreviewImageExtension(_ data: Data) -> String? {
+        let b = [UInt8](data.prefix(12))
+        if b.count >= 3, b[0] == 0xff, b[1] == 0xd8, b[2] == 0xff { return "jpg" }
+        if b.count >= 8, b[0..<8].elementsEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) { return "png" }
+        if b.count >= 6, b[0..<4].elementsEqual([0x47, 0x49, 0x46, 0x38]) { return "gif" }
+        if b.count >= 12, b[0..<4].elementsEqual([0x52, 0x49, 0x46, 0x46]), b[8..<12].elementsEqual([0x57, 0x45, 0x42, 0x50]) { return "webp" }
+        return nil
+    }
+
+    /// The copy's file name. A sent file or a link keeps its base name (Quick Look picks its viewer by the extension). A
+    /// picture route is named for what its bytes ARE (the normalized JPEG, the tool image's own type), and bytes that are
+    /// not a picture are refused (nil).
+    static func sessionPreviewFileName(name: String, id: String, part: String, data: Data) -> String? {
+        let base = sessionPreviewName(name) ?? "file"
+        guard id.hasPrefix("ai_") || id.hasPrefix("ti_") || part == "thumb" else { return base }
+        guard let ext = sessionPreviewImageExtension(data) else { return nil }
+        let stem = (base as NSString).deletingPathExtension
+        return (stem.isEmpty ? "image" : stem) + "." + ext
+    }
+
+    private lazy var sessionPreviewRoot = controlCache.appendingPathComponent("SessionPreviews", isDirectory: true)
+
+    private func emitSessionPreviews(args: [String]) throws {
+        guard let provider = option("--provider", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              let sessionId = option("--session-id", in: args)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              Self.sessionChatValidationError(provider: provider, threadId: sessionId) == nil else {
+            throw HelperError.message("--provider and --session-id are required")
+        }
+        guard let token = try? readToken() else {
+            emit(ok: true, message: "No pairing token", details: ["state": "unauthorized", "turns": []])
+            return
+        }
+        guard let response = request("/api/agent-sessions/\(provider)/\(sessionId)?turns=\(Self.sessionPreviewTurns)", token: token, timeout: 25) else {
+            emit(ok: true, message: "COS server unreachable", details: ["state": "unreachable", "turns": []])
+            return
+        }
+        guard response.status == 200 else {
+            let state = response.status == 401 || response.status == 403 ? "unauthorized" : response.status == 404 ? "missing" : "unavailable"
+            emit(ok: true, message: "Session previews unavailable (\(response.status))", details: ["state": state, "turns": []])
+            return
+        }
+        emit(ok: true, message: "Session previews ready", details: Self.sessionPreviewsAnswer(response.body))
+    }
+
+    /// stdin: {provider, session, id, part: raw|thumb, name}. The name is the descriptor's, re-sanitized here; it only names
+    /// the private copy. Answers {state: ready, path, bytes, name} or {state: <refusal>}.
+    private func emitSessionPreviewFetch() throws {
+        let input = try readBoundedStdin(4096)
+        guard let o = try? JSONSerialization.jsonObject(with: input) as? [String: Any],
+              Set(o.keys).isSubset(of: ["provider", "session", "id", "part", "name"]),
+              let provider = (o["provider"] as? String)?.lowercased(), let session = (o["session"] as? String)?.lowercased(),
+              Self.sessionChatValidationError(provider: provider, threadId: session) == nil,
+              let rawID = o["id"] as? String, let source = Self.sessionPreviewSource(rawID),
+              let id = Self.sessionPreviewID(rawID, source: source),
+              let part = o["part"] as? String, part == "raw" || part == "thumb",
+              let route = Self.sessionPreviewRoute(provider: provider, session: session, id: id, part: part) else {
+            throw HelperError.message("That preview request is not valid")
+        }
+        guard let token = try? readToken() else {
+            emit(ok: true, message: "No pairing token", details: ["state": "unauthorized"])
+            return
+        }
+        let maximum = part == "thumb" ? Self.sessionPreviewThumbMax : Self.sessionPreviewRawMax
+        guard let response = boundedMediaRequest(route, token: token, timeout: 30, maximumBytes: maximum) else {
+            emit(ok: true, message: "COS server unreachable", details: ["state": "offline"])
+            return
+        }
+        guard response.status == 200, let data = response.data, !data.isEmpty else {
+            let body = response.data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            let state = response.status == 200 ? "unavailable" : Self.sessionPreviewRefusal(status: response.status, body: body)
+            emit(ok: true, message: "Preview unavailable (\(response.status))", details: ["state": state, "httpStatus": response.status])
+            return
+        }
+        guard let fileName = Self.sessionPreviewFileName(name: o["name"] as? String ?? "", id: id, part: part, data: data) else {
+            emit(ok: true, message: "Preview unavailable", details: ["state": "invalid"])
+            return
+        }
+        try ensurePrivateDirectory(controlCache)
+        try ensurePrivateDirectory(sessionPreviewRoot)
+        let folder = sessionPreviewRoot.appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
+        try fm.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let destination = folder.appendingPathComponent(fileName)
+        do { try atomicWriteData(data, to: destination, permissions: 0o600) } catch {
+            try? fm.removeItem(at: folder)
+            throw error
+        }
+        emit(ok: true, message: "Preview ready", details: ["state": "ready", "path": destination.path, "bytes": data.count, "name": fileName])
+    }
+
     private func emitVoiceProfiles() throws {
         let body = try speakerReviewBody("/api/voice/profiles")
         emit(ok: true, message: "Voice profiles ready", details: [
@@ -27169,6 +27458,16 @@ final class COSControlHelper {
         try expect(brief.details["reason"] as? String == "unreachable", "a retry nothing answered is unreachable")
         brief = try Self.todayBriefExchange([:]) { _ in HTTPResponse(status: 503, body: ["error": "busy"]) }
         try expect(brief.details["reason"] as? String == "failed" && brief.details["status"] as? Int == 503, "a 5xx is a failed ask with its status")
+        // 0.5.380: a server before 7.0.5 refuses `reason: "reconnect"`; it is dropped first, then `force` (a 7.0.0 server).
+        briefAsked = []; briefReplies = [briefRefusal, briefRefusal, HTTPResponse(status: 200, body: ["text": "Fine.", "state": "fresh"])]
+        brief = try Self.todayBriefExchange(["sessions": [], "force": true, "reason": "reconnect"]) { payload in briefAsked.append(payload); return briefReplies.removeFirst() }
+        try expect(briefAsked.count == 3 && briefAsked[0]["reason"] as? String == "reconnect" && briefAsked[1]["reason"] == nil
+                   && briefAsked[1]["force"] as? Bool == true && briefAsked[2]["force"] == nil && brief.details["available"] as? Bool == true,
+                   "reason is dropped first, then force, each once")
+        briefAsked = []; briefReplies = [briefRefusal, HTTPResponse(status: 200, body: ["text": "Fine.", "state": "fresh"])]
+        brief = try Self.todayBriefExchange(["sessions": [], "reason": "reconnect"]) { payload in briefAsked.append(payload); return briefReplies.removeFirst() }
+        try expect(briefAsked.count == 2 && briefAsked[1]["reason"] == nil && brief.details["available"] as? Bool == true,
+                   "an unforced reconnect ask to an older server is asked again without reason")
         try expect(Self.learningDoctorLine(absentStatus) == nil, "Doctor says nothing about learning on an older server")
         let doctorLine = Self.learningDoctorLine(fullStatus)
         try expect(doctorLine?.state == "ok" && doctorLine?.detail.contains("5 to review") == true,
