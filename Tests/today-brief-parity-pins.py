@@ -14,11 +14,17 @@ worktree and the server checkout. None found is a failure, never a skip: a pin t
 import json, os, pathlib, re, sys
 
 root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else ".")
-home = pathlib.Path.home()
+# The release runner gives tests a private HOME (/tmp/cos-native-*/home), so look under the account's real home
+# (the password database) as well as $HOME. 0.5.379 run at 7558690 failed here with the file present.
+import pwd
+homes = []
+for h in (pathlib.Path.home(), pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)):
+    if h not in homes: homes.append(h)
 candidates = [sys.argv[2]] if len(sys.argv) > 2 else []
-candidates += [os.environ.get("COS_SERVER_TODAY_BRIEF", ""),
-               str(home / "cos-worktrees/server-tool-images-release-7.0.4/server/lib/today-brief.ts"),
-               str(home / "Documents/GitHub/cos-glasses-app/server/lib/today-brief.ts")]
+candidates.append(os.environ.get("COS_SERVER_TODAY_BRIEF", ""))
+for home in homes:
+    candidates += [str(home / "cos-worktrees/server-tool-images-release-7.0.4/server/lib/today-brief.ts"),
+                   str(home / "Documents/GitHub/cos-glasses-app/server/lib/today-brief.ts")]
 server_path = next((pathlib.Path(c) for c in candidates if c and pathlib.Path(c).is_file()), None)
 if server_path is None:
     sys.exit("FAIL: Today brief parity pin: server/lib/today-brief.ts not found; pass it or set COS_SERVER_TODAY_BRIEF")
