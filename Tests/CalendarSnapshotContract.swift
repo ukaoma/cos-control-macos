@@ -26,6 +26,9 @@ struct CalendarSnapshotContract {
         // Attendee domains, never full addresses.
         check(C.emailDomain(URL(string: "mailto:Pat.Lee@Example.COM")) == "example.com", "mailto domain, lowercased")
         check(C.emailDomain(URL(string: "https://example.com")) == nil, "non-mailto has no domain")
+        check(C.attendeeName("pat.lee@example.com") == nil, "an address in the name field is dropped")
+        check(C.attendeeName("Pat Lee") == "Pat Lee", "a display name is kept")
+        check(C.attendeeName("  ") == nil && C.attendeeName(nil) == nil, "blank or missing name is nil")
 
         // Only selected calendars' events are written, whatever the reader returned.
         let cals = [
