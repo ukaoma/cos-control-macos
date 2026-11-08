@@ -129,6 +129,8 @@ import SwiftUI
                                               "running", minutes: Double(3 + $0 * 4), provider: ["claude", "codex", "cursor"][$0 % 3], workspace: ["Bottle POS", "IT Retail"][$0 % 2]) }
         }
         model.claudeSessions = sessions
+        // Fixture rows represent a completed read, except the explicit loading scene.
+        model.claudeSessionsReadState = scene == .loading ? .pending : .answered
         store.hosts = ["claude:t1": TodayHome.Host(app: "Terminal", terminal: true)]
         store.jobsSupported = true
         store.jobs = [TodayHome.ActiveJob(.object(["jobId": .string("qj1"), "origin": .string("person"),

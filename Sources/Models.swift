@@ -15945,7 +15945,7 @@ enum TodaySummary {
     /// An unsupported route is quiet; a component's server failure is an incomplete refresh.
     static func componentReadFailed(_ blocks: [JSONValue?]) -> Bool {
         blocks.contains { block in
-            guard let status = block?["status"]?.double else { return false }
+            guard let status = block?.object?["status"]?.double else { return false }
             return status >= 500
         }
     }
