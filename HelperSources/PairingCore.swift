@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 // Glasses pairing (contract 2026-10-09, server 6.67.0). Pure: no process is spawned, no file is read and nothing is
 // fetched here. `cos-control-helper tailscale-status | tailscale-whois | pairing-code | pairing-status |
@@ -312,5 +313,128 @@ enum WebSignInCore {
         out["code"] = code
         out["expiresAt"] = expiresAt
         return out
+    }
+}
+
+/// Phone approvals (server 6.99.31, flag COS_WEB_KEY_AUTHORITY, default off). `cos-control-helper web-key --op <op>` carries
+/// COS Control's calls to /api/web-key/* over loopback with the pairing token (the helper reads it; the app never does).
+/// Pure: the op table, the stdin bodies it accepts and the answer it emits. Tests/WebKeyChecks.swift drives it.
+enum WebKeyHelperCore {
+    struct Call: Equatable {
+        let method: String
+        let path: String
+        /// The exact keys a stdin body must have (every value a short string), or nil for no body.
+        let bodyKeys: Set<String>?
+    }
+
+    static let calls: [String: Call] = [
+        "status": Call(method: "GET", path: "/api/web-key/status", bodyKeys: nil),
+        "pending": Call(method: "GET", path: "/api/web-key/enroll/pending", bodyKeys: nil),
+        "keys": Call(method: "GET", path: "/api/web-key/keys", bodyKeys: nil),
+        // Review B1: the anchor's self-signed statement. The route takes loopback, no proxy headers, and the token.
+        "anchor": Call(method: "POST", path: "/api/web-key/anchor", bodyKeys: ["anchorPub", "statement", "signature"]),
+        "approve": Call(method: "POST", path: "/api/web-key/enroll/approve", bodyKeys: ["enrollId", "anchorSig"]),
+        "revoke": Call(method: "POST", path: "/api/web-key/revoke", bodyKeys: ["kid", "reason"]),
+        "revoke-all": Call(method: "POST", path: "/api/web-key/revoke-all", bodyKeys: []),
+    ]
+    /// The listener audit (review W9) is local, not a server call.
+    static let ops: Set<String> = Set(calls.keys).union(["listeners"])
+    static let auditPorts = [3141, 3143, 3144]
+    static let bodyMax = 4_096
+
+    /// The JSON body to send, or nil when stdin is not exactly the op's shape: an object with the op's keys only, each value
+    /// a string of 1 to 2048 characters from the base64url alphabet (plus `_` and lower case for `reason`).
+    static func body(op: String, stdin: Data) -> String? {
+        guard let call = calls[op], let keys = call.bodyKeys, stdin.count <= bodyMax,
+              let object = (try? JSONSerialization.jsonObject(with: stdin.isEmpty ? Data("{}".utf8) : stdin)) as? [String: Any],
+              Set(object.keys) == keys else { return nil }
+        for (key, value) in object {
+            guard let text = value as? String, !text.isEmpty, text.count <= 2048 else { return nil }
+            let pattern = key == "reason" ? #"\A[a-z_]{1,64}\z"# : #"\A[A-Za-z0-9_-]+\z"#
+            guard text.range(of: pattern, options: .regularExpression) != nil else { return nil }
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// What the app reads: the HTTP status and the server's JSON body as it came.
+    static func answer(status: Int, body: [String: Any]?) -> [String: Any] {
+        ["transport": "answered", "httpStatus": status, "body": body ?? [:]]
+    }
+
+    /// The listener audit's answer: the COS LaunchAgent's PID, and for each audited port every PID listening on it on any
+    /// address, each with whether it runs under that LaunchAgent.
+    static func listeners(servicePID: Int?, owners: [Int: [Int]], underService: (Int) -> Bool) -> [String: Any] {
+        var ports: [String: Any] = [:]
+        for port in auditPorts {
+            ports[String(port)] = (owners[port] ?? []).sorted().map { pid -> [String: Any] in ["pid": pid, "underService": underService(pid)] }
+        }
+        return ["servicePID": servicePID ?? 0, "ports": ports]
+    }
+}
+
+/// Trust comes from a resource sealed inside the signed Control bundle, never from the running server or active.json.
+/// This module only parses and compares bytes. The helper owns signature validation, safe file reads and HTTPS.
+enum WebKeyAssetsCore {
+    struct Pins: Equatable, Sendable {
+        let webControlManifestSha256: String
+        let webSignerManifestSha256: String
+    }
+    static let resourceName = "web-key-assets.json"
+    static let signerPaths: Set<String> = ["/index.html", "/signer-proof.js", "/signer-store.js", "/signer.js", "/signer.css"]
+    static let maximumFileBytes = 8 * 1024 * 1024
+    static let maximumTreeBytes = 64 * 1024 * 1024
+    static func hash(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+    static func hex(_ value: Any?) -> String? {
+        guard let text = value as? String, text.range(of: #"\A[0-9a-f]{64}\z"#, options: .regularExpression) != nil else { return nil }
+        return text
+    }
+    static func pins(_ data: Data, version: String) -> Pins? {
+        guard data.count <= 64 * 1024,
+              let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              Set(body.keys) == ["v", "releases"], let v = body["v"] as? NSNumber, CFGetTypeID(v) != CFBooleanGetTypeID(), v == 1,
+              let releases = body["releases"] as? [String: Any], releases.count <= 32,
+              version.range(of: #"\A[0-9]+\.[0-9]+\.[0-9]+\z"#, options: .regularExpression) != nil,
+              let row = releases[version] as? [String: Any],
+              Set(row.keys) == ["webControlManifestSha256", "webSignerManifestSha256"],
+              let control = hex(row["webControlManifestSha256"]), let signer = hex(row["webSignerManifestSha256"]) else { return nil }
+        return Pins(webControlManifestSha256: control, webSignerManifestSha256: signer)
+    }
+    static func safePath(_ path: String) -> Bool {
+        guard path.hasPrefix("/"), path.count <= 512,
+              path.range(of: #"\A/[A-Za-z0-9_./-]+\z"#, options: .regularExpression) != nil else { return false }
+        return !path.dropFirst().split(separator: "/", omittingEmptySubsequences: false).contains { $0.isEmpty || $0 == "." || $0 == ".." || $0.hasPrefix(".") }
+    }
+    static func manifest(_ data: Data, sha: String, signer: Bool) -> [String: String]? {
+        guard data.count <= 256 * 1024, hash(data) == sha,
+              let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              Set(body.keys) == ["v", "algorithm", "files"], let v = body["v"] as? NSNumber,
+              CFGetTypeID(v) != CFBooleanGetTypeID(), v == 1, body["algorithm"] as? String == "sha256",
+              let rows = body["files"] as? [String: Any], !rows.isEmpty, rows.count <= 2048 else { return nil }
+        var result: [String: String] = [:]
+        for (path, value) in rows { guard safePath(path), let sha = hex(value) else { return nil }; result[path] = sha }
+        if signer, Set(result.keys) != signerPaths { return nil }
+        return result
+    }
+    static func statusMatches(_ status: [String: Any], pins: Pins) -> Bool {
+        guard status["enabled"] as? Bool == true, let control = status["integrity"] as? [String: Any],
+              control["enabled"] as? Bool == true, control["ok"] as? Bool == true,
+              control["manifestSha256"] as? String == pins.webControlManifestSha256,
+              let signer = control["signer"] as? [String: Any], signer["enabled"] as? Bool == true,
+              signer["ok"] as? Bool == true, signer["manifestSha256"] as? String == pins.webSignerManifestSha256 else { return false }
+        return true
+    }
+    static func verified(_ bytes: Data, sha: String) -> Bool { bytes.count <= maximumFileBytes && hash(bytes) == sha }
+    static func bundleResource(executable: URL) -> (app: URL, resource: URL)? {
+        let executable = executable.standardizedFileURL
+        guard executable.path == executable.resolvingSymlinksInPath().path,
+              executable.lastPathComponent == "cos-control-helper",
+              executable.deletingLastPathComponent().lastPathComponent == "Resources",
+              executable.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent == "Contents" else { return nil }
+        let app = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        guard app.pathExtension == "app" else { return nil }
+        let resource = executable.deletingLastPathComponent().appendingPathComponent(resourceName)
+        guard resource.path == resource.resolvingSymlinksInPath().path else { return nil }
+        return (app, resource)
     }
 }

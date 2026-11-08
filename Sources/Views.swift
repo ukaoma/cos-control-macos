@@ -4189,6 +4189,9 @@ private extension ControlPanel {
                 }
                 hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }
             }
+            // PK-01 (server 6.99.31, COS_WEB_KEY_AUTHORITY): Phone approvals. Zero height unless the server says the flag is on.
+            WebKeySettingsBlock(state: model.webKey)
+                .settingsHubAnchor("PK-01")
         } advanced: {
             hubRow("UT-21") {
                 Button("Copy token") { model.perform("token") }.buttonStyle(TodayButtonStyle(small: true)).disabled(pairingTokenBlocked)

@@ -791,6 +791,9 @@ final class ControllerModel: ObservableObject {
     /// 0.5.367 (server 6.99.3): Open COS on your phone, the QR and code that sign the phone's browser in to Control Web. Inert
     /// in a model built by a check. It holds a link or a code only while its row is on screen (PhoneSignInState.run).
     lazy var phoneSignIn: PhoneSignInState = makePhoneSignIn()
+    /// Phone approvals (server 6.99.31, COS_WEB_KEY_AUTHORITY): the anchor, the enrollment card, Control's revocation record.
+    /// Inert in a model built by a check, and hidden in Settings unless the server says the flag is on (WebKeyState.refresh).
+    lazy var webKey: WebKeyState = makeWebKey()
     /// Opens the setup guide window (the Welcome window, which shows the full guide once COS is set up).
     var showSetupGuide: (() -> Void)?
     /// Opens the menu-bar panel on its settings (the pet's and the Dock's Settings…).
@@ -1027,6 +1030,21 @@ final class ControllerModel: ObservableObject {
         }
         // Stage names only: never the link, its ticket or the code.
         state.log = { line in onboardingLog.info("phone sign-in \(line, privacy: .public)") }
+        return state
+    }
+
+    private func makeWebKey() -> WebKeyState {
+        let state = WebKeyState()
+        let bundleURL = Bundle.main.bundleURL.standardizedFileURL
+        guard bundleURL.pathExtension == "app", Bundle.main.bundleIdentifier != nil, backgroundWorkEnabled else { return state }
+        let helper = self.helper
+        state.runHelper = { arguments, body in
+            // The listener audit runs lsof three times (about 2 s each); every server call is 10 s at most.
+            let response = try await helper.run(arguments, timeout: arguments.last == "listeners" ? 120 : 30, stdinData: body)
+            return WebKeyHelperAnswer(ok: response.ok, message: response.message, details: try JSONEncoder().encode(response.details))
+        }
+        // Stage names only: never a signature, a key or a code.
+        state.log = { line in onboardingLog.info("\(line, privacy: .public)") }
         return state
     }
 
