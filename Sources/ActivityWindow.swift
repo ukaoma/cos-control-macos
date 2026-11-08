@@ -5701,7 +5701,8 @@ struct ActivityWindow: View {
                                 }
                                 messageBlock(label: "You", text: message.query,
                                              tint: ActivitySection.messages.tint, highlight: chatQuery)
-                                messageBlock(label: "COS", text: message.text,
+                                // 0.5.380: the lens's inline numbered lists on their own lines, as Control Web draws them.
+                                messageBlock(label: "COS", text: LensAnswerStructure.structure(message.text),
                                              tint: COSPalette.green, highlight: chatQuery, markdownID: "archive:\(date)/\(index)/\(message.id)")
                             }
                             .padding(hit ? 10 : 0)
@@ -5884,7 +5885,10 @@ struct ActivityWindow: View {
                 messageBlock(label: "You", text: turn.query,
                              tint: ActivitySection.messages.tint, highlight: recentQuery)
                 attachmentStrip(attachments: turn.attachments.filter(\.isUserPhoto), fallback: "Your attachments")
-                messageBlock(label: "COS", text: turn.text,
+                // 0.5.380 (server 7.0.5 parity): a COS answer is written for the lens as plain text, so its inline numbered
+                // lists go on their own lines before Markdown draws them (Sources/LensAnswerStructure.swift, the web's
+                // structureLensAnswer). Only whitespace changes; Copy turn still reads the stored text.
+                messageBlock(label: "COS", text: LensAnswerStructure.structure(turn.text),
                              tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id)
                 attachmentStrip(attachments: turn.attachments.filter { !$0.isUserPhoto }, fallback: "From COS")
             }
