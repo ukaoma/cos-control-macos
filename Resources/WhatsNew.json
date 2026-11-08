@@ -9,8 +9,12 @@
           "Today shows the summary COS writes about your sessions, the same one COS Control Web shows, with when it was updated.",
           "Refresh reads everything on Today again and asks for a new summary, at most every 30 seconds. If the daily limit is reached, a meeting is recording or COS is updating, Today says so.",
           "Settings, Activity home has the switch “Write the Today summary with a model”, the same one COS Control Web shows. When it is off, or the COS server is older, Today keeps its own headline.",
-          "Work items waiting on your answer or review appear in Today and Work again, dated by when they started waiting. One you already answered in its session leaves the list. If COS cannot read them, Today says so instead of calling you caught up.",
-          "Memories, To review: only items that need a decision are counted. Suggested rules still under their confidence bar sit in a calm Learning group.",
+          "Work items waiting on your answer or review appear in Today and Work again, dated by when they started waiting, and Work handoffs still in flight show in Needs you so you can check on them. One you already answered in its session leaves the list. If COS cannot read them, Today says so instead of calling you caught up. A COS server without Work’s list no longer stops Today from settling.",
+          "Memories, To review: only items that need a decision are counted, and Today’s “Next 7 of N” counts the same way COS Control Web does. Suggested rules still under their confidence bar sit in a calm Learning group.",
+          "Held voices: if one row from the server cannot be read, Speakers shows an error instead of quietly leaving it out. Leaving Speakers for Today no longer leaves voices stuck loading.",
+          "Sessions: if the COS server does not answer, Today says it could not read your sessions instead of waiting forever, and keeps trying. After a quick relaunch with the pet on, Today reads your sessions again on its own.",
+          "The summary also hears how many sub-agents each session is running. If one session row from the server cannot be read, Today uses your saved session list rather than a partial one, and the pet keeps finished sessions until COS has read the full list.",
+          "Today says some of it could not update when a calendar, job or routine read fails, and Work reads give up after a few seconds instead of hanging.",
           "Calendars: picking no calendar no longer reads as an empty day, add-only calendar access keeps your previous calendar source, and Turn off cannot be undone by a refresh in flight. Turn off returns COS to the calendar source it used before.",
           "Calendar attendees keep display names only; an email address in the name field is dropped."
         ]
