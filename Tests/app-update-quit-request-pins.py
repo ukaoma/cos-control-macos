@@ -77,13 +77,13 @@ need('c = Case("asked")' in read("Tests/app-update-escalation-checks.py"), "lane
 
 # Version touchpoints.
 plist = read("Resources/Info.plist")
-need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.379</string>", plist) is not None
-     and re.search(r"<key>CFBundleVersion</key>\s*<string>433</string>", plist) is not None, "version", "Info.plist is 0.5.379 (build 433), the Mac parity bundle on top of 0.5.378: calendars, pet session counts and Meeting Prep on top of Ask Work review, the Messages cleanup and quit fix")
+need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.380</string>", plist) is not None
+     and re.search(r"<key>CFBundleVersion</key>\s*<string>434</string>", plist) is not None, "version", "Info.plist is 0.5.380 (build 434), Sessions file and image cards on top of 0.5.379: the Mac parity bundle on top of 0.5.378: calendars, pet session counts and Meeting Prep on top of Ask Work review, the Messages cleanup and quit fix")
 whats = json.loads(read("Resources/WhatsNew.json"))
-need(whats.get("version") == "0.5.379" and [s["title"] for s in whats["whatsNew"]["sections"][:7]] == ["0.5.379", "0.5.378", "0.5.377", "0.5.376", "0.5.375", "0.5.374", "0.5.373"], "version",
+need(whats.get("version") == "0.5.380" and [s["title"] for s in whats["whatsNew"]["sections"][:8]] == ["0.5.380", "0.5.379", "0.5.378", "0.5.377", "0.5.376", "0.5.375", "0.5.374", "0.5.373"], "version",
      "What's New is 0.5.377 and retains Meeting Prep, Ask Work review, the Messages cleanup and quit-fix sections in order")
 log = read("CHANGELOG.md")
-need(log.startswith("## 0.5.379 (build 433)") and log.index("\n## 0.5.378 (build 432)") < log.index("\n## 0.5.377 (build 431)") and log.index("\n## 0.5.373 (build 427)") < log.index("\n## 0.5.372 (build 426)"), "version",
+need(log.startswith("## 0.5.380 (build 434)") and log.index("\n## 0.5.379 (build 433)") < log.index("\n## 0.5.378 (build 432)") and log.index("\n## 0.5.378 (build 432)") < log.index("\n## 0.5.377 (build 431)") and log.index("\n## 0.5.373 (build 427)") < log.index("\n## 0.5.372 (build 426)"), "version",
      "the changelog's 0.5.373 entry sits above 0.5.372's")
 
 print(f"app update quit request pins: {passed} passed")
