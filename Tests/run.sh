@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="${0:A:h:h}"
 TARGET="arm64-apple-macosx14.0"
+_coord_lease_held=0
 # Keep the self-test home under /tmp: loopbackAPIPort honors COS_CONTROL_TEST_HOME only
 # when it starts with /tmp/, and with a home elsewhere the self-test failed its workspace
 # fixture (measured 2026-09-13, released 0.5.223 helper included).
@@ -12,7 +13,7 @@ TMP="$(mktemp -d /tmp/cos-control-tests.XXXXXX)"
 # the cleanup). COS_SUITE_LOG_DIR overrides the folder; a failed copy never changes the suite's exit status.
 SUITE_LOG_DIR="${COS_SUITE_LOG_DIR:-$HOME/Library/Logs/COS/control-suite}"
 SUITE_STAMP="$(date +%Y%m%d-%H%M%S)"
-trap '_app_build_stop 2>/dev/null || true; _suite_exit_logs 2>/dev/null || true; rm -rf "$TMP"' EXIT
+trap '_app_build_stop 2>/dev/null || true; _suite_exit_logs 2>/dev/null || true; rm -rf "$TMP"; if (( _coord_lease_held )); then _coord_lease_release || true; fi' EXIT
 # Speed plan A1 (2026-10-31): a pin or lane that failed under set -e used to end the suite with no output at all (0.5.357
 # needed a separate tail run to find out where). Every such failure now names its line in this file, on stderr. A command
 # inside `if`, `||` or `!` never reaches this trap, so a check that already reports its own failure is unchanged.
@@ -120,6 +121,15 @@ _app_build_stop() {
 # opted in by hand. The self-test proves each rule can fail.
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT"
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT" --selftest
+# COORD_SWIFT_LEASE_BEGIN
+# Suite admission is opt-in; compile-guard keeps its machine-wide lock in every mode.
+# Keep this after the read-only safety checks so run-header-selftest's synthetic
+# headers do not recursively acquire the live suite's lease. No Swift precedes it.
+if [[ "${(L)${COS_COORD_LEASES:-}}" =~ '^[[:space:]]*(1|true|yes|on)[[:space:]]*$' ]]; then
+  source "$ROOT/Tests/coord-swift-lease.zsh"
+  _coord_lease_acquire
+fi
+# COORD_SWIFT_LEASE_END
 # Speed plan A3 (2026-10-31): the static checks first, about two minutes, no Swift compile. Five of ten recent suite failures
 # were a text pin that only ran 25 to 50 minutes in. The static pins are DUPLICATED in Tests/preflight.sh, not moved: they
 # still run below where they always did. Some checks exist only there (the compile-guard self-tests, the duplicate-file
@@ -1600,6 +1610,8 @@ PY
 # Tests/run-activity-today-render.sh (PNGs against activity-canvas).
 # Tests/run-command-center-render.sh (the ⌘K panel: PNGs of every state, by hand, never a gate).
 "$ROOT/Tests/run-activity-today.sh"
+"$ROOT/Tests/run-today-summary-subagents.sh"
+"$ROOT/Tests/run-held-groups-read-queue.sh"
 /usr/bin/python3 "$ROOT/Tests/activity-today-pins.py" "$ROOT"
 # 0.5.379: the Today summary's wiring (view, store, helper); its rules execute in ActivityTodayChecks above.
 /usr/bin/python3 "$ROOT/Tests/today-summary-pins.py" "$ROOT"

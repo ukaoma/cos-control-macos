@@ -1797,6 +1797,27 @@ struct SessionChatPendingTurn: Codable, Sendable {
     let sentAt: Double
 }
 
+/// Optional list-level subagent counts. Missing or malformed readings stay unknown, never zero by default.
+struct SessionSubagentActivity: Equatable, Sendable {
+    let active: Int
+    let completed: Int
+    let total: Int
+
+    init?(_ value: JSONValue?) {
+        guard let row = value?.object else { return nil }
+        func count(_ key: String) -> Int? {
+            guard let number = row[key]?.double, number.isFinite, number >= 0 else { return nil }
+            return Int(exactly: number)
+        }
+        guard let active = count("active"), let completed = count("completed"), let total = count("total") else { return nil }
+        self.active = active; self.completed = completed; self.total = total
+    }
+
+    var json: JSONValue {
+        .object(["active": .number(Double(active)), "completed": .number(Double(completed)), "total": .number(Double(total))])
+    }
+}
+
 struct ClaudeSession: Identifiable, Sendable {
     let id: String
     let sessionId: String
@@ -1846,6 +1867,8 @@ struct ClaudeSession: Identifiable, Sendable {
     /// Activity Today (B1): the pending AskUserQuestion's own words, from the helper's transcript tail read (`waitingQuestion`).
     var waitingQuestion = ""
     var waitingQuestionCount = 0
+    /// The server's optional `subagent_activity`; used as Today summary fallback if its bounded richer read misses.
+    var subagentActivity: SessionSubagentActivity?
 
     var isScheduledJob: Bool { origin == "job" && !fromWork }
     /// Only the COS server may write this session now: a scheduled job, or a Work New session still running.
@@ -2183,6 +2206,7 @@ struct ClaudeSession: Identifiable, Sendable {
         namedTitle = o["namedTitle"]?.bool ?? false
         waitingQuestion = o["waitingQuestion"]?.string ?? ""
         waitingQuestionCount = o["waitingQuestionCount"]?.int ?? 0
+        subagentActivity = SessionSubagentActivity(o["subagentActivity"] ?? o["subagent_activity"])
     }
 
     static func isKeepWarmSessionTitle(_ title: String) -> Bool {
@@ -13822,15 +13846,16 @@ enum TodayHome {
     // MARK: Sessions
 
     /// The sessions home reads: the pet's live list when the pet is on (so the two never disagree), else the Sessions list.
-    /// A live row keeps the list row's question text when the live read has none.
+    /// A live row keeps the list row's question text and optional agent counts when the live read has none.
     static func liveSessions(list: [ClaudeSession], live: [ClaudeSession]?) -> [ClaudeSession] {
         guard let live else { return list.filter { !$0.isKeepWarm } }
         var out: [ClaudeSession] = []
         for row in live where !row.isKeepWarm {
             guard !out.contains(where: { ClaudeSession.sameSession($0.id, row.id) }) else { continue }
             var next = row
-            if next.waitingQuestion.isEmpty, let listed = list.first(where: { ClaudeSession.sameSession($0.id, row.id) }) {
-                next.waitingQuestion = listed.waitingQuestion
+            if let listed = list.first(where: { ClaudeSession.sameSession($0.id, row.id) }) {
+                if next.waitingQuestion.isEmpty { next.waitingQuestion = listed.waitingQuestion }
+                if next.subagentActivity == nil { next.subagentActivity = listed.subagentActivity }
             }
             out.append(next)
         }
@@ -14559,6 +14584,8 @@ enum TodayHome {
         /// 0.5.379 (root QA): Work's your move (/api/work-board/your-move) failed or answered unavailable. Control Web reads that
         /// as Work failed (app.js workState); a board that read is not enough to say no Work handoff waits on Miles.
         var yourMoveFailed = false
+        /// The board can answer before its handoffs; pending is not an empty, complete Work list.
+        var yourMovePending = false
         var dictation: ActivityHome.SourceState = .answered
     }
 
@@ -14568,6 +14595,7 @@ enum TodayHome {
         func server(_ state: ActivityHome.SourceState) -> ActivityHome.SourceState { input.reachable || state == .off ? state : .failed }
         var work = server(input.work)
         if input.intakeFailed || input.yourMoveFailed, work != .off { work = .failed }
+        else if input.yourMovePending, work != .off && work != .failed { work = .pending }
         return [.sessions: input.sessions, .voices: server(input.voices), .memories: server(input.memories), .work: work, .dictation: input.dictation]
     }
 
@@ -15905,6 +15933,23 @@ enum TodaySummary {
     /// How long a Refresh answer stays beside the button.
     static let noteSeconds: TimeInterval = 600
 
+    /// Explicit Refresh bypasses the slow calendar/intake cache; ordinary ticks keep their five-minute cadence.
+    static func slowReadDue(last: Date?, now: Date, interval: TimeInterval, force: Bool) -> Bool {
+        force || last.map { now.timeIntervalSince($0) >= interval } ?? true
+    }
+
+    static func sessionReadState(partial: Bool, cached: Bool) -> ActivityHome.SourceState {
+        partial || cached ? .pending : .answered
+    }
+
+    /// An unsupported route is quiet; a component's server failure is an incomplete refresh.
+    static func componentReadFailed(_ blocks: [JSONValue?]) -> Bool {
+        blocks.contains { block in
+            guard let status = block?["status"]?.double else { return false }
+            return status >= 500
+        }
+    }
+
     /// The server's answer (TodayBriefView).
     /// The fields of the server's TodayBriefView this side reads (Tests/fixtures/today-running-now.json).
     static let runningNowFields = ["text", "at", "basis", "model", "state", "reason", "enabled", "source"]
@@ -15999,6 +16044,7 @@ enum TodaySummary {
         func statusLine(calendar: Calendar = .current) -> String {
             guard enabled, let kind = statusKind else { return "" }
             switch kind {
+            case "daily_cap": return "Today\u{2019}s \(statusCount ?? 60) are used. It writes again tomorrow."
             case "paused": return "Paused after three failed tries. It tries again at " + (statusUntil.map { TodayHome.clock($0, calendar: calendar) } ?? "") + "."
             case "failed":
                 let tail = statusCode == "timeout" ? " (it took too long)." : statusCode == "unavailable" ? " (Claude Code was not found on your Mac)." : "."
@@ -16115,6 +16161,8 @@ enum TodaySummary {
             // Only so the server can read this session's sub-agents; it never reaches the model.
             let key = provider + "|" + session.sessionId
             if sessionKey.firstMatch(in: key, range: NSRange(key.startIndex..., in: key)) != nil { row["key"] = .string(key) }
+            // The web forwards these counts too; the server may enrich only eight sessions, then keeps this fallback.
+            if let activity = session.subagentActivity { row["agents"] = activity.json }
             rows.append(.object(row))
             if rows.count == 40 { break }
         }
@@ -16150,5 +16198,77 @@ enum TodaySummary {
         guard var o = inputs.object else { return inputs }
         o["force"] = nil
         return .object(o)
+    }
+}
+
+/// Serializes Today reads across actor re-entry. A periodic tick never duplicates an active read;
+/// a deliberate Refresh waits for it, then reads again before asking for its summary.
+@MainActor final class TodayReadQueue {
+    private var pending: Task<Void, Never>?
+    func run(force: Bool, read: @escaping @MainActor () async -> Void) async {
+        while let previous = pending {
+            guard force else { return }
+            await previous.value
+        }
+        guard !Task.isCancelled else { return }
+        let current = Task { @MainActor in
+            await read()
+            self.pending = nil
+        }
+        pending = current
+        await withTaskCancellationHandler(operation: { await current.value }, onCancel: { current.cancel() })
+    }
+}
+
+/// The helper's held-voice inventory. Missing state remains compatible with older successful helpers,
+/// but missing arrays or rows that the existing DTOs cannot identify are failed reads, never an empty answer.
+struct HeldGroupsReadSnapshot {
+    let state: String
+    let groups: [HeldVoiceGroup]
+    let loose: [HeldSampleRef]
+
+    init?(_ details: [String: JSONValue]) {
+        let state: String
+        if let value = details["state"] {
+            guard let text = value.string, ["ready", "route_absent"].contains(text) else { return nil }
+            state = text
+        } else { state = "ready" }
+        guard let groupRows = details["groups"]?.array, let looseRows = details["loose"]?.array else { return nil }
+        let groups = groupRows.compactMap(HeldVoiceGroup.init)
+        let loose = looseRows.compactMap(HeldSampleRef.init)
+        guard groups.count == groupRows.count, loose.count == looseRows.count else { return nil }
+        self.state = state
+        self.groups = groups
+        self.loose = loose
+    }
+}
+
+/// One held-voice read cycle at a time. Background callers coalesce into one follow-up read;
+/// an explicit Refresh waits for the complete active cycle, then owns a fresh cycle before returning.
+@MainActor final class HeldGroupsReadQueue {
+    private var pending: Task<Void, Never>?
+    private var reloadRequested = false
+
+    func run(force: Bool, read: @escaping @MainActor () async -> Void) async {
+        guard !Task.isCancelled else { return }
+        while let previous = pending {
+            if !force { reloadRequested = true; return }
+            await previous.value
+            guard !Task.isCancelled else { return }
+        }
+        let current = Task { @MainActor in
+            repeat {
+                self.reloadRequested = false
+                guard !Task.isCancelled else { break }
+                await read()
+            } while self.reloadRequested && !Task.isCancelled
+            self.pending = nil
+        }
+        pending = current
+        await withTaskCancellationHandler {
+            await current.value
+        } onCancel: {
+            current.cancel()
+        }
     }
 }

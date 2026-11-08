@@ -11528,6 +11528,8 @@ final class COSControlHelper {
         for (wire, key) in serverStateKeys {
             if let value = row[wire] { out[key] = value } else if let value = row[key] { out[key] = value }
         }
+        // Optional list counts, not additional sessions. The native DTO validates the numeric fields.
+        if let activity = row["subagent_activity"] ?? row["subagentActivity"] { out["subagentActivity"] = activity }
         return out
     }
 
@@ -11872,6 +11874,38 @@ final class COSControlHelper {
         ]
     }
 
+    struct FreshSessionCatalogSelection {
+        let rows: [[String: Any]]
+        let dropped: [String: Int]
+        let cached: Bool
+        let partial: Bool
+        var shouldSaveFresh: Bool { !cached && !partial }
+    }
+
+    /// A valid, empty server inventory is authoritative. Only an unavailable or
+    /// malformed response may fall back, and fallback rows never acquire a fresh timestamp.
+    static func freshSessionCatalogSelection(
+        serverBody: [String: Any]?,
+        cachedBody: [String: Any]?,
+        localIndex: () -> (rows: [[String: Any]], dropped: [String: Int])
+    ) -> FreshSessionCatalogSelection {
+        if let serverBody, let raw = serverBody["sessions"] as? [[String: Any]] {
+            let rows = raw.compactMap(agentSessionRowProjection)
+            if rows.count == raw.count {
+                return FreshSessionCatalogSelection(
+                    rows: rows, dropped: agentSessionDroppedProjection(serverBody), cached: false, partial: false
+                )
+            }
+        }
+        if let cachedBody, let rows = cachedBody["sessions"] as? [[String: Any]] {
+            return FreshSessionCatalogSelection(
+                rows: rows, dropped: agentSessionDroppedProjection(cachedBody), cached: true, partial: true
+            )
+        }
+        let indexed = localIndex()
+        return FreshSessionCatalogSelection(rows: indexed.rows, dropped: indexed.dropped, cached: false, partial: true)
+    }
+
     /// Live status the list route does not carry.
     ///
     /// `/api/agent-sessions` already merges running sessions and sets `alive`, but it has
@@ -11898,6 +11932,7 @@ final class COSControlHelper {
             // 0.5.232: the peer's server-derived state is the freshest; a row that carried
             // its own (the list route stamps the same fields) keeps it only where the peer has none.
             for (_, key) in serverStateKeys where peer[key] != nil { merged[index][key] = peer[key] }
+            if let activity = peer["subagentActivity"] { merged[index]["subagentActivity"] = activity }
         }
         // A running session the list route did not return still belongs on screen.
         for peer in live {
@@ -14463,38 +14498,28 @@ final class COSControlHelper {
         // Measured 2026-08-19: 7 starred Claude sessions, 6 with no projects transcript,
         // and ZERO reaching the Pinned view. The server returned all 7 with correct
         // titles. Rather than patch both sites, the divergent copy stops being the source.
-        var serverRows: [[String: Any]] = []
-        var dropped: [String: Int] = ["age": 0, "limit": 0, "oversized": 0]
+        var serverBody: [String: Any]?
         if let token = try? speakerReviewToken(),
            let response = request("/api/agent-sessions?limit=80", token: token, timeout: 15),
            response.status == 200,
-           let body = response.body,
-           let raw = body["sessions"] as? [[String: Any]] {
-            serverRows = raw.compactMap(Self.agentSessionRowProjection)
-            dropped = Self.agentSessionDroppedProjection(body)
+           let body = response.body {
+            serverBody = body
         }
-
-        if serverRows.isEmpty {
-            if let payload = Self.readSessionListCache(from: sessionListCacheURL),
-               let cachedRows = payload["sessions"] as? [[String: Any]], !cachedRows.isEmpty {
-                serverRows = cachedRows
-                dropped = Self.agentSessionDroppedProjection(payload)
-            } else {
-                let indexed = Self.collectAgentSessionIndex(
-                    home: home,
-                    composerNames: composerMeta.names,
-                    claudeStarred: claudeStarred,
-                    codexPinned: Self.loadCodexPinnedIds(
-                        sessionsRoot: home.appendingPathComponent(".codex/sessions", isDirectory: true)
-                    )
+        let selection = Self.freshSessionCatalogSelection(
+            serverBody: serverBody,
+            cachedBody: Self.readSessionListCache(from: sessionListCacheURL)
+        ) {
+            Self.collectAgentSessionIndex(
+                home: home,
+                composerNames: composerMeta.names,
+                claudeStarred: claudeStarred,
+                codexPinned: Self.loadCodexPinnedIds(
+                    sessionsRoot: home.appendingPathComponent(".codex/sessions", isDirectory: true)
                 )
-                serverRows = indexed.rows
-                dropped = indexed.dropped
-            }
-            peers = Self.overlayLiveState(onto: serverRows, live: peers)
-        } else {
-            peers = Self.overlayLiveState(onto: serverRows, live: peers)
+            )
         }
+        let dropped = selection.dropped
+        peers = Self.overlayLiveState(onto: selection.rows, live: peers)
         peers = Self.applyClaudeDesktopTitles(peers, desktopIndex: desktopIndex)
         // 0.5.250: the name a Work New session was given (`claude -p --name`), read from its own transcript.
         let transcripts = Self.claudeTranscriptIndex(projectsRoot: claudeProjects)
@@ -14519,10 +14544,12 @@ final class COSControlHelper {
             if aPin != bPin { return aPin && !bPin }
             return (a["updatedAt"] as? String ?? "") > (b["updatedAt"] as? String ?? "")
         }
-        saveSessionListCache(sessions: peers, dropped: dropped, enabled: true, reason: reason)
+        if selection.shouldSaveFresh {
+            saveSessionListCache(sessions: peers, dropped: dropped, enabled: true, reason: reason)
+        }
         emitSessionList(
             peers, liveOnly: false, enabled: true, reason: reason, counts: counts,
-            dropped: dropped, cached: false, partial: false
+            dropped: dropped, cached: selection.cached, partial: selection.partial
         )
     }
 
@@ -22363,8 +22390,11 @@ final class COSControlHelper {
         guard response.status == 200, let body = response.body else {
             throw HelperError.message("Request failed (\(response.status))")
         }
-        let groups = (body["groups"] as? [[String: Any]]) ?? []
-        let loose = (body["loose"] as? [[String: Any]]) ?? []
+        guard let inventory = Self.heldGroupsInventory(body) else {
+            throw HelperError.message("Held voices response is incomplete. Try again.")
+        }
+        let groups = inventory.groups
+        let loose = inventory.loose
         let pending = body["pending"] as? Int ?? 0
         emit(ok: true, message: Self.heldGroupsSummary(groups: groups.count, loose: loose.count, pending: pending), details: [
             "state": "ready",
@@ -22387,6 +22417,12 @@ final class COSControlHelper {
     static let heldGroupsNeeds = "6.46.0"
     static func heldGroupsUpdateMessage(_ what: String) -> String {
         "Update the COS server to \(heldGroupsNeeds) or newer to \(what)."
+    }
+
+    static func heldGroupsInventory(_ body: [String: Any]) -> (groups: [[String: Any]], loose: [[String: Any]])? {
+        guard let groups = body["groups"] as? [[String: Any]],
+              let loose = body["loose"] as? [[String: Any]] else { return nil }
+        return (groups, loose)
     }
 
     static func heldGroupsSummary(groups: Int, loose: Int, pending: Int) -> String {
@@ -23899,6 +23935,24 @@ final class COSControlHelper {
         try expect(Self.heldGroupsSummary(groups: 3, loose: 7, pending: 0) == "3 voices · 7 loose samples", "held-groups summary names voices and loose samples")
         try expect(Self.heldGroupsSummary(groups: 0, loose: 0, pending: 0) == "No unrecognized audio is being held.", "held-groups summary for an empty window")
         try expect(Self.heldGroupsSummary(groups: 0, loose: 0, pending: 12) == "12 still being read", "held-groups summary while decodes are pending")
+        let emptyHeldInventory = Self.heldGroupsInventory(["groups": [], "loose": []])
+        try expect(emptyHeldInventory?.groups.isEmpty == true && emptyHeldInventory?.loose.isEmpty == true,
+                   "an explicitly empty held inventory remains authoritative")
+        let populatedHeldInventory = Self.heldGroupsInventory(["groups": [["id": "group-1"]], "loose": [["sessionId": "held-1"]]])
+        try expect(populatedHeldInventory?.groups.first?["id"] as? String == "group-1"
+                   && populatedHeldInventory?.loose.first?["sessionId"] as? String == "held-1",
+                   "held inventory decoder preserves populated arrays")
+        let malformedHeldInventories: [[String: Any]] = [
+            [:], ["groups": []], ["loose": []],
+            ["groups": NSNull(), "loose": []], ["groups": [], "loose": NSNull()],
+            ["groups": [:], "loose": []], ["groups": [], "loose": "bad"],
+            ["groups": [["id": "group-1"], "bad"], "loose": []],
+            ["groups": [], "loose": [3]],
+        ]
+        for (index, malformed) in malformedHeldInventories.enumerated() {
+            try expect(Self.heldGroupsInventory(malformed) == nil,
+                       "malformed held inventory \(index) cannot become an empty ready response")
+        }
         let heldCaps: [String: Any] = ["namingCapabilities": ["version": 1, "preview": true, "apply": true, "undo": true]]
         try expect(Self.heldNamingSupported(heldCaps), "held naming explicit capabilities accepted")
         try expect(!Self.heldNamingSupported([:]), "old grouping server cannot receive preview POST")
@@ -24152,6 +24206,56 @@ final class COSControlHelper {
         try expect(Self.agentSessionDroppedProjection(loadedCache ?? [:])["age"] == 1691, "session list cache keeps dropped.age")
         try expect(Self.readSessionListCache(from: cacheURL, now: indexNow.addingTimeInterval(8 * 24 * 3600)) == nil,
                    "session list cache older than 7 days is ignored")
+
+        var fallbackIndexReads = 0
+        let fallbackIndex = { () -> (rows: [[String: Any]], dropped: [String: Int]) in
+            fallbackIndexReads += 1
+            return ([["id": "local-1", "provider": "cursor"]], ["age": 7, "limit": 0, "oversized": 0])
+        }
+        let freshEmptyCatalog = Self.freshSessionCatalogSelection(
+            serverBody: ["sessions": [], "dropped": ["age": 2]], cachedBody: loadedCache, localIndex: fallbackIndex
+        )
+        try expect(freshEmptyCatalog.rows.isEmpty && freshEmptyCatalog.dropped["age"] == 2,
+                   "fresh HTTP 200 empty catalog does not resurrect cached or indexed sessions")
+        try expect(!freshEmptyCatalog.cached && !freshEmptyCatalog.partial && freshEmptyCatalog.shouldSaveFresh && fallbackIndexReads == 0,
+                   "authoritative empty catalog is complete, cacheable and never walks local transcripts")
+        let freshPopulatedCatalog = Self.freshSessionCatalogSelection(
+            serverBody: ["sessions": [["session_id": "server-1", "provider": "codex"]]],
+            cachedBody: loadedCache, localIndex: fallbackIndex
+        )
+        try expect(freshPopulatedCatalog.rows.first?["id"] as? String == "server-1"
+                   && freshPopulatedCatalog.shouldSaveFresh && !freshPopulatedCatalog.partial && fallbackIndexReads == 0,
+                   "fresh populated catalog projects server rows and wins over every fallback")
+        let unavailableCatalog = Self.freshSessionCatalogSelection(serverBody: nil, cachedBody: loadedCache, localIndex: fallbackIndex)
+        try expect(unavailableCatalog.rows.first?["id"] as? String == "cached-1"
+                   && unavailableCatalog.dropped["age"] == 1691 && unavailableCatalog.cached && unavailableCatalog.partial
+                   && !unavailableCatalog.shouldSaveFresh && fallbackIndexReads == 0,
+                   "an unavailable catalog exposes cache provenance and cannot refresh its saved timestamp")
+        let malformedCatalogs: [[String: Any]] = [
+            [:], ["sessions": NSNull()], ["sessions": [:]], ["sessions": ["bad"]],
+            ["sessions": [["provider": "claude"]]],
+            ["sessions": [["session_id": "valid-1"], ["session_id": ""]]],
+        ]
+        for (index, malformed) in malformedCatalogs.enumerated() {
+            let fallback = Self.freshSessionCatalogSelection(serverBody: malformed, cachedBody: loadedCache, localIndex: fallbackIndex)
+            try expect(fallback.rows.first?["id"] as? String == "cached-1" && fallback.cached && fallback.partial
+                       && !fallback.shouldSaveFresh && fallbackIndexReads == 0,
+                       "malformed catalog \(index) is unavailable rather than a fresh complete subset")
+        }
+        let cachedEmptyCatalog = Self.freshSessionCatalogSelection(serverBody: nil, cachedBody: ["sessions": []], localIndex: fallbackIndex)
+        try expect(cachedEmptyCatalog.rows.isEmpty && cachedEmptyCatalog.cached && cachedEmptyCatalog.partial
+                   && !cachedEmptyCatalog.shouldSaveFresh && fallbackIndexReads == 0,
+                   "an empty cache stays empty and stale instead of reviving older local rows")
+        let indexedCatalog = Self.freshSessionCatalogSelection(serverBody: nil, cachedBody: nil, localIndex: fallbackIndex)
+        try expect(indexedCatalog.rows.first?["id"] as? String == "local-1" && indexedCatalog.dropped["age"] == 7
+                   && !indexedCatalog.cached && indexedCatalog.partial && !indexedCatalog.shouldSaveFresh && fallbackIndexReads == 1,
+                   "local inventory is a partial last resort and is not saved as fresh")
+        let malformedCacheCatalog = Self.freshSessionCatalogSelection(
+            serverBody: nil, cachedBody: ["sessions": "bad"], localIndex: fallbackIndex
+        )
+        try expect(malformedCacheCatalog.rows.first?["id"] as? String == "local-1"
+                   && malformedCacheCatalog.partial && !malformedCacheCatalog.shouldSaveFresh && fallbackIndexReads == 2,
+                   "a malformed cache cannot prevent the honest local fallback")
 
         try expect(Self.tokenizeSessionQuery("Toast in grocery vs Clover") == ["toast", "grocery", "clover"],
                    "session search drops stopwords")
@@ -24678,6 +24782,18 @@ final class COSControlHelper {
         let overlaid = Self.overlayLiveState(onto: [projectedRow!], live: [projectedPeer!])
         try expect(overlaid.first?["agentState"] as? String == "running" && overlaid.first?["stateSource"] as? String == "registry" && overlaid.first?["queuedTurns"] as? Int == 1,
                    "the overlay takes the peer's server state onto the listed row")
+        let agentCounts = ["active": 2, "completed": 3, "total": 5]
+        let countedRow = Self.agentSessionRowProjection(serverRow.merging(["subagent_activity": agentCounts]) { _, new in new })!
+        try expect(countedRow["subagentActivity"] as? [String: Int] == agentCounts,
+                   "session list projection preserves the server subagent count fallback")
+        let countFallback = Self.overlayLiveState(onto: [countedRow], live: [projectedPeer!])
+        try expect(countFallback.count == 1 && countFallback.first?["subagentActivity"] as? [String: Int] == agentCounts,
+                   "a peer without counts retains catalog counts without adding a session")
+        let zeroCounts = ["active": 0, "completed": 0, "total": 0]
+        let countedPeer = Self.claudePeerProjection(["id": "9a9a9a9a", "alive": true, "subagent_activity": zeroCounts])!
+        let countOverlay = Self.overlayLiveState(onto: [countedRow], live: [countedPeer])
+        try expect(countOverlay.first?["subagentActivity"] as? [String: Int] == zeroCounts,
+                   "a live peer's explicit zero subagent counts replace the catalog fallback")
         try expect(Self.sessionStateFromServer(agentState: "waiting", stateSource: "hook") == "waiting"
                    && Self.sessionStateFromServer(agentState: "idle", stateSource: "registry") == "recent"
                    && Self.sessionStateFromServer(agentState: "ended", stateSource: "hook") == "stale"

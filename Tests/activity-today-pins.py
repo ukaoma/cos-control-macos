@@ -55,11 +55,11 @@ need("TodayWindowWatcher { visible in if today.windowVisible != visible { today.
 need(in_order(win, "today.overviewDone = true", "private func loadHomeWork()"),
      "[polling] the opening loads say when they are done")
 need("static let interval: TimeInterval = 60" in models and "static let slowSeconds: TimeInterval = 300" in store and store.count("Self.slowSeconds") == 2,
-     "[polling] one tick a minute; calendar and intake at most every 5 minutes")
+     "[polling] one tick a minute; ordinary calendar and intake reads at most every 5 minutes")
 need(len(re.findall(r"\btodayTickLoop\(\)", win)) == 2 and ".task(id: todayEnabled) { await todayTickLoop() }" in today,
      "[polling] one tick loop, owned by the Today frame (it ends when the window goes)")
-tick = body(store, "    func tick(model: ControllerModel, now: Date = Date()) async {", "\n    static func readHosts(")
-need(tick.count("model.todayHelper(") == 1 and "guard !ticking else { return }" in tick, "[polling] one helper run per tick, never two at once")
+tick = body(store, "    func tick(model: ControllerModel, now: Date = Date(), force: Bool = false) async {", "\n    static func readHosts(")
+need(tick.count("model.todayHelper(") == 1 and "await tickReads.run(force: force)" in tick, "[polling] one helper run per tick, never two at once")
 need("if reachable == true { checkedAt = Date() }" in tick and tick.count("checkedAt =") == 1, "[states] checked only after a tick that reached the server")
 need('reachable = response.details["unreachable"]?.bool != true' in tick and len(re.findall(r"\breachable = ", store)) == 1,
      "[reachability] unreachable only when the helper says nothing answered")

@@ -87,7 +87,42 @@ import Foundation
         dismissChecks()
         yourMoveShapeChecks()
         summaryChecks()
+        await refreshReadQueueChecks()
         print("PASS: Activity Today home: \(ran) checks (predicates, five pin tests, tool-name guard, platform table, finished hour and cap, intake split and midnight, quiet hours, cost guards, capability gating, layout, dismiss and undo)")
+    }
+
+
+    static func refreshReadQueueChecks() async {
+        let queue = TodayReadQueue()
+        var start: CheckedContinuation<Void, Never>?
+        var release: CheckedContinuation<Void, Never>?
+        var events: [String] = []
+        let entered = Task { @MainActor in
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in start = c }
+        }
+        // Wait until the entry waiter is installed, without elapsed-time assumptions.
+        while start == nil { await Task.yield() }
+        let first = Task { @MainActor in
+            await queue.run(force: false) {
+                events.append("tick")
+                start?.resume(); start = nil
+                await withCheckedContinuation { release = $0 }
+                events.append("tick done")
+            }
+        }
+        await entered.value
+        await queue.run(force: false) { events.append("duplicate tick") }
+        check(events == ["tick"], "periodic ticks coalesce while a read is active")
+        let forced = Task { @MainActor in await queue.run(force: true) { events.append("forced") } }
+        let secondForced = Task { @MainActor in await queue.run(force: true) { events.append("second forced") } }
+        await Task.yield()
+        check(events == ["tick"], "Refresh waits for the pending read")
+        release?.resume(); release = nil
+        await first.value; await forced.value; await secondForced.value
+        check(events.prefix(2) == ["tick", "tick done"] && events.count == 4, "both forced reads run after the old read without duplication")
+        check(Set(events.suffix(2)) == ["forced", "second forced"], "each explicit Refresh performs its own read")
+        await queue.run(force: false) { events.append("later tick") }
+        check(events.last == "later tick", "the queue releases after reads finish")
     }
 
     // MARK: B1 tool-name guard
@@ -973,6 +1008,16 @@ import Foundation
 
     static func summaryChecks() {
         runningNowContract()
+        check(!TodaySummary.slowReadDue(last: now.addingTimeInterval(-1), now: now, interval: 300, force: false), "ordinary ticks keep slow reads cached")
+        check(TodaySummary.slowReadDue(last: now.addingTimeInterval(-1), now: now, interval: 300, force: true), "Refresh bypasses the slow-read cache")
+        check(TodaySummary.slowReadDue(last: nil, now: now, interval: 300, force: false), "first calendar read is not cached")
+        check(TodaySummary.slowReadDue(last: now.addingTimeInterval(-300), now: now, interval: 300, force: false), "the five-minute boundary rereads")
+        check(TodaySummary.sessionReadState(partial: false, cached: false) == .answered, "a fresh complete session read is answered, including empty")
+        check(TodaySummary.sessionReadState(partial: false, cached: true) == .pending, "cached rows never certify current sessions")
+        check(TodaySummary.sessionReadState(partial: true, cached: false) == .pending, "a partial local inventory stays pending")
+        check(TodaySummary.componentReadFailed([.object(["available": .bool(false), "status": .number(503)])]), "a component 503 warns despite a successful helper tick")
+        check(!TodaySummary.componentReadFailed([nil, .object(["available": .bool(false), "status": .number(404)])]), "unsupported components do not warn")
+        check(!TodaySummary.componentReadFailed([.object(["available": .bool(true)])]), "healthy components do not warn")
         let fresh = reply(["text": .string("You are finishing the pricing work and QA is idle."), "at": .string(ago(3)), "basis": .string("3 sessions"),
                            "model": .string("sonnet"), "state": .string("fresh"), "enabled": .bool(true), "source": .string("settings")])
         check(fresh != nil && fresh?.text.hasPrefix("You are") == true, "a brief reply parses")
@@ -1114,7 +1159,27 @@ import Foundation
         let missing = TodaySummary.inputs(sessions: [], needs: frame.needs, folded: 0, sessionsRead: true, settled: frame.counts.settled, failed: frame.counts.failedSources, recording: false, now: now).object ?? [:]
         check(missing["needsComplete"]?.bool == false && missing["unread"]?.array?.compactMap(\.string) == ["Work"], "the summary hears Work was not read", "\(missing)")
         home.sources.yourMoveFailed = false
+        home.sources.yourMovePending = true
+        let pendingWork = TodayHome.compose(home)
+        check(pendingWork.states[.work] == .pending && !pendingWork.counts.settled && pendingWork.line != .caughtUp, "pending handoffs cannot claim Work is empty")
+        let pendingBody = TodaySummary.inputs(sessions: [], needs: [], folded: 0, sessionsRead: true, settled: pendingWork.counts.settled, failed: pendingWork.counts.failedSources, recording: false, now: now).object ?? [:]
+        check(pendingBody["needsComplete"]?.bool == false, "pending handoffs keep summary completeness false")
+        home.sources.work = .failed
+        check(TodayHome.compose(home).states[.work] == .failed, "pending handoffs cannot hide a board failure")
+        home.sources.work = .answered; home.sources.reachable = false
+        check(TodayHome.compose(home).states[.work] == .failed, "pending handoffs cannot hide a transport failure")
+        home.sources.reachable = true
+        home.sources.work = .off
+        check(TodayHome.compose(home).states[.work] == .off, "disabled Work stays off while its handoffs are pending")
+        home.sources.work = .answered
+        home.sources.yourMovePending = false
         check(TodayHome.compose(home).states[.work] == .answered && TodayHome.compose(home).counts.settled, "your move read: Work answered and Today settles")
+        home.sources.sessions = .failed
+        let staleSessions = TodayHome.compose(home)
+        check(!staleSessions.counts.sessionsKnown && !staleSessions.counts.settled, "failed fresh session reads cannot certify retained rows")
+        check(TodaySummary.inputs(sessions: [working], needs: [], folded: 0, sessionsRead: false, settled: true, failed: [.sessions], recording: false, now: now).object?["needsComplete"]?.bool == false, "even settled input cannot override an unread source")
+        let dead = ClaudeSession(.object(["id": .string("closed-session"), "name": .string("Old"), "state": .string("idle"), "alive": .bool(false)]))!
+        check(TodaySummary.inputs(sessions: [dead], needs: [], folded: 0, sessionsRead: true, settled: true, failed: [], recording: false, now: now).object?["sessions"]?.array?.isEmpty == true, "closed idle sessions never become open summary rows")
         let unreadBody = TodaySummary.inputs(sessions: [], needs: [], folded: 0, sessionsRead: false, settled: false, failed: [.work, .sessions], recording: true, now: now).object ?? [:]
         check(unreadBody["unread"]?.array?.compactMap(\.string) == ["Work", "sessions"] && unreadBody["needsComplete"]?.bool == false && unreadBody["recording"]?.bool == true,
               "unread sources by the server's names, never complete with one unread")

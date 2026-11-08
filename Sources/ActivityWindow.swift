@@ -7965,7 +7965,8 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
     private var probedFor: String?
     private var lastCalendar: Date?
     private var lastIntake: Date?
-    private var ticking = false
+    private let tickReads = TodayReadQueue()
+    private let summaryReads = TodayReadQueue()
     static let slowSeconds: TimeInterval = 300
 
     /// 0.5.379: one ask for the Today summary (helper `today-brief`, server 7.0.1 POST /api/today/brief). Nil: no answer
@@ -7988,6 +7989,11 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
     /// Today asks on its own (TodaySummary.Asking): changed rows at once but at most once a minute, the same rows every five
     /// minutes. Never waits: the count headline shows until a summary lands, and a failed ask keeps what was shown.
     func askSummary(model: ControllerModel, body: JSONValue, now: Date = Date()) async {
+        guard !refresh.busy else { return }
+        await summaryReads.run(force: false) { await self.performAutomaticSummary(model: model, body: body, now: now) }
+    }
+
+    private func performAutomaticSummary(model: ControllerModel, body: JSONValue, now: Date) async {
         // Settings turned the summary on or off: forget it, so this tick asks at once (Control Web's resetTodayBrief).
         if summaryEpoch != TodaySummarySettingsStore.epoch, !summary.inflight { summaryEpoch = TodaySummarySettingsStore.epoch; summary = TodaySummary.Asking() }
         let key = TodaySummary.key(body)
@@ -8003,11 +8009,18 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
     /// Refresh (Control Web's todayRefresh): every Today source read again now, then a new summary asked for with `force`.
     /// The server still holds its switch, its 30 s refresh floor and its daily cap, and says which; so does this Mac's
     /// own floor. Switched off or an older server: the sources only.
-    func refreshToday(model: ControllerModel, reload: () async -> Void, body: () -> JSONValue) async {
+    func refreshToday(model: ControllerModel, reload: () async -> Void, body: @escaping @MainActor () -> JSONValue) async {
         guard refresh.begin(now: Date()) else { return }
         await reload()
+        // An automatic ask already in flight finishes first. No older answer can overwrite this forced one.
+        await summaryReads.run(force: true) { await self.performRefreshedSummary(model: model, body: body) }
+        if refresh.busy { refresh.finish(reply: nil, words: "Today refresh was cancelled", now: Date()) }
+    }
+
+    private func performRefreshedSummary(model: ControllerModel, body: () -> JSONValue) async {
+        let readWarning = lastError == nil ? "" : "Some of Today could not update. Try Refresh again."
         if summary.reply?.switchedOff == true || summary.unavailable {
-            refresh.finish(reply: nil, words: "", now: Date())
+            refresh.finish(reply: nil, words: readWarning, now: Date())
             return
         }
         let rows = body()
@@ -8019,21 +8032,22 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
         summary.reply = TodaySummary.kept(previous: summary.reply, answer: answer)
         if answer.available, answer.reply != nil { summary.sent(key: TodaySummary.key(rows), now: Date()) }
         let words = answer.available ? TodaySummary.refreshWords(answer.reply) : "The summary did not update"
-        refresh.finish(reply: answer.available ? answer.reply : nil, words: words, now: Date())
+        refresh.finish(reply: answer.available ? answer.reply : nil, words: [words, readWarning].filter { !$0.isEmpty }.joined(separator: ". "), now: Date())
     }
 
-    /// One tick: the helper's serial reads, then the local host lookup, then intake when 5 minutes have passed.
-    func tick(model: ControllerModel, now: Date = Date()) async {
-        guard !ticking else { return }
-        ticking = true
-        defer { ticking = false }
+    /// Ordinary ticks coalesce; Refresh waits for a pending tick and then performs its own uncached reads.
+    func tick(model: ControllerModel, now: Date = Date(), force: Bool = false) async {
+        await tickReads.run(force: force) { await self.performTick(model: model, now: now, force: force) }
+    }
+
+    private func performTick(model: ControllerModel, now: Date, force: Bool) async {
         ticks += 1
         let started = Date()
         let server = "\(model.status.running)|\(model.status.version ?? "")"
         var args = ["activity-today"]
         let probe = jobsSupported == nil || probedFor != server
         if probe { args.append("--probe") } else if jobsSupported == true { args.append("--jobs") }
-        let calendar = lastCalendar.map { now.timeIntervalSince($0) >= Self.slowSeconds } ?? true
+        let calendar = TodaySummary.slowReadDue(last: lastCalendar, now: now, interval: Self.slowSeconds, force: force)
         if calendar { args.append("--calendar") }
         do {
             let response = try await model.todayHelper(args, timeout: 60)
@@ -8055,21 +8069,29 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
                 // 0.5.336: the live meeting view's title takes this event when it started near the recording.
                 model.liveMeetingCalendarEvent = nextEvent
             }
-            lastError = nil
+            let failedComponent = TodaySummary.componentReadFailed([
+                response.details["queryJobs"], response.details["routines"], calendar ? response.details["calendar"] : nil,
+            ])
+            lastError = failedComponent ? "Some of Today could not update." : nil
             if reachable == true { checkedAt = Date() }
             todayLog.info("tick \(self.ticks) args=\(args.joined(separator: " "), privacy: .public) ms=\(Int(Date().timeIntervalSince(started) * 1000)) reachable=\(self.reachable == true) jobs=\(self.jobs?.count ?? -1) routines=\(self.routines.count) calendar=\(self.calendarAvailable)")
         } catch {
             // The helper did not run or said no: these reads are missing this tick, and that is not the server being down.
             lastError = error.localizedDescription
+            if calendar {
+                calendarAvailable = false; calendarRead = nil; nextEvent = nil
+                model.liveMeetingCalendarEvent = nil
+            }
             routines = []
             if jobsSupported == true { jobs = nil }
             todayLog.error("tick \(self.ticks) args=\(args.joined(separator: " "), privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
         }
         hosts = await Self.readHosts(model: model)
         hostsRead = true
-        if let last = lastIntake {
-            if now.timeIntervalSince(last) >= Self.slowSeconds { lastIntake = now; await model.loadWorkIntake() }
-        } else {
+        if force || (lastIntake != nil && TodaySummary.slowReadDue(last: lastIntake, now: now, interval: Self.slowSeconds, force: false)) {
+            lastIntake = now
+            await model.loadWorkIntake()
+        } else if lastIntake == nil {
             lastIntake = now   // the window's opening loads just read it
         }
     }
@@ -8410,12 +8432,13 @@ extension ActivityWindow {
     func todaySourceInputs() -> TodayHome.SourceInputs {
         var input = TodayHome.SourceInputs()
         input.reachable = model.status.running && today.reachable != false
-        input.sessions = ActivityHome.sourceState(enabled: true, loaded: homeLoads[.sessions], hasData: !model.claudeSessions.isEmpty || !model.petSessions.isEmpty)
+        input.sessions = model.claudeSessionsReadState
         input.voices = model.heldGroupsError != nil ? .failed : (model.heldGroupsState == nil ? .pending : .answered)
         input.memories = model.status.learningToReview == nil ? .off : .answered
         input.work = ActivityHome.sourceState(enabled: workConnectionsEnabled && !isolatedWorkPreview, loaded: homeLoads[.work], hasData: !model.workTasks.isEmpty)
         input.intakeFailed = model.workIntakeError != nil && model.workIntakeError != today.lastResolveError
         input.yourMoveFailed = model.workYourMoveFailed
+        input.yourMovePending = !model.workYourMoveAvailable && !model.workYourMoveFailed
         return input
     }
 
@@ -8848,6 +8871,9 @@ extension ActivityWindow {
         let refresh = today.refresh
         let counting = (refresh.retryAt ?? .distantPast) > now
         return HStack(alignment: .firstTextBaseline, spacing: 12) {
+            if today.lastError != nil && refresh.message.isEmpty {
+                Text("Some of Today could not update. Refresh to try again.").font(COSType.body(12.5)).foregroundStyle(TodayInk.sub)
+            }
             if let shown {
                 Text(TodaySummary.when(shown, now: now, failed: frame.counts.failedSources.map(\.name)))
                     .font(COSType.body(12.5)).foregroundStyle(TodayInk.sub)
@@ -8882,10 +8908,16 @@ extension ActivityWindow {
     func todayRefresh() async {
         guard Self.allowsLiveSectionLoads(isolatedWorkPreview: isolatedWorkPreview, backgroundWorkEnabled: model.activityLoadsEnabled) else { return }
         await today.refreshToday(model: model, reload: {
+            // Status supplies Memories' review count. Read it again even inside the normal five-minute cadence.
+            await model.refresh(quiet: true)
             await model.loadClaudeSessions(force: true)
-            await model.loadYourMove()
-            await model.loadHeldGroups()
-            await today.tick(model: model)
+            homeLoads[.sessions] = model.claudeSessionsReadState
+            if workConnectionsEnabled && !isolatedWorkPreview {
+                await model.loadWorkTasks(force: true) // includes a fresh your-move read
+                homeLoads[.work] = model.workTasksError == nil ? .answered : .failed
+            }
+            await model.loadHeldGroups(force: true)
+            await today.tick(model: model, force: true)
         }, body: { todaySummaryBody(now: Date()) })
     }
 

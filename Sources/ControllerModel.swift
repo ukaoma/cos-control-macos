@@ -553,7 +553,6 @@ final class ControllerModel: ObservableObject {
     @Published var heldNamingShowReview = false
     private var heldNamingMembers: [HeldSampleRef] = []
     @Published var heldGroupsGeneration = 0
-    private var heldGroupsReloadRequested = false
     /// 0.5.222 — a refresh asked for while the directory is loading is queued, not
     /// dropped. Switching to Voices while a naming saved used to swallow the naming's
     /// refresh and leave SAMPLES on the old count.
@@ -2735,6 +2734,9 @@ final class ControllerModel: ObservableObject {
     @Published var claudeSessionsReason = ""
     @Published var claudeSessionsLoading = false
     @Published var claudeSessionsError: String?
+    /// Read outcome is independent of retained rows: stale rows must never certify a complete Today summary.
+    @Published var claudeSessionsReadState: ActivityHome.SourceState = .pending
+    private var claudeSessionsReadGeneration = 0
     @Published var tasks: [TaskRow] = []
     /// Empty until the server answers. The Tasks picker falls back to whatever
     /// the user last saw rather than emptying itself against an older server.
@@ -4563,21 +4565,29 @@ final class ControllerModel: ObservableObject {
     }
 
     private func fetchClaudeSessions(quick: Bool) async {
+        claudeSessionsReadGeneration += 1
+        let generation = claudeSessionsReadGeneration
+        claudeSessionsReadState = .pending
         claudeSessionsLoading = true
-        defer { claudeSessionsLoading = false }
+        defer { if generation == claudeSessionsReadGeneration { claudeSessionsLoading = false } }
         let args = quick ? ["claude-sessions", "--quick"] : ["claude-sessions", "--fresh"]
         let timeout = quick ? Self.claudeSessionsQuickTimeout : Self.claudeSessionsFreshTimeout
         do {
             let response = try await helper.run(args, timeout: timeout)
-            let next = (response.details["sessions"]?.array ?? []).compactMap(ClaudeSession.init)
+            guard generation == claudeSessionsReadGeneration else { return }
+            guard response.ok, let rows = response.details["sessions"]?.array else {
+                throw HelperClientError.invalidResponse("The session inventory could not be read.")
+            }
+            let next = rows.compactMap(ClaudeSession.init)
             let partial = response.details["partial"]?.bool ?? false
+            let cached = response.details["cached"]?.bool ?? false
             if !next.isEmpty || !partial {
                 claudeSessionsEnabled = response.details["enabled"]?.bool ?? claudeSessionsEnabled
                 claudeSessionsReason = response.details["reason"]?.string ?? claudeSessionsReason
                 claudeSessions = ClaudeSession.markingWork(next, workSessionIDs: workSessionIDs, runningWorkSessionIDs: runningWorkSessionIDs)
                 recordWorkObservation("sessions", values: ["ids": Array(next.map(\.id).prefix(2000))])
                 sessionListDropped = SessionListDropped(response.details["dropped"])
-                if !quick, !partial {
+                if !quick, !partial, !cached {
                     claudeSessionsCacheSavedAt = Date()
                 }
                 // 0.5.235: the open pane's queue follows the row's queued count.
@@ -4588,9 +4598,12 @@ final class ControllerModel: ObservableObject {
                 }
             }
             claudeSessionsError = nil
+            claudeSessionsReadState = TodaySummary.sessionReadState(partial: partial, cached: cached)
         } catch is CancellationError {
-            return
+            if generation == claudeSessionsReadGeneration { claudeSessionsReadState = .failed }
         } catch {
+            guard generation == claudeSessionsReadGeneration else { return }
+            claudeSessionsReadState = .failed
             if claudeSessions.isEmpty {
                 claudeSessionsError = error.localizedDescription
             }
@@ -10075,25 +10088,36 @@ final class ControllerModel: ObservableObject {
 
     /// 0.5.219 — every held sample, grouped by who it sounds like across the
     /// whole window, plus the loose ones. An older server answers route_absent.
-    func loadHeldGroups() async {
-        // A reload asked for while one is in flight is not dropped: the caller
-        // is usually a naming or discard that just changed what is held.
-        guard !heldGroupsLoading else { heldGroupsReloadRequested = true; return }
+    private let heldGroupsReads = HeldGroupsReadQueue()
+
+    func loadHeldGroups(force: Bool = false) async {
+        await heldGroupsReads.run(force: force) { await self.performLoadHeldGroups() }
+    }
+
+    private func performLoadHeldGroups() async {
         heldGroupsLoading = true
-        heldGroupsError = nil
+        defer { heldGroupsLoading = false }
         do {
             let response = try await helper.run(["voice-held-groups"])
-            heldGroupsState = response.details["state"]?.string ?? "ready"
-            heldGroups = (response.details["groups"]?.array ?? []).compactMap(HeldVoiceGroup.init)
-            heldLoose = (response.details["loose"]?.array ?? []).compactMap(HeldSampleRef.init)
+            try Task.checkCancellation()
+            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            guard let snapshot = HeldGroupsReadSnapshot(response.details) else {
+                throw HelperClientError.invalidResponse("Held voices did not return a valid group and sample inventory. Try again.")
+            }
+            heldGroupsState = snapshot.state
+            heldGroups = snapshot.groups
+            heldLoose = snapshot.loose
             heldGroupsPending = response.details["pending"]?.int ?? 0
             heldGroupsSamples = response.details["samples"]?.int ?? 0
             heldGroupsEmbedded = response.details["embedded"]?.int ?? 0
             heldGroupsUnusable = response.details["unusable"]?.int ?? 0
             heldGroupsSpeakerModel = response.details["speakerModel"]?.bool ?? true
             heldNamingAvailable = response.details["namingAvailable"]?.bool ?? false
+            heldGroupsError = nil
             if heldNamingAvailable { await loadHeldNamingBatches() }
             else { heldNamingBatches = []; heldNamingPreview = nil; heldNamingShowReview = false }
+        } catch is CancellationError {
+            return
         } catch {
             heldGroupsState = "error"
             heldNamingAvailable = false
@@ -10101,11 +10125,6 @@ final class ControllerModel: ObservableObject {
             heldLoose = []
             heldGroupsPending = 0
             heldGroupsError = error.localizedDescription
-        }
-        heldGroupsLoading = false
-        if heldGroupsReloadRequested {
-            heldGroupsReloadRequested = false
-            await loadHeldGroups()
         }
     }
 

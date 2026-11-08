@@ -15,7 +15,7 @@ def body(text, start, stop):
 
 home = body(win, "    func todayHomeView(", "    func todayHeader(now: Date)")
 need(home.count("Text(TodaySummary.headline(todayBriefCounts(frame, now: now), summary: todaySummaryShown(frame)))") == 1,
-     "the headline is COS's count line plus the summary, over the quiet-hours fold")
+     "the headline is the server's exact summary, over the quiet-hours fold")
 need("todaySummaryLine(frame, now: now)" in home, "the Updated line and Refresh sit under the headline")
 shown = body(win, "    func todaySummaryShown(", "    func todaySummaryLine(")
 need("TodaySummary.shown(today.summary.reply, sessionsRead: frame.counts.sessionsKnown)" in shown, "a summary shows only over a session list that was read")
@@ -30,7 +30,9 @@ need(tick.count("today.askSummary(") == 1 and "if section == nil && !showingSett
 need(win.count("today.askSummary(") == 1 and win.count("today.refreshToday(") == 1, "one automatic ask and one Refresh path")
 refresh = body(win, "    func todayRefresh() async {", "    func todayHeader(now: Date)")
 need("Self.allowsLiveSectionLoads(" in refresh, "Refresh never reaches a server from a preview or render")
-store_refresh = body(win, "    func refreshToday(", "    /// One tick: the helper's serial reads")
+need("await model.refresh(quiet: true)" in refresh and "await model.loadWorkTasks(force: true)" in refresh and "await today.tick(model: model, force: true)" in refresh, "Refresh rereads Memories, Work, calendar and intake before the forced summary")
+need("input.yourMovePending = !model.workYourMoveAvailable && !model.workYourMoveFailed" in win, "pending handoffs keep Work pending")
+store_refresh = body(win, "    func refreshToday(", "    /// Ordinary ticks coalesce;")
 need("guard refresh.begin(now: Date()) else { return }" in store_refresh and "TodaySummary.forced(rows)" in store_refresh
      and "summary.reply?.switchedOff == true || summary.unavailable" in store_refresh, "Refresh: the floor first, force only when the summary is on and the route exists")
 need(win.count("TodaySummary.forced(") == 1, "force is sent only by Refresh")
@@ -51,13 +53,19 @@ need(".toggleStyle(COSCheckStyle())" in blk and ".disabled(settings.locked || st
 need("TodaySummarySettingsBlock(model: model)" in (root / "Sources/Views.swift").read_text(), "Settings, Activity home draws the switch")
 need("summaryEpoch != TodaySummarySettingsStore.epoch" in win and "Self.epoch &+= 1" in body(win, "@MainActor final class TodaySummarySettingsStore", "struct TodaySummarySettingsBlock"), "a change in Settings resets the Today summary")
 src_inputs = body(win, "    func todaySourceInputs() -> TodayHome.SourceInputs {", "    func todayCardFacts(")
+need("input.sessions = model.claudeSessionsReadState" in src_inputs, "retained rows never hide a failed fresh session read")
 need("input.yourMoveFailed = model.workYourMoveFailed" in src_inputs, "a failed your-move read reaches Today's Work source")
 cm = (root / "Sources/ControllerModel.swift").read_text()
+session_read = body(cm, "    private func fetchClaudeSessions(quick: Bool) async {", "    /// 0.5.254 resize pass:")
+need('TodaySummary.sessionReadState(partial: partial, cached: cached)' in session_read and 'if !quick, !partial, !cached {' in session_read,
+     "cached and partial session inventories never certify freshness or advance the fresh-cache clock")
+need('TodaySummary.componentReadFailed([' in win, "component server failures reach the Today refresh warning")
 ym = body(cm, "    func loadYourMove() async {", "    @Published var workTasksLoading")
 need("workYourMoveFailed = !workYourMoveAvailable" in ym and ym.count("workYourMoveFailed = true") == 1, "your move unavailable or failed is recorded as failed")
 ask = body(win, "    func askSummary(", "    func refreshToday(")
 need("TodaySummary.kept(previous: summary.reply, answer: answer)" in ask and "TodaySummary.kept(previous: summary.reply, answer: answer)" in store_refresh,
      "a failed or unreachable ask keeps the summary shown (TodaySummary.kept)")
+need("summaryReads.run(force: false)" in ask and "guard !refresh.busy else { return }" in ask and "summaryReads.run(force: true)" in store_refresh, "automatic and forced asks share one awaited queue")
 need('response.details["reason"]?.string == "older_server" ? (nil, false) : nil' in send, "only a missing route is an older server; unreachable or failed is no answer")
 if failures:
     for f in failures: print("FAIL: Today summary pin: " + f, file=sys.stderr)
