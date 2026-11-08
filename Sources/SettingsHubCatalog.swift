@@ -160,6 +160,11 @@ enum SettingsHubCatalog {
         // /api/today/brief/settings/cap), 1 to 100, default 100. Shown on a server that has it. A hub row, not an inventory row.
         .init("TS-02", "Summaries per day", "At most this many new Today summaries a day, Refresh included. 1 to 100.", old: "", group: "general.home",
               advanced: false, mount: .group, keywords: ["today", "summary", "summaries", "cap", "limit", "per day", "daily"]),
+        // 0.5.380 (server 7.0.5, Miles decision 2b): Extra folders for previews, the folders a session's linked or sent files may
+        // also open from (GET and POST /api/preview-folders/settings). Empty by default. Shown on a server that has it. A hub
+        // row, not an inventory row.
+        .init("PF-01", "Extra folders for previews", "Folders a session's linked or sent files may also open from, besides its own project folder. Empty unless you add one.", old: "", group: "work.sessions",
+              advanced: false, mount: .group, keywords: ["previews", "preview", "folders", "extra folders", "files", "images", "quick look", "worktrees", "session files"]),
         .init("JV-13", "Find sessions by meaning", "After you say yes, each ⌘K search sends your words, plus session titles and the start of first prompts, to the model that decides search. Emails, links, home-folder paths and key-shaped text are removed first. Shown with Today home on and a server that supports it.", old: "", group: "ai.decision", advanced: false, mount: .group,
               keywords: ["meaning", "command k", "sessions", "consent", "jev", "subq"]),
         // 0.5.367 (server 6.99.3): Open COS on your phone, the QR and code that sign the phone's browser in to Control Web. The

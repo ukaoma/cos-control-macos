@@ -1632,6 +1632,10 @@ PY
 /usr/bin/python3 "$ROOT/Tests/today-summary-pins.py" "$ROOT"
 # QA 0.5.379: the numbers Control copies from server/lib/today-brief.ts, read from both repos (fails if the server file is absent).
 /usr/bin/python3 "$ROOT/Tests/today-brief-parity-pins.py" "$ROOT"
+# 0.5.380 (server 7.0.5, Miles decision 2b): Settings, Sessions, Extra folders for previews, wired as Control Web has it (the
+# helper, the store, the block, the catalog row, the 404 that hides it), with the web's copy and the server's limit from both
+# repos. The exchange itself runs in the helper self-test.
+/usr/bin/python3 "$ROOT/Tests/preview-folders-pins.py" "$ROOT"
 # Settings hub (Miles, 2026-10-27, the A treatment with B's On this page rail): the catalog's rules (every inventory row
 # in one group, deep links, search, breakpoints, scroll-spy, status lines; Tests/run-settings-hub.sh), then the wiring pins.
 # Hand-run: Tests/mutate-settings-hub.py (the mutation lane) and Tests/run-settings-hub-render.sh (PNGs for QA).

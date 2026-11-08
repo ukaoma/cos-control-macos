@@ -4416,6 +4416,9 @@ private extension ControlPanel {
             }
             .disabled(model.busy)
             hubRow("OUT-04") { SettingsHubUsageSwitch(store: model.sessionUsage, label: hubLabel("OUT-04")) }
+            // PF-01 (0.5.380, server 7.0.5): Extra folders for previews, the server's list, as Control Web Settings shows it.
+            // A server without it: no row.
+            PreviewFoldersSettingsBlock(model: model)
         }
         hubCard("work.chat", advanced: hubAdvancedCount("work.chat")) {
             Group {

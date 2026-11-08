@@ -11673,3 +11673,161 @@ struct TodaySummarySettingsBlock: View {
         .task { await store.load(model: model) }
     }
 }
+
+// MARK: - Settings, Sessions: Extra folders for previews (0.5.380, PF-01)
+
+/// 0.5.380 (server 7.0.5, preview engine, Miles decision 2b): "Extra folders for previews", the folders a session's linked or
+/// sent files may also open from, besides its own project folder. The server's list (GET and POST /api/preview-folders/settings,
+/// through the helper's `preview-folders`), the same one Control Web Settings' Extra folders changes, with its copy. Empty by
+/// default; at most 20. The server refuses broad and private folders (home, Documents, Library, /) and says why for each one,
+/// shown under the list. A server without the setting: no row.
+enum PreviewFolders {
+    static let label = "Extra folders for previews"
+    static let limit = 20
+    static let addHint = "Add a project folder, like ~/cos-worktrees. Not your whole home or Documents folder."
+    static let refusedFallback = "That folder can\u{2019}t be used."
+
+    /// Control Web's line under Extra folders: a damaged saved list, the folders, or none.
+    static func blurb(count: Int, source: String) -> String {
+        if source == "damaged" { return "Couldn\u{2019}t read the saved list, so no extra folder counts. Add a folder to save it again." }
+        return count > 0 ? "Sessions can also open files from these folders." : "None. Sessions open files only from their own project folder."
+    }
+
+    /// One folder the server refused, by its place in the list that was sent.
+    struct Refusal: Identifiable, Equatable, Sendable {
+        let id: Int
+        let folder: String
+        let message: String
+        var line: String { folder + ": " + message }
+    }
+
+    /// The server's per-folder errors (the helper's `errors`), matched to the list that was sent.
+    static func refusals(_ details: [String: JSONValue], sent: [String]) -> [Refusal] {
+        (details["errors"]?.array ?? []).compactMap { error in
+            guard let row = error.object, let index = row["index"]?.int, sent.indices.contains(index) else { return nil }
+            return Refusal(id: index, folder: sent[index], message: row["message"]?.string ?? refusedFallback)
+        }
+    }
+}
+
+@MainActor final class PreviewFoldersSettingsStore: ObservableObject {
+    /// Nil on a server without the setting (the helper's 404) or when the read fails: no row.
+    @Published private(set) var folders: [String]?
+    @Published private(set) var source = "default"
+    @Published private(set) var busy = false
+    @Published private(set) var refusals: [PreviewFolders.Refusal] = []
+    @Published private(set) var error: String?
+
+    func load(model: ControllerModel) async {
+        do {
+            let response = try await model.todayHelper(["preview-folders"], timeout: 12)
+            guard response.ok, response.details["available"]?.bool == true, let list = response.details["folders"]?.array else {
+                folders = nil
+                return
+            }
+            folders = list.compactMap { $0.string }
+            source = response.details["source"]?.string ?? "default"
+        } catch {
+            folders = nil
+        }
+    }
+
+    /// The folder picker. Folders only, one at a time.
+    func chooseFolder() -> String? {
+        let panel = NSOpenPanel()
+        panel.title = PreviewFolders.label
+        panel.message = PreviewFolders.addHint
+        panel.prompt = "Add folder"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        return url.path
+    }
+
+    func add(_ folder: String, model: ControllerModel) async {
+        guard let current = folders, current.count < PreviewFolders.limit else { return }
+        await save(current + [folder], model: model)
+    }
+
+    func remove(at index: Int, model: ControllerModel) async {
+        guard let current = folders, current.indices.contains(index) else { return }
+        var next = current
+        next.remove(at: index)
+        await save(next, model: model)
+    }
+
+    /// Replaces the list. The body goes on the helper's stdin, never argv. A refusal keeps the saved list and shows why.
+    private func save(_ next: [String], model: ControllerModel) async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: ["folders": next])
+            let response = try await model.todayHelper(["preview-folders", "--set"], timeout: 12, stdinData: data)
+            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            if response.details["refused"]?.bool == true {
+                refusals = PreviewFolders.refusals(response.details, sent: next)
+                error = refusals.isEmpty ? response.message : nil
+                return
+            }
+            guard let list = response.details["folders"]?.array else { throw HelperClientError.commandFailed(response.message) }
+            folders = list.compactMap { $0.string }
+            source = response.details["source"]?.string ?? source
+            refusals = []
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+}
+
+struct PreviewFoldersSettingsBlock: View {
+    @ObservedObject var model: ControllerModel
+    @StateObject private var store = PreviewFoldersSettingsStore()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let folders = store.folders {
+                let item = SettingsHubCatalog.item("PF-01")
+                SettingsHubRow(label: item?.label ?? PreviewFolders.label, detail: PreviewFolders.blurb(count: folders.count, source: store.source),
+                               anchor: "item.PF-01") {
+                    if folders.count < PreviewFolders.limit {
+                        Button("Add folder\u{2026}") {
+                            if let folder = store.chooseFolder() { Task { await store.add(folder, model: model) } }
+                        }
+                        .buttonStyle(TodayButtonStyle(small: true))
+                        .disabled(store.busy)
+                        .help(PreviewFolders.addHint)
+                    }
+                }
+                ForEach(Array(folders.enumerated()), id: \.offset) { index, folder in
+                    HStack(alignment: .center, spacing: 12) {
+                        Text(folder).font(COSType.body(13)).foregroundStyle(TodayInk.ink)
+                            .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button("Remove") { Task { await store.remove(at: index, model: model) } }
+                            .buttonStyle(TodayButtonStyle(small: true))
+                            .disabled(store.busy)
+                            .accessibilityLabel("Remove " + folder)
+                    }
+                    .padding(.horizontal, 20).padding(.bottom, 10)
+                }
+                // The server's reason under each folder it refused, then anything else that went wrong.
+                ForEach(store.refusals) { refusal in
+                    Text(refusal.line).font(COSType.body(12)).foregroundStyle(TodayInk.hot)
+                        .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 20).padding(.bottom, 8)
+                }
+                if let error = store.error {
+                    Text(error).font(COSType.body(12)).foregroundStyle(TodayInk.hot)
+                        .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 20).padding(.bottom, 8)
+                }
+                if folders.count < PreviewFolders.limit {
+                    Text(PreviewFolders.addHint).font(COSType.body(12)).foregroundStyle(TodayInk.sub)
+                        .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 20).padding(.bottom, 12)
+                }
+            }
+        }
+        .task { await store.load(model: model) }
+    }
+}

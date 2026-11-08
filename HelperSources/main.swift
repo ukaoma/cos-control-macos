@@ -582,6 +582,7 @@ final class COSControlHelper {
         case "today-brief": try emitTodayBrief()
         case "today-brief-settings": try emitTodayBriefSettings(args: args)
         case "today-brief-cap": try emitTodayBriefCap(args: args)
+        case "preview-folders": try emitPreviewFolders(args: args)
         case "activity-today": try emitActivityToday(args: args)
         case "work-set-stage":
             if args.count > 1 { try emitWorkStage(args: args) } else { try emitWorkUpdate(action: "stage") }
@@ -5332,6 +5333,72 @@ final class COSControlHelper {
         var details: [String: Any] = ["available": true, "dailyCap": cap]
         for key in ["min", "max", "default", "usedToday"] { if let n = body[key] as? Int { details[key] = n } }
         emit(ok: true, message: value == nil ? "Summaries per day" : "Summaries per day saved", details: details)
+    }
+
+    /// 0.5.380 (server 7.0.5, preview engine, Miles decision 2b): "Extra folders for previews", the folders a session's
+    /// linked or sent files may also open from, besides its own project folder. Control Web Settings' Extra folders, over
+    /// the same routes: GET /api/preview-folders/settings, or with `--set` POST { folders } read from stdin (paths never go
+    /// on argv), which replaces the list. Empty by default. The server refuses broad and private folders (400
+    /// preview_folder_refused, one error per folder); that answer is `refused: true` with each error's index, code and
+    /// message, so Settings can say why under each folder. A 404 is a server without the setting: `available: false`.
+    static let previewFoldersMax = 20
+    static let previewFoldersStdinMax = 64 * 1024
+    static let previewFoldersSources: Set<String> = ["default", "settings", "damaged"]
+
+    /// The `--set` body: exactly { "folders": [up to 20 non-empty strings] }, else nil (nothing reaches the server).
+    static func previewFoldersBody(_ data: Data) -> [String]? {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], object.count == 1,
+              let raw = object["folders"] as? [Any], raw.count <= previewFoldersMax else { return nil }
+        var folders: [String] = []
+        for item in raw {
+            guard let folder = item as? String, !folder.isEmpty, folder.utf8.count <= 4_096 else { return nil }
+            folders.append(folder)
+        }
+        return folders
+    }
+
+    /// The preview-folders exchange apart from its transport, so the self-test drives it with a stub. `folders` nil reads;
+    /// a list replaces. Only the contract's keys cross: folders (at most 20 strings) and source (default, settings or
+    /// damaged), or on a refusal the message and each error's index, code and message.
+    static func previewFoldersExchange(set folders: [String]?, ask: (_ method: String, _ body: String?) throws -> HTTPResponse?) throws -> (message: String, details: [String: Any]) {
+        var body: String?
+        if let folders { body = String(decoding: try JSONSerialization.data(withJSONObject: ["folders": folders]), as: UTF8.self) }
+        guard let response = try ask(folders == nil ? "GET" : "POST", body) else { throw HelperError.message("Server stopped") }
+        if response.status == 404 { return ("Not available on this server", ["available": false]) }
+        let error = response.body?["error"] as? [String: Any]
+        if response.status == 400, (error?["code"] as? String) == "preview_folder_refused" {
+            var errors: [[String: Any]] = []
+            for item in (response.body?["errors"] as? [[String: Any]]) ?? [] {
+                guard let index = item["index"] as? Int else { continue }
+                var row: [String: Any] = ["index": index]
+                if let code = item["code"] as? String { row["code"] = code }
+                if let message = item["message"] as? String { row["message"] = message }
+                errors.append(row)
+            }
+            return ((error?["message"] as? String) ?? "That folder was not saved.", ["available": true, "refused": true, "errors": errors])
+        }
+        guard response.status == 200, let reply = response.body, let list = reply["folders"] as? [Any] else {
+            throw HelperError.message((error?["message"] as? String) ?? "Extra folders could not be \(folders == nil ? "read" : "saved").")
+        }
+        let names = Array(list.compactMap { $0 as? String }.prefix(previewFoldersMax))
+        let source = (reply["source"] as? String).flatMap { previewFoldersSources.contains($0) ? $0 : nil } ?? "default"
+        return (folders == nil ? "Extra folders" : "Extra folders saved", ["available": true, "folders": names, "source": source])
+    }
+
+    private func emitPreviewFolders(args: [String]) throws {
+        var folders: [String]?
+        if args.contains("--set") {
+            guard let list = Self.previewFoldersBody(try readBoundedStdin(Self.previewFoldersStdinMax)) else {
+                throw HelperError.message("Extra folders is a list of up to 20 folders.")
+            }
+            folders = list
+        }
+        let candidate = try reviewCandidateTransport()
+        let token = try candidate?.token ?? readToken()
+        let answer = try Self.previewFoldersExchange(set: folders) { method, body in
+            request("/api/preview-folders/settings", method: method, token: token, body: body, timeout: 8, reviewCandidatePort: candidate?.port)
+        }
+        emit(ok: true, message: answer.message, details: answer.details)
     }
 
     private func emitWorkTasks() throws {
@@ -27468,6 +27535,58 @@ final class COSControlHelper {
         brief = try Self.todayBriefExchange(["sessions": [], "reason": "reconnect"]) { payload in briefAsked.append(payload); return briefReplies.removeFirst() }
         try expect(briefAsked.count == 2 && briefAsked[1]["reason"] == nil && brief.details["available"] as? Bool == true,
                    "an unforced reconnect ask to an older server is asked again without reason")
+        // 0.5.380 (server 7.0.5): the preview-folders exchange the helper really runs, through a stub transport.
+        var folderAsks: [(String, String?)] = []
+        var folders = try Self.previewFoldersExchange(set: nil) { method, body in
+            folderAsks.append((method, body))
+            return HTTPResponse(status: 200, body: ["folders": ["~/cos-worktrees", 7, "/Volumes/x/y"] as [Any], "source": "settings", "extra": "SECRET"])
+        }
+        try expect(folderAsks.count == 1 && folderAsks[0].0 == "GET" && folderAsks[0].1 == nil, "a read is a GET with no body")
+        let readFolders: [String] = folders.details["folders"] as? [String] ?? []
+        try expect(readFolders == ["~/cos-worktrees", "/Volumes/x/y"], "the folders cross, strings only")
+        try expect(folders.details["source"] as? String == "settings" && folders.details["available"] as? Bool == true, "the source crosses")
+        try expect(folders.details.count == 3, "only the contract's keys cross")
+        folderAsks = []
+        folders = try Self.previewFoldersExchange(set: ["/Users/me/cos-worktrees"]) { method, body in
+            folderAsks.append((method, body))
+            return HTTPResponse(status: 200, body: ["folders": ["/Users/me/cos-worktrees"], "source": "settings"])
+        }
+        let savedBody: String = folderAsks.first?.1 ?? ""
+        let savedObject = (try? JSONSerialization.jsonObject(with: Data(savedBody.utf8))) as? [String: [String]]
+        try expect(folderAsks.count == 1 && folderAsks[0].0 == "POST", "a save is a POST")
+        try expect(savedObject == ["folders": ["/Users/me/cos-worktrees"]], "a save sends exactly { folders }")
+        try expect(folders.message == "Extra folders saved", "a save says saved")
+        folders = try Self.previewFoldersExchange(set: ["/"]) { _, _ in
+            HTTPResponse(status: 400, body: ["error": ["code": "preview_folder_refused", "message": "That folder is too broad."],
+                                             "errors": [["index": 0, "code": "broad", "message": "Too broad: choose a project folder."], ["code": "broad"]] as [[String: Any]]])
+        }
+        let refusals: [[String: Any]] = folders.details["errors"] as? [[String: Any]] ?? []
+        try expect(folders.details["refused"] as? Bool == true && folders.message == "That folder is too broad.", "a refusal is refused, with the server's message")
+        try expect(refusals.count == 1, "an error without an index is dropped")
+        try expect(refusals.first?["index"] as? Int == 0 && refusals.first?["code"] as? String == "broad", "each error keeps its index and code")
+        try expect(refusals.first?["message"] as? String == "Too broad: choose a project folder.", "each error keeps its message")
+        folders = try Self.previewFoldersExchange(set: nil) { _, _ in HTTPResponse(status: 404, body: nil) }
+        try expect(folders.details["available"] as? Bool == false && folders.details.count == 1, "a 404 is a server without the setting")
+        folders = try Self.previewFoldersExchange(set: nil) { _, _ in HTTPResponse(status: 200, body: ["folders": [] as [String], "source": "mystery"]) }
+        let noFolders: [String]? = folders.details["folders"] as? [String]
+        try expect(folders.details["source"] as? String == "default" && noFolders?.isEmpty == true, "an unknown source reads as default")
+        folders = try Self.previewFoldersExchange(set: nil) { _, _ in HTTPResponse(status: 200, body: ["folders": Array(repeating: "/p", count: 25), "source": "settings"]) }
+        let manyFolders: [String] = folders.details["folders"] as? [String] ?? []
+        try expect(manyFolders.count == 20, "at most 20 folders cross")
+        var folderFailed = false
+        do { _ = try Self.previewFoldersExchange(set: nil) { _, _ in nil } } catch { folderFailed = true }
+        try expect(folderFailed, "nothing answered is a failed read")
+        folderFailed = false
+        do { _ = try Self.previewFoldersExchange(set: ["/x"]) { _, _ in HTTPResponse(status: 400, body: ["error": ["code": "other", "message": "no"]]) } } catch { folderFailed = true }
+        try expect(folderFailed, "another 400 is a failed save, not a refusal")
+        try expect(Self.previewFoldersBody(Data(#"{"folders":["~/a","/b"]}"#.utf8)) == ["~/a", "/b"], "the --set body is { folders }")
+        try expect(Self.previewFoldersBody(Data(#"{"folders":[]}"#.utf8))?.isEmpty == true, "an empty list clears the folders")
+        try expect(Self.previewFoldersBody(Data(#"{"folders":["~/a"],"x":1}"#.utf8)) == nil && Self.previewFoldersBody(Data(#"{"folders":[""]}"#.utf8)) == nil
+                   && Self.previewFoldersBody(Data(#"{"folders":[1]}"#.utf8)) == nil && Self.previewFoldersBody(Data("[]".utf8)) == nil,
+                   "anything else never reaches the server")
+        let twentyOne = try JSONSerialization.data(withJSONObject: ["folders": Array(repeating: "/p", count: 21)])
+        let twenty = try JSONSerialization.data(withJSONObject: ["folders": Array(repeating: "/p", count: 20)])
+        try expect(Self.previewFoldersBody(twentyOne) == nil && Self.previewFoldersBody(twenty)?.count == 20, "at most 20 folders")
         try expect(Self.learningDoctorLine(absentStatus) == nil, "Doctor says nothing about learning on an older server")
         let doctorLine = Self.learningDoctorLine(fullStatus)
         try expect(doctorLine?.state == "ok" && doctorLine?.detail.contains("5 to review") == true,
