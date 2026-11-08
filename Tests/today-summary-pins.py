@@ -91,12 +91,16 @@ need("Self.petLiveReadComplete(body)" in live_helper and "partial: !serverAnswer
      "the helper emits live provenance only from a structurally valid server response")
 need('TodaySummary.componentReadFailed([' in win, "component server failures reach the Today refresh warning")
 ym = body(cm, "    func loadYourMove() async {", "    @Published var workTasksLoading")
-need("workYourMoveOff = !workYourMoveAvailable" in ym and "workYourMoveFailed = false" in ym and ym.count("workYourMoveFailed = true") == 1
-     and "workYourMoveFailed = !workYourMoveAvailable" not in ym, "your move unavailable is off; only a failed read is failed")
+need('workYourMoveOff = !workYourMoveAvailable && response.details["reason"]?.string == "older_server"' in ym
+     and "workYourMoveFailed = !workYourMoveAvailable && !workYourMoveOff" in ym and ym.count("workYourMoveFailed = true") == 1
+     and "workYourMoveOff = !workYourMoveAvailable\n" not in ym,
+     "your move is off only for an older server (the helper's 404); a server's {available:false} is failed, as on Control Web")
 need("timeout: Self.workYourMoveHelperTimeout" in ym and "static let workYourMoveHelperTimeout: TimeInterval = 14" in cm, "the app waits past the helper's request")
 wym = body(helper, "    private func emitWorkYourMove() throws {", "    /// 0.5.379: the Today summary")
 need("timeout: Self.workYourMoveRequestTimeout" in wym and "static let workYourMoveServerLookupSeconds = 8" in helper
      and "static let workYourMoveRequestTimeout = workYourMoveServerLookupSeconds + 2" in helper, "the helper waits past the server's 8 s lookup")
+need('if response.status == 404 { emit(ok: true, message: "Not available on this server", details: ["available": false, "reason": "older_server", "items": []]); return }' in wym,
+     "the helper tags a missing route older_server, the only your-move answer the app reads as off")
 # QA 0.5.379: the tick's opening loads are marked done only after they ran; summary failures are logged.
 need(in_order(tick, "await todayOpenLoads()", "if !Task.isCancelled { today.openLoadsDone = true }"), "opening loads are done only after they finish")
 need("today.openLoadsDone = true\n            await todayOpenLoads()" not in tick, "never marked done before the loads")

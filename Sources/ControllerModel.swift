@@ -4628,8 +4628,8 @@ final class ControllerModel: ObservableObject {
     /// 0.5.379 (root QA): the last your-move read failed or answered unavailable. Today reads Work as failed then (Control
     /// Web's workState), so nothing says no Work handoff waits and the summary is never told Needs you is complete.
     @Published var workYourMoveFailed = false
-    /// The server answered that Work's your move is not available (its journal is off, or an older server without the
-    /// route). Off, not failed and not pending: Today settles without it.
+    /// An older server without the your-move route (the helper's 404, tagged `older_server`). Off, not failed and not
+    /// pending: Today settles without it. Any other {available:false} is failed (workYourMoveFailed).
     @Published var workYourMoveOff = false
     /// The helper's own request waits HelperSources' `workYourMoveRequestTimeout` (10 s, past the server route's 8 s
     /// loopback read); this leaves room for the helper to launch and answer.
@@ -4651,11 +4651,12 @@ final class ControllerModel: ObservableObject {
             workYourMoveTotal = workYourMoveAvailable ? max(0, response.details["total"]?.int ?? 0) : 0
             if workYourMoveAvailable { recordWorkObservation("yourMove", values: ["count": workYourMoveTotal, "heldForWeekday": response.details["heldForWeekday"]?.int ?? 0]) }
             workYourMove = workYourMoveAvailable ? (response.details["items"]?.array ?? []).compactMap(WorkYourMove.init) : []
-            // QA 0.5.379: a server that answered "not available" (its Work journal is off) or has no route (older than
-            // 6.99, the helper's 404) has Work's your move OFF, not failed: Today still settles. Only a read that failed
-            // (transport, timeout, a non-200, a malformed body: the helper throws) fails Work.
-            workYourMoveOff = !workYourMoveAvailable
-            workYourMoveFailed = false
+            // QA 0.5.379: only a server without the route (older than 6.99: the helper tags its 404 `older_server`) has
+            // Work's your move OFF, so Today still settles. A server that answered {available:false} could not read its
+            // board (its own 8 s lookup failed or the journal is off): FAILED, as Control Web's workState reads it, so
+            // nothing says no Work handoff waits and the summary is never told Needs you is complete.
+            workYourMoveOff = !workYourMoveAvailable && response.details["reason"]?.string == "older_server"
+            workYourMoveFailed = !workYourMoveAvailable && !workYourMoveOff
         } catch {
             guard generation == yourMoveGeneration else { return }
             workYourMoveAvailable = false; workYourMove = []; workYourMoveTotal = 0
