@@ -2631,9 +2631,18 @@ fresh = helper[helper.index("private func emitFreshClaudeSessions"):]
 fresh = fresh[:fresh.index("\n    private func saveSessionListCache")]
 assert '"/api/agent-sessions?limit=80"' in fresh, \
     "the list must come from the server, not a second local scanner"
-assert "if serverRows.isEmpty {" in fresh, "local scan must be gated on the server failing"
-assert fresh.index("serverRows = raw.compactMap") < fresh.index("collectAgentSessionIndex"), \
-    "the server must be consulted BEFORE the local index"
+# A successful EMPTY inventory is authoritative too. The selector owns the
+# unavailable/malformed -> cache -> local fallback policy (and its real helper
+# self-tests), so do not require the old empty-rows fallback that resurrected rows.
+fresh_code = "\n".join(line for line in fresh.splitlines() if not line.strip().startswith("//"))
+assert "let selection = Self.freshSessionCatalogSelection(" in fresh_code, \
+    "fresh inventory must use the tested provenance selector"
+assert fresh_code.index('request("/api/agent-sessions?limit=80"') < fresh_code.index("let selection = Self.freshSessionCatalogSelection("), \
+    "the server must be consulted BEFORE choosing inventory provenance"
+assert re.search(r"Self\.freshSessionCatalogSelection\(\s*serverBody: serverBody,\s*cachedBody: Self\.readSessionListCache\(from: sessionListCacheURL\)\s*\)\s*\{\s*Self\.collectAgentSessionIndex\(", fresh_code), \
+    "local inventory must remain the selector's lazy last resort"
+assert fresh_code.count("Self.collectAgentSessionIndex(") == 1, \
+    "local inventory must not also be read eagerly outside the selector"
 assert "recentClaudeConversations(" not in fresh, \
     "full-list fallback must not open transcript bodies"
 
@@ -2696,7 +2705,7 @@ for key in ('"age"', '"limit"', '"oversized"'):
 
 fn = helper[helper.index("private func emitFreshClaudeSessions"):]
 fn = fn[:fn.index("\n    private func emitSessionList")]
-assert "agentSessionDroppedProjection(body)" in fn
+assert "let dropped = selection.dropped" in fn, "drop counts must follow the selected inventory provenance"
 assert "dropped: dropped" in fn
 emit = helper[helper.index("private func emitSessionList"):]
 emit = emit[:emit.index("\n    private func saveSessionListCache")]
