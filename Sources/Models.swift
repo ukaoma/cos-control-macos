@@ -256,6 +256,9 @@ struct ServerStatus: Sendable {
     var learningState: String?
     var learningCount: Int?
     var learningToReview: Int?
+    /// Every item that needs review past the shown cap, by Control Web's predicate (memory-review.js `total`): the "of N"
+    /// in Today's "Next 7 of N", as Control Web reads `learningToReviewTotal`. Nil on a helper or server that cannot say.
+    var learningToReviewTotal: Int?
     var learningPatterns: Int?
     var learningTaskProposals: Int?
     var learningLastTs: String?
@@ -513,6 +516,7 @@ struct ServerStatus: Sendable {
         learningState = details["learningState"]?.string
         learningCount = details["learningCount"]?.int
         learningToReview = details["learningToReview"]?.int
+        learningToReviewTotal = details["learningToReviewTotal"]?.int
         learningPatterns = details["learningPatterns"]?.int
         learningTaskProposals = details["learningTaskProposals"]?.int
         learningLastTs = details["learningLastTs"]?.string
@@ -15943,8 +15947,44 @@ enum TodaySummary {
         force || last.map { now.timeIntervalSince($0) >= interval } ?? true
     }
 
-    static func sessionReadState(partial: Bool, cached: Bool) -> ActivityHome.SourceState {
-        partial || cached ? .pending : .answered
+    /// A quick read (the cache or the local index, shown while the fresh walk runs) is pending. A fresh walk falls back to
+    /// the cache or the local index only when the server did not answer cleanly (FreshSessionCatalogSelection), so that
+    /// read FAILED: Today says "Couldn't read your sessions.", never "still reading" for as long as the server is down
+    /// (QA 0.5.379).
+    static func sessionReadState(partial: Bool, cached: Bool, fresh: Bool) -> ActivityHome.SourceState {
+        guard partial || cached else { return .answered }
+        return fresh ? .failed : .pending
+    }
+
+    /// QA 0.5.379: while the session catalog is not answered, the Today tick asks for a fresh walk itself, pet on or off.
+    /// With the pet on nothing else re-read it, so a relaunch inside the cache's 45 s window (the hydrated cache's saved
+    /// time made the ordinary load skip its walk) left sessions "not yet read" for good. A failed walk backs off: the next
+    /// tick, then 2, 4 and 8 minutes, then every 10 minutes until one answers. A read already running is never doubled.
+    struct CatalogRetry: Equatable {
+        static let maxSeconds: TimeInterval = 600
+        private(set) var failures = 0
+        private(set) var lastAttempt: Date?
+        /// The wait after `failures` failed walks: none after the first (the next tick), then doubling from 2 minutes.
+        static func wait(failures: Int) -> TimeInterval {
+            failures <= 1 ? 0 : min(maxSeconds, 60 * pow(2, Double(failures - 1)))
+        }
+        /// Whether this tick should walk. An answered catalog resets the backoff and never walks from here.
+        mutating func due(state: ActivityHome.SourceState, loading: Bool, now: Date) -> Bool {
+            if state == .answered { failures = 0; lastAttempt = nil; return false }
+            guard !loading else { return false }
+            guard let lastAttempt else { return true }
+            // One second of slack: a minute tick that lands a moment early is not skipped.
+            return now.timeIntervalSince(lastAttempt) + 1 >= Self.wait(failures: failures)
+        }
+        mutating func attempted(at now: Date) { lastAttempt = now }
+        /// After the walk: answered resets, failed counts toward the backoff, pending (a newer read took over) counts nothing.
+        mutating func finished(_ state: ActivityHome.SourceState) {
+            switch state {
+            case .answered: failures = 0; lastAttempt = nil
+            case .failed: failures += 1
+            default: break
+            }
+        }
     }
 
     /// The displayed list uses both inventories when the pet is on. A fresh catalog cannot certify retained live rows.
@@ -15963,21 +16003,25 @@ enum TodaySummary {
 
     /// A missing compatibility route is quiet. Transport, auth, throttling and malformed replies are incomplete reads.
     static func componentReadFailed(_ blocks: [JSONValue?]) -> Bool {
-        blocks.contains { block in
-            guard let object = block?.object else { return false }
-            let reason = object["reason"]?.string
-            if reason == "unreachable" || reason == "malformed" { return true }
-            if let status = object["status"]?.double {
-                if status == 404 { return false }
-                return status < 200 || status >= 300 || object["available"]?.bool == false
-            }
-            return false
+        blocks.contains(where: componentFailed)
+    }
+    static func componentFailed(_ block: JSONValue?) -> Bool {
+        guard let object = block?.object else { return false }
+        let reason = object["reason"]?.string
+        if reason == "unreachable" || reason == "malformed" { return true }
+        if let status = object["status"]?.double {
+            if status == 404 { return false }
+            return status < 200 || status >= 300 || object["available"]?.bool == false
         }
+        return false
+    }
+    /// Which named components failed, by the same rule, for the tick's log line (QA 0.5.379).
+    static func failedComponentNames(_ blocks: [(String, JSONValue?)]) -> [String] {
+        blocks.filter { componentFailed($0.1) }.map(\.0)
     }
 
-    /// The server's answer (TodayBriefView).
-    /// The fields of the server's TodayBriefView this side reads (Tests/fixtures/today-running-now.json).
-    static let runningNowFields = ["text", "at", "basis", "model", "state", "reason", "enabled", "source"]
+    /// The server's answer (TodayBriefView). Tests/fixtures/today-running-now.json holds one, with the view's field list;
+    /// Tests/today-brief-parity-pins.py checks that list against the server's own `interface TodayBriefView`.
 
     struct Reply: Equatable, Sendable {
         let text: String
@@ -16162,6 +16206,46 @@ enum TodaySummary {
         }
     }
 
+    /// The server's own bounds (server/lib/today-brief.ts: LIMITS, TODAY_BRIEF_BODY_MAX_BYTES), pinned against it by
+    /// Tests/today-brief-parity-pins.py. Text is cut to them before encoding, so the body the helper reads (48 KiB, the
+    /// server's bound) carries no characters the server would throw away.
+    static let sessionRowsMax = 40
+    static let needRowsMax = 12
+    static let titleMax = 90
+    static let lineMax = 180
+    static let waitingMax = 140
+    static let needTitleMax = 120
+    static let needWhyMax = 140
+    static let bodyMaxBytes = 48 * 1024
+    static func clip(_ text: String, _ max: Int) -> String { text.count <= max ? text : String(text.prefix(max)) }
+
+    /// The body exactly as the helper is sent it, at most `bodyMaxBytes`. Past the cap (long multibyte titles) rows are
+    /// dropped until it fits: open sessions first, then working, then waiting, from the end, then needs, which also clears
+    /// `needsComplete` (the server is no longer told every need). Nil only if even an empty body cannot fit.
+    static func encodedBody(_ inputs: JSONValue, maxBytes: Int = bodyMaxBytes) -> (data: Data, dropped: Int)? {
+        let encoder = JSONEncoder()
+        guard var o = inputs.object else { return nil }
+        var dropped = 0
+        while true {
+            guard let data = try? encoder.encode(JSONValue.object(o)) else { return nil }
+            if data.count <= maxBytes { return (data, dropped) }
+            var sessions = o["sessions"]?.array ?? []
+            var drop: Int?
+            for state in ["open", "working", "waiting"] where drop == nil {
+                drop = sessions.lastIndex { $0.object?["state"]?.string == state }
+            }
+            if drop == nil, !sessions.isEmpty { drop = sessions.count - 1 }
+            if let index = drop {
+                sessions.remove(at: index); o["sessions"] = .array(sessions)
+            } else if var needs = o["needs"]?.array, !needs.isEmpty {
+                needs.removeLast(); o["needs"] = .array(needs)
+                o["later"] = .number(min(o["later"]?.double ?? 0, Double(needs.count)))
+                o["needsComplete"] = .bool(false)
+            } else { return nil }
+            dropped += 1
+        }
+    }
+
     /// The server's session states and source names (normalizeTodayBriefInputs refuses any other top-level key).
     private static let sessionKey = try! NSRegularExpression(pattern: "^(claude|codex|cursor)\\|[A-Za-z0-9._-]{6,128}$")
     private static let unreadNames: Set<String> = ["sessions", "Work", "voices", "memories"]
@@ -16179,20 +16263,20 @@ enum TodaySummary {
                                           : (ActivityHome.stamp(session.stateSince) ?? ActivityHome.stamp(session.updatedAt))
             let minutes = started.map { max(0, Int((now.timeIntervalSince($0) / 60).rounded())) } ?? 0
             let provider = ["claude", "codex", "cursor"].contains(session.provider) ? session.provider : "claude"
-            var row: [String: JSONValue] = ["title": .string(TodayHome.guarded(session.title) ?? "A session"), "provider": .string(provider),
+            var row: [String: JSONValue] = ["title": .string(clip(TodayHome.guarded(session.title) ?? "A session", titleMax)), "provider": .string(provider),
                                             "state": .string(state), "minutes": .number(Double(minutes)),
-                                            "line": .string(String(session.discussionSummary.prefix(400))),
-                                            "waiting": .string(state == "waiting" ? (TodayHome.questionText(session) ?? TodayHome.askedWhy(session) ?? "") : "")]
+                                            "line": .string(clip(session.discussionSummary, lineMax)),
+                                            "waiting": .string(clip(state == "waiting" ? (TodayHome.questionText(session) ?? TodayHome.askedWhy(session) ?? "") : "", waitingMax))]
             // Only so the server can read this session's sub-agents; it never reaches the model.
             let key = provider + "|" + session.sessionId
             if sessionKey.firstMatch(in: key, range: NSRange(key.startIndex..., in: key)) != nil { row["key"] = .string(key) }
             // The web forwards these counts too; the server may enrich only eight sessions, then keeps this fallback.
             if let activity = session.subagentActivity { row["agents"] = activity.json }
             rows.append(.object(row))
-            if rows.count == 40 { break }
+            if rows.count == sessionRowsMax { break }
         }
         let others = needs.filter { $0.kind != .session }
-        let needRows: [JSONValue] = others.prefix(12).map { .object(["title": .string($0.title), "why": .string($0.why ?? "")]) }
+        let needRows: [JSONValue] = others.prefix(needRowsMax).map { .object(["title": .string(clip($0.title, needTitleMax)), "why": .string(clip($0.why ?? "", needWhyMax))]) }
         let unread = failed.map(\.name).filter { unreadNames.contains($0) }
         return .object(["sessions": .array(rows), "needs": .array(needRows), "later": .number(Double(min(max(0, folded), needRows.count))),
                         "sessionsRead": .bool(sessionsRead), "needsComplete": .bool(settled && unread.isEmpty),
@@ -16218,16 +16302,13 @@ enum TodaySummary {
         o["force"] = .bool(true)
         return .object(o)
     }
-    /// A 7.0.0 server refuses the unknown `force` (400 invalid_today_brief): the helper asks again without it.
-    static func unforced(_ inputs: JSONValue) -> JSONValue {
-        guard var o = inputs.object else { return inputs }
-        o["force"] = nil
-        return .object(o)
-    }
 }
 
 /// Serializes Today reads across actor re-entry. A periodic tick never duplicates an active read;
 /// a deliberate Refresh waits for it, then reads again before asking for its summary.
+/// QA 0.5.379: the read is shared, so the caller that started it does not own it. A caller's cancellation (a window's
+/// `.task` ending) never cancels the read under every other waiter; the read runs to its own end (each helper run is
+/// bounded by its timeout) and then releases the queue.
 @MainActor final class TodayReadQueue {
     private var pending: Task<Void, Never>?
     func run(force: Bool, read: @escaping @MainActor () async -> Void) async {
@@ -16241,7 +16322,7 @@ enum TodaySummary {
             self.pending = nil
         }
         pending = current
-        await withTaskCancellationHandler(operation: { await current.value }, onCancel: { current.cancel() })
+        await current.value
     }
 }
 
@@ -16268,8 +16349,13 @@ struct HeldGroupsReadSnapshot {
     }
 }
 
-/// One held-voice read cycle at a time. Background callers coalesce into one follow-up read;
+/// One held-voice read cycle at a time. Background callers coalesce into one follow-up read, which always runs;
 /// an explicit Refresh waits for the complete active cycle, then owns a fresh cycle before returning.
+/// QA 0.5.379: the cycle is shared, so the caller that started it does not own it. Its cancellation (Speakers' `.task`
+/// ending when Miles goes to Today) used to cancel the cycle and drop the reload Today had queued, leaving voices
+/// "pending" for the life of the window. A caller's cancellation now never reaches the cycle: the read and every queued
+/// follow-up run to their own end (each helper run is bounded by its timeout). A cancelled caller only skips starting
+/// a new cycle of its own.
 @MainActor final class HeldGroupsReadQueue {
     private var pending: Task<Void, Never>?
     private var reloadRequested = false
@@ -16284,16 +16370,11 @@ struct HeldGroupsReadSnapshot {
         let current = Task { @MainActor in
             repeat {
                 self.reloadRequested = false
-                guard !Task.isCancelled else { break }
                 await read()
-            } while self.reloadRequested && !Task.isCancelled
+            } while self.reloadRequested
             self.pending = nil
         }
         pending = current
-        await withTaskCancellationHandler {
-            await current.value
-        } onCancel: {
-            current.cancel()
-        }
+        await current.value
     }
 }

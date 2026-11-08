@@ -28,6 +28,7 @@ import Foundation
         await concurrentForceChecks()
         await cancelledWaiterChecks()
         await cancelledOwnerChecks()
+        await cancelledForceWaiterKeepsReloadChecks()
         print("PASS: Held voice reads: \(checks) checks (inventory, compatibility, coalescing, force barrier and cancellation)")
     }
 
@@ -120,6 +121,8 @@ import Foundation
         check(forcedReads == 0, "a cancelled waiter never starts a new read")
     }
 
+    /// QA 0.5.379: the caller that started a cycle does not own it. Cancelling it (Speakers' `.task` ending when Miles goes
+    /// to Today) must not reach the shared read, and a reload queued meanwhile (Today's opening load) still runs.
     static func cancelledOwnerChecks() async {
         let queue = HeldGroupsReadQueue()
         let entered = Gate(), release = Gate()
@@ -127,16 +130,32 @@ import Foundation
         var sawCancellation = false
         let owner = Task { @MainActor in
             await queue.run(force: false) {
-                reads += 1; entered.open(); await release.wait()
-                sawCancellation = Task.isCancelled
+                reads += 1
+                if reads == 1 { entered.open(); await release.wait() }
+                sawCancellation = sawCancellation || Task.isCancelled
             }
         }
         await entered.wait()
         await queue.run(force: false) { reads += 100 }
         owner.cancel(); release.open(); await owner.value
-        check(sawCancellation, "cancelling the owner reaches the active read")
-        check(reads == 1, "a cancelled cycle does not start its queued follow-up")
+        check(!sawCancellation, "cancelling the caller that started the cycle never reaches the shared read")
+        check(reads == 2, "the reload queued while the cycle ran still runs after its starter is cancelled")
         await queue.run(force: true) { reads += 1 }
-        check(reads == 2, "cancelled cycle releases the queue for a later force read")
+        check(reads == 3, "the queue is free afterwards for a later force read")
+    }
+
+    /// The waiter's own cancellation is not the read's: a background reload queued behind a cancelled force waiter runs.
+    static func cancelledForceWaiterKeepsReloadChecks() async {
+        let queue = HeldGroupsReadQueue()
+        let entered = Gate(), release = Gate()
+        var reads = 0
+        let first = Task { @MainActor in await queue.run(force: false) { reads += 1; if reads == 1 { entered.open(); await release.wait() } } }
+        await entered.wait()
+        let waiter = Task { @MainActor in await queue.run(force: true) { reads += 1000 } }
+        await Task.yield()
+        await queue.run(force: false) { reads += 1000 }
+        waiter.cancel(); release.open()
+        await first.value; await waiter.value
+        check(reads == 2, "a queued reload survives a cancelled force waiter; the cancelled waiter starts nothing")
     }
 }

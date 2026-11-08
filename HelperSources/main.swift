@@ -5215,10 +5215,16 @@ final class COSControlHelper {
         ("lineChangedAt", { $0.count <= 40 && $0.range(of: #"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$"#, options: .regularExpression) != nil }),
     ]
 
+    /// QA 0.5.379: the server's `/api/work-board/your-move` waits up to 8 s on its own loopback read of
+    /// `/api/work-board/activity/open` (routes/web-control.ts, `timeoutMs: 8_000`). The old 4 s here cut a slow but
+    /// healthy board off and marked Work failed. Wait past the server's own bound, with two seconds of margin (10 s).
+    static let workYourMoveServerLookupSeconds = 8
+    static let workYourMoveRequestTimeout = workYourMoveServerLookupSeconds + 2
+
     private func emitWorkYourMove() throws {
         let candidate = try reviewCandidateTransport()
         let token = try candidate?.token ?? readToken()
-        guard let response = request("/api/work-board/your-move", token: token, timeout: 4, reviewCandidatePort: candidate?.port) else { throw HelperError.message("Server stopped") }
+        guard let response = request("/api/work-board/your-move", token: token, timeout: Self.workYourMoveRequestTimeout, reviewCandidatePort: candidate?.port) else { throw HelperError.message("Server stopped") }
         if response.status == 404 { emit(ok: true, message: "Not available on this server", details: ["available": false, "items": []]); return }
         guard response.status == 200, let body = response.body else { throw HelperError.message("Your move could not be read") }
         emit(ok: true, message: "Your move", details: body)
@@ -5230,32 +5236,40 @@ final class COSControlHelper {
     /// route (404) is an older one: `available: false`, and Today keeps its own headline. A 7.0.0 server refuses the
     /// unknown `force` (400 invalid_today_brief): asked again without it, as Control Web does.
     private func emitTodayBrief() throws {
-        let data = try readBoundedStdin(48 * 1024)
-        guard var body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+        let data = try readBoundedStdin(Self.todayBriefBodyMaxBytes)
+        guard let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             throw HelperError.message("That is not a Today summary request.")
         }
         let candidate = try reviewCandidateTransport()
         let token = try candidate?.token ?? readToken()
-        func ask(_ payload: [String: Any]) throws -> HTTPResponse? {
+        let answer = try Self.todayBriefExchange(body) { payload in
             let text = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
             return request("/api/today/brief", method: "POST", token: token, body: text, timeout: 45, reviewCandidatePort: candidate?.port)
         }
-        guard var response = try ask(body) else {
-            emit(ok: true, message: "Today summary unavailable", details: ["available": false, "reason": "unreachable"]); return
-        }
+        emit(ok: true, message: answer.message, details: answer.details)
+    }
+
+    /// The server's TODAY_BRIEF_BODY_MAX_BYTES (server/lib/today-brief.ts; Tests/today-brief-parity-pins.py).
+    static let todayBriefBodyMaxBytes = 48 * 1024
+
+    /// The today-brief exchange apart from its transport, so the self-test drives it with a stub (`ask` nil: nothing
+    /// answered). A 7.0.0 server's 400 invalid_today_brief to the unknown `force` is asked again without it; a 404 is an
+    /// older server; anything else that is not a 200 body is a failed ask with its status.
+    static func todayBriefExchange(_ request: [String: Any], ask: ([String: Any]) throws -> HTTPResponse?) throws -> (message: String, details: [String: Any]) {
+        var body = request
+        let unreachable: (message: String, details: [String: Any]) = ("Today summary unavailable", ["available": false, "reason": "unreachable"])
+        guard var response = try ask(body) else { return unreachable }
         if response.status == 400, body["force"] != nil, ((response.body?["error"] as? [String: Any])?["code"] as? String) == "invalid_today_brief" {
             body.removeValue(forKey: "force")
-            guard let again = try ask(body) else {
-                emit(ok: true, message: "Today summary unavailable", details: ["available": false, "reason": "unreachable"]); return
-            }
+            guard let again = try ask(body) else { return unreachable }
             response = again
         }
-        if response.status == 404 { emit(ok: true, message: "Not available on this server", details: ["available": false, "reason": "older_server"]); return }
+        if response.status == 404 { return ("Not available on this server", ["available": false, "reason": "older_server"]) }
         guard response.status == 200, var reply = response.body else {
-            emit(ok: true, message: "Today summary unavailable", details: ["available": false, "reason": "failed", "status": response.status]); return
+            return ("Today summary unavailable", ["available": false, "reason": "failed", "status": response.status])
         }
         reply["available"] = true
-        emit(ok: true, message: "Today summary", details: reply)
+        return ("Today summary", reply)
     }
 
     /// 0.5.379: the Today summary switch ("Write the Today summary with a model"), the same one Control Web Settings
@@ -11111,10 +11125,51 @@ final class COSControlHelper {
     /// `needs_you.count` / `needsYou` items, capped by `limit` when present.
     static func needsYouCount(from learning: [String: Any]?) -> Int? {
         guard let learning else { return nil }
-        if let block = learning["needs_you"] as? [String: Any] { return needsYouCount(fromBlock: block) }
+        if let block = learning["needs_you"] as? [String: Any] { return needsYouCount(fromBlock: normalizedNeedsYouBlock(block)) }
         if let items = learning["needsYou"] as? [Any] { return items.count }
         if let n = learning["needsYou"] as? Int { return n }
         return nil
+    }
+
+    /// QA 0.5.379 (parity with Control Web's "Next 7 of N"): every item that needs review past the shown cap, memory-review.js
+    /// `total` over the normalized block: its `count`, else its open items. Nil without a needs-you block.
+    static func needsYouTotal(from learning: [String: Any]?) -> Int? {
+        guard let block = learning?["needs_you"] as? [String: Any] else { return nil }
+        let normalized = normalizedNeedsYouBlock(block)
+        if let count = jsonNumber(normalized["count"]) { return max(0, Int(count)) }
+        return (normalized["items"] as? [Any])?.count
+    }
+
+    /// Control Web's predicate (Resources/memories/memory-review.js, a byte copy of the server's web-control file, which the
+    /// server applies to this block through learning-needs-you.ts `normalizeBlock`). An item needs review only for a rule
+    /// at or over its bar (an older producer's `low_confidence` is judged the same way) or a decision gate; a closing
+    /// decision is history; any other gate is Learning, never counted.
+    static let needsYouRuleBar = 0.8
+    static func needsYouItemNeedsReview(_ raw: Any, blockBar: Double) -> Bool {
+        guard let item = raw as? [String: Any] else { return false }
+        if let decision = item["decision"] as? String, ["accepted", "dismissed", "pruned"].contains(decision) { return false }
+        let gate = item["gate"] as? String ?? ""
+        if ["rule_ready", "low_confidence"].contains(gate) {
+            guard let confidence = jsonNumber(item["confidence"]) else { return false }
+            return confidence >= (jsonNumber(item["bar"]) ?? blockBar)
+        }
+        return ["attribution", "scope", "contradiction", "candidate", "prune_ready"].contains(gate)
+    }
+    /// memory-review.js `normalizeBlock`: only the items that need review, and `count` less the ones moved out.
+    static func normalizedNeedsYouBlock(_ block: [String: Any]) -> [String: Any] {
+        guard let items = block["items"] as? [Any] else { return block }
+        let bar = jsonNumber(block["bar"]) ?? needsYouRuleBar
+        let keep = items.filter { needsYouItemNeedsReview($0, blockBar: bar) }
+        var out = block
+        out["items"] = keep
+        if let count = jsonNumber(block["count"]) { out["count"] = max(keep.count, Int(count) - (items.count - keep.count)) }
+        return out
+    }
+    /// A finite JSON number, never a JSON boolean (JSONSerialization hands both back as NSNumber).
+    static func jsonNumber(_ value: Any?) -> Double? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let double = number.doubleValue
+        return double.isFinite ? double : nil
     }
 
     /// The projector's `reward_enabled` (COS_MEMORY_REWARD), carried inside the
@@ -11244,6 +11299,7 @@ final class COSControlHelper {
             "learningState": learning?["state"] ?? NSNull(),
             "learningCount": learning?["count"] ?? NSNull(),
             "learningToReview": learningToReview(learning) ?? NSNull(),
+            "learningToReviewTotal": needsYouTotal(from: learning) ?? NSNull(),
             "learningPatterns": review?["patterns"] ?? NSNull(),
             "learningTaskProposals": review?["task_proposals"] ?? NSNull(),
             "learningLastTs": learning?["last_ts"] ?? NSNull(),
@@ -27043,7 +27099,7 @@ final class COSControlHelper {
                                             "to_review": ["patterns": 1, "task_proposals": 120],
                                             "needs_you": ["count": 5, "limit": 7, "items": [["gate": "attribution"], ["gate": "attribution"],
                                                                                             ["gate": "attribution"], ["gate": "attribution"],
-                                                                                            ["gate": "low_confidence"]]],
+                                                                                            ["gate": "low_confidence", "confidence": 0.9]]],
                                             "last_ts": "2026-08-31"]
         let graphBlock: [String: Any] = ["available": true, "state": "ready", "entities": 40359, "relationships": 88369,
                                          "index_state": "fresh", "queue_pending": 56, "owner_host": "m3", "is_owner": true,
@@ -27077,6 +27133,42 @@ final class COSControlHelper {
         try expect(Self.learningToReview(nil) == nil, "no learning block, no to-review number")
         try expect(Self.learningToReview(["needs_you": ["count": 20, "limit": 7]]) == 7,
                    "an uncapped needs_you count still respects the cap")
+        // QA 0.5.379: Control Web's predicate (memory-review.js). The fixture's fifth item is an older producer's
+        // `low_confidence` over the bar, so it still needs review; the `barred` block below holds the ones that do not.
+        try expect(fullStatus["learningToReviewTotal"] as? Int == 5, "the total is the needs-review count past the cap, by the web's predicate")
+        let barred: [String: Any] = ["needs_you": ["count": 30, "limit": 7, "bar": 0.8, "items": [
+            ["gate": "rule_ready", "confidence": 0.85], ["gate": "low_confidence", "confidence": 0.5], ["gate": "rule_ready", "confidence": true],
+            ["gate": "scope"], ["gate": "attribution", "decision": "accepted"], ["gate": "mystery"], ["gate": "rule_ready", "confidence": 0.7, "bar": 0.6],
+        ]]]
+        try expect(Self.learningToReview(barred) == 3, "rules under the bar, a boolean confidence, a closed decision and an unknown gate are not counted")
+        try expect(Self.needsYouTotal(from: barred) == 26, "the total drops the items the predicate moved out (30 - 4)")
+        try expect(Self.needsYouTotal(from: ["needs_you": ["items": [["gate": "scope"], ["gate": "low_confidence"]]]]) == 1, "no count: the open items")
+        try expect(Self.needsYouTotal(from: ["count": 7]) == nil && Self.learningStatusDetails(nil)["learningToReviewTotal"] is NSNull,
+                   "no needs-you block, no total")
+        // QA 0.5.379: the today-brief exchange the helper really runs, through a stub transport.
+        var briefAsked: [[String: Any]] = []
+        let briefRefusal = HTTPResponse(status: 400, body: ["error": ["code": "invalid_today_brief"]])
+        var briefReplies: [HTTPResponse?] = [briefRefusal, HTTPResponse(status: 200, body: ["text": "Two things need you.", "state": "fresh"])]
+        var brief = try Self.todayBriefExchange(["sessions": [], "force": true]) { payload in briefAsked.append(payload); return briefReplies.removeFirst() }
+        try expect(briefAsked.count == 2 && briefAsked[0]["force"] as? Bool == true && briefAsked[1]["force"] == nil,
+                   "a 7.0.0 server's 400 to force is briefAsked again, once, without it")
+        try expect(brief.details["available"] as? Bool == true && brief.details["text"] as? String == "Two things need you.", "the second answer is the reply")
+        briefAsked = []; briefReplies = [briefRefusal]
+        brief = try Self.todayBriefExchange(["sessions": []]) { payload in briefAsked.append(payload); return briefReplies.removeFirst() }
+        try expect(briefAsked.count == 1 && brief.details["reason"] as? String == "failed" && brief.details["status"] as? Int == 400,
+                   "an unforced 400 is a failed ask, never retried")
+        briefAsked = []; briefReplies = [HTTPResponse(status: 400, body: ["error": ["code": "other"]])]
+        brief = try Self.todayBriefExchange(["force": true]) { payload in briefAsked.append(payload); return briefReplies.removeFirst() }
+        try expect(briefAsked.count == 1 && brief.details["reason"] as? String == "failed", "another 400 code is not retried")
+        brief = try Self.todayBriefExchange(["force": true]) { _ in HTTPResponse(status: 404, body: nil) }
+        try expect(brief.details["available"] as? Bool == false && brief.details["reason"] as? String == "older_server", "a 404 is an older server")
+        brief = try Self.todayBriefExchange([:]) { _ in nil }
+        try expect(brief.details["reason"] as? String == "unreachable", "nothing answered is unreachable")
+        briefReplies = [briefRefusal, nil]
+        brief = try Self.todayBriefExchange(["force": true]) { _ in briefReplies.removeFirst() }
+        try expect(brief.details["reason"] as? String == "unreachable", "a retry nothing answered is unreachable")
+        brief = try Self.todayBriefExchange([:]) { _ in HTTPResponse(status: 503, body: ["error": "busy"]) }
+        try expect(brief.details["reason"] as? String == "failed" && brief.details["status"] as? Int == 503, "a 5xx is a failed ask with its status")
         try expect(Self.learningDoctorLine(absentStatus) == nil, "Doctor says nothing about learning on an older server")
         let doctorLine = Self.learningDoctorLine(fullStatus)
         try expect(doctorLine?.state == "ok" && doctorLine?.detail.contains("5 to review") == true,

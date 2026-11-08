@@ -126,7 +126,7 @@ MUTANTS = [
     ("polling: the loop ignores the opening loads", W, "ready: { today.overviewDone }", "ready: { true }", "[polling]"),
     ("polling: the calendar every tick", W, "        let calendar = lastCalendar.map { now.timeIntervalSince($0) >= Self.slowSeconds } ?? true\n", "        let calendar = true\n", "[polling]"),
     ("states: checked after a failed tick", W, "            if reachable == true { checkedAt = Date() }\n", "            checkedAt = Date()\n", "[states]"),
-    ("pet off: no session refresh", W, "        if !model.petEnabled { await model.loadClaudeSessions() }\n", "", "[pet off]"),
+    ("pet off: no session refresh", W, "        } else if !model.petEnabled { await model.loadClaudeSessions() }\n", "        }\n", "[pet off]"),
     ("create: Create task dismisses", W, "await model.resolveWorkIntake(item, accept: true)", "await model.resolveWorkIntake(item, accept: false)", "[create accepts]"),
     ("one at a time: two creates at once", W, "        guard model.workIntakeBusyIDs.isEmpty, !created.contains(item.id) else { return }\n", "        guard !created.contains(item.id) else { return }\n", "[one at a time]"),
     ("cost: a run before admission", W, "        guard admission == .allowed else {", "        guard admission == .allowed || true else {", "[cost guards]"),

@@ -532,7 +532,9 @@ pin("case .hit(let id): return commandOpenHit(id)" in row_run and "case .searchA
 open_fn = block(ext, "    func openCommandCenter() {", "    func closeCommandCenter() {")
 pin("Task { await model.loadClaudeSessions() }" in open_fn and "force: true" not in open_fn, "the session list refreshes when the panel opens, and is not forced")
 ticker_fn = block(window, "    func todayTick() async {", "\n    func todayOpenLoads() async {")
-pin("loadClaudeSessions" in ticker_fn and ticker_fn.count("loadClaudeSessions") == 1 and "if !model.petEnabled { await model.loadClaudeSessions() }" in ticker_fn, "the tick is unchanged")
+# QA 0.5.379: plus one forced walk while the catalog is unanswered (TodaySummary.CatalogRetry), pet on or off.
+pin(ticker_fn.count("loadClaudeSessions") == 2 and "} else if !model.petEnabled { await model.loadClaudeSessions() }" in ticker_fn
+    and "await model.loadClaudeSessions(force: true)" in ticker_fn, "the tick reads sessions only as the pet rule and the unread-catalog retry say")
 
 # Match text: its own field, drawn verbatim, never named `why`, never a decision.
 pin("Text(verbatim: match)" in panel and "row.match" in panel and ".match" not in block(core, "        static func onReturn(option: Bool,", "        struct Footer: Equatable, Sendable {"), "match text is drawn verbatim on its row and Return never reads it")

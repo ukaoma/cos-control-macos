@@ -30,12 +30,13 @@ import Foundation
     static func ago(_ minutes: Double) -> String { iso(now.addingTimeInterval(-minutes * 60)) }
 
     static func session(_ id: String, _ state: String, provider: String = "claude", name: String, minutes: Double = 5, kind: String = "",
-                        detail: String = "", question: String = "", workspace: String = "MU-Chief-Staff", job: String? = nil) -> ClaudeSession {
+                        detail: String = "", question: String = "", workspace: String = "MU-Chief-Staff", job: String? = nil, summary: String = "") -> ClaudeSession {
         var o: [String: JSONValue] = ["id": .string(String(id.split(separator: ":").last!)), "provider": .string(provider), "name": .string(name), "state": .string(state),
                                       "updatedAt": .string(ago(1)), "stateSince": .string(ago(minutes)), "createdAt": .string(ago(minutes)),
                                       "alive": .bool(true), "waitingKind": .string(kind), "waitingDetail": .string(detail),
                                       "waitingQuestion": .string(question), "workspace": .string(workspace), "stateSource": .string("hook")]
         if let job { o["origin"] = .string("job"); o["jobLabel"] = .string(job) }
+        if !summary.isEmpty { o["discussionSummary"] = .string(summary) }
         return ClaudeSession(.object(o))!
     }
 
@@ -123,6 +124,32 @@ import Foundation
         check(Set(events.suffix(2)) == ["forced", "second forced"], "each explicit Refresh performs its own read")
         await queue.run(force: false) { events.append("later tick") }
         check(events.last == "later tick", "the queue releases after reads finish")
+        await cancelledStarterChecks()
+    }
+
+    /// QA 0.5.379: cancelling the caller that started a shared Today read (a window's `.task` ending) never cancels the
+    /// read under a Refresh waiting on it; the read finishes and the Refresh then performs its own.
+    static func cancelledStarterChecks() async {
+        let queue = TodayReadQueue()
+        var release: CheckedContinuation<Void, Never>?
+        var events: [String] = []
+        var sawCancellation = false
+        let starter = Task { @MainActor in
+            await queue.run(force: false) {
+                events.append("tick")
+                await withCheckedContinuation { release = $0 }
+                sawCancellation = Task.isCancelled
+                events.append("tick done")
+            }
+        }
+        while release == nil { await Task.yield() }
+        let refresh = Task { @MainActor in await queue.run(force: true) { events.append("refresh") } }
+        await Task.yield()
+        starter.cancel()
+        release?.resume(); release = nil
+        await starter.value; await refresh.value
+        check(!sawCancellation, "the starter's cancellation never reaches the shared read")
+        check(events == ["tick", "tick done", "refresh"], "the shared read finishes, then the waiting Refresh reads", events.joined(separator: ","))
     }
 
     // MARK: B1 tool-name guard
@@ -1021,9 +1048,17 @@ import Foundation
         check(TodaySummary.slowReadDue(last: now.addingTimeInterval(-1), now: now, interval: 300, force: true), "Refresh bypasses the slow-read cache")
         check(TodaySummary.slowReadDue(last: nil, now: now, interval: 300, force: false), "first calendar read is not cached")
         check(TodaySummary.slowReadDue(last: now.addingTimeInterval(-300), now: now, interval: 300, force: false), "the five-minute boundary rereads")
-        check(TodaySummary.sessionReadState(partial: false, cached: false) == .answered, "a fresh complete session read is answered, including empty")
-        check(TodaySummary.sessionReadState(partial: false, cached: true) == .pending, "cached rows never certify current sessions")
-        check(TodaySummary.sessionReadState(partial: true, cached: false) == .pending, "a partial local inventory stays pending")
+        check(TodaySummary.sessionReadState(partial: false, cached: false, fresh: true) == .answered, "a fresh complete session read is answered, including empty")
+        check(TodaySummary.sessionReadState(partial: false, cached: true, fresh: false) == .pending, "a quick read of cached rows is pending while the walk runs")
+        check(TodaySummary.sessionReadState(partial: true, cached: false, fresh: false) == .pending, "a quick partial local inventory stays pending")
+        // QA 0.5.379: a fresh walk falls back to the cache or the local index only when the server did not answer.
+        check(TodaySummary.sessionReadState(partial: true, cached: true, fresh: true) == .failed, "a fresh walk that fell back to the cache failed")
+        check(TodaySummary.sessionReadState(partial: true, cached: false, fresh: true) == .failed, "a fresh walk that fell back to the local index failed")
+        catalogRetryChecks()
+        bodyBoundChecks()
+        check(TodaySummary.failedComponentNames([("jobs", .object(["available": .bool(true)])), ("routines", .object(["reason": .string("malformed")])),
+                                                 ("calendar", .object(["available": .bool(false), "status": .number(503)])), ("none", nil)]) == ["routines", "calendar"],
+              "the tick's log names each failed component by the same rule")
         check(TodaySummary.componentReadFailed([.object(["available": .bool(false), "status": .number(503)])]), "a component 503 warns despite a successful helper tick")
         check(!TodaySummary.componentReadFailed([nil, .object(["available": .bool(false), "status": .number(404)])]), "unsupported components do not warn")
         check(!TodaySummary.componentReadFailed([.object(["available": .bool(true)])]), "healthy components do not warn")
@@ -1223,23 +1258,88 @@ import Foundation
               "minutes moving on is not a change (the web's key)")
         check(TodaySummary.key(body) != TodaySummary.key(TodaySummary.inputs(sessions: [waiting, working], needs: needs, folded: 1, sessionsRead: true, settled: true, failed: [], recording: false, now: now)),
               "a session leaving is a change")
-        var forced = TodaySummary.forced(body)
+        let forced = TodaySummary.forced(body)
         check(forced.object?["force"]?.bool == true, "Refresh adds force")
-        forced = TodaySummary.unforced(forced)
-        check(forced.object?["force"] == nil, "an older server's 400 retries without force")
+        // An older server's 400 to force is asked again without it by the helper itself (todayBriefExchange), executed in
+        // the helper's --self-test against a stub transport.
     }
 
-    /// One fixture, the server's TodayBriefView fields, read by this model. Tests/today-running-now-contract.mjs reads the
-    /// same file through Control Web's renderStory. A desktop that only has the local counts line does not compile this,
-    /// and a headline that prepends that line fails the equality.
+    /// One fixture of the server's TodayBriefView, read by this model. Tests/today-brief-parity-pins.py checks its `fields`
+    /// list against the server's own `interface TodayBriefView` (server/lib/today-brief.ts), so a field the server adds or
+    /// renames fails there; here every view in the fixture uses only those fields and parses. A headline that prepends the
+    /// local counts line fails the equality below.
+    /// QA 0.5.379: the tick walks the catalog itself while it is not answered, pet on or off, and backs off after failures.
+    static func catalogRetryChecks() {
+        var retry = TodaySummary.CatalogRetry()
+        check(retry.due(state: .pending, loading: false, now: now), "an unread catalog after a relaunch is walked on the first tick")
+        check(!retry.due(state: .pending, loading: true, now: now), "a walk already running is never doubled")
+        retry.attempted(at: now); retry.finished(.failed)
+        check(retry.due(state: .failed, loading: false, now: now.addingTimeInterval(59.5)), "after one failure the next minute tick walks again")
+        retry.attempted(at: now); retry.finished(.failed)
+        check(!retry.due(state: .failed, loading: false, now: now.addingTimeInterval(60)), "after two failures it waits")
+        check(retry.due(state: .failed, loading: false, now: now.addingTimeInterval(120)), "two minutes after the second failure")
+        for _ in 0..<10 { retry.attempted(at: now); retry.finished(.failed) }
+        check(!retry.due(state: .failed, loading: false, now: now.addingTimeInterval(598)) && retry.due(state: .failed, loading: false, now: now.addingTimeInterval(600)),
+              "the backoff stops growing at ten minutes")
+        retry.finished(.pending)
+        check(retry.failures == 12, "a read a newer one took over counts nothing")
+        check(!retry.due(state: .answered, loading: false, now: now) && retry.failures == 0 && retry.lastAttempt == nil, "an answered catalog resets the backoff and is not walked")
+        check(retry.due(state: .failed, loading: false, now: now), "a later failure starts the backoff over")
+        check(TodaySummary.CatalogRetry.wait(failures: 0) == 0 && TodaySummary.CatalogRetry.wait(failures: 3) == 240, "the waits")
+    }
+
+    /// QA 0.5.379: titles and lines are cut to the server's own limits, and a body past 48 KiB drops rows until it fits.
+    static func bodyBoundChecks() {
+        let long = String(repeating: "\u{201C}word\u{201D} ", count: 200)
+        func row(_ id: String, _ state: String) -> ClaudeSession {
+            session(id, state, name: long, kind: state == "waiting" ? "question" : "", question: state == "waiting" ? long : "", summary: long)
+        }
+        var sessions: [ClaudeSession] = []
+        for i in 0..<50 { sessions.append(row("claude:bound\(i)", i % 3 == 0 ? "waiting" : (i % 3 == 1 ? "running" : "idle"))) }
+        let body = TodaySummary.inputs(sessions: sessions, needs: [], folded: 0, sessionsRead: true, settled: true, failed: [], recording: false, now: now)
+        let rows = body.object?["sessions"]?.array ?? []
+        check(rows.count <= TodaySummary.sessionRowsMax, "at most the server's 40 session rows", "\(rows.count)")
+        check(rows.allSatisfy { ($0.object?["title"]?.string?.count ?? 0) <= 90 && ($0.object?["line"]?.string?.count ?? 0) <= 180
+                                && ($0.object?["waiting"]?.string?.count ?? 0) <= 140 }, "titles, lines and questions are cut to the server's limits")
+        check(rows.contains { ($0.object?["title"]?.string?.count ?? 0) == 90 } && rows.contains { ($0.object?["line"]?.string?.count ?? 0) == 180 }
+              && rows.contains { ($0.object?["waiting"]?.string?.count ?? 0) == 140 }, "a long title, line and question are cut, not dropped")
+        guard let full = TodaySummary.encodedBody(body) else { check(false, "the clipped body encodes"); return }
+        check(full.data.count <= TodaySummary.bodyMaxBytes, "the body is within 48 KiB", "\(full.data.count)")
+        // A tight cap: rows leave, open before working before waiting, and the needs flag is cleared only when needs leave.
+        var o = body.object ?? [:]
+        o["needs"] = .array([.object(["title": .string("Name two voices"), "why": .string("")])]); o["later"] = .number(1)
+        let mixed = JSONValue.object(o)
+        let encoded = (try? JSONEncoder().encode(mixed))?.count ?? 0
+        guard let tight = TodaySummary.encodedBody(mixed, maxBytes: encoded - 1),
+              let back = try? JSONDecoder().decode(JSONValue.self, from: tight.data) else { check(false, "a body over the cap is trimmed, not refused"); return }
+        check(tight.dropped == 1 && tight.data.count < encoded, "one row too many drops one row", "\(tight.dropped)")
+        let before = (o["sessions"]?.array ?? []).compactMap { $0.object?["state"]?.string }
+        let after = (back.object?["sessions"]?.array ?? []).compactMap { $0.object?["state"]?.string }
+        func n(_ states: [String], _ state: String) -> Int { states.filter { $0 == state }.count }
+        check(n(before, "open") > 0 && n(after, "open") == n(before, "open") - 1 && n(after, "working") == n(before, "working")
+              && n(after, "waiting") == n(before, "waiting"), "an open session leaves first", "\(before) to \(after)")
+        check(back.object?["needsComplete"]?.bool == true && back.object?["needs"]?.array?.count == 1, "needs stay while session rows can leave")
+        guard let bare = TodaySummary.encodedBody(mixed, maxBytes: 130), let small = try? JSONDecoder().decode(JSONValue.self, from: bare.data) else {
+            check(false, "a body trimmed to nothing still encodes"); return
+        }
+        check(small.object?["sessions"]?.array?.isEmpty == true && small.object?["needsComplete"]?.bool == false && small.object?["later"]?.double == 0,
+              "needs leave last, and then the body says it no longer holds every need")
+        check(TodaySummary.encodedBody(mixed, maxBytes: 10) == nil, "an impossible cap sends nothing")
+    }
+
     static func runningNowContract() {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/today-running-now.json")
         guard let data = try? Data(contentsOf: url), let fixture = (try? JSONDecoder().decode(JSONValue.self, from: data))?.object else {
             check(false, "the shared running-now fixture loads", url.path)
             return
         }
-        let fields = fixture["fields"]?.array?.compactMap(\.string) ?? []
-        check(fields == TodaySummary.runningNowFields, "fixture fields are text, at, basis, model, state, reason, enabled, source", fields.joined(separator: ","))
+        let fields = Set(fixture["fields"]?.array?.compactMap(\.string) ?? [])
+        for name in ["runningNow", "off", "failedEmpty", "throttled"] {
+            let keys = Set(fixture[name]?.object?.keys.map { $0 } ?? [])
+            check(!keys.isEmpty && keys.isSubset(of: fields), "the \(name) view uses only the server's fields", keys.subtracting(fields).joined(separator: ","))
+        }
+        let throttled = fixture["throttled"].flatMap { TodaySummary.Reply($0) }
+        check(throttled?.reason == "refresh_throttled" && throttled?.retryAfterMs == 12_000, "retryAfterMs is read for Refresh's countdown")
         guard let running = fixture["runningNow"], let reply = TodaySummary.Reply(running) else {
             check(false, "the running-now view parses")
             return

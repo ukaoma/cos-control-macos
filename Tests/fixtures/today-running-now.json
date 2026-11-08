@@ -1,5 +1,15 @@
 {
-  "fields": ["text", "at", "basis", "model", "state", "reason", "enabled", "source"],
+  "fields": [
+    "text",
+    "at",
+    "basis",
+    "model",
+    "state",
+    "reason",
+    "enabled",
+    "source",
+    "retryAfterMs"
+  ],
   "runningNow": {
     "text": "Three things can wait until tomorrow. Two builders are on the Today summary and the Work pane, and QA is idle.",
     "at": "2026-11-08T14:10:00Z",
@@ -28,5 +38,16 @@
     "reason": "failed",
     "enabled": true,
     "source": "settings"
+  },
+  "throttled": {
+    "text": "Three things can wait until tomorrow.",
+    "at": "2026-11-08T14:10:00Z",
+    "basis": "4 sessions, 3 things that need you",
+    "model": "sonnet",
+    "state": "fresh",
+    "reason": "refresh_throttled",
+    "enabled": true,
+    "source": "settings",
+    "retryAfterMs": 12000
   }
 }

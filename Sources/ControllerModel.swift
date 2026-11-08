@@ -4600,7 +4600,7 @@ final class ControllerModel: ObservableObject {
                 }
             }
             claudeSessionsError = nil
-            claudeSessionsReadState = TodaySummary.sessionReadState(partial: partial, cached: cached)
+            claudeSessionsReadState = TodaySummary.sessionReadState(partial: partial, cached: cached, fresh: !quick)
         } catch is CancellationError {
             if generation == claudeSessionsReadGeneration { claudeSessionsReadState = .failed }
         } catch {
@@ -4628,6 +4628,12 @@ final class ControllerModel: ObservableObject {
     /// 0.5.379 (root QA): the last your-move read failed or answered unavailable. Today reads Work as failed then (Control
     /// Web's workState), so nothing says no Work handoff waits and the summary is never told Needs you is complete.
     @Published var workYourMoveFailed = false
+    /// The server answered that Work's your move is not available (its journal is off, or an older server without the
+    /// route). Off, not failed and not pending: Today settles without it.
+    @Published var workYourMoveOff = false
+    /// The helper's own request waits HelperSources' `workYourMoveRequestTimeout` (10 s, past the server route's 8 s
+    /// loopback read); this leaves room for the helper to launch and answer.
+    static let workYourMoveHelperTimeout: TimeInterval = 14
     private var yourMoveGeneration = 0
     /// Activity Today home (plan v2): its one helper call per home tick (`activity-today`) and its one-at-a-time intake
     /// accept. Read-only apart from that accept; no LLM.
@@ -4639,16 +4645,21 @@ final class ControllerModel: ObservableObject {
         yourMoveGeneration += 1
         let generation = yourMoveGeneration
         do {
-            let response = try await helper.run(["work-your-move"], timeout: 6)
+            let response = try await helper.run(["work-your-move"], timeout: Self.workYourMoveHelperTimeout)
             guard generation == yourMoveGeneration else { return }
             workYourMoveAvailable = response.ok && response.details["available"]?.bool == true
             workYourMoveTotal = workYourMoveAvailable ? max(0, response.details["total"]?.int ?? 0) : 0
             if workYourMoveAvailable { recordWorkObservation("yourMove", values: ["count": workYourMoveTotal, "heldForWeekday": response.details["heldForWeekday"]?.int ?? 0]) }
             workYourMove = workYourMoveAvailable ? (response.details["items"]?.array ?? []).compactMap(WorkYourMove.init) : []
-            workYourMoveFailed = !workYourMoveAvailable
+            // QA 0.5.379: a server that answered "not available" (its Work journal is off) or has no route (older than
+            // 6.99, the helper's 404) has Work's your move OFF, not failed: Today still settles. Only a read that failed
+            // (transport, timeout, a non-200, a malformed body: the helper throws) fails Work.
+            workYourMoveOff = !workYourMoveAvailable
+            workYourMoveFailed = false
         } catch {
             guard generation == yourMoveGeneration else { return }
             workYourMoveAvailable = false; workYourMove = []; workYourMoveTotal = 0
+            workYourMoveOff = false
             workYourMoveFailed = true
         }
     }
@@ -10123,7 +10134,14 @@ final class ControllerModel: ObservableObject {
             if heldNamingAvailable { await loadHeldNamingBatches() }
             else { heldNamingBatches = []; heldNamingPreview = nil; heldNamingShowReview = false }
         } catch is CancellationError {
-            return
+            // HeldGroupsReadQueue never cancels a shared read, so this is reached only if the helper run itself was
+            // cancelled. It still ends in a defined state (QA 0.5.379): an earlier answer stays as it was; a first read
+            // that never answered is failed, never left pending, so Today names voices as unread instead of waiting.
+            if heldGroupsState == nil {
+                heldGroupsState = "error"
+                heldNamingAvailable = false
+                heldGroupsError = "Held voices could not be read. Try again."
+            }
         } catch {
             heldGroupsState = "error"
             heldNamingAvailable = false

@@ -7958,6 +7958,8 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
     @Published var windowVisible = true
     var overviewDone = false
     var openLoadsDone = false
+    /// QA 0.5.379: the tick's own fresh session walk while the catalog is unanswered, with its backoff.
+    var catalogRetry = TodaySummary.CatalogRetry()
     /// The rail as last drawn (a test probe for the breakpoint; never read by the app).
     nonisolated(unsafe) static var drawnRailWidth: CGFloat = 0
     /// Ticks run (logged with each tick; canary 6 counts them).
@@ -7971,17 +7973,43 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
 
     /// 0.5.379: one ask for the Today summary (helper `today-brief`, server 7.0.1 POST /api/today/brief). Nil: no answer
     /// (the helper failed, the server was unreachable or failed); `available: false` is a server without the route.
+    /// A helper failure's case name only (timedOut, commandFailed, ...): never its associated text, which can quote the
+    /// helper's output.
+    static func failureKind(_ error: Error) -> String {
+        if error is CancellationError { return "cancelled" }
+        if let helper = error as? HelperClientError { return String(String(describing: helper).prefix { $0 != "(" }) }
+        return "other"
+    }
+
+    /// QA 0.5.379: every outcome that is not a fresh summary is logged under `todayLog` (codes, counts and statuses only:
+    /// never a title, a line, the summary text or a helper message, which can carry them).
     func sendSummary(model: ControllerModel, body: JSONValue) async -> (reply: TodaySummary.Reply?, available: Bool)? {
-        guard let data = try? JSONEncoder().encode(body) else { return nil }
+        let forced = body.object?["force"]?.bool == true
+        guard let bounded = TodaySummary.encodedBody(body) else {
+            todayLog.error("summary ask not sent: body over \(TodaySummary.bodyMaxBytes) bytes after trimming forced=\(forced)")
+            return nil
+        }
+        if bounded.dropped > 0 { todayLog.info("summary body trimmed: dropped=\(bounded.dropped) bytes=\(bounded.data.count)") }
         do {
-            let response = try await model.todayHelper(["today-brief"], timeout: 50, stdinData: data)
-            guard response.ok else { return nil }
+            let response = try await model.todayHelper(["today-brief"], timeout: 50, stdinData: bounded.data)
+            guard response.ok else { todayLog.error("summary ask refused by helper forced=\(forced)"); return nil }
             // Only a missing route is an older server; an unreachable or failed server is no answer (what was shown stays).
             if response.details["available"]?.bool == false {
-                return response.details["reason"]?.string == "older_server" ? (nil, false) : nil
+                let reason = response.details["reason"]?.string ?? "none"
+                let status = response.details["status"]?.int ?? 0
+                todayLog.error("summary ask unavailable reason=\(reason, privacy: .public) status=\(status) forced=\(forced)")
+                return reason == "older_server" ? (nil, false) : nil
             }
-            return (TodaySummary.Reply(.object(response.details)), true)
+            let reply = TodaySummary.Reply(.object(response.details))
+            if let reason = reply?.reason {
+                todayLog.info("summary answered state=\(reply?.state ?? "", privacy: .public) reason=\(reason, privacy: .public) forced=\(forced)")
+            } else if reply == nil {
+                todayLog.error("summary answer unreadable forced=\(forced)")
+            }
+            return (reply, true)
         } catch {
+            let kind = Self.failureKind(error)
+            todayLog.error("summary ask failed kind=\(kind, privacy: .public) forced=\(forced)")
             return nil
         }
     }
@@ -8072,9 +8100,13 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
             let failedComponent = TodaySummary.componentReadFailed([
                 response.details["queryJobs"], response.details["routines"], calendar ? response.details["calendar"] : nil,
             ])
+            let failedNames = TodaySummary.failedComponentNames([
+                ("jobs", response.details["queryJobs"]), ("routines", response.details["routines"]),
+                ("calendar", calendar ? response.details["calendar"] : nil),
+            ])
             lastError = failedComponent ? "Some of Today could not update." : nil
             if reachable == true { checkedAt = Date() }
-            todayLog.info("tick \(self.ticks) args=\(args.joined(separator: " "), privacy: .public) ms=\(Int(Date().timeIntervalSince(started) * 1000)) reachable=\(self.reachable == true) jobs=\(self.jobs?.count ?? -1) routines=\(self.routines.count) calendar=\(self.calendarAvailable)")
+            todayLog.info("tick \(self.ticks) args=\(args.joined(separator: " "), privacy: .public) ms=\(Int(Date().timeIntervalSince(started) * 1000)) reachable=\(self.reachable == true) jobs=\(self.jobs?.count ?? -1) routines=\(self.routines.count) calendar=\(self.calendarAvailable) failed=\(failedNames.isEmpty ? "none" : failedNames.joined(separator: ","), privacy: .public)")
         } catch {
             // The helper did not run or said no: these reads are missing this tick, and that is not the server being down.
             lastError = error.localizedDescription
@@ -8423,7 +8455,9 @@ extension ActivityWindow {
         input.meetingUnnamed = unnamed
         input.yourMove = model.workYourMoveAvailable ? model.workYourMove : nil
         input.memoriesToReview = model.status.learningToReview
-        input.memoriesTotal = model.toReviewEvents.isEmpty ? nil : model.toReviewEvents.count
+        // Control Web's "of N" (learningToReviewTotal): every item that needs review by the shared predicate, never the
+        // To review list's length, which also holds suggestions and below-bar items with no decision waiting.
+        input.memoriesTotal = model.status.learningToReviewTotal
         input.olderToSort = split?.olderCount
         input.dictationFixes = model.dictation.suggestions.suggestions.count
         return input
@@ -8439,14 +8473,14 @@ extension ActivityWindow {
         input.work = ActivityHome.sourceState(enabled: workConnectionsEnabled && !isolatedWorkPreview, loaded: homeLoads[.work], hasData: !model.workTasks.isEmpty)
         input.intakeFailed = TodayHome.intakeReadFailed(model.workIntake, readError: model.workIntakeError, actionError: today.lastResolveError)
         input.yourMoveFailed = model.workYourMoveFailed
-        input.yourMovePending = !model.workYourMoveAvailable && !model.workYourMoveFailed
+        input.yourMovePending = !model.workYourMoveAvailable && !model.workYourMoveFailed && !model.workYourMoveOff
         return input
     }
 
     func todayCardFacts(now: Date) -> TodayHome.CardFacts {
         var facts = TodayHome.CardFacts()
         facts.memoriesToReview = model.status.learningToReview
-        facts.memoriesTotal = model.toReviewEvents.isEmpty ? nil : model.toReviewEvents.count
+        facts.memoriesTotal = model.status.learningToReviewTotal
         facts.oldestReview = model.toReviewEvents.compactMap { ActivityHome.stamp($0.ts) }.min()
         facts.meetingsReady = reviewStore.available ? reviewStore.reviews.filter { $0.status == "ready" }.count : nil
         let todayKey = ActivityHome.dayKey(now)
@@ -8636,12 +8670,19 @@ extension ActivityWindow {
     }
 
     func todayTick() async {
+        // QA 0.5.379: done only once the loads finished. A window whose tick was cancelled mid-open runs them again.
         if !today.openLoadsDone {
-            today.openLoadsDone = true
             await todayOpenLoads()
+            if !Task.isCancelled { today.openLoadsDone = true }
         }
-        // With the pet off nothing else refreshes the session list (the classic home's refreshHomeSessions, here on the tick).
-        if !model.petEnabled { await model.loadClaudeSessions() }
+        // A catalog that is not answered gets a fresh walk here, pet on or off, backing off after failures
+        // (TodaySummary.CatalogRetry). Otherwise, with the pet off nothing else refreshes the session list (the classic
+        // home's refreshHomeSessions, here on the tick).
+        if today.catalogRetry.due(state: model.claudeSessionsReadState, loading: model.claudeSessionsLoading, now: Date()) {
+            today.catalogRetry.attempted(at: Date())
+            await model.loadClaudeSessions(force: true)
+            today.catalogRetry.finished(model.claudeSessionsReadState)
+        } else if !model.petEnabled { await model.loadClaudeSessions() }
         await today.tick(model: model)
         // 0.5.379: the summary is asked about only while the Today home is on screen (Control Web asks only on its Today pane).
         if section == nil && !showingSettings { await today.askSummary(model: model, body: todaySummaryBody(now: Date())) }
@@ -8816,8 +8857,8 @@ extension ActivityWindow {
                     TodayRecordingSection(rows: frame.recordings, now: now, store: model.macRecording, initialConfirm: commandFixture?.todayStopConfirm,
                                           recording: { commandRecording() }, open: { todayOpen($0) }, stop: { commandStopRecording() })
                 }
-                // 0.5.379: COS's count line first, then the server's summary when there is one (TodaySummary.headline), as on
-                // Control Web; off, failed or an older server: the local headline, word for word.
+                // 0.5.379: the server's summary exactly as written (it opens with its own count sentence), as Control Web's
+                // renderStory shows it (TodaySummary.headline); off, failed or an older server: the local headline, word for word.
                 VStack(alignment: .leading, spacing: 8) {
                     Text(TodaySummary.headline(todayBriefCounts(frame, now: now), summary: todaySummaryShown(frame)))
                         .font(COSType.display(wide ? 25 : 22))
