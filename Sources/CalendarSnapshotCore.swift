@@ -82,6 +82,13 @@ enum CalendarSnapshotCore {
         return nil
     }
 
+    /// A participant's display name, or nil. macOS fills `EKParticipant.name` with the address when the invitee has no
+    /// display name (on-device canary 2026-11-07: 124 such names), and only names and domains may be kept.
+    static func attendeeName(_ name: String?) -> String? {
+        guard let name = name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty, !name.contains("@") else { return nil }
+        return String(name.prefix(200))
+    }
+
     /// The domain of a mailto: participant URL. Full addresses are never kept.
     static func emailDomain(_ url: URL?) -> String? {
         guard let url, url.scheme?.lowercased() == "mailto" else { return nil }

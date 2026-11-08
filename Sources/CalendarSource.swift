@@ -90,7 +90,7 @@ actor CalendarReader {
             default: status = isOrganizer ? "accepted" : "none"
             }
             let attendees = participants.filter { !$0.isCurrentUser }.prefix(200).map {
-                CalendarSnapshotCore.Attendee(name: $0.name, domain: CalendarSnapshotCore.emailDomain($0.url))
+                CalendarSnapshotCore.Attendee(name: CalendarSnapshotCore.attendeeName($0.name), domain: CalendarSnapshotCore.emailDomain($0.url))
             }
             // Notes are read here, in memory, for a meeting link only. They are never stored.
             let link = CalendarSnapshotCore.meetingURL([e.url?.absoluteString, e.location, e.notes])
