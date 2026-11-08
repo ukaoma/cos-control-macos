@@ -11,8 +11,11 @@ import SwiftUI
 // - Notes are scanned in memory for an allowlisted meeting link and never stored.
 // - The file is ~/.cos-glasses/data/calendar/snapshot.json (or under COS_DATA_DIR from ~/.cos-glasses/.env): folder 0700,
 //   file 0600, atomic, class C protection (never class B: the keybag locks minutes after the screen does).
-// - Losing access writes an `access: denied` tombstone, so the server stops using events it can no longer vouch for.
+// - 0.5.379 (QA W22): without full access (writeOnly, denied, restricted, not asked) there is NO snapshot file, so the
+//   server keeps what it did before (the CalendarFetch bridge). No tombstone is written automatically.
+// - 0.5.379 (QA W20): full access with no calendar picked is not configured: no snapshot (an empty one reads as an empty day).
 // - Turning the row off deletes the file: the server goes back to what it did before (the starter-kit bridge, if any).
+//   A refresh in flight re-checks after every EventKit await and never puts the file back (QA B2, CalendarSnapshotCore.refresh).
 
 // MARK: EventKit (an actor: EKEventStore is not Sendable)
 
@@ -24,7 +27,9 @@ actor CalendarReader {
         if #available(macOS 14.0, *) {
             switch status {
             case .fullAccess: return "granted"
-            case .writeOnly, .denied: return "denied"
+            // 0.5.379 (QA W22): add-only access is its own state, never "denied" (no events can be read either way).
+            case .writeOnly: return "writeOnly"
+            case .denied: return "denied"
             case .restricted: return "restricted"
             case .notDetermined: return "notDetermined"
             @unknown default: return "denied"
@@ -138,7 +143,7 @@ final class CalendarSourceStore: ObservableObject {
     func resume() {
         guard connected else { return }
         access = CalendarReader.accessState()
-        if access == "granted" { begin() } else { writeTombstone() }
+        if access == "granted" { begin() } else { removeSnapshot() }
     }
 
     /// The Settings row's Connect: the one place the system prompt can appear.
@@ -154,7 +159,7 @@ final class CalendarSourceStore: ObservableObject {
             begin()
         } else {
             line = "Calendar access is off for COS Control."
-            writeTombstone()
+            removeSnapshot()
         }
     }
 
@@ -213,28 +218,38 @@ final class CalendarSourceStore: ObservableObject {
         }
     }
 
+    /// Connected and this task not cancelled: the only state in which a snapshot may be written.
+    private var live: Bool { connected && !Task.isCancelled }
+
     func writeNow() async {
-        guard connected else { return }
-        access = CalendarReader.accessState()
-        guard access == "granted" else { writeTombstone(); return }
-        let picked = selected
         let now = Date()
-        let cals = await reader.calendars(selected: picked)
-        let events = await reader.events(calendarIDs: picked, now: now)
-        calendars = cals
-        do {
-            let data = try CalendarSnapshotCore.encode(CalendarSnapshotCore.snapshot(calendars: cals, events: events, now: now))
-            try CalendarSnapshotCore.write(data, to: file)
-            lastWritten = now
-        } catch {
+        let reader = self.reader
+        let outcome = await CalendarSnapshotCore.refresh(
+            live: { [weak self] in self?.live ?? false },
+            access: { [weak self] in
+                let state = CalendarReader.accessState()
+                self?.access = state
+                return state
+            },
+            selected: { [weak self] in self?.selected ?? [] },
+            calendars: { picked in await reader.calendars(selected: picked) },
+            events: { picked, at in await reader.events(calendarIDs: picked, now: at) },
+            write: { [file] data in try CalendarSnapshotCore.write(data, to: file) },
+            remove: { [weak self] in self?.removeSnapshot() },
+            now: now)
+        switch outcome {
+        case .stopped: return
+        case .noAccess: calendars = []
+        case .notConfigured(let cals): calendars = cals; lastWritten = nil
+        case .wrote(let cals): calendars = cals; lastWritten = now
+        case .failed(let cals):
+            calendars = cals
             line = "Couldn't save the calendar for COS. It will try again in 5 minutes."
         }
     }
 
-    private func writeTombstone() {
-        calendars = []
-        guard let data = try? CalendarSnapshotCore.encode(CalendarSnapshotCore.tombstone(access: access, now: Date())) else { return }
-        try? CalendarSnapshotCore.write(data, to: file)
+    private func removeSnapshot() {
+        try? FileManager.default.removeItem(at: file)
     }
 }
 

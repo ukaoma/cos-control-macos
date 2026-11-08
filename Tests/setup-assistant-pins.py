@@ -302,7 +302,7 @@ for motion in ("withAnimation", ".animation(", ".transition(", "TodayPulse", "Ti
 
 # The recording section (Miles, 2026-10-31): under the Today header, above everything else, and nothing when nothing records.
 home = block(window, "    func todayHomeView(", "    func todayHeader(now: Date)")
-pin(before(home, "todayHeader(now: now)", "TodayRecordingSection(", "TodayHome.brief(todayBriefCounts(frame, now: now))", "todayNeedsPanel(frame", "todayRunningPanel(run"),
+pin(before(home, "todayHeader(now: now)", "TodayRecordingSection(", "TodaySummary.headline(todayBriefCounts(frame, now: now)", "todayNeedsPanel(frame", "todayRunningPanel(run"),
     "the recording section sits under the header, above the brief, Needs you and Running")
 pin("if !frame.recordings.isEmpty {\n                    TodayRecordingSection(" in home, "no recording, no section: it takes no space")
 section = block(window, "struct TodayRecordingSection: View {", "struct CommandCenterKeyHint: View {")

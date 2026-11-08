@@ -1,0 +1,32 @@
+{
+  "fields": ["text", "at", "basis", "model", "state", "reason", "enabled", "source"],
+  "runningNow": {
+    "text": "Three things can wait until tomorrow. Two builders are on the Today summary and the Work pane, and QA is idle.",
+    "at": "2026-11-08T14:10:00Z",
+    "basis": "4 sessions, 3 things that need you",
+    "model": "sonnet",
+    "state": "fresh",
+    "enabled": true,
+    "source": "settings"
+  },
+  "off": {
+    "text": "",
+    "at": null,
+    "basis": "",
+    "model": "sonnet",
+    "state": "off",
+    "reason": "switch_off",
+    "enabled": false,
+    "source": "default"
+  },
+  "failedEmpty": {
+    "text": "",
+    "at": null,
+    "basis": "",
+    "model": "sonnet",
+    "state": "failed",
+    "reason": "failed",
+    "enabled": true,
+    "source": "settings"
+  }
+}

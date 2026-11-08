@@ -69,6 +69,8 @@ function boot(overrides) {
     else if (msg.op === 'status' && overrides.statusNever) { /* never answers */ }
     else setImmediate(deliver);
   } } } };
+  // 0.5.379: memories.html loads the shared review predicate before the page.
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../Resources/memories/memory-review.js'), 'utf8'), context, { filename: 'memory-review.js' });
   vm.runInNewContext(page, context, { filename: 'memories-app.js' });
   return { context, calls, el: sel => els[sel] || (els[sel] = element(sel)) };
 }

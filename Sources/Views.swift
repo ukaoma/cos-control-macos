@@ -4123,6 +4123,8 @@ private extension ControlPanel {
             .disabled(model.busy)
             // CAL-01 (PH plan P1): never behind Today home, since prep and pings read it too.
             CalendarSettingsBlock(store: model.calendarSource)
+            // TS-01 (0.5.379): the Today summary switch, the server's, as Control Web Settings shows it.
+            TodaySummarySettingsBlock(model: model)
         }
         hubCard("general.guide") {
             // SG-01, which opens the whole guide in place (SG-02 to SG-14 inside it).

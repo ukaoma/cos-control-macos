@@ -12765,14 +12765,67 @@ struct WorkYourMove: Identifiable, Sendable {
     let kind: String
     let action: String
     let sessionID: String?
+    /// 0.5.379: the open-work row's progress report as it stands (nil once the server marks it superseded), its handoff
+    /// status, and when it started waiting: `waitingSince` (server 7.0.1), else its newest event, else when it was made.
+    let reported: String?
+    let status: String?
+    let since: Date?
+    /// 0.5.379 (Miles, 2026-11-08 parity pass): server 6.99+ answers GET /api/work-board/your-move with the open-work list
+    /// (projectOpenWork): no `kind`, no `action`, the session id at the top level. Every row was dropped here until this
+    /// release. `kind` and `action`, when a server sends them, still win and are still checked; otherwise they are read
+    /// from the report. A 7.0.1 row the server marked `supersededAt` (Miles started a turn in its session after the report)
+    /// is history: one that regrouped to running leaves, as Control Web leaves it (app.js needsModel, review N6), and the
+    /// rest keep their row without the old report.
     init?(_ value: JSONValue) {
-        guard let row = value.object, let id = row["id"]?.string, let work = row["workId"]?.string,
-              let kind = row["kind"]?.string, ["question", "qa", "unknown"].contains(kind),
-              let action = row["action"]?.string else { return nil }
-        self.id = id; workID = work; title = row["title"]?.string ?? "Work item"; self.kind = kind; self.action = action
-        sessionID = row["activity"]?.object?["sessionId"]?.string
+        guard let row = value.object, let id = row["id"]?.string, let work = row["workId"]?.string else { return nil }
+        if Self.superseded(row) { return nil }
+        let superseded = !(row["supersededAt"]?.string ?? "").isEmpty
+        let reported = superseded ? nil : row["progress"]?.object?["reported"]?.string
+        let status = row["status"]?.string
+        let kind: String
+        if let given = row["kind"]?.string {
+            guard ["question", "qa", "unknown"].contains(given) else { return nil }
+            kind = given
+        } else if reported == "needsInput" || (!superseded && row["waitingInApp"]?.bool == true) {
+            kind = "question"
+        } else if reported == "done" {
+            kind = "qa"
+        } else {
+            kind = "unknown"
+        }
+        let action: String
+        if let given = row["action"]?.string {
+            action = given
+        } else {
+            switch kind {
+            case "question": action = "answer"
+            case "qa": action = "review"
+            default: action = ["failed", "refused", "canceled"].contains(status ?? "") ? "startFresh" : "checkSession"
+            }
+        }
+        self.id = id; workID = work; self.kind = kind; self.action = action
+        let named = (row["title"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let session = (row["sessionTitle"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        title = !named.isEmpty ? named : !session.isEmpty ? session : "Work item"
+        // The open-work row names the session natively with its provider beside it; Control's ids are "provider:native".
+        let rawSession = row["activity"]?.object?["sessionId"]?.string ?? row["sessionId"]?.string
+        if let raw = rawSession, !raw.contains(":"), let provider = row["provider"]?.string, !provider.isEmpty { sessionID = provider + ":" + raw } else { sessionID = rawSession }
+        self.reported = reported; self.status = status
+        since = [row["waitingSince"], row["updatedAt"], row["createdAt"]].lazy.compactMap { $0?.string.flatMap(WorkIntakeItem.stamp) }.first
+    }
+    /// A 7.0.1 row whose report was superseded and that regrouped to running: not something waiting on Miles.
+    static func superseded(_ row: [String: JSONValue]) -> Bool {
+        !(row["supersededAt"]?.string ?? "").isEmpty && row["group"]?.string == "running"
     }
     var actionTitle: String { action == "answer" ? "Answer" : action == "review" ? "Review" : action == "startFresh" ? "Start fresh" : "Check session" }
+    /// Today's why line for the row (Control Web's needWhy, in the Mac's sentences).
+    var why: String {
+        if kind == "question" { return "The Work card is waiting on your answer before it moves on." }
+        if kind == "qa" { return "The Work card is waiting on your review before it moves on." }
+        if reported == "blocked" { return "The Work card is blocked." }
+        if status == "delivered" { return "The Work card was handed to you." }
+        return "The Work card needs a look."
+    }
 }
 
 /// One small decision group. Self-captures lead; dates come from each card.
@@ -14339,8 +14392,7 @@ enum TodayHome {
         for move in input.yourMove ?? [] {
             if let sid = move.sessionID, waitingIDs.contains(where: { ClaudeSession.sameSession($0, sid) }) { continue }
             rows.append(NeedRow(id: "work:" + move.id, kind: .work, tier: 3, title: (move.action == "review" ? "Review " : "") + (guarded(move.title) ?? "a Work item"),
-                                why: move.kind == "question" ? "The Work card is waiting on your answer before it moves on." : "The Work card is waiting on your review before it moves on.",
-                                source: "In Work", move: move, openLabel: move.actionTitle))
+                                why: move.why, source: "In Work", since: move.since, move: move, openLabel: move.actionTitle))
         }
         if let count = input.memoriesToReview, count > 0 {
             rows.append(NeedRow(id: "memories", kind: .memories, tier: 4, title: count == 1 ? "Review 1 memory" : "Review \(count) memories",
@@ -14504,6 +14556,9 @@ enum TodayHome {
         var work: ActivityHome.SourceState = .pending
         /// Work's Intake read failed (a Create task refusal is not a read failure).
         var intakeFailed = false
+        /// 0.5.379 (root QA): Work's your move (/api/work-board/your-move) failed or answered unavailable. Control Web reads that
+        /// as Work failed (app.js workState); a board that read is not enough to say no Work handoff waits on Miles.
+        var yourMoveFailed = false
         var dictation: ActivityHome.SourceState = .answered
     }
 
@@ -14512,7 +14567,7 @@ enum TodayHome {
     static func sourceStates(_ input: SourceInputs) -> [Source: ActivityHome.SourceState] {
         func server(_ state: ActivityHome.SourceState) -> ActivityHome.SourceState { input.reachable || state == .off ? state : .failed }
         var work = server(input.work)
-        if input.intakeFailed, work != .off { work = .failed }
+        if input.intakeFailed || input.yourMoveFailed, work != .off { work = .failed }
         return [.sessions: input.sessions, .voices: server(input.voices), .memories: server(input.memories), .work: work, .dictation: input.dictation]
     }
 
@@ -14765,6 +14820,30 @@ enum TodayHome {
     /// brief says only what it knows, or that it is still reading (or what it could not read). The calendar is "clear"
     /// only when the server said it read it.
     static func brief(_ c: Counts, calendar: Calendar = .current) -> String {
+        let first = countLine(c, calendar: calendar)
+        var parts: [String] = []
+        if c.agentsWorking > 0 { parts.append(number(c.agentsWorking) + (c.agentsWorking == 1 ? " agent is working" : " agents are working")) }
+        if c.glassesQuestions > 0 {
+            parts.append(c.glassesQuestions == 1 ? "COS is answering a question" : "COS is answering " + number(c.glassesQuestions) + " questions")
+        }
+        if c.routinesRunning > 0 { parts.append(c.routinesRunning == 1 ? "a routine is running" : number(c.routinesRunning) + " routines are running") }
+        var sentences: [String] = []
+        if let first { sentences.append(first + ".") }
+        if !parts.isEmpty { let second = list(parts); sentences.append(second.prefix(1).uppercased() + second.dropFirst() + ".") }
+        // 0.5.379 (Control Web's renderStory, W3-r2): a session list that was not read is named, never read as nothing running.
+        let sessionsUnread = c.failedSources.contains(.sessions)
+        if sessionsUnread { sentences.append("Couldn't read your sessions.") }
+        let others = c.failedSources.filter { $0 != .sessions }
+        if !c.settled && c.needs == 0 && c.folded == 0 && !(sessionsUnread && others.isEmpty) {
+            sentences.append(others.isEmpty ? "Still reading what needs you."
+                             : "Couldn't read " + list(others.map(\.name)) + ", so this may not be everything.")
+        }
+        return sentences.joined(separator: " ")
+    }
+
+    /// 0.5.379: the brief's own count line (what waits on Miles and the next event), without its full stop. The Today
+    /// summary keeps it first (TodaySummary.headline), as Control Web's summary follows its count line.
+    static func countLine(_ c: Counts, calendar: Calendar = .current) -> String? {
         var first: String?
         if c.sessionsWaiting > 0 {
             first = number(c.sessionsWaiting, capital: true) + (c.sessionsWaiting == 1 ? " session is waiting on you" : " sessions are waiting on you")
@@ -14783,20 +14862,7 @@ enum TodayHome {
         } else if c.calendarRead {
             first = first.map { $0 + ", and your calendar is clear for the rest of the day" } ?? "Your calendar is clear for the rest of the day"
         }
-        var parts: [String] = []
-        if c.agentsWorking > 0 { parts.append(number(c.agentsWorking) + (c.agentsWorking == 1 ? " agent is working" : " agents are working")) }
-        if c.glassesQuestions > 0 {
-            parts.append(c.glassesQuestions == 1 ? "COS is answering a question" : "COS is answering " + number(c.glassesQuestions) + " questions")
-        }
-        if c.routinesRunning > 0 { parts.append(c.routinesRunning == 1 ? "a routine is running" : number(c.routinesRunning) + " routines are running") }
-        var sentences: [String] = []
-        if let first { sentences.append(first + ".") }
-        if !parts.isEmpty { let second = list(parts); sentences.append(second.prefix(1).uppercased() + second.dropFirst() + ".") }
-        if !c.settled && c.needs == 0 && c.folded == 0 {
-            sentences.append(c.failedSources.isEmpty ? "Still reading what needs you."
-                             : "Couldn't read " + list(c.failedSources.map(\.name)) + ", so this may not be everything.")
-        }
-        return sentences.joined(separator: " ")
+        return first
     }
 
     // MARK: Rail stories (one line per tab; the same counts the tab lists)
@@ -15819,4 +15885,270 @@ struct COSBuildUpMachine: Equatable, Sendable {
 enum DropItThreadCopy {
     /// The label on a fresh thread Ask's carried summary, sent as query-jobs `reference.query` (server 6.99.16 uses the same).
     static let referenceQuery = "Summary carried over from earlier in this COS thread"
+}
+
+// MARK: - The Today summary (0.5.379, server 7.0.1)
+
+/// 0.5.379 (Miles, 2026-11-08: "why don't we get the same summary on the Today tab for desktop that we've come to like on the
+/// web view?"): the server-written Today summary (GET and POST /api/today/brief, lib/today-brief.ts; Sonnet on 7.0.1), shown
+/// the way Control Web shows it (web-control/app.js requestBrief, briefShown, briefWhen, todayRefresh). The server holds the
+/// spend: its switch ("Write the Today summary with a model", off unless turned on), only when the rows changed, 10 minutes
+/// apart, 60 a day, a breaker, nothing while a meeting records. This side only decides when to ask and what to show. Pure:
+/// Tests/ActivityTodayChecks.swift executes every rule.
+enum TodaySummary {
+    /// The web's BRIEF_RESEND_MS and BRIEF_OFF_RECHECK_MS: the same rows, or a switched-off summary, are asked about every 5 min.
+    static let resendSeconds: TimeInterval = 300
+    /// The web's BRIEF_LIVE_GAP_MS: the Mac's session list moves live, so a changed Today asks at most once a minute.
+    static let liveGapSeconds: TimeInterval = 60
+    /// Refresh asks with `force` at most every 30 s (the server's own floor, kept here too so a second press asks nothing).
+    static let refreshFloorSeconds: TimeInterval = 30
+    /// How long a Refresh answer stays beside the button.
+    static let noteSeconds: TimeInterval = 600
+
+    /// The server's answer (TodayBriefView).
+    /// The fields of the server's TodayBriefView this side reads (Tests/fixtures/today-running-now.json).
+    static let runningNowFields = ["text", "at", "basis", "model", "state", "reason", "enabled", "source"]
+
+    struct Reply: Equatable, Sendable {
+        let text: String
+        let at: Date?
+        /// What it was written from, in words, and by which model; shown nowhere yet, kept for parity with the view.
+        let basis: String
+        let model: String
+        let source: String
+        let state: String
+        let reason: String?
+        let enabled: Bool
+        let retryAfterMs: Int?
+        let message: String?
+        init?(_ value: JSONValue) {
+            guard let o = value.object, let state = o["state"]?.string else { return nil }
+            text = (o["text"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            at = o["at"]?.string.flatMap(WorkIntakeItem.stamp)
+            basis = o["basis"]?.string ?? ""
+            model = o["model"]?.string ?? ""
+            source = o["source"]?.string ?? ""
+            self.state = state
+            reason = o["reason"]?.string
+            enabled = o["enabled"]?.bool ?? (state != "off")
+            retryAfterMs = o["retryAfterMs"]?.double.map { Int($0.rounded()) }
+            message = o["message"]?.string
+        }
+        var switchedOff: Bool { state == "off" || !enabled }
+    }
+
+    /// The summary to show, or nil: only with text, only fresh or stale, only over a session list that was read.
+    static func shown(_ reply: Reply?, sessionsRead: Bool) -> Reply? {
+        guard let reply, sessionsRead, !reply.text.isEmpty, reply.state == "fresh" || reply.state == "stale" else { return nil }
+        return reply
+    }
+
+    /// The web's span(): "3 min", "2 h", "3 days" (never under a minute).
+    static func span(_ seconds: TimeInterval) -> String {
+        let minutes = max(1, Int((seconds / 60).rounded()))
+        if minutes < 60 { return "\(minutes) min" }
+        let hours = minutes / 60
+        return hours < 48 ? "\(hours) h" : "\(Int((Double(hours) / 24).rounded())) days"
+    }
+
+    /// "Updated 3 min ago." Stale says so once it is five minutes old; an unread source is named (the web's briefWhen).
+    static func when(_ reply: Reply, now: Date, failed: [String]) -> String {
+        let age = reply.at.map { max(0, now.timeIntervalSince($0)) } ?? 0
+        let minutes = Int((age / 60).rounded())
+        var out = "Updated " + (minutes < 1 ? "just now" : span(age) + " ago")
+        if reply.state == "stale" && minutes >= 5 { out += ". Things have moved since" }
+        if !failed.isEmpty { out += ". Couldn\u{2019}t read " + TodayHome.list(failed) + ", so this may not be everything" }
+        return out + "."
+    }
+
+    /// The headline: the server's summary exactly as written, as Control Web's renderStory shows it. The server opens it with
+    /// its own count sentence (todayBriefOpener, "Two things need you."), so nothing is added here. No summary (off, failed,
+    /// an older server, nothing read yet): the local headline, word for word.
+    static func headline(_ c: TodayHome.Counts, summary: Reply?, calendar: Calendar = .current) -> String {
+        guard let summary, !summary.text.isEmpty, summary.state == "fresh" || summary.state == "stale" else { return TodayHome.brief(c, calendar: calendar) }
+        return summary.text
+    }
+
+    /// The switch "Write the Today summary with a model" (GET and POST /api/today/brief/settings), with Control Web's copy
+    /// (panes/settings.js, the Today summary group and briefStatus).
+    struct Settings: Equatable, Sendable {
+        static let label = "Write the Today summary with a model"
+        static let blurb = "Sonnet writes two or three sentences after the count of what needs you. It reads what Today shows (session titles and states, each session\u{2019}s latest reply, the questions sessions ask you, what needs you) and, on your Mac, each session\u{2019}s sub-agents and the Work cards in progress. It runs only while Today is open, only when something changed, never during a recording, at most every 10 minutes and 60 times a day. Refresh on Today asks for a new one at once, at most every 30 seconds."
+        let enabled: Bool
+        let source: String
+        let statusKind: String?
+        let statusUntil: Date?
+        let statusAt: Date?
+        let statusCount: Int?
+        let statusCode: String?
+        init?(_ value: JSONValue) {
+            guard let o = value.object, let enabled = o["enabled"]?.bool else { return nil }
+            self.enabled = enabled
+            source = o["source"]?.string ?? "default"
+            let status = o["status"]?.object
+            statusKind = status?["kind"]?.string
+            statusUntil = status?["until"]?.string.flatMap(WorkIntakeItem.stamp)
+            statusAt = status?["at"]?.string.flatMap(WorkIntakeItem.stamp)
+            statusCount = status?["count"]?.int
+            statusCode = status?["code"]?.string
+        }
+        /// COS_TODAY_BRIEF_LLM on the Mac sets it: shown, not changeable.
+        var locked: Bool { source == "env" }
+        var detail: String { locked ? "Set on the Mac by the server environment." : Self.blurb }
+        /// The line under the switch: paused until, today's cap reached, or the last call failed (only while it is on).
+        func statusLine(calendar: Calendar = .current) -> String {
+            guard enabled, let kind = statusKind else { return "" }
+            switch kind {
+            case "paused": return "Paused after three failed tries. It tries again at " + (statusUntil.map { TodayHome.clock($0, calendar: calendar) } ?? "") + "."
+            case "failed":
+                let tail = statusCode == "timeout" ? " (it took too long)." : statusCode == "unavailable" ? " (Claude Code was not found on your Mac)." : "."
+                return "The last try failed at " + (statusAt.map { TodayHome.clock($0, calendar: calendar) } ?? "") + tail
+            default: return ""
+            }
+        }
+    }
+
+    /// What Today shows after an ask (the web's requestBrief and todayRefresh): a view the server answered replaces the last
+    /// one (an empty or failed view lets the counts line return); no answer, an unreachable server or a server without the
+    /// route keeps what was shown.
+    static func kept(previous: Reply?, answer: (reply: Reply?, available: Bool)?) -> Reply? {
+        guard let answer, answer.available, let reply = answer.reply else { return previous }
+        return reply
+    }
+
+    /// A Refresh answer in plain words (the web's refreshWords and TR_REASONS), or "" when it updated or is switched off.
+    /// A throttled one says nothing here: its countdown is the note.
+    static func refreshWords(_ reply: Reply?) -> String {
+        guard let reply else { return "" }
+        if let message = reply.message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty { return message }
+        if reply.state == "off" || reply.reason == "refresh_throttled" { return "" }
+        if reply.state == "fresh" && reply.reason == nil { return "" }
+        switch reply.reason {
+        case "daily_cap": return "Daily summary limit reached"
+        case "recording": return "No new summary while a meeting records"
+        case "maintenance": return "No new summary while COS updates"
+        case "paused": return "The summary is paused for now. Try again later"
+        case "failed": return "The summary did not update"
+        case "interval": return "The summary updated recently. Try again in a few minutes"
+        default: return ""
+        }
+    }
+
+    /// When Today asks on its own (the web's requestBrief): changed rows at once but at most once a minute, the same rows
+    /// every five minutes, a switched-off summary every five minutes, one ask at a time.
+    struct Asking: Equatable {
+        var reply: Reply?
+        var inflight = false
+        var sentKey = ""
+        var sentAt: Date?
+        /// The server has no summary route (older than 6.99.26): asked again every five minutes, in case it updated.
+        var unavailable = false
+        func shouldAsk(key: String, now: Date) -> Bool {
+            guard !inflight else { return false }
+            guard let sentAt else { return true }
+            let since = now.timeIntervalSince(sentAt)
+            if reply?.switchedOff == true || unavailable { return since >= TodaySummary.resendSeconds }
+            if key == sentKey { return since >= TodaySummary.resendSeconds }
+            return since >= TodaySummary.liveGapSeconds
+        }
+        mutating func sent(key: String, now: Date) { sentKey = key; sentAt = now }
+    }
+
+    /// Refresh beside the summary: busy while it reads, at most every 30 s, the server's throttle as a countdown, its
+    /// reason for ten minutes.
+    struct Refresh: Equatable {
+        var busy = false
+        var doneAt: Date?
+        var message = ""
+        var retryAt: Date?
+        var forcedAt: Date?
+        /// Starts a refresh, or refuses one inside the 30 s floor (and counts down instead).
+        mutating func begin(now: Date) -> Bool {
+            guard !busy else { return false }
+            if let forcedAt, now.timeIntervalSince(forcedAt) < TodaySummary.refreshFloorSeconds {
+                retryAt = forcedAt.addingTimeInterval(TodaySummary.refreshFloorSeconds)
+                return false
+            }
+            busy = true; message = ""; retryAt = nil; forcedAt = now
+            return true
+        }
+        mutating func finish(reply: Reply?, words: String, now: Date) {
+            busy = false; doneAt = now; message = words
+            if reply?.reason == "refresh_throttled" {
+                retryAt = now.addingTimeInterval(max(1, Double(reply?.retryAfterMs ?? 30_000) / 1000))
+            }
+        }
+        /// The line beside Refresh: Updating, the countdown, the reason, or when Today was refreshed (only when no summary
+        /// shows its own "Updated" line).
+        func note(now: Date, summaryShown: Bool) -> String {
+            if busy { return "Updating" }
+            if let retryAt, retryAt > now { return "Try again in \(Int(ceil(retryAt.timeIntervalSince(now)))) s" }
+            guard let doneAt, now.timeIntervalSince(doneAt) < TodaySummary.noteSeconds else { return "" }
+            if !message.isEmpty { return message }
+            if summaryShown { return "" }
+            let minutes = Int(now.timeIntervalSince(doneAt) / 60)
+            return minutes < 1 ? "Updated just now" : "Updated \(minutes) min ago"
+        }
+    }
+
+    /// The server's session states and source names (normalizeTodayBriefInputs refuses any other top-level key).
+    private static let sessionKey = try! NSRegularExpression(pattern: "^(claude|codex|cursor)\\|[A-Za-z0-9._-]{6,128}$")
+    private static let unreadNames: Set<String> = ["sessions", "Work", "voices", "memories"]
+
+    /// The body the server reads, from what Today already holds (the web's briefInputs): waiting, working and open sessions
+    /// (title, provider, state, how long, the latest line, what it asks), what needs Miles beyond the sessions, how many of
+    /// those fold until tomorrow, and which sources were read.
+    static func inputs(sessions: [ClaudeSession], needs: [TodayHome.NeedRow], folded: Int, sessionsRead: Bool, settled: Bool,
+                       failed: [TodayHome.Source], recording: Bool, now: Date) -> JSONValue {
+        var rows: [JSONValue] = []
+        for session in sessions where !session.isKeepWarm {
+            let state: String
+            if TodayHome.isWaiting(session) { state = "waiting" } else if TodayHome.isWorking(session) { state = "working" } else if session.alive { state = "open" } else { continue }
+            let started = state == "open" ? (ActivityHome.stamp(session.updatedAt) ?? ActivityHome.stamp(session.stateSince))
+                                          : (ActivityHome.stamp(session.stateSince) ?? ActivityHome.stamp(session.updatedAt))
+            let minutes = started.map { max(0, Int((now.timeIntervalSince($0) / 60).rounded())) } ?? 0
+            let provider = ["claude", "codex", "cursor"].contains(session.provider) ? session.provider : "claude"
+            var row: [String: JSONValue] = ["title": .string(TodayHome.guarded(session.title) ?? "A session"), "provider": .string(provider),
+                                            "state": .string(state), "minutes": .number(Double(minutes)),
+                                            "line": .string(String(session.discussionSummary.prefix(400))),
+                                            "waiting": .string(state == "waiting" ? (TodayHome.questionText(session) ?? TodayHome.askedWhy(session) ?? "") : "")]
+            // Only so the server can read this session's sub-agents; it never reaches the model.
+            let key = provider + "|" + session.sessionId
+            if sessionKey.firstMatch(in: key, range: NSRange(key.startIndex..., in: key)) != nil { row["key"] = .string(key) }
+            rows.append(.object(row))
+            if rows.count == 40 { break }
+        }
+        let others = needs.filter { $0.kind != .session }
+        let needRows: [JSONValue] = others.prefix(12).map { .object(["title": .string($0.title), "why": .string($0.why ?? "")]) }
+        let unread = failed.map(\.name).filter { unreadNames.contains($0) }
+        return .object(["sessions": .array(rows), "needs": .array(needRows), "later": .number(Double(min(max(0, folded), needRows.count))),
+                        "sessionsRead": .bool(sessionsRead), "needsComplete": .bool(settled && unread.isEmpty),
+                        "unread": .array(unread.map { .string($0) }), "recording": .bool(recording)])
+    }
+
+    /// What counts as "Today changed" (the web's key): the rows without their minutes, which move on by themselves.
+    static func key(_ inputs: JSONValue) -> String {
+        guard var o = inputs.object else { return "" }
+        o["sessions"] = .array((o["sessions"]?.array ?? []).map { row in
+            guard var r = row.object else { return row }
+            r["minutes"] = nil; r["key"] = nil
+            return .object(r)
+        })
+        o["force"] = nil
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return (try? encoder.encode(JSONValue.object(o))).map { String(decoding: $0, as: UTF8.self) } ?? ""
+    }
+
+    /// Refresh's body: the same rows with `force` (server 7.0.1).
+    static func forced(_ inputs: JSONValue) -> JSONValue {
+        guard var o = inputs.object else { return inputs }
+        o["force"] = .bool(true)
+        return .object(o)
+    }
+    /// A 7.0.0 server refuses the unknown `force` (400 invalid_today_brief): the helper asks again without it.
+    static func unforced(_ inputs: JSONValue) -> JSONValue {
+        guard var o = inputs.object else { return inputs }
+        o["force"] = nil
+        return .object(o)
+    }
 }

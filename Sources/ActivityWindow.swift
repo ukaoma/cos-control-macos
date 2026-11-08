@@ -7950,6 +7950,10 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
     /// The receipt of the last run started here, so its row can come first.
     @Published var lastStartedRunID: String?
     @Published var notice: String?
+    /// 0.5.379: the Today summary as the server wrote it (TodaySummary), when Today asks on its own, and Refresh.
+    @Published var summary = TodaySummary.Asking()
+    @Published var refresh = TodaySummary.Refresh()
+    private var summaryEpoch = TodaySummarySettingsStore.epoch
     /// On screen (TodayWindowWatcher), and the window's opening loads finished (loadOverviewIfNeeded).
     @Published var windowVisible = true
     var overviewDone = false
@@ -7963,6 +7967,60 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
     private var lastIntake: Date?
     private var ticking = false
     static let slowSeconds: TimeInterval = 300
+
+    /// 0.5.379: one ask for the Today summary (helper `today-brief`, server 7.0.1 POST /api/today/brief). Nil: no answer
+    /// (the helper failed, the server was unreachable or failed); `available: false` is a server without the route.
+    func sendSummary(model: ControllerModel, body: JSONValue) async -> (reply: TodaySummary.Reply?, available: Bool)? {
+        guard let data = try? JSONEncoder().encode(body) else { return nil }
+        do {
+            let response = try await model.todayHelper(["today-brief"], timeout: 50, stdinData: data)
+            guard response.ok else { return nil }
+            // Only a missing route is an older server; an unreachable or failed server is no answer (what was shown stays).
+            if response.details["available"]?.bool == false {
+                return response.details["reason"]?.string == "older_server" ? (nil, false) : nil
+            }
+            return (TodaySummary.Reply(.object(response.details)), true)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Today asks on its own (TodaySummary.Asking): changed rows at once but at most once a minute, the same rows every five
+    /// minutes. Never waits: the count headline shows until a summary lands, and a failed ask keeps what was shown.
+    func askSummary(model: ControllerModel, body: JSONValue, now: Date = Date()) async {
+        // Settings turned the summary on or off: forget it, so this tick asks at once (Control Web's resetTodayBrief).
+        if summaryEpoch != TodaySummarySettingsStore.epoch, !summary.inflight { summaryEpoch = TodaySummarySettingsStore.epoch; summary = TodaySummary.Asking() }
+        let key = TodaySummary.key(body)
+        guard summary.shouldAsk(key: key, now: now) else { return }
+        summary.inflight = true
+        summary.sent(key: key, now: now)
+        let answer = await sendSummary(model: model, body: body)
+        summary.inflight = false
+        if let answer { summary.unavailable = !answer.available }
+        summary.reply = TodaySummary.kept(previous: summary.reply, answer: answer)
+    }
+
+    /// Refresh (Control Web's todayRefresh): every Today source read again now, then a new summary asked for with `force`.
+    /// The server still holds its switch, its 30 s refresh floor and its daily cap, and says which; so does this Mac's
+    /// own floor. Switched off or an older server: the sources only.
+    func refreshToday(model: ControllerModel, reload: () async -> Void, body: () -> JSONValue) async {
+        guard refresh.begin(now: Date()) else { return }
+        await reload()
+        if summary.reply?.switchedOff == true || summary.unavailable {
+            refresh.finish(reply: nil, words: "", now: Date())
+            return
+        }
+        let rows = body()
+        summary.inflight = true
+        let answer = await sendSummary(model: model, body: TodaySummary.forced(rows))
+        summary.inflight = false
+        guard let answer else { refresh.finish(reply: nil, words: "The summary did not update", now: Date()); return }
+        summary.unavailable = !answer.available
+        summary.reply = TodaySummary.kept(previous: summary.reply, answer: answer)
+        if answer.available, answer.reply != nil { summary.sent(key: TodaySummary.key(rows), now: Date()) }
+        let words = answer.available ? TodaySummary.refreshWords(answer.reply) : "The summary did not update"
+        refresh.finish(reply: answer.available ? answer.reply : nil, words: words, now: Date())
+    }
 
     /// One tick: the helper's serial reads, then the local host lookup, then intake when 5 minutes have passed.
     func tick(model: ControllerModel, now: Date = Date()) async {
@@ -8357,6 +8415,7 @@ extension ActivityWindow {
         input.memories = model.status.learningToReview == nil ? .off : .answered
         input.work = ActivityHome.sourceState(enabled: workConnectionsEnabled && !isolatedWorkPreview, loaded: homeLoads[.work], hasData: !model.workTasks.isEmpty)
         input.intakeFailed = model.workIntakeError != nil && model.workIntakeError != today.lastResolveError
+        input.yourMoveFailed = model.workYourMoveFailed
         return input
     }
 
@@ -8560,6 +8619,8 @@ extension ActivityWindow {
         // With the pet off nothing else refreshes the session list (the classic home's refreshHomeSessions, here on the tick).
         if !model.petEnabled { await model.loadClaudeSessions() }
         await today.tick(model: model)
+        // 0.5.379: the summary is asked about only while the Today home is on screen (Control Web asks only on its Today pane).
+        if section == nil && !showingSettings { await today.askSummary(model: model, body: todaySummaryBody(now: Date())) }
     }
 
     /// Once, after loadOverviewIfNeeded: what it does not already read (voices, Work's your move, Work's runs and models, the
@@ -8731,13 +8792,18 @@ extension ActivityWindow {
                     TodayRecordingSection(rows: frame.recordings, now: now, store: model.macRecording, initialConfirm: commandFixture?.todayStopConfirm,
                                           recording: { commandRecording() }, open: { todayOpen($0) }, stop: { commandStopRecording() })
                 }
-                Text(TodayHome.brief(todayBriefCounts(frame, now: now)))
-                    .font(COSType.display(wide ? 25 : 22))
-                    .lineSpacing(wide ? 8 : 6)
-                    .foregroundStyle(TodayInk.ink)
-                    .frame(maxWidth: 980, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityAddTraits(.isHeader)
+                // 0.5.379: COS's count line first, then the server's summary when there is one (TodaySummary.headline), as on
+                // Control Web; off, failed or an older server: the local headline, word for word.
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(TodaySummary.headline(todayBriefCounts(frame, now: now), summary: todaySummaryShown(frame)))
+                        .font(COSType.display(wide ? 25 : 22))
+                        .lineSpacing(wide ? 8 : 6)
+                        .foregroundStyle(TodayInk.ink)
+                        .frame(maxWidth: 980, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityAddTraits(.isHeader)
+                    todaySummaryLine(frame, now: now)
+                }
                 FinishSetupCard(model: model, provider: model.providerGuide, guide: model.setupGuide, permissions: model.permissionGuide) {
                     model.showSetupGuide?()
                 }
@@ -8766,6 +8832,61 @@ extension ActivityWindow {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(TodayInk.page)
+    }
+
+    /// 0.5.379: the summary to show (TodaySummary.shown): only over a session list that was read, and never while the server
+    /// is not answering (Control Web's offline Today shows no summary either; the local headline says what failed).
+    func todaySummaryShown(_ frame: TodayHome.Frame) -> TodaySummary.Reply? {
+        guard frame.reachable else { return nil }
+        return TodaySummary.shown(today.summary.reply, sessionsRead: frame.counts.sessionsKnown)
+    }
+
+    /// Under the headline: "Updated N min ago." when a summary shows, then Refresh and its note (Updating, the 30 s
+    /// countdown, the server's reason). The note counts down once a second only while a countdown runs.
+    func todaySummaryLine(_ frame: TodayHome.Frame, now: Date) -> some View {
+        let shown = todaySummaryShown(frame)
+        let refresh = today.refresh
+        let counting = (refresh.retryAt ?? .distantPast) > now
+        return HStack(alignment: .firstTextBaseline, spacing: 12) {
+            if let shown {
+                Text(TodaySummary.when(shown, now: now, failed: frame.counts.failedSources.map(\.name)))
+                    .font(COSType.body(12.5)).foregroundStyle(TodayInk.sub)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Button("Refresh") { Task { await todayRefresh() } }
+                .buttonStyle(COSTextButtonStyle()).controlSize(.small)
+                .disabled(refresh.busy || counting)
+                .help("Read everything on Today again and ask for a new summary. At most every 30 seconds.")
+            if counting {
+                TimelineView(.periodic(from: now, by: 1)) { context in
+                    Text(today.refresh.note(now: context.date, summaryShown: shown != nil)).font(COSType.body(12.5)).foregroundStyle(TodayInk.sub)
+                }
+            } else {
+                let note = refresh.note(now: now, summaryShown: shown != nil)
+                if !note.isEmpty { Text(note).font(COSType.body(12.5)).foregroundStyle(TodayInk.sub) }
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: 980, alignment: .leading)
+    }
+
+    /// The body Today sends for its summary (TodaySummary.inputs), from the same frame the home draws.
+    func todaySummaryBody(now: Date) -> JSONValue {
+        let frame = todayFrame(now: now)
+        let counts = todayBriefCounts(frame, now: now)
+        return TodaySummary.inputs(sessions: todaySessions(), needs: frame.needs, folded: counts.folded, sessionsRead: frame.counts.sessionsKnown,
+                                   settled: frame.counts.settled, failed: frame.counts.failedSources, recording: !frame.recordings.isEmpty, now: now)
+    }
+
+    /// Refresh: the sessions, Work's your move, the voices and the tick's reads again, then a forced summary.
+    func todayRefresh() async {
+        guard Self.allowsLiveSectionLoads(isolatedWorkPreview: isolatedWorkPreview, backgroundWorkEnabled: model.activityLoadsEnabled) else { return }
+        await today.refreshToday(model: model, reload: {
+            await model.loadClaudeSessions(force: true)
+            await model.loadYourMove()
+            await model.loadHeldGroups()
+            await today.tick(model: model)
+        }, body: { todaySummaryBody(now: Date()) })
     }
 
     func todayHeader(now: Date) -> some View {
@@ -8974,7 +9095,8 @@ extension ActivityWindow {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            if let since = row.since, row.kind == .session || row.kind == .voice {
+            // 0.5.379: a Work row is dated too, by when it started waiting (waitingSince), as on Control Web.
+            if let since = row.since, row.kind == .session || row.kind == .voice || row.kind == .work {
                 Text(ActivityHome.age(since, now: now)).font(COSType.mono(12, weight: .medium)).foregroundStyle(TodayInk.grey).fixedSize()
             }
         }
@@ -11145,5 +11267,69 @@ struct CommandCenterPanel: View {
         if case .waiting = row.kind { return TodayInk.hot }
         if row.kind == .command(.stopRecording) { return TodayInk.hot }
         return TodayInk.grey
+    }
+}
+
+// MARK: - Settings, Activity home: the Today summary switch (0.5.379, TS-01)
+
+/// "Write the Today summary with a model": the server's switch (GET and POST /api/today/brief/settings), the same one Control
+/// Web Settings, General changes, with its copy. Set by COS_TODAY_BRIEF_LLM on the Mac: shown, not changeable. A server without
+/// the summary: no row. A change resets the Today summary so the next Today tick asks at once (Control Web's resetTodayBrief).
+@MainActor final class TodaySummarySettingsStore: ObservableObject {
+    @Published private(set) var settings: TodaySummary.Settings?
+    @Published private(set) var busy = false
+    @Published private(set) var error: String?
+    /// Bumped on every change; the Today store forgets its summary when it moves.
+    nonisolated(unsafe) static var epoch = 0
+
+    func load(model: ControllerModel) async {
+        do {
+            let response = try await model.todayHelper(["today-brief-settings"], timeout: 12)
+            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            settings = response.details["available"]?.bool == false ? nil : TodaySummary.Settings(.object(response.details))
+            error = nil
+        } catch {
+            settings = nil
+        }
+    }
+
+    func set(_ on: Bool, model: ControllerModel) async {
+        guard !busy, settings?.locked != true else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let response = try await model.todayHelper(["today-brief-settings", "--set", on ? "on" : "off"], timeout: 12)
+            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            settings = TodaySummary.Settings(.object(response.details)) ?? settings
+            error = nil
+            Self.epoch &+= 1
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+}
+
+struct TodaySummarySettingsBlock: View {
+    @ObservedObject var model: ControllerModel
+    @StateObject private var store = TodaySummarySettingsStore()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let settings = store.settings {
+                let item = SettingsHubCatalog.item("TS-01")
+                SettingsHubRow(label: item?.label ?? TodaySummary.Settings.label, detail: settings.detail, anchor: "item.TS-01") {
+                    Toggle(isOn: Binding(get: { store.settings?.enabled ?? false }, set: { on in Task { await store.set(on, model: model) } })) { EmptyView() }
+                        .toggleStyle(COSCheckStyle())
+                        .disabled(settings.locked || store.busy)
+                        .accessibilityLabel(TodaySummary.Settings.label)
+                }
+                let line = store.error ?? settings.statusLine()
+                if !line.isEmpty {
+                    Text(line).font(COSType.body(12)).foregroundStyle(TodayInk.sub)
+                        .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 20).padding(.bottom, 12)
+                }
+            }
+        }
+        .task { await store.load(model: model) }
     }
 }

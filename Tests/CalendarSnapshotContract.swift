@@ -11,7 +11,7 @@ struct CalendarSnapshotContract {
         if !ok { failures += 1; FileHandle.standardError.write(Data("FAIL: calendar snapshot: \(what)\n".utf8)) }
     }
 
-    static func main() throws {
+    static func main() async throws {
         typealias C = CalendarSnapshotCore
         let now = ISO8601DateFormatter().date(from: "2026-11-09T15:00:00Z")!
 
@@ -76,10 +76,48 @@ struct CalendarSnapshotContract {
         let refused = (try? C.write(Data("{}".utf8), to: linked.appendingPathComponent("snapshot.json"))) == nil
         check(refused, "a symlinked folder is refused")
 
+
+        // 0.5.379 (QA B2, W20, W22): one refresh, step by step (CalendarSnapshotCore.refresh). A fake reader stands in for
+        // EventKit; `live` is the store's connected-and-not-cancelled; the file calls are counted.
+        final class Probe { var live = true; var access = "granted"; var picked: Set<String> = ["a"]; var writes = 0; var removes = 0; var reads = 0
+            var onCalendars: () -> Void = {}; var onEvents: () -> Void = {}; var onWrite: () -> Void = {} }
+        func run(_ p: Probe) async -> C.WriteOutcome {
+            await C.refresh(live: { p.live }, access: { p.access }, selected: { p.picked },
+                            calendars: { ids in p.reads += 1; p.onCalendars(); return cals.map { var c = $0; c.selected = ids.contains(c.id); return c } },
+                            events: { _, _ in p.reads += 1; p.onEvents(); return [ev("a", "Pipeline")] },
+                            write: { _ in p.writes += 1; p.onWrite() }, remove: { p.removes += 1 }, now: now)
+        }
+        var p = Probe()
+        check(await run(p) == .wrote(cals) && p.writes == 1 && p.removes == 0, "granted with a calendar picked writes once")
+        // B2: Turn off lands during either EventKit await: nothing is written after it.
+        p = Probe(); p.onCalendars = { p.live = false }
+        check(await run(p) == .stopped && p.writes == 0 && p.reads == 1, "turned off during the calendars read: no write, no events read")
+        p = Probe(); p.picked = []; p.onCalendars = { p.live = false }
+        check(await run(p) == .stopped && p.removes == 0, "turned off during the read with nothing picked: stopped, the picker list is not put back")
+        p = Probe(); p.onEvents = { p.live = false }
+        check(await run(p) == .stopped && p.writes == 0, "turned off during the events read: no write")
+        // A write that lost the race anyway is deleted again.
+        p = Probe(); p.onWrite = { p.live = false }
+        check(await run(p) == .stopped && p.writes == 1 && p.removes == 1, "a write that lost the race is removed again")
+        p = Probe(); p.live = false
+        check(await run(p) == .stopped && p.writes == 0 && p.removes == 0 && p.reads == 0, "not connected: nothing at all, not even a read")
+        // W20: granted with nothing picked is not configured: no snapshot (an empty one reads as an empty day), any old one removed.
+        p = Probe(); p.picked = []
+        if case .notConfigured(let listed) = await run(p) { check(listed.count == 2 && !listed.contains(where: \.selected), "the picker still lists the calendars") }
+        else { check(false, "granted, zero picked is not configured") }
+        check(p.writes == 0 && p.removes == 1, "granted, zero picked writes nothing and removes an old snapshot")
+        p = Probe(); p.picked = ["gone"]
+        if case .notConfigured = await run(p) {} else { check(false, "a picked calendar that no longer exists is not a selection") }
+        check(p.writes == 0, "a stale pick writes nothing")
+        // W22: writeOnly or denied leaves the file absent (the CalendarFetch bridge still answers), never a tombstone.
+        for state in ["writeOnly", "denied", "restricted", "notDetermined"] {
+            p = Probe(); p.access = state
+            check(await run(p) == .noAccess && p.writes == 0 && p.removes == 1, "\(state) leaves no snapshot")
+        }
         if CommandLine.arguments.count > 2 {
             try C.encode(C.snapshot(calendars: cals, events: [ev("a", "Pipeline"), ev("b", "Holiday")], now: Date())).write(to: URL(fileURLWithPath: CommandLine.arguments[2]))
         }
         if failures > 0 { exit(1) }
-        print("PASS: calendar snapshot contract (links, domains, selection, tombstone, keys, data dir, modes)")
+        print("PASS: calendar snapshot contract (links, domains, selection, tombstone, keys, data dir, modes, refresh race, zero picked, no access)")
     }
 }

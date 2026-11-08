@@ -38,6 +38,13 @@ import SwiftUI
         try render(.firstRun, width: 1440, height: 980, name: "today-state-first-run-1440")
         try render(.olderServer, width: 1440, height: 1240, name: "today-state-older-server-1440")
         try render(.busy, width: 1228, height: 900, name: "today-main-1228")
+        // 0.5.379: the server's Today summary under COS's count line, its Updated line and Refresh; the daily cap after a
+        // Refresh; the switch off (the local headline, unchanged). Work's your move comes in the server's 7.0.1 shape.
+        try render(.summary, width: 1440, height: 1240, name: "today-summary-1440")
+        try render(.summary, width: 920, height: 1100, name: "today-summary-920")
+        try render(.summaryLimit, width: 1440, height: 1240, name: "today-summary-daily-limit-1440")
+        try render(.summaryOff, width: 1440, height: 1240, name: "today-summary-off-1440")
+        try render(.summaryUnreachable, width: 1440, height: 1240, name: "today-summary-unreachable-1440")
         UserDefaults.standard.set(true, forKey: TodayHome.quietHoursKey)
         // The fold reads the real clock (the window's own tick), so these two fold only after 6 PM, before 6 AM or on a weekend. 0.5.361: the busy
         // day has real tier 2 to 5 needs (voices, a meeting to review, Work's move, older suggestions), so the rail, the headline and the Needs you
@@ -53,7 +60,7 @@ import SwiftUI
         }
     }
 
-    enum Scene { case busy, caughtUp, many, loading, oneFailed, unreachable, firstRun, olderServer, foldedOnly }
+    enum Scene { case busy, caughtUp, many, loading, oneFailed, unreachable, firstRun, olderServer, foldedOnly, summary, summaryLimit, summaryOff, summaryUnreachable }
 
     static func iso(_ minutesAgo: Double) -> String { ISO8601DateFormatter().string(from: now.addingTimeInterval(-minutesAgo * 60)) }
 
@@ -161,6 +168,27 @@ import SwiftUI
         model.workIntake = WorkIntakeSnapshot(available: true, message: nil, items: items, cardCreation: true, linkWrites: true)
         model.workTasks = []
         model.workTasksComplete = true
+        if scene == .summary || scene == .summaryLimit || scene == .summaryOff || scene == .summaryUnreachable {
+            // The live 7.0.1 row shape (2026-11-08 read): no kind or action, the session at the top level, waitingSince.
+            model.workYourMove = [WorkYourMove(.object(["id": .string("rcpt_rain"), "workId": .string("task:quilt:rain"), "title": .string("Rain POS pricing table copy"),
+                                                        "status": .string("delivered"), "group": .string("needsInput"), "provider": .string("claude"), "sessionId": .string("t9"),
+                                                        "progress": .object(["reported": .string("needsInput")]), "waitingSince": .string(iso(26)),
+                                                        "updatedAt": .string(iso(2)), "createdAt": .string(iso(80))]))!]
+            if scene == .summaryOff {
+                store.summary.reply = TodaySummary.Reply(.object(["text": .string(""), "at": .null, "state": .string("off"), "reason": .string("switch_off"),
+                                                                  "enabled": .bool(false), "source": .string("default")]))
+            } else {
+                store.summary.reply = TodaySummary.Reply(.object([
+                    "text": .string("Two sessions are waiting on you. You are closing out the holiday promo page while Codex audits the Rain POS schema, and the Cigars POS age-gate placement and a Bottle POS footer tweak are paused on your answers."),
+                    "at": .string(iso(4)), "basis": .string("5 sessions, 6 things that need you"), "model": .string("sonnet"), "state": .string("fresh"), "enabled": .bool(true), "source": .string("settings")]))
+            }
+            if scene == .summaryUnreachable { store.reachable = false }
+            if scene == .summaryLimit {
+                let cap = TodaySummary.Reply(.object(["text": .string("x"), "at": .string(iso(4)), "state": .string("stale"), "reason": .string("daily_cap"),
+                                                      "enabled": .bool(true), "source": .string("settings")]))
+                store.refresh.finish(reply: cap, words: TodaySummary.refreshWords(cap), now: now)
+            }
+        }
         switch scene {
         case .oneFailed: model.workIntakeError = "Work intake is temporarily unavailable."
         case .unreachable: store.reachable = false

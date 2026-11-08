@@ -248,6 +248,39 @@
   var STORE = { self_improvement_queue: 'Self-improvement queue', correction_journal: 'Correction journal', bot_memory: 'Bot memory', review_ledger: 'Review ledger', git_versions: 'Skill versions', eval_scores: 'Eval scores', reflect_log: 'Reflect log', capture_ledger: 'Capture ledger' };
   function isProposal(e) { return e && e.target && e.target.kind === 'task-proposal'; }
   function isPattern(e) { return e && (e.event_type === 'promotable' || (e.target && e.target.kind === 'pattern')); }
+  // ── what needs review (0.5.379) ─────────────────────────────────
+  // One predicate, memory-review.js (window.COSMemoryReview), the same file COS Control Web and the server's count load.
+  // MU's learning_events.py review_state is the producer's copy of the same case table.
+  var R = window.COSMemoryReview;
+  function needsBlock() {
+    var s = state.status || {}, ls = state.learningStatus || {}, ny = ls.needs_you || s.needs_you;
+    return ny && Array.isArray(ny.items) ? R.normalizeBlock(ny) : null;
+  }
+  function needsLesson(id) { return !!id && R.openItems(needsBlock(), state.decisions).some(function (it) { return it.lesson_id === id; }); }
+  function learningItems() { return R.learningItems(needsBlock(), state.decisions).filter(function (it) { return it && it.event_id; }); }
+  function learningFor(id) { return id ? learningItems().filter(function (it) { return it.lesson_id === id; })[0] || null : null; }
+  // A latest decision of accepted, dismissed or pruned closes an item: it leaves To review (its reader stays open on it).
+  function closedHere(e) { return R.reviewState(null, null, latestDecisionFor(e)) === R.HISTORY; }
+  function plainReason(r) {
+    var t = String(r || ''), m;
+    if ((m = /^promotable at confidence ([\d.]+) \(< ([\d.]+)\)$/.exec(t))) return 'Confidence ' + m[1] + ', under the ' + m[2] + ' bar for a rule';
+    if ((m = /^promotable at confidence ([\d.]+) \(>= ([\d.]+)\)$/.exec(t))) return 'Confidence ' + m[1] + ', at or over the ' + m[2] + ' bar for a rule';
+    if (/^promotable at confidence unknown/.test(t)) return 'Confidence not known yet, so it cannot become a rule';
+    return t || 'Not a rule yet';
+  }
+  function learningRow(it) {
+    var known = state.review.concat(state.recent).filter(function (r) { return r.event_id === it.event_id; })[0];
+    return Object.assign({}, known || { event_id: it.event_id, lesson_id: it.lesson_id, ts: it.ts, title: it.title, category: it.category,
+      store: it.store || 'correction_journal', event_type: 'promotable', scope: 'unknown', engine: 'unknown',
+      target: { kind: 'pattern', id: it.lesson_id }, source_refs: [], applies_to: [] }, { learning: { reason: plainReason(it.reason), confidence: it.confidence, bar: it.bar } });
+  }
+  // To review's rows: what is still open (a proposal or suggestion decided here leaves for history), then Learning.
+  function reviewListRows() {
+    var learn = {}, learning = learningItems().map(learningRow);
+    learning.forEach(function (r) { learn[r.lesson_id] = 1; });
+    var open = state.review.filter(function (e) { return !((isProposal(e) || isPattern(e)) && (closedHere(e) || learn[e.lesson_id])); });
+    return open.concat(learning);
+  }
   // A review decision survives a reload (0.5.257): the ledger's pruned/accepted events seed the map memoryActions
   // reads. Before, a reload forgot every prune and offered Accept and Prune on a memory already out of recall.
   // The newest decision per memory wins; one made in this session is stamped now, so a stale seed never undoes it.
@@ -270,7 +303,15 @@
   function rowStatus(e) {
     var o = outcomeText(e);
     if (o) { var result=typeof e.outcome==='object'?e.outcome.result:e.outcome; return { text:'Checked: '+o, color: /^(pass|passed|success)$/.test(result)?'green':/^(fail|failed)$/.test(result)?'bad':'' }; }
-    if (isProposal(e) || isPattern(e)) return { text: 'Needs your review', color: '' };
+    if (isProposal(e) || isPattern(e)) {
+      // 0.5.379: Needs review only when the one predicate says so (memory-review.js, shared with COS Control Web and the
+      // server's count): a suggested rule at or over its bar. Below the bar it is Learning, listed calmly with its confidence.
+      if (closedHere(e)) return { text: 'Dismissed', color: '' };
+      if (needsLesson(e.lesson_id)) return { text: 'Needs your review', color: '' };
+      var lr = learningFor(e.lesson_id);
+      if (lr) return { text: 'Learning. ' + plainReason(lr.reason), color: '' };
+      return { text: isProposal(e) ? 'Suggested by a scheduled task' : 'Watching. Not a rule yet', color: '' };
+    }
     if (e.event_type === 'dismissed') return { text: 'Dismissed', color: '' };
     if (e.event_type === 'retrieved') return {text:'Retrieved · application unverified',color:''};
     if (e.event_type === 'included') return {text:'Included in context · application unverified',color:''};
@@ -294,8 +335,8 @@
     var s = state.status || {}, ls = state.learningStatus || {}, ny = ls.needs_you || s.needs_you;
     if (Array.isArray(state.needsYou)) return state.needsYou.length;
     if (Array.isArray(s.needsYou)) return s.needsYou.length;
-    if (ny && Array.isArray(ny.items)) return ny.items.length;
-    if (ny && ny.count != null) return ny.limit != null ? Math.min(Number(ny.count), Number(ny.limit)) : Number(ny.count);
+    // The same count the server hands Today and the rail (memory-review.js count), less what was decided on this page.
+    if (ny) { var n = R.count(R.normalizeBlock(ny), state.decisions); if (n != null) return n; }
     if (s.learningNeedsYou != null) return s.learningNeedsYou;
     if (s.learningToReview != null) return s.learningToReview;
     return null;
@@ -349,10 +390,11 @@
     document.querySelector('#workspace').style.gridTemplateColumns = ''; inbox.classList.remove('hidden');
     if (state.filter === 'memories') { renderMemories(inbox, detail); return; }
     if (state.filter === 'applied') { renderApplied(inbox, detail); return; }
-    var rows = state.filter === 'review' ? state.review : state.recent;
+    var rows = state.filter === 'review' ? reviewListRows() : state.recent;
     var err = state.filter === 'review' ? state.errors.review : state.errors.recent;
     var loading = state.filter === 'review' ? (state.reviewCount == null && !err) : (state.recentTotal == null && !err);
-    if (rows.length && !rows.some(function (x) { return x.event_id === state.selected; })) state.selected = rows[0].event_id;
+    var kept = state.filter === 'review' && state.history ? state.history[state.selected] : null;
+    if (rows.length && !kept && !rows.some(function (x) { return x.event_id === state.selected; })) state.selected = rows[0].event_id;
     inbox.innerHTML = '<div class="date">' + (state.filter === 'recent' ? 'RECENT LEARNING · 90 DAYS' : 'PROPOSED CHANGES') + '</div>' +
       (err ? '<div class="host-state"><div><h3>Not available</h3><p>' + esc(err) + '</p><button onclick="cosApp.refresh()">Retry</button></div></div>' : '') +
       (loading ? '<div class="host-state">Loading…</div>' : '') +
@@ -363,12 +405,13 @@
       detail.innerHTML = loading ? '<div class="host-state">Loading…</div>' : (err ? '' : '<div class="empty"><div><h2>You’re up to date.</h2><p>' + (state.filter === 'review' ? 'No proposed changes are waiting for review.' : 'Nothing learned in the last 90 days.') + '</p>' + (state.filter === 'review' ? '<button onclick="cosApp.setFilter(\'recent\')">View recent learning</button>' : '') + '</div></div>');
       return;
     }
-    var event = rows.find(function (x) { return x.event_id === state.selected; });
+    var event = rows.find(function (x) { return x.event_id === state.selected; }) || kept;
     ensureDetail(event.event_id);
     var full = state.detail[event.event_id];
     detail.innerHTML = detailActions(event) + lessonDetail(Object.assign({}, event, full && !full._error ? full : {}), full);
   }
-  function reviewRows(rows) {
+  function reviewRows(all) {
+    var learning = all.filter(function (e) { return e.learning; }), rows = all.filter(function (e) { return !e.learning; });
     var other = rows.filter(function (e) { return !isPruneReady(e); }), ready = rows.filter(isPruneReady);
     var open = ready.filter(function (e) { return !latestDecisionFor(e); }).length, b = state.bulkPrune;
     var head = !ready.length ? '' : '<div class="date">' + esc(PRUNE_READY.toUpperCase()) + ' · ' + (open ? fmt(open) : 'ALL DECIDED') + '</div>' +
@@ -376,7 +419,10 @@
         open ? '<div class="actions" style="padding:0 9px 8px"><button class="quiet" onclick="cosApp.pruneAllReady()">' +
           (state.armed === 'prune-ready' ? 'Click again to quarantine ' + fmt(open) : 'Quarantine all ' + fmt(open)) + '</button></div>' : '');
     var line = function (e) { return lessonRow(e, e.event_id === state.selected); };
-    return other.map(line).join('') + head + ready.map(line).join('');
+    var learnHtml = !learning.length ? '' : '<div class="date">LEARNING · ' + fmt(learning.length) + ' SUGGESTION' + (learning.length === 1 ? '' : 'S') + '</div>' +
+      '<p class="muted" style="padding:0 9px 6px;font-size:11px">Suggested rules still gathering evidence. They cannot become a rule until their confidence reaches the bar, and move to To review on their own when it does.</p>' +
+      learning.map(line).join('');
+    return other.map(line).join('') + head + ready.map(line).join('') + learnHtml;
   }
   function coverageNote() {
     var gaps = Object.keys(state.coverage || {}).filter(function (k) { return state.coverage[k] && state.coverage[k].state !== 'ok'; });
@@ -510,6 +556,8 @@
     var head = '<div class="row spread">' + badge + '<span class="meta">' + esc(e.event_id) + '</span></div><h2 style="margin-top:12px">' + esc(e.title || '(untitled)') + '</h2><p class="intro">' + esc([STORE[e.store] || e.store, e.scope !== 'unknown' ? e.scope : null, e.engine !== e.scope && e.engine !== 'unknown' ? e.engine : null].filter(Boolean).join(' · ')) + '</p>';
     var note = full && full._error ? '<div class="notice">' + esc(full._error) + '</div>' : (!full ? '<p class="muted" style="font-size:11px">Loading the record…</p>' : '');
     if (e.detail && e.detail.truncated) note += '<div class="notice">Record truncated to fit; the store holds more than shown here.</div>';
+    var learnt = (isPattern(e) || isProposal(e)) && !closedHere(e) && !needsLesson(e.lesson_id) ? (e.learning || learningFor(e.lesson_id)) : null;
+    if (learnt) note += '<div class="notice">Learning: ' + esc(e.learning ? e.learning.reason : plainReason(learnt.reason)) + '. It moves to To review on its own once its confidence reaches the bar.</div>';
     return head + note + '<div class="timeline">' + sourceEvent(e) + changeEvent(e, full) + useEvent(e) + evidenceEvent(e) + '</div>';
   }
 
@@ -1157,7 +1205,10 @@
     state.knowledgeFocus = id; state.view = 'knowledge'; state.knowledgeTab = 'graph'; state.graphQuery = exploreTerm(e); render();
     call('graph.search', { q: state.graphQuery, limit: 3 }).then(function (d) { var items = d.items || []; if (items.length) { state.graphFocus = items[0].id; state.graphFocusChosen = true; render(); } else toast('No entity in the graph matches "' + state.graphQuery + '". Showing ' + state.graphFocus + '.'); }, function (er) { toast(er.message); });
   }
-  function findEvent(id) { return state.recent.concat(state.review).find(function (x) { return x.event_id === id; }); }
+  function findEvent(id) {
+    var hit = state.recent.concat(state.review, learningItems().map(learningRow)).find(function (x) { return x.event_id === id; });
+    return hit || (state.history && state.history[id]) || undefined;
+  }
 
   // ── decisions (the one write with a backend tonight) ────────────
   state.decisions = {};
@@ -1165,6 +1216,8 @@
     var e = findEvent(id); if (!e) return;
     call('learning.decide', { id: e.lesson_id, decision: decision }).then(function () {
       state.decisions[e.lesson_id] = decision;
+      // A dismissed item leaves To review; its reader stays on it so Restore is one tap away.
+      state.history = state.history || {}; state.history[e.event_id] = e;
       toast(decision === 'dismissed' ? 'Proposal dismissed. The To review count updates on the next refresh.' : 'Proposal restored.');
       call('learning.review', { limit: 200 }).then(function (d) { state.review = d.events || []; state.reviewCount = d.reviewCount != null ? d.reviewCount : d.total; render(); }, function () { render(); });
     }, function (er) { toast(er.message); });

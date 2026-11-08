@@ -223,7 +223,7 @@ core_text = strip((root / "Sources/SetupAssistant.swift").read_text())
 brief_counts = body(today, "    func todayBriefCounts(", "\n    func todayHomeView(")
 need("let tomorrow = TodayHome.fold(frame.needs, quiet: TodayHome.isQuiet(now: now, enabled: TodayHome.quietHoursOn(.standard))).tomorrow" in brief_counts
      and "counts.folded = tomorrow.count" in brief_counts and "counts.foldedWork = tomorrow.filter { $0.kind == .work }.count" in brief_counts
-     and "Text(TodayHome.brief(todayBriefCounts(frame, now: now)))" in today and "Text(TodayHome.brief(frame.counts))" not in today,
+     and "Text(TodaySummary.headline(todayBriefCounts(frame, now: now), summary: todaySummaryShown(frame)))" in today and "TodaySummary.headline(frame.counts" not in today,
      "[wording] Today's headline reads the quiet-hours fold, so it agrees with the ⌘K panel")
 need("quiet: TodayHome.isQuiet(now: now, enabled: TodayHome.quietHoursOn(.standard)))" in body(today, "    func commandInputs(", "\n    func commandResultInputs()")
      and "inputs.foldedCount = commandFixture?.foldedCount ?? folded.tomorrow.count" in today, "[wording] ⌘K counts what the same fold moved to tomorrow")

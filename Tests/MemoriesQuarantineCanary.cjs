@@ -47,6 +47,8 @@ function boot(o) {
       context.window.cosBridge.resolve(msg.id, { ok, message, details });
     });
   } } } };
+  // 0.5.379: memories.html loads the shared review predicate before the page.
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../Resources/memories/memory-review.js'), 'utf8'), context, { filename: 'memory-review.js' });
   vm.runInNewContext(page, context, { filename: 'memories-app.js' });
   const get = sel => (els[sel] || (els[sel] = element(sel)));
   return { app: context.window.cosApp, calls, html: sel => get(sel).innerHTML, text: sel => get(sel).textContent };

@@ -579,6 +579,8 @@ final class COSControlHelper {
         case "tasks": try emitTasks(args: args)
         case "work-tasks": try emitWorkTasks()
         case "work-your-move": try emitWorkYourMove()
+        case "today-brief": try emitTodayBrief()
+        case "today-brief-settings": try emitTodayBriefSettings(args: args)
         case "activity-today": try emitActivityToday(args: args)
         case "work-set-stage":
             if args.count > 1 { try emitWorkStage(args: args) } else { try emitWorkUpdate(action: "stage") }
@@ -5220,6 +5222,65 @@ final class COSControlHelper {
         if response.status == 404 { emit(ok: true, message: "Not available on this server", details: ["available": false, "items": []]); return }
         guard response.status == 200, let body = response.body else { throw HelperError.message("Your move could not be read") }
         emit(ok: true, message: "Your move", details: body)
+    }
+
+    /// 0.5.379: the Today summary (server 7.0.1 POST /api/today/brief), asked with the rows Today already read. The body
+    /// arrives on stdin (session titles and lines never go on argv). The server holds every gate (its switch, the
+    /// 10-minute interval, the 30 s refresh floor, 60 a day, the breaker) and says which in `reason`. A server without the
+    /// route (404) is an older one: `available: false`, and Today keeps its own headline. A 7.0.0 server refuses the
+    /// unknown `force` (400 invalid_today_brief): asked again without it, as Control Web does.
+    private func emitTodayBrief() throws {
+        let data = try readBoundedStdin(48 * 1024)
+        guard var body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            throw HelperError.message("That is not a Today summary request.")
+        }
+        let candidate = try reviewCandidateTransport()
+        let token = try candidate?.token ?? readToken()
+        func ask(_ payload: [String: Any]) throws -> HTTPResponse? {
+            let text = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
+            return request("/api/today/brief", method: "POST", token: token, body: text, timeout: 45, reviewCandidatePort: candidate?.port)
+        }
+        guard var response = try ask(body) else {
+            emit(ok: true, message: "Today summary unavailable", details: ["available": false, "reason": "unreachable"]); return
+        }
+        if response.status == 400, body["force"] != nil, ((response.body?["error"] as? [String: Any])?["code"] as? String) == "invalid_today_brief" {
+            body.removeValue(forKey: "force")
+            guard let again = try ask(body) else {
+                emit(ok: true, message: "Today summary unavailable", details: ["available": false, "reason": "unreachable"]); return
+            }
+            response = again
+        }
+        if response.status == 404 { emit(ok: true, message: "Not available on this server", details: ["available": false, "reason": "older_server"]); return }
+        guard response.status == 200, var reply = response.body else {
+            emit(ok: true, message: "Today summary unavailable", details: ["available": false, "reason": "failed", "status": response.status]); return
+        }
+        reply["available"] = true
+        emit(ok: true, message: "Today summary", details: reply)
+    }
+
+    /// 0.5.379: the Today summary switch ("Write the Today summary with a model"), the same one Control Web Settings
+    /// changes: GET /api/today/brief/settings, or with `--set on|off` POST { enabled }. COS_TODAY_BRIEF_LLM on the Mac wins
+    /// when set (source `env`). A 404 is a server without the summary.
+    private func emitTodayBriefSettings(args: [String]) throws {
+        let change = option("--set", in: args)
+        if let change, change != "on" && change != "off" { throw HelperError.message("Choose on or off for the Today summary.") }
+        let candidate = try reviewCandidateTransport()
+        let token = try candidate?.token ?? readToken()
+        let response: HTTPResponse?
+        if let change {
+            response = request("/api/today/brief/settings", method: "POST", token: token, body: change == "on" ? "{\"enabled\":true}" : "{\"enabled\":false}",
+                               timeout: 8, reviewCandidatePort: candidate?.port)
+        } else {
+            response = request("/api/today/brief/settings", token: token, timeout: 8, reviewCandidatePort: candidate?.port)
+        }
+        guard let response else { throw HelperError.message("Server stopped") }
+        if response.status == 404 { emit(ok: true, message: "Not available on this server", details: ["available": false]); return }
+        guard response.status == 200, var body = response.body else {
+            let message = (response.body?["error"] as? [String: Any])?["message"] as? String
+            throw HelperError.message(message ?? "The Today summary setting could not be \(change == nil ? "read" : "saved").")
+        }
+        body["available"] = true
+        emit(ok: true, message: change == nil ? "Today summary setting" : (change == "on" ? "Today summary on" : "Today summary off"), details: body)
     }
 
     private func emitWorkTasks() throws {

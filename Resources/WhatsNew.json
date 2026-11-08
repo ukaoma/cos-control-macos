@@ -1,8 +1,20 @@
 {
-  "version": "0.5.378",
+  "version": "0.5.379",
   "whatsNew": {
-    "summary": "Calendars: COS can read the calendars on this Mac (Exchange, iCloud, Google, subscribed) for Next up, Today and prep. Off until you choose Connect in Settings, and you pick which calendars count. Plus everything in 0.5.377.",
+    "summary": "Today on the Mac now shows the same summary as COS Control Web, with Refresh, and Work items that wait on you show up again. Memories lists low-confidence suggestions calmly under Learning. Plus everything in 0.5.378.",
     "sections": [
+      {
+        "title": "0.5.379",
+        "items": [
+          "Today shows the summary COS writes about your sessions, the same one COS Control Web shows, with when it was updated.",
+          "Refresh reads everything on Today again and asks for a new summary, at most every 30 seconds. If the daily limit is reached, a meeting is recording or COS is updating, Today says so.",
+          "Settings, Activity home has the switch “Write the Today summary with a model”, the same one COS Control Web shows. When it is off, or the COS server is older, Today keeps its own headline.",
+          "Work items waiting on your answer or review appear in Today and Work again, dated by when they started waiting. One you already answered in its session leaves the list. If COS cannot read them, Today says so instead of calling you caught up.",
+          "Memories, To review: only items that need a decision are counted. Suggested rules still under their confidence bar sit in a calm Learning group.",
+          "Calendars: picking no calendar no longer reads as an empty day, add-only calendar access keeps your previous calendar source, and Turn off cannot be undone by a refresh in flight. Turn off returns COS to the calendar source it used before.",
+          "Calendar attendees keep display names only; an email address in the name field is dropped."
+        ]
+      },
       {
         "title": "0.5.378",
         "items": [

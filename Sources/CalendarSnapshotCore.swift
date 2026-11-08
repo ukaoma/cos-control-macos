@@ -142,4 +142,37 @@ enum CalendarSnapshotCore {
         try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
+
+    /// 0.5.379: how one refresh ended.
+    enum WriteOutcome: Equatable {
+        /// Turned off, or the task was cancelled, before or during the reads: nothing written (or a lost write removed again).
+        case stopped
+        /// Not full access (writeOnly, denied, restricted, not asked): no snapshot file, so the server keeps the CalendarFetch
+        /// bridge. Never a tombstone (QA W22).
+        case noAccess
+        /// Full access with no calendar picked: not configured. No snapshot, which the server would read as an empty day (W20).
+        case notConfigured([Calendar])
+        case wrote([Calendar])
+        case failed([Calendar])
+    }
+
+    /// 0.5.379 (QA B2): one refresh, re-checking `live` (connected and not cancelled) after EVERY await. Turn off deletes
+    /// the file while the EventKit reads are in flight; a write after that would put a granted snapshot back. A write that
+    /// still lost the race is removed again.
+    @MainActor
+    static func refresh(live: () -> Bool, access: () -> String, selected: () -> Set<String>,
+                        calendars: (Set<String>) async -> [Calendar], events: (Set<String>, Date) async -> [Event],
+                        write: (Data) throws -> Void, remove: () -> Void, now: Date) async -> WriteOutcome {
+        guard live() else { return .stopped }
+        guard access() == "granted" else { remove(); return .noAccess }
+        let picked = selected()
+        let cals = await calendars(picked)
+        guard live() else { return .stopped }
+        guard cals.contains(where: \.selected) else { remove(); return .notConfigured(cals) }
+        let found = await events(picked, now)
+        guard live() else { return .stopped }
+        do { try write(try encode(snapshot(calendars: cals, events: found, now: now))) } catch { return .failed(cals) }
+        guard live() else { remove(); return .stopped }
+        return .wrote(cals)
+    }
 }

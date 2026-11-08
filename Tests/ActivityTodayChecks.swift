@@ -85,6 +85,8 @@ import Foundation
         actionChecks()
         await tickLoopChecks()
         dismissChecks()
+        yourMoveShapeChecks()
+        summaryChecks()
         print("PASS: Activity Today home: \(ran) checks (predicates, five pin tests, tool-name guard, platform table, finished hour and cap, intake split and midnight, quiet hours, cost guards, capability gating, layout, dismiss and undo)")
     }
 
@@ -512,6 +514,9 @@ import Foundation
         var failedWork = TodayHome.Counts(); failedWork.failedSources = [.work]
         check(TodayHome.brief(failedWork) == "Couldn't read Work, so this may not be everything." && !TodayHome.brief(failedWork).contains("Nothing"),
               "no false caught up after a source failed", TodayHome.brief(failedWork))
+        var failedSessions = TodayHome.Counts(); failedSessions.needs = 2; failedSessions.failedSources = [.sessions]
+        check(TodayHome.brief(failedSessions) == "Two things need you so far. Couldn't read your sessions.",
+              "a failed session read is named beside the counts, never as nothing running", TodayHome.brief(failedSessions))
         var partial = TodayHome.Counts(); partial.needs = 2
         check(TodayHome.brief(partial) == "Two things need you so far.", "a count before every source answered says so far", TodayHome.brief(partial))
         var clearUnknown = TodayHome.Counts(); clearUnknown.settled = true
@@ -899,5 +904,274 @@ import Foundation
             return waited < 8
         })
         check(early == 1 && firstTickAt == now.addingTimeInterval(3), "the first tick waits for the window's opening loads")
+    }
+
+    // MARK: 0.5.379 Work's your move, as server 7.0.1 sends it (GET /api/work-board/your-move, projectOpenWork)
+
+    /// One open-work row in the shape the live server sends (2026-11-08 read: no `kind`, no `action`, the session id at the
+    /// top level, `group`, `waitingSince`, and `supersededAt` on 7.0.1).
+    static func openRow(_ id: String, group: String, status: String = "delivered", reported: String? = nil, waitingInApp: Bool = false,
+                        waitingSince: Double? = nil, updated: Double = 30, superseded: Bool = false, session: String? = "sess-" ) -> JSONValue {
+        var o: [String: JSONValue] = ["id": .string("rcpt_" + id), "workId": .string("task:quilt:" + id), "domain": .string("quilt"), "status": .string(status),
+                                      "provider": .string("claude"), "sessionTitle": .string("Pricing session"), "mode": .string("continue"),
+                                      "createdAt": .string(ago(90)), "updatedAt": .string(ago(updated)), "acknowledged": .bool(false),
+                                      "waitingInApp": .bool(waitingInApp), "workIdentity": .string("0123456789ab"), "title": .string("Card " + id),
+                                      "taskRevision": .string("r1"), "group": .string(group)]
+        if let session { o["sessionId"] = .string(session + id) }
+        if let reported { o["progress"] = .object(["reported": .string(reported), "paused": .bool(false), "reportedBy": .string("hook")]) }
+        if let waitingSince { o["waitingSince"] = .string(ago(waitingSince)) }
+        if superseded { o["supersededAt"] = .string(ago(2)) }
+        return .object(o)
+    }
+
+    static func yourMoveShapeChecks() {
+        // The live 7.0.1 row has neither kind nor action: every one was dropped before 0.5.379.
+        let question = WorkYourMove(openRow("q1", group: "needsInput", reported: "needsInput", waitingSince: 42, updated: 3))
+        check(question != nil, "a 7.0.1 row with no kind or action is kept")
+        check(question?.kind == "question" && question?.action == "answer", "a needs-input report is a question to answer", "\(String(describing: question?.kind)) \(String(describing: question?.action))")
+        check(question?.sessionID == "claude:sess-q1", "the session id is read from the top level, as Control's provider:native", question?.sessionID ?? "nil")
+        // A Work row for a session that is itself waiting is the session's row (TodayHome.things): the native id has to match.
+        var dedup = TodayHome.NeedInputs(); dedup.now = now
+        dedup.waiting = [session("claude:sess-q1", "waiting", name: "Pricing session", kind: "question")]; dedup.yourMove = [question!]
+        check(!TodayHome.things(dedup).contains { $0.kind == .work }, "a Work row for a waiting session folds into the session's row")
+        check(question?.since.map { abs($0.timeIntervalSince(now.addingTimeInterval(-42 * 60))) < 1 } == true,
+              "a waiting row is dated by waitingSince, not its newest event")
+        let inApp = WorkYourMove(openRow("q2", group: "needsInput", waitingInApp: true))
+        check(inApp?.kind == "question" && inApp?.action == "answer", "a note waiting in its app is a question too")
+        let done = WorkYourMove(openRow("d1", group: "done", reported: "done"))
+        check(done?.kind == "qa" && done?.action == "review" && done?.actionTitle == "Review", "a done report is a review")
+        let failed = WorkYourMove(openRow("f1", group: "attention", status: "failed"))
+        check(failed?.kind == "unknown" && failed?.action == "startFresh", "a failed handoff starts fresh")
+        let blocked = WorkYourMove(openRow("b1", group: "needsInput", reported: "blocked"))
+        check(blocked?.kind == "unknown" && blocked?.action == "checkSession" && blocked?.why == "The Work card is blocked.", "a blocked report checks its session", blocked?.why ?? "nil")
+        check(done?.since.map { abs($0.timeIntervalSince(now.addingTimeInterval(-30 * 60))) < 1 } == true, "no waitingSince: dated by its newest event")
+        // An older server's explicit kind and action still win.
+        let explicit = move("x1", title: "Explicit")
+        check(explicit.kind == "qa" && explicit.action == "review", "an explicit kind and action are kept")
+        check(WorkYourMove(.object(["id": .string("r"), "workId": .string("task:quilt:r"), "kind": .string("bogus"), "action": .string("answer")])) == nil,
+              "an explicit kind outside the set is still refused")
+        // 7.0.1 supersededAt: the live row (2026-11-08) is a superseded needs-input report regrouped to running. It leaves, as on the web.
+        let live = WorkYourMove(openRow("s1", group: "running", reported: "needsInput", waitingInApp: true, waitingSince: 300, superseded: true))
+        check(live == nil, "a superseded row that regrouped to running is dropped")
+        // A superseded completed handoff regroups to attention and stays (Control Web review N6), but its old report is history.
+        let regrouped = WorkYourMove(openRow("s2", group: "attention", status: "completed", reported: "needsInput", waitingInApp: true, superseded: true))
+        check(regrouped != nil && regrouped?.kind == "unknown" && regrouped?.action == "checkSession", "a superseded report is never a question",
+              "\(String(describing: regrouped?.kind)) \(String(describing: regrouped?.action))")
+        // Today: the rows read through, the why follows the row, the age is waitingSince.
+        var input = TodayHome.NeedInputs(); input.now = now; input.calendar = calendar
+        input.yourMove = [question!, done!, blocked!, regrouped!]
+        let rows = TodayHome.things(input).filter { $0.kind == .work }
+        check(rows.count == 4, "every kept Work row reaches Needs you", "\(rows.count)")
+        check(rows.first(where: { $0.id == "work:rcpt_q1" })?.why == "The Work card is waiting on your answer before it moves on.", "the question's why")
+        check(rows.first(where: { $0.id == "work:rcpt_b1" })?.why == "The Work card is blocked.", "the blocked why")
+        check(rows.first(where: { $0.id == "work:rcpt_q1" })?.since == question?.since, "Needs you dates the row by waitingSince")
+    }
+
+    // MARK: 0.5.379 the Today summary (server 7.0.1 POST /api/today/brief), as Control Web shows it
+
+    static func reply(_ o: [String: JSONValue]) -> TodaySummary.Reply? { TodaySummary.Reply(.object(o)) }
+
+    static func summaryChecks() {
+        runningNowContract()
+        let fresh = reply(["text": .string("You are finishing the pricing work and QA is idle."), "at": .string(ago(3)), "basis": .string("3 sessions"),
+                           "model": .string("sonnet"), "state": .string("fresh"), "enabled": .bool(true), "source": .string("settings")])
+        check(fresh != nil && fresh?.text.hasPrefix("You are") == true, "a brief reply parses")
+        check(TodaySummary.shown(fresh, sessionsRead: true) != nil, "a fresh summary over a read session list shows")
+        check(TodaySummary.shown(fresh, sessionsRead: false) == nil, "never over a session list that was not read")
+        let off = reply(["text": .string(""), "at": .null, "state": .string("off"), "reason": .string("switch_off"), "enabled": .bool(false), "source": .string("default")])
+        check(off != nil && TodaySummary.shown(off, sessionsRead: true) == nil, "the switch off shows no summary")
+        let failed = reply(["text": .string(""), "at": .null, "state": .string("failed"), "reason": .string("not_asked"), "enabled": .bool(true), "source": .string("settings")])
+        check(TodaySummary.shown(failed, sessionsRead: true) == nil, "a failed summary falls back")
+        let staleOld = reply(["text": .string("Old picture."), "at": .string(ago(7)), "state": .string("stale"), "enabled": .bool(true), "source": .string("settings")])
+        check(TodaySummary.shown(staleOld, sessionsRead: true) != nil, "a stale summary still shows")
+        // Updated N min ago, with the stale and the could-not-read notes, as the web's briefWhen.
+        check(TodaySummary.when(fresh!, now: now, failed: []) == "Updated 3 min ago.", "updated line", TodaySummary.when(fresh!, now: now, failed: []))
+        let justNow = reply(["text": .string("x"), "at": .string(iso(now.addingTimeInterval(-20))), "state": .string("fresh"), "enabled": .bool(true), "source": .string("settings")])!
+        check(TodaySummary.when(justNow, now: now, failed: []) == "Updated just now.", "just now", TodaySummary.when(justNow, now: now, failed: []))
+        check(TodaySummary.when(staleOld!, now: now, failed: ["Work"]) == "Updated 7 min ago. Things have moved since. Couldn\u{2019}t read Work, so this may not be everything.",
+              "stale after five minutes, and the unread source", TodaySummary.when(staleOld!, now: now, failed: ["Work"]))
+        let staleNew = reply(["text": .string("x"), "at": .string(ago(2)), "state": .string("stale"), "enabled": .bool(true), "source": .string("settings")])!
+        check(TodaySummary.when(staleNew, now: now, failed: []) == "Updated 2 min ago.", "stale under five minutes says nothing more")
+        let hours = reply(["text": .string("x"), "at": .string(ago(150)), "state": .string("fresh"), "enabled": .bool(true), "source": .string("settings")])!
+        check(TodaySummary.when(hours, now: now, failed: []) == "Updated 2 h ago.", "hours", TodaySummary.when(hours, now: now, failed: []))
+        // The headline is the server's text. The live payload already opens with the count; a second local count would double it.
+        var c = TodayHome.Counts(); c.needs = 6; c.folded = 6; c.settled = true; c.agentsWorking = 1
+        c.nextEvent = TodayHome.NextEvent(title: "New Event", start: at("2026-10-21 21:15"))
+        check(TodaySummary.headline(c, summary: TodaySummary.shown(fresh, sessionsRead: true), calendar: calendar)
+              == "You are finishing the pricing work and QA is idle.",
+              "the server text is the headline", TodaySummary.headline(c, summary: TodaySummary.shown(fresh, sessionsRead: true), calendar: calendar))
+        check(!TodaySummary.headline(c, summary: fresh, calendar: calendar).contains("New Event"), "the calendar line stays off the summary")
+        let opened = reply(["text": .string("Six things can wait until tomorrow. Two builders are on the Today summary and QA is idle."), "at": .string(ago(3)),
+                            "basis": .string("4 sessions, 6 things that need you"), "model": .string("sonnet"), "state": .string("fresh"),
+                            "enabled": .bool(true), "source": .string("settings")])
+        let headline = TodaySummary.headline(c, summary: TodaySummary.shown(opened, sessionsRead: true), calendar: calendar)
+        check(headline == opened?.text, "the summary exactly as the server wrote it", headline)
+        check(headline.components(separatedBy: "can wait until tomorrow").count - 1 == 1, "the count sentence appears exactly once", headline)
+        // A view with text but not fresh or stale is never shown (the web's briefShown).
+        let failedWithText = reply(["text": .string("Old words."), "at": .string(ago(3)), "state": .string("failed"), "reason": .string("failed"), "enabled": .bool(true), "source": .string("settings")])
+        check(TodaySummary.shown(failedWithText, sessionsRead: true) == nil && TodaySummary.headline(c, summary: failedWithText, calendar: calendar) == TodayHome.brief(c, calendar: calendar),
+              "a failed view with old text falls back")
+        check(TodaySummary.headline(c, summary: nil, calendar: calendar) == TodayHome.brief(c, calendar: calendar), "no summary: the local headline, word for word")
+        check(TodaySummary.headline(c, summary: TodaySummary.shown(off, sessionsRead: true), calendar: calendar) == TodayHome.brief(c, calendar: calendar), "switch off: the local headline")
+        let loading = TodayHome.Counts()
+        check(TodaySummary.headline(loading, summary: fresh, calendar: calendar) == "You are finishing the pricing work and QA is idle.", "no count line yet: the summary alone")
+        // Settings: the switch with Control Web's copy, locked by the Mac's environment, and its status line.
+        let set = TodaySummary.Settings(.object(["enabled": .bool(true), "source": .string("settings"), "saved": .bool(true)]))
+        check(set?.enabled == true && set?.locked == false && set?.detail == TodaySummary.Settings.blurb && set?.statusLine() == "", "the switch, on, changeable")
+        let env = TodaySummary.Settings(.object(["enabled": .bool(false), "source": .string("env"), "saved": .null]))
+        check(env?.locked == true && env?.detail == "Set on the Mac by the server environment.", "COS_TODAY_BRIEF_LLM locks it")
+        let capped = TodaySummary.Settings(.object(["enabled": .bool(true), "source": .string("settings"), "status": .object(["kind": .string("daily_cap"), "count": .number(60)])]))
+        check(capped?.statusLine() == "Today\u{2019}s 60 are used. It writes again tomorrow.", "the daily cap line", capped?.statusLine() ?? "nil")
+        let paused = TodaySummary.Settings(.object(["enabled": .bool(true), "source": .string("settings"), "status": .object(["kind": .string("paused"), "until": .string(iso(at("2026-10-21 15:47")))])]))
+        check(paused?.statusLine(calendar: calendar) == "Paused after three failed tries. It tries again at 3:47 PM.", "the paused line", paused?.statusLine(calendar: calendar) ?? "nil")
+        let timedOut = TodaySummary.Settings(.object(["enabled": .bool(true), "source": .string("settings"), "status": .object(["kind": .string("failed"), "at": .string(iso(at("2026-10-21 14:40"))), "code": .string("timeout")])]))
+        check(timedOut?.statusLine(calendar: calendar) == "The last try failed at 2:40 PM (it took too long).", "the failed line", timedOut?.statusLine(calendar: calendar) ?? "nil")
+        let offCapped = TodaySummary.Settings(.object(["enabled": .bool(false), "source": .string("settings"), "status": .object(["kind": .string("daily_cap"), "count": .number(60)])]))
+        check(offCapped?.statusLine() == "", "no status line while it is off")
+        check(TodaySummary.Settings(.object(["source": .string("settings")])) == nil, "no enabled: not the switch")
+        // Refresh: the server's reasons in plain words (the web's TR_REASONS), the throttle as a countdown.
+        func r(_ reason: String?, state: String = "stale", message: String? = nil, retryAfterMs: Double? = nil) -> TodaySummary.Reply {
+            var o: [String: JSONValue] = ["text": .string("x"), "at": .string(ago(4)), "state": .string(state), "enabled": .bool(true), "source": .string("settings")]
+            if let reason { o["reason"] = .string(reason) }
+            if let message { o["message"] = .string(message) }
+            if let retryAfterMs { o["retryAfterMs"] = .number(retryAfterMs) }
+            return reply(o)!
+        }
+        check(TodaySummary.refreshWords(r("daily_cap")) == "Daily summary limit reached", "daily cap words")
+        check(TodaySummary.refreshWords(r("recording")) == "No new summary while a meeting records", "recording words")
+        check(TodaySummary.refreshWords(r("maintenance")) == "No new summary while COS updates", "maintenance words")
+        check(TodaySummary.refreshWords(r("paused")) == "The summary is paused for now. Try again later", "paused words")
+        check(TodaySummary.refreshWords(r("failed")) == "The summary did not update", "failed words")
+        check(TodaySummary.refreshWords(r("interval")) == "The summary updated recently. Try again in a few minutes", "interval words")
+        check(TodaySummary.refreshWords(r(nil, state: "fresh")) == "", "a fresh summary needs no words")
+        check(TodaySummary.refreshWords(r("refresh_throttled")) == "", "the throttle is the countdown, not words")
+        check(TodaySummary.refreshWords(off) == "", "switched off: the state only")
+        check(TodaySummary.refreshWords(r("daily_cap", message: "  Server says so  ")) == "Server says so", "the server's own message wins")
+        let t = r("refresh_throttled", retryAfterMs: 12_400)
+        check(t.retryAfterMs == 12_400, "retryAfterMs parses")
+        var refresh = TodaySummary.Refresh()
+        refresh.finish(reply: t, words: TodaySummary.refreshWords(t), now: now)
+        check(refresh.note(now: now, summaryShown: true) == "Try again in 13 s", "the throttle counts down", refresh.note(now: now, summaryShown: true))
+        check(refresh.note(now: now.addingTimeInterval(14), summaryShown: true) == "", "the countdown ends", refresh.note(now: now.addingTimeInterval(14), summaryShown: true))
+        // At most every 30 s from this Mac: a second press inside the floor asks nothing and counts down.
+        var floor = TodaySummary.Refresh()
+        check(floor.begin(now: now) == true && floor.busy, "the first press starts")
+        check(floor.note(now: now, summaryShown: true) == "Updating", "busy says Updating")
+        floor.finish(reply: r(nil, state: "fresh"), words: "", now: now)
+        check(floor.begin(now: now.addingTimeInterval(10)) == false && !floor.busy, "a press inside 30 s does not ask")
+        check(floor.note(now: now.addingTimeInterval(10), summaryShown: true) == "Try again in 20 s", "the floor counts down", floor.note(now: now.addingTimeInterval(10), summaryShown: true))
+        check(floor.begin(now: now.addingTimeInterval(31)) == true, "after 30 s it asks again")
+        floor.finish(reply: r("daily_cap"), words: TodaySummary.refreshWords(r("daily_cap")), now: now.addingTimeInterval(31))
+        check(floor.note(now: now.addingTimeInterval(40), summaryShown: true) == "Daily summary limit reached", "the cap reason shows plainly")
+        check(floor.note(now: now.addingTimeInterval(31 + 601), summaryShown: true) == "", "a reason clears after ten minutes")
+        var plain = TodaySummary.Refresh(); _ = plain.begin(now: now); plain.finish(reply: off, words: "", now: now)
+        check(plain.note(now: now.addingTimeInterval(120), summaryShown: false) == "Updated 2 min ago", "no summary: the note says when Today was refreshed")
+        check(plain.note(now: now.addingTimeInterval(120), summaryShown: true) == "", "with a summary its own line says when")
+        // When to ask (the web's requestBrief): changed rows at once, the same rows every five minutes, a live Mac at most once a minute, off every five.
+        var ask = TodaySummary.Asking()
+        check(ask.shouldAsk(key: "a", now: now), "the first ask goes")
+        ask.sent(key: "a", now: now)
+        check(!ask.shouldAsk(key: "a", now: now.addingTimeInterval(299)), "the same rows wait five minutes")
+        check(ask.shouldAsk(key: "a", now: now.addingTimeInterval(300)), "the same rows ask again after five")
+        check(!ask.shouldAsk(key: "b", now: now.addingTimeInterval(30)), "changed rows wait out the one-minute gap")
+        check(ask.shouldAsk(key: "b", now: now.addingTimeInterval(60)), "changed rows ask after a minute")
+        ask.inflight = true
+        check(!ask.shouldAsk(key: "c", now: now.addingTimeInterval(600)), "one ask at a time")
+        ask.inflight = false; ask.reply = off; ask.sent(key: "c", now: now)
+        check(!ask.shouldAsk(key: "d", now: now.addingTimeInterval(200)) && ask.shouldAsk(key: "d", now: now.addingTimeInterval(300)), "switched off: asked every five minutes")
+        var older = TodaySummary.Asking(); older.unavailable = true; older.sent(key: "e", now: now)
+        check(!older.shouldAsk(key: "f", now: now.addingTimeInterval(120)) && older.shouldAsk(key: "f", now: now.addingTimeInterval(300)), "an older server: asked every five minutes")
+        // The body: only what Today counts, the server's keys only, no ids in the text.
+        let waiting = session("claude:01234567-aaaa-bbbb-cccc-0123456789ab", "waiting", name: "Pricing table", minutes: 12, kind: "question", detail: "Which tier?")
+        let working = session("codex:sess-working-1", "running", provider: "codex", name: "Docs sweep", minutes: 4)
+        let idle = session("claude:sess-idle-1", "idle", name: "Old idea", minutes: 200)
+        var needRow = TodayHome.NeedInputs(); needRow.now = now; needRow.waiting = [waiting]; needRow.yourMove = [WorkYourMove(openRow("q1", group: "needsInput", reported: "needsInput"))!]; needRow.memoriesToReview = 2
+        let needs = TodayHome.things(needRow)
+        let body = TodaySummary.inputs(sessions: [waiting, working, idle], needs: needs, folded: 1, sessionsRead: true, settled: true, failed: [.dictation], recording: false, now: now)
+        let o = body.object ?? [:]
+        check(Set(o.keys) == ["sessions", "needs", "later", "sessionsRead", "needsComplete", "unread", "recording"], "only the server's keys (it refuses others)", o.keys.sorted().joined(separator: ","))
+        let rows = o["sessions"]?.array ?? []
+        check(rows.count == 3, "waiting, working and open sessions are sent", "\(rows.count)")
+        check(rows.compactMap { $0.object?["state"]?.string } == ["waiting", "working", "open"], "the states", rows.compactMap { $0.object?["state"]?.string }.joined(separator: ","))
+        check(rows.first?.object?["waiting"]?.string == "Which tier?" && rows.first?.object?["minutes"]?.int == 12, "the waiting row says why and how long")
+        check(rows[1].object?["provider"]?.string == "codex" && rows[1].object?["key"]?.string == "codex|sess-working-1", "provider and lookup key")
+        let needList = o["needs"]?.array ?? []
+        check(needList.count == needs.filter { $0.kind != .session }.count && !needList.contains { $0.object?["title"]?.string?.contains("Pricing table asked") == true },
+              "needs leave out session rows (the sessions say those)")
+        check(o["later"]?.int == 1 && o["sessionsRead"]?.bool == true && o["needsComplete"]?.bool == true, "later, sessionsRead and needsComplete")
+        check(o["unread"]?.array?.isEmpty == true, "dictation is not a source the server knows")
+        // Root QA: the board read but Work's your move failed or answered unavailable. Work is failed (Control Web's workState),
+        // nothing settles, and the summary is never told Needs you is complete.
+        var home = TodayHome.HomeInputs()
+        home.run.now = now
+        home.sources.sessions = .answered; home.sources.voices = .answered; home.sources.memories = .answered; home.sources.work = .answered
+        home.sources.yourMoveFailed = true
+        home.need.now = now; home.need.yourMove = nil
+        home.facts.voicesLoaded = true
+        let frame = TodayHome.compose(home)
+        check(frame.states[.work] == .failed && !frame.counts.settled && frame.counts.failedSources.contains(.work), "a failed your move fails Work", "\(String(describing: frame.states[.work]))")
+        check(frame.line != .caughtUp && !TodayHome.brief(frame.counts).contains("Nothing is waiting"), "never caught up while your move is unread", TodayHome.brief(frame.counts))
+        let missing = TodaySummary.inputs(sessions: [], needs: frame.needs, folded: 0, sessionsRead: true, settled: frame.counts.settled, failed: frame.counts.failedSources, recording: false, now: now).object ?? [:]
+        check(missing["needsComplete"]?.bool == false && missing["unread"]?.array?.compactMap(\.string) == ["Work"], "the summary hears Work was not read", "\(missing)")
+        home.sources.yourMoveFailed = false
+        check(TodayHome.compose(home).states[.work] == .answered && TodayHome.compose(home).counts.settled, "your move read: Work answered and Today settles")
+        let unreadBody = TodaySummary.inputs(sessions: [], needs: [], folded: 0, sessionsRead: false, settled: false, failed: [.work, .sessions], recording: true, now: now).object ?? [:]
+        check(unreadBody["unread"]?.array?.compactMap(\.string) == ["Work", "sessions"] && unreadBody["needsComplete"]?.bool == false && unreadBody["recording"]?.bool == true,
+              "unread sources by the server's names, never complete with one unread")
+        check(TodaySummary.key(body) == TodaySummary.key(TodaySummary.inputs(sessions: [waiting, working, idle], needs: needs, folded: 1, sessionsRead: true, settled: true, failed: [], recording: false, now: now.addingTimeInterval(240))),
+              "minutes moving on is not a change (the web's key)")
+        check(TodaySummary.key(body) != TodaySummary.key(TodaySummary.inputs(sessions: [waiting, working], needs: needs, folded: 1, sessionsRead: true, settled: true, failed: [], recording: false, now: now)),
+              "a session leaving is a change")
+        var forced = TodaySummary.forced(body)
+        check(forced.object?["force"]?.bool == true, "Refresh adds force")
+        forced = TodaySummary.unforced(forced)
+        check(forced.object?["force"] == nil, "an older server's 400 retries without force")
+    }
+
+    /// One fixture, the server's TodayBriefView fields, read by this model. Tests/today-running-now-contract.mjs reads the
+    /// same file through Control Web's renderStory. A desktop that only has the local counts line does not compile this,
+    /// and a headline that prepends that line fails the equality.
+    static func runningNowContract() {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/today-running-now.json")
+        guard let data = try? Data(contentsOf: url), let fixture = (try? JSONDecoder().decode(JSONValue.self, from: data))?.object else {
+            check(false, "the shared running-now fixture loads", url.path)
+            return
+        }
+        let fields = fixture["fields"]?.array?.compactMap(\.string) ?? []
+        check(fields == TodaySummary.runningNowFields, "fixture fields are text, at, basis, model, state, reason, enabled, source", fields.joined(separator: ","))
+        guard let running = fixture["runningNow"], let reply = TodaySummary.Reply(running) else {
+            check(false, "the running-now view parses")
+            return
+        }
+        let text = "Three things can wait until tomorrow. Two builders are on the Today summary and the Work pane, and QA is idle."
+        check(reply.text == text, "text", reply.text)
+        check(reply.at != nil, "at")
+        check(reply.basis == "4 sessions, 3 things that need you", "basis", reply.basis)
+        check(reply.model == "sonnet", "model", reply.model)
+        check(reply.state == "fresh", "state", reply.state)
+        check(reply.reason == nil, "reason is absent on a fresh view")
+        check(reply.enabled, "enabled")
+        check(reply.source == "settings", "source", reply.source)
+        var counts = TodayHome.Counts()
+        counts.needs = 6
+        counts.folded = 6
+        counts.settled = true
+        counts.agentsWorking = 3
+        counts.nextEvent = TodayHome.NextEvent(title: "New Event", start: at("2026-10-21 21:15"))
+        let shown = TodaySummary.headline(counts, summary: TodaySummary.shown(reply, sessionsRead: true), calendar: calendar)
+        check(shown == reply.text, "desktop headline is the shared text", shown)
+        check(!shown.contains("New Event") && !shown.contains("agents are working"), "desktop does not rebuild the local counts sentence", shown)
+        let off = fixture["off"].flatMap { TodaySummary.Reply($0) }
+        check(off?.state == "off" && off?.enabled == false && off?.reason == "switch_off" && off?.source == "default", "off view follows the same switch")
+        check(TodaySummary.shown(off, sessionsRead: true) == nil, "the switch hides the summary")
+        check(TodaySummary.headline(counts, summary: TodaySummary.shown(off, sessionsRead: true), calendar: calendar) == TodayHome.brief(counts, calendar: calendar),
+              "switch off: the counts line")
+        let failed = fixture["failedEmpty"].flatMap { TodaySummary.Reply($0) }
+        check(failed?.state == "failed" && failed?.reason == "failed" && TodaySummary.shown(failed, sessionsRead: true) == nil, "an empty failure shows no summary")
+        check(TodaySummary.headline(counts, summary: nil, calendar: calendar) == TodayHome.brief(counts, calendar: calendar), "no reply: the counts line, not a blank")
+        check(TodaySummary.kept(previous: reply, answer: nil)?.text == reply.text, "a failed ask keeps the last summary")
+        check(TodaySummary.kept(previous: reply, answer: (reply: nil, available: false))?.text == reply.text, "an unreachable server keeps the last summary")
+        check(TodaySummary.kept(previous: reply, answer: (reply: failed, available: true))?.text.isEmpty == true, "an empty server view lets the counts line return")
+        check(TodaySummary.shown(reply, sessionsRead: false) == nil, "never over a session list that was not read")
     }
 }

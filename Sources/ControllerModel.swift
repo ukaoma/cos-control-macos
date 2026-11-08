@@ -4610,6 +4610,9 @@ final class ControllerModel: ObservableObject {
     @Published var workYourMove: [WorkYourMove] = []
     @Published var workYourMoveAvailable = false
     @Published var workYourMoveTotal = 0
+    /// 0.5.379 (root QA): the last your-move read failed or answered unavailable. Today reads Work as failed then (Control
+    /// Web's workState), so nothing says no Work handoff waits and the summary is never told Needs you is complete.
+    @Published var workYourMoveFailed = false
     private var yourMoveGeneration = 0
     /// Activity Today home (plan v2): its one helper call per home tick (`activity-today`) and its one-at-a-time intake
     /// accept. Read-only apart from that accept; no LLM.
@@ -4627,9 +4630,11 @@ final class ControllerModel: ObservableObject {
             workYourMoveTotal = workYourMoveAvailable ? max(0, response.details["total"]?.int ?? 0) : 0
             if workYourMoveAvailable { recordWorkObservation("yourMove", values: ["count": workYourMoveTotal, "heldForWeekday": response.details["heldForWeekday"]?.int ?? 0]) }
             workYourMove = workYourMoveAvailable ? (response.details["items"]?.array ?? []).compactMap(WorkYourMove.init) : []
+            workYourMoveFailed = !workYourMoveAvailable
         } catch {
             guard generation == yourMoveGeneration else { return }
             workYourMoveAvailable = false; workYourMove = []; workYourMoveTotal = 0
+            workYourMoveFailed = true
         }
     }
     @Published var workTasksLoading = false

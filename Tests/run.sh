@@ -171,6 +171,23 @@ node "$ROOT/Tests/MemoriesAppliedCanary.cjs"
 node "$ROOT/Tests/MemoriesQuarantineCanary.cjs"
 # 0.5.327: the Memories page's Cues to rate and Rated cues entries (shown only on a server with the cue history).
 node "$ROOT/Tests/MemoriesCuesCanary.cjs"
+# 0.5.379: To review counts only what needs review (one predicate, memory-review.js, Control Web's copy), with a calm
+# Learning group for suggestions under their bar; the page loads that file before itself.
+node "$ROOT/Tests/MemoriesReviewCanary.cjs"
+/usr/bin/python3 - "$ROOT" <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+html = (root / "Resources/memories/memories.html").read_text()
+app = (root / "Resources/memories/memories-app.js").read_text()
+bad = []
+if not (0 <= html.find('<script src="memory-review.js"></script>') < html.find('<script src="memories-app.js"></script>')):
+    bad.append("memories.html loads memory-review.js before memories-app.js")
+if "var R = window.COSMemoryReview;" not in app or "RULE_BAR" in app or "0.8" in app:
+    bad.append("the page judges review through window.COSMemoryReview only (no bar of its own)")
+if bad:
+    print("FAIL: memories review predicate: " + "; ".join(bad), file=sys.stderr); sys.exit(1)
+print("PASS: memories review predicate wiring (one file, loaded first, no second bar)")
+PY
 
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete \
   "$ROOT/HelperSources/main.swift" "$ROOT/HelperSources/ProviderStatusCore.swift" "$ROOT/HelperSources/PairingCore.swift" "$ROOT/HelperSources/SessionUsageCollector.swift" "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/WorkSessionLinks.swift" \
@@ -441,6 +458,27 @@ zsh "$ROOT/Tests/run-transcription-settings.sh"
   "$ROOT/Sources/SessionUsageCore.swift" "$ROOT/Sources/CalendarSnapshotCore.swift" "$ROOT/Tests/CalendarSnapshotContract.swift" \
   -o "$TMP/calendar-snapshot-contract"
 "$TMP/calendar-snapshot-contract" "$ROOT"
+# 0.5.379 (QA B2, W20, W22): the store writes only through CalendarSnapshotCore.refresh (the race, zero-picked and no-access
+# rules the contract above executes), add-only access is never read as denied, and nothing writes a tombstone on its own.
+/usr/bin/python3 - "$ROOT" <<'PY'
+import pathlib, re, sys
+src = (pathlib.Path(sys.argv[1]) / "Sources/CalendarSource.swift").read_text()
+problems = []
+write_now = src[src.index("    func writeNow() async {"):src.index("    private func removeSnapshot()")]
+if write_now.count("CalendarSnapshotCore.refresh(") != 1 or "CalendarSnapshotCore.write(" not in write_now:
+    problems.append("writeNow must write through CalendarSnapshotCore.refresh")
+if src.count("CalendarSnapshotCore.write(") != 1:
+    problems.append("the snapshot is written in exactly one place (inside refresh's write step)")
+if re.search(r"\.writeOnly[^\n]*return \"denied\"", src):
+    problems.append("writeOnly must not map to denied (W22)")
+if "case .writeOnly: return \"writeOnly\"" not in src:
+    problems.append("writeOnly is its own access state")
+if "tombstone(" in src:
+    problems.append("Control writes no tombstone on its own (W22)")
+if problems:
+    print("FAIL: calendar store wiring: " + "; ".join(problems), file=sys.stderr); sys.exit(1)
+print("PASS: calendar store wiring (one write path, writeOnly kept, no automatic tombstone)")
+PY
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target "$TARGET" -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Tests/JediUpgradeContract.swift" \
   -framework AppKit -o "$TMP/jedi-upgrade-contract"
@@ -1563,6 +1601,8 @@ PY
 # Tests/run-command-center-render.sh (the ⌘K panel: PNGs of every state, by hand, never a gate).
 "$ROOT/Tests/run-activity-today.sh"
 /usr/bin/python3 "$ROOT/Tests/activity-today-pins.py" "$ROOT"
+# 0.5.379: the Today summary's wiring (view, store, helper); its rules execute in ActivityTodayChecks above.
+/usr/bin/python3 "$ROOT/Tests/today-summary-pins.py" "$ROOT"
 # Settings hub (Miles, 2026-10-27, the A treatment with B's On this page rail): the catalog's rules (every inventory row
 # in one group, deep links, search, breakpoints, scroll-spy, status lines; Tests/run-settings-hub.sh), then the wiring pins.
 # Hand-run: Tests/mutate-settings-hub.py (the mutation lane) and Tests/run-settings-hub-render.sh (PNGs for QA).
@@ -5469,7 +5509,7 @@ need("import WebKit" in activity and "import WebKit" not in views, "the web view
 need("struct MemoriesWebView: NSViewRepresentable" in activity and "case .memories: memoriesSurface()" in activity,
      "Memories must mount the reviewed page")
 need("if MemoriesWebView.bundleURL != nil {" in activity and "memoriesPane()" in activity, "the native panes must remain the fallback")
-for asset in ("memories.html", "memories-app.js", "graph-explorer.js", "graph-explorer.css", "memories-theme.css", "d3.min.js"):
+for asset in ("memories.html", "memories-app.js", "memory-review.js", "graph-explorer.js", "graph-explorer.css", "memories-theme.css", "d3.min.js"):
     need((root / "Resources/memories" / asset).exists(), f"Resources/memories/{asset} is missing")
     need(f'"$ROOT/Resources/memories/{asset}"' in release, f"build-release.sh does not copy {asset}")
 bundle = "".join((root / "Resources/memories" / a).read_text(errors="ignore") for a in ("memories.html", "memories-app.js", "graph-explorer.js"))
