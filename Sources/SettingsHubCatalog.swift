@@ -156,6 +156,10 @@ enum SettingsHubCatalog {
         // Shown on a server that has the summary (6.99.26 or later). A hub row, not an inventory row.
         .init("TS-01", "Write the Today summary with a model", "Sonnet writes two or three sentences on Today about what your sessions add up to. Off unless you turn it on.", old: "", group: "general.home",
               advanced: false, mount: .group, keywords: ["today", "summary", "brief", "sonnet", "model", "headline", "refresh"]),
+        // 0.5.380 (server 7.0.5): Summaries per day, the server's daily cap for the Today summary (GET and PUT
+        // /api/today/brief/settings/cap), 1 to 100, default 100. Shown on a server that has it. A hub row, not an inventory row.
+        .init("TS-02", "Summaries per day", "At most this many new Today summaries a day, Refresh included. 1 to 100.", old: "", group: "general.home",
+              advanced: false, mount: .group, keywords: ["today", "summary", "summaries", "cap", "limit", "per day", "daily"]),
         .init("JV-13", "Find sessions by meaning", "After you say yes, each ⌘K search sends your words, plus session titles and the start of first prompts, to the model that decides search. Emails, links, home-folder paths and key-shaped text are removed first. Shown with Today home on and a server that supports it.", old: "", group: "ai.decision", advanced: false, mount: .group,
               keywords: ["meaning", "command k", "sessions", "consent", "jev", "subq"]),
         // 0.5.367 (server 6.99.3): Open COS on your phone, the QR and code that sign the phone's browser in to Control Web. The

@@ -15926,7 +15926,7 @@ enum DropItThreadCopy {
 /// web view?"): the server-written Today summary (GET and POST /api/today/brief, lib/today-brief.ts; Sonnet on 7.0.1), shown
 /// the way Control Web shows it (web-control/app.js requestBrief, briefShown, briefWhen, todayRefresh). The server holds the
 /// spend: its switch ("Write the Today summary with a model", off unless turned on), only when the rows changed, 10 minutes
-/// apart, 60 a day, a breaker, nothing while a meeting records. This side only decides when to ask and what to show. Pure:
+/// apart, Summaries per day (60 a day before server 7.0.5), a breaker, nothing while a meeting records. This side only decides when to ask and what to show. Pure:
 /// Tests/ActivityTodayChecks.swift executes every rule.
 enum TodaySummary {
     /// The web's BRIEF_RESEND_MS and BRIEF_OFF_RECHECK_MS: the same rows, or a switched-off summary, are asked about every 5 min.
@@ -16043,13 +16043,15 @@ enum TodaySummary {
     /// (panes/settings.js, the Today summary group and briefStatus).
     struct Settings: Equatable, Sendable {
         static let label = "Write the Today summary with a model"
-        static let blurb = "Sonnet writes two or three sentences after the count of what needs you. It reads what Today shows (session titles and states, each session\u{2019}s latest reply, the questions sessions ask you, what needs you) and, on your Mac, each session\u{2019}s sub-agents and the Work cards in progress. It runs only while Today is open, only when something changed, never during a recording, at most every 10 minutes and 60 times a day. Refresh on Today asks for a new one at once, at most every 30 seconds."
+        static let blurb = "Sonnet writes two or three sentences after the count of what needs you. It reads what Today shows (session titles and states, each session\u{2019}s latest reply, the questions sessions ask you, what needs you) and, on your Mac, each session\u{2019}s sub-agents and the Work cards in progress. It runs only while Today is open, only when something changed, never during a recording, at most every 10 minutes and no more than Summaries per day allows. Refresh on Today asks for a new one at once, at most every 30 seconds."
         let enabled: Bool
         let source: String
         let statusKind: String?
         let statusUntil: Date?
         let statusAt: Date?
         let statusCount: Int?
+        /// 0.5.380 (server 7.0.5): the Summaries per day setting the daily_cap status was reached at.
+        let statusCap: Int?
         let statusCode: String?
         init?(_ value: JSONValue) {
             guard let o = value.object, let enabled = o["enabled"]?.bool else { return nil }
@@ -16060,6 +16062,7 @@ enum TodaySummary {
             statusUntil = status?["until"]?.string.flatMap(WorkIntakeItem.stamp)
             statusAt = status?["at"]?.string.flatMap(WorkIntakeItem.stamp)
             statusCount = status?["count"]?.int
+            statusCap = status?["cap"]?.int
             statusCode = status?["code"]?.string
         }
         /// COS_TODAY_BRIEF_LLM on the Mac sets it: shown, not changeable.
@@ -16069,7 +16072,10 @@ enum TodaySummary {
         func statusLine(calendar: Calendar = .current) -> String {
             guard enabled, let kind = statusKind else { return "" }
             switch kind {
-            case "daily_cap": return "Today\u{2019}s \(statusCount ?? 60) are used. It writes again tomorrow."
+            case "daily_cap":
+                // 0.5.380 (server 7.0.5): the number is the Summaries per day setting; an older server sends only the count.
+                let n = statusCap ?? statusCount ?? Cap.defaultCap
+                return "Today\u{2019}s \(n) \(n == 1 ? "summary is" : "summaries are") used. It writes again tomorrow."
             case "paused": return "Paused after three failed tries. It tries again at " + (statusUntil.map { TodayHome.clock($0, calendar: calendar) } ?? "") + "."
             case "failed":
                 let tail = statusCode == "timeout" ? " (it took too long)." : statusCode == "unavailable" ? " (Claude Code was not found on your Mac)." : "."
@@ -16208,8 +16214,62 @@ enum TodaySummary {
             return .object(r)
         })
         o["force"] = nil
+        o["reason"] = nil
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         return (try? encoder.encode(JSONValue.object(o))).map { String(decoding: $0, as: UTF8.self) } ?? ""
+    }
+
+    /// 0.5.380 (Miles 2026-11-08, server 7.0.5): "Summaries per day", the server's own daily cap (GET and PUT
+    /// /api/today/brief/settings/cap), 1 to 100, default 100. A server without the route (older than 7.0.5) has no row.
+    struct Cap: Equatable, Sendable {
+        static let label = "Summaries per day"
+        static let blurb = "At most this many new summaries a day, Refresh included. 1 to 100."
+        static let defaultCap = 100
+        let dailyCap: Int
+        let min: Int
+        let max: Int
+        let usedToday: Int?
+        init?(_ value: JSONValue) {
+            guard let o = value.object, let cap = o["dailyCap"]?.int else { return nil }
+            let low = Swift.max(1, o["min"]?.int ?? 1), high = Swift.max(low, Swift.min(100, o["max"]?.int ?? 100))
+            min = low; max = high
+            dailyCap = Swift.min(high, Swift.max(low, cap))
+            usedToday = o["usedToday"]?.int.map { Swift.max(0, $0) }
+        }
+        /// What a typed value sends: a whole number inside the range, or nil (nothing is sent).
+        func typed(_ text: String) -> Int? {
+            guard let n = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
+            return Swift.min(max, Swift.max(min, n))
+        }
+        var usedLine: String {
+            guard let usedToday else { return "" }
+            return "\(usedToday) of \(dailyCap) used today."
+        }
+    }
+
+    /// 0.5.380 (Miles 2026-11-08, server 7.0.5): when Today's sessions or Today read recovers after a failed read, the next
+    /// automatic ask says `reason: "reconnect"`, once (Control Web's BRIEF.reconnect). The server lets that one start skip its
+    /// 10-minute spacing, at most once per 10 minutes, and still holds its switch, cap and breaker.
+    struct Reconnect: Equatable {
+        var failed = false
+        var pending = false
+        /// One read's outcome: a success right after a failure arms the reconnect.
+        mutating func observe(failed now: Bool) {
+            if now { failed = true } else if failed { failed = false; pending = true }
+        }
+        /// Spends the armed reconnect (whether or not it is used): true when this ask should say so. A switched-off summary
+        /// never asks early.
+        mutating func take(switchedOff: Bool) -> Bool {
+            defer { pending = false }
+            return pending && !switchedOff
+        }
+    }
+    /// The body of a reconnect ask (server 7.0.5). An older server refuses the unknown `reason` (400 invalid_today_brief):
+    /// the helper asks again without it.
+    static func reconnecting(_ inputs: JSONValue) -> JSONValue {
+        guard var o = inputs.object else { return inputs }
+        o["reason"] = .string("reconnect")
+        return .object(o)
     }
 
     /// Refresh's body: the same rows with `force` (server 7.0.1).

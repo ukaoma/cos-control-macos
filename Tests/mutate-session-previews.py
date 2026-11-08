@@ -9,7 +9,8 @@ that applies and still passes is a finding: the guard is unreached.
 Lanes:
   checks  Tests/SessionPreviewsChecks.swift compiled with Models.swift and SessionPreviews.swift (the store, executed)
   helper  the helper compiled alone, then Tests/session-previews-helper-checks.py
-  pins    Tests/session-previews-pins.py (the wiring the checks cannot reach)
+  capchecks  Tests/TodayCapChecks.swift compiled with Models.swift (Summaries per day and the reconnect ask, 0.5.380)
+  pins    Tests/session-previews-pins.py and Tests/today-cap-pins.py (the wiring the checks cannot reach)
 
     python3 Tests/mutate-session-previews.py [lane ...]
 """
@@ -20,6 +21,7 @@ STORE = "Sources/SessionPreviews.swift"
 HELPER = "HelperSources/main.swift"
 MODEL = "Sources/ControllerModel.swift"
 WINDOW = "Sources/ActivityWindow.swift"
+MODELS = "Sources/Models.swift"
 
 MUTANTS = [
     # Previews off: no cards and no fetch.
@@ -62,6 +64,21 @@ MUTANTS = [
     ("helper", "helper: the copy is world-readable", HELPER,
      "do { try atomicWriteData(data, to: destination, permissions: 0o600) }", "do { try atomicWriteData(data, to: destination, permissions: 0o644) }"),
 
+    # 0.5.380 Summaries per day and the reconnect ask (server 7.0.5).
+    ("capchecks", "reconnect armed by every good read", MODELS,
+     "if now { failed = true } else if failed { failed = false; pending = true }", "if now { failed = true } else { failed = false; pending = true }"),
+    ("capchecks", "reconnect while switched off", MODELS, "return pending && !switchedOff", "return pending"),
+    ("capchecks", "reconnect never spent", MODELS, "            defer { pending = false }\n", ""),
+    ("capchecks", "cap not clamped", MODELS, "dailyCap = Swift.min(high, Swift.max(low, cap))", "dailyCap = cap"),
+    ("capchecks", "cap line ignores the setting", MODELS, "let n = statusCap ?? statusCount ?? Cap.defaultCap", "let n = statusCount ?? Cap.defaultCap"),
+    ("capchecks", "reason changes the key", MODELS, '        o["force"] = nil\n        o["reason"] = nil\n', '        o["force"] = nil\n'),
+    ("helper", "helper: reason never falls back", HELPER, 'for key in ["reason", "force"] where', 'for key in ["force"] where'),
+    ("helper", "helper: any cap value is sent", HELPER,
+     "guard let raw, raw.count <= 3, let n = Int(raw), (1...100).contains(n) else { return nil }", "guard let raw, let n = Int(raw) else { return nil }"),
+    ("helper", "helper: the cap answer passes through whole", HELPER,
+     'var details: [String: Any] = ["available": true, "dailyCap": cap]', 'var details: [String: Any] = body; details["available"] = true; _ = cap'),
+    ("pins", "pins: no reconnect observed", WINDOW,
+     "        today.reconnects.observe(failed: model.claudeSessionsError != nil || today.reachable == false || today.tickFailed)\n", ""),
     ("pins", "pins: open loads no cards", MODEL, "        sessionPreviews.load(provider: session.provider, sessionID: session.sessionId)\n", ""),
     ("pins", "pins: no launch sweep", MODEL, "        SessionPreviewStore.sweep()\n", ""),
     ("pins", "pins: leaving the pane keeps Quick Look", WINDOW, "            .onDisappear { store.quickLookURL = nil }\n", ""),
@@ -79,6 +96,12 @@ def lane_command(lane, scratch):
                     "-framework", "AppKit", "-o", str(out)]
         env = dict(os.environ, CFFIXED_USER_HOME=str(home), COS_CONTROL_TEST_HOME=str(home))
         return [(compile_, dict(os.environ, COS_COMPILE_PROFILE="bounded")), ([str(out)], env)]
+    if lane == "capchecks":
+        out = scratch / "checks"
+        compile_ = ["/usr/bin/python3", str(ROOT / "Tests/kit-compile.py"), str(ROOT / "Tests/compile-guard.sh"), "swiftc",
+                    "-target", "arm64-apple-macosx14.0", "-swift-version", "6", "-strict-concurrency=complete", "-parse-as-library",
+                    str(ROOT / MODELS), str(ROOT / "Tests/TodayCapChecks.swift"), "-framework", "AppKit", "-o", str(out)]
+        return [(compile_, dict(os.environ, COS_COMPILE_PROFILE="bounded")), ([str(out)], dict(os.environ))]
     if lane == "helper":
         out = scratch / "cos-control-helper"
         compile_ = ["/usr/bin/python3", str(ROOT / "Tests/kit-compile.py"), str(ROOT / "Tests/compile-guard.sh"), "swiftc",
@@ -87,8 +110,10 @@ def lane_command(lane, scratch):
                     str(ROOT / "HelperSources/SessionUsageCollector.swift"), str(ROOT / "Sources/SessionUsageCore.swift"),
                     str(ROOT / "Sources/WorkSessionLinks.swift"), "-framework", "Security", "-framework", "AppKit", "-o", str(out)]
         return [(compile_, dict(os.environ, COS_COMPILE_PROFILE="bounded")),
-                (["/usr/bin/python3", str(ROOT / "Tests/session-previews-helper-checks.py"), str(out)], dict(os.environ))]
-    return [(["/usr/bin/python3", str(ROOT / "Tests/session-previews-pins.py"), str(ROOT)], dict(os.environ))]
+                (["/usr/bin/python3", str(ROOT / "Tests/session-previews-helper-checks.py"), str(out)], dict(os.environ)),
+                (["/usr/bin/python3", str(ROOT / "Tests/today-cap-helper-checks.py"), str(out)], dict(os.environ))]
+    return [(["/usr/bin/python3", str(ROOT / "Tests/session-previews-pins.py"), str(ROOT)], dict(os.environ)),
+            (["/usr/bin/python3", str(ROOT / "Tests/today-cap-pins.py"), str(ROOT)], dict(os.environ))]
 
 
 def run_lane(lane):
@@ -101,7 +126,7 @@ def run_lane(lane):
 
 
 def main():
-    lanes = sys.argv[1:] or ["pins", "checks", "helper"]
+    lanes = sys.argv[1:] or ["pins", "checks", "capchecks", "helper"]
     survivors = []
     for lane in lanes:
         ok, why = run_lane(lane)

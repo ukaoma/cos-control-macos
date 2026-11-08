@@ -50,7 +50,8 @@ h = body(helper, "    private func emitTodayBrief() throws {", "    private func
 need("readBoundedStdin(48 * 1024)" in h, "the body is bounded to the server's 48 KiB")
 need('request("/api/today/brief", method: "POST"' in h and h.count("request(") == 1, "one POST route, asked through one call site")
 need('response.status == 404 { emit(ok: true, message: "Not available on this server", details: ["available": false' in h, "a missing route is an older server, not a failure")
-need('== "invalid_today_brief"' in h and 'body.removeValue(forKey: "force")' in h, "a 7.0.0 server's 400 to force is asked again without it")
+need('== "invalid_today_brief"' in h and 'for key in ["reason", "force"] where response.status == 400 && body[key] != nil' in h
+     and "body.removeValue(forKey: key)" in h, "a 7.0.0 server's 400 to force (0.5.380: and a pre-7.0.5 server's 400 to reason) is asked again without it")
 need("print(" not in h and "token" not in h.replace("let token = try candidate?.token ?? readToken()", "").replace("token: token", ""), "the token is only passed to the request")
 st = body(helper, "    private func emitTodayBriefSettings(args: [String]) throws {", "    private func emitWorkTasks() throws {")
 need('case "today-brief-settings": try emitTodayBriefSettings(args: args)' in helper and st.count('"/api/today/brief/settings"') == 2

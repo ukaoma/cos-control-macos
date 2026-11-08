@@ -1,7 +1,7 @@
 {
   "version": "0.5.380",
   "whatsNew": {
-    "summary": "Sessions shows the files and images a session made, under the reply that made them, and opens each with Quick Look on a copy that is deleted when you close it. A file whose name says it may hold secrets is never shown. Plus everything in 0.5.379.",
+    "summary": "Sessions shows the files and images a session made, under the reply that made them, and opens each with Quick Look on a copy that is deleted when you close it. A file whose name says it may hold secrets is never shown. Today summaries now go up to 100 a day, set in Settings. Plus everything in 0.5.379.",
     "sections": [
       {
         "title": "0.5.380",
@@ -10,7 +10,9 @@
           "Click a card to open it with Quick Look. COS fetches a copy only you can read through the COS server and deletes it when Quick Look closes.",
           "A file whose name says it may hold secrets is never shown. A file that is gone, or outside the session's folder, says so.",
           "Cards follow “Show files and images your sessions make” in Settings, Privacy, on COS Control Web. When it is off, Sessions shows no cards and fetches nothing.",
-          "Linked files need the matching COS server update. With an older server Sessions shows no cards, as before."
+          "Linked files need the matching COS server update. With an older server Sessions shows no cards, as before.",
+          "Settings, Activity home: Summaries per day sets how many Today summaries COS may write a day, from 1 to 100. It starts at 100.",
+          "When COS reconnects after it could not read your sessions, Today asks for a fresh summary right away, once."
         ]
       },
       {

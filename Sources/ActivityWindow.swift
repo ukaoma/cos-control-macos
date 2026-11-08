@@ -8151,6 +8151,10 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
     /// 0.5.379: the Today summary as the server wrote it (TodaySummary), when Today asks on its own, and Refresh.
     @Published var summary = TodaySummary.Asking()
     @Published var refresh = TodaySummary.Refresh()
+    /// 0.5.380 (server 7.0.5): a sessions or Today read that recovered after a failed one makes the next ask a reconnect, once.
+    var reconnects = TodaySummary.Reconnect()
+    /// The last tick's helper run failed outright (no answer at all).
+    private(set) var tickFailed = false
     private var summaryEpoch = TodaySummarySettingsStore.epoch
     /// On screen (TodayWindowWatcher), and the window's opening loads finished (loadOverviewIfNeeded).
     @Published var windowVisible = true
@@ -8195,10 +8199,12 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
         // Settings turned the summary on or off: forget it, so this tick asks at once (Control Web's resetTodayBrief).
         if summaryEpoch != TodaySummarySettingsStore.epoch, !summary.inflight { summaryEpoch = TodaySummarySettingsStore.epoch; summary = TodaySummary.Asking() }
         let key = TodaySummary.key(body)
-        guard summary.shouldAsk(key: key, now: now) else { return }
+        // 0.5.380: right after a read recovered, ask at once with reason "reconnect" (the server still holds its gates).
+        let reconnect = !summary.inflight && reconnects.take(switchedOff: summary.reply?.switchedOff == true)
+        guard reconnect || summary.shouldAsk(key: key, now: now) else { return }
         summary.inflight = true
         summary.sent(key: key, now: now)
-        let answer = await sendSummary(model: model, body: body)
+        let answer = await sendSummary(model: model, body: reconnect ? TodaySummary.reconnecting(body) : body)
         summary.inflight = false
         if let answer { summary.unavailable = !answer.available }
         summary.reply = TodaySummary.kept(previous: summary.reply, answer: answer)
@@ -8250,6 +8256,7 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
         do {
             let response = try await model.todayHelper(args, timeout: 60)
             guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            tickFailed = false
             let received = Date()
             reachable = response.details["unreachable"]?.bool != true
             if probe, let supported = response.details["activeQueryJobs"]?.bool { jobsSupported = supported; probedFor = server }
@@ -8276,6 +8283,7 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
         } catch {
             // The helper did not run or said no: these reads are missing this tick, and that is not the server being down.
             lastError = error.localizedDescription
+            tickFailed = true
             if calendar {
                 calendarAvailable = false; calendarRead = nil; nextEvent = nil
                 model.liveMeetingCalendarEvent = nil
@@ -8841,6 +8849,8 @@ extension ActivityWindow {
         // With the pet off nothing else refreshes the session list (the classic home's refreshHomeSessions, here on the tick).
         if !model.petEnabled { await model.loadClaudeSessions() }
         await today.tick(model: model)
+        // 0.5.380: a sessions or Today read that failed and now answers arms one reconnect ask (Control Web's BRIEF.reconnect).
+        today.reconnects.observe(failed: model.claudeSessionsError != nil || today.reachable == false || today.tickFailed)
         // 0.5.379: the summary is asked about only while the Today home is on screen (Control Web asks only on its Today pane).
         if section == nil && !showingSettings { await today.askSummary(model: model, body: todaySummaryBody(now: Date())) }
     }
@@ -11512,6 +11522,10 @@ struct CommandCenterPanel: View {
 /// the summary: no row. A change resets the Today summary so the next Today tick asks at once (Control Web's resetTodayBrief).
 @MainActor final class TodaySummarySettingsStore: ObservableObject {
     @Published private(set) var settings: TodaySummary.Settings?
+    /// 0.5.380 (server 7.0.5): Summaries per day. Nil on an older server: no row.
+    @Published private(set) var cap: TodaySummary.Cap?
+    @Published private(set) var capBusy = false
+    @Published private(set) var capError: String?
     @Published private(set) var busy = false
     @Published private(set) var error: String?
     /// Bumped on every change; the Today store forgets its summary when it moves.
@@ -11525,6 +11539,35 @@ struct CommandCenterPanel: View {
             error = nil
         } catch {
             settings = nil
+        }
+        await loadCap(model: model)
+    }
+
+    /// Summaries per day (helper `today-brief-cap`). A server without the setting, or a read that fails: no row.
+    func loadCap(model: ControllerModel) async {
+        guard settings != nil else { cap = nil; return }
+        do {
+            let response = try await model.todayHelper(["today-brief-cap"], timeout: 12)
+            guard response.ok, response.details["available"]?.bool == true else { cap = nil; return }
+            cap = TodaySummary.Cap(.object(response.details))
+        } catch {
+            cap = nil
+        }
+    }
+
+    /// Saves a new cap. The server clamps to 1 to 100 and answers what it saved, which the row then shows.
+    func setCap(_ value: Int, model: ControllerModel) async {
+        guard !capBusy, let current = cap, value != current.dailyCap,
+              let wanted = current.typed(String(value)) else { return }
+        capBusy = true
+        defer { capBusy = false }
+        do {
+            let response = try await model.todayHelper(["today-brief-cap", "--set", String(wanted)], timeout: 12)
+            guard response.ok else { throw HelperClientError.commandFailed(response.message) }
+            cap = TodaySummary.Cap(.object(response.details)) ?? cap
+            capError = nil
+        } catch {
+            capError = error.localizedDescription
         }
     }
 
@@ -11562,6 +11605,23 @@ struct TodaySummarySettingsBlock: View {
                 if !line.isEmpty {
                     Text(line).font(COSType.body(12)).foregroundStyle(TodayInk.sub)
                         .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 20).padding(.bottom, 12)
+                }
+                // 0.5.380 (server 7.0.5): Summaries per day, 1 to 100. An older server: no row.
+                if let cap = store.cap {
+                    let capItem = SettingsHubCatalog.item("TS-02")
+                    SettingsHubRow(label: capItem?.label ?? TodaySummary.Cap.label, detail: TodaySummary.Cap.blurb, anchor: "item.TS-02") {
+                        COSStepper(TodaySummary.Cap.label, value: Binding(get: { store.cap?.dailyCap ?? cap.dailyCap },
+                                                                         set: { n in Task { await store.setCap(n, model: model) } }),
+                                   in: cap.min...cap.max, valueText: "\(cap.dailyCap)", showsLabel: false,
+                                   onTypedValue: { text in if let n = cap.typed(text) { Task { await store.setCap(n, model: model) } } })
+                            .disabled(store.capBusy || settings.locked)
+                            .accessibilityLabel(TodaySummary.Cap.label)
+                    }
+                    let capLine = store.capError ?? cap.usedLine
+                    if !capLine.isEmpty {
+                        Text(capLine).font(COSType.body(12)).foregroundStyle(TodayInk.sub)
+                            .fixedSize(horizontal: false, vertical: true).padding(.horizontal, 20).padding(.bottom, 12)
+                    }
                 }
             }
         }

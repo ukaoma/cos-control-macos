@@ -321,6 +321,10 @@ python3 "$ROOT/Tests/session-previews-helper-checks.py" "$TMP/cos-control-helper
 # 0.5.380: the Sessions pane's cards (store, placement, Quick Look copy deleted on close, launch sweep, previews off fetches
 # nothing), compiled with Models.swift alone, then the wiring pins. The mutants are Tests/mutate-session-previews.py (by hand).
 zsh "$ROOT/Tests/run-session-previews.sh"
+# 0.5.380 (server 7.0.5): Summaries per day (today-brief-cap) and the reconnect ask's fallback through the compiled helper, then
+# the pure rules (TodaySummary.Cap, TodaySummary.Reconnect, the daily cap line) compiled with Models.swift alone, and the pins.
+python3 "$ROOT/Tests/today-cap-helper-checks.py" "$TMP/cos-control-helper"
+zsh "$ROOT/Tests/run-today-cap.sh"
 # 0.5.366 Title steer (server 6.99.0): meeting-title-steer through the compiled helper against a loopback fixture (the route, the
 # query and the body exactly, the title on stdin only, every status an answer, only the contract's keys, the file's titleSteer).
 python3 "$ROOT/Tests/title-steer-helper-checks.py" "$TMP/cos-control-helper"

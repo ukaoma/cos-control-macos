@@ -581,6 +581,7 @@ final class COSControlHelper {
         case "work-your-move": try emitWorkYourMove()
         case "today-brief": try emitTodayBrief()
         case "today-brief-settings": try emitTodayBriefSettings(args: args)
+        case "today-brief-cap": try emitTodayBriefCap(args: args)
         case "activity-today": try emitActivityToday(args: args)
         case "work-set-stage":
             if args.count > 1 { try emitWorkStage(args: args) } else { try emitWorkUpdate(action: "stage") }
@@ -5245,8 +5246,10 @@ final class COSControlHelper {
         guard var response = try ask(body) else {
             emit(ok: true, message: "Today summary unavailable", details: ["available": false, "reason": "unreachable"]); return
         }
-        if response.status == 400, body["force"] != nil, ((response.body?["error"] as? [String: Any])?["code"] as? String) == "invalid_today_brief" {
-            body.removeValue(forKey: "force")
+        // 0.5.380: a server before 7.0.5 refuses `reason: "reconnect"` the same way; it is dropped first, then `force`.
+        for key in ["reason", "force"] where response.status == 400 && body[key] != nil
+            && ((response.body?["error"] as? [String: Any])?["code"] as? String) == "invalid_today_brief" {
+            body.removeValue(forKey: key)
             guard let again = try ask(body) else {
                 emit(ok: true, message: "Today summary unavailable", details: ["available": false, "reason": "unreachable"]); return
             }
@@ -5283,6 +5286,38 @@ final class COSControlHelper {
         }
         body["available"] = true
         emit(ok: true, message: change == nil ? "Today summary setting" : (change == "on" ? "Today summary on" : "Today summary off"), details: body)
+    }
+
+    /// 0.5.380 (Miles 2026-11-08, server 7.0.5): "Summaries per day", the server's daily cap for the Today summary. GET
+    /// /api/today/brief/settings/cap, or with `--set N` PUT { dailyCap: N } (the server clamps to 1 to 100 and answers what it
+    /// saved). A 404 is a server without the setting: `available: false`, and Settings shows no row.
+    static func todayBriefCapValue(_ raw: String?) -> Int? {
+        guard let raw, raw.count <= 3, let n = Int(raw), (1...100).contains(n) else { return nil }
+        return n
+    }
+
+    private func emitTodayBriefCap(args: [String]) throws {
+        let change = option("--set", in: args)
+        let value = Self.todayBriefCapValue(change)
+        if change != nil, value == nil { throw HelperError.message("Choose a number from 1 to 100.") }
+        let candidate = try reviewCandidateTransport()
+        let token = try candidate?.token ?? readToken()
+        let response: HTTPResponse?
+        if let value {
+            response = request("/api/today/brief/settings/cap", method: "PUT", token: token, body: "{\"dailyCap\":\(value)}",
+                               timeout: 8, reviewCandidatePort: candidate?.port)
+        } else {
+            response = request("/api/today/brief/settings/cap", token: token, timeout: 8, reviewCandidatePort: candidate?.port)
+        }
+        guard let response else { throw HelperError.message("Server stopped") }
+        if response.status == 404 { emit(ok: true, message: "Not available on this server", details: ["available": false]); return }
+        guard response.status == 200, let body = response.body, let cap = body["dailyCap"] as? Int else {
+            let message = (response.body?["error"] as? [String: Any])?["message"] as? String
+            throw HelperError.message(message ?? "Summaries per day could not be \(value == nil ? "read" : "saved").")
+        }
+        var details: [String: Any] = ["available": true, "dailyCap": cap]
+        for key in ["min", "max", "default", "usedToday"] { if let n = body[key] as? Int { details[key] = n } }
+        emit(ok: true, message: value == nil ? "Summaries per day" : "Summaries per day saved", details: details)
     }
 
     private func emitWorkTasks() throws {
