@@ -148,6 +148,10 @@ struct WebKeyChecks {
             check(WebKeyJCS.encode(row["value"]!) == row["text"] as? String, "jcs", "\(WebKeyJCS.encode(row["value"]!) ?? "nil") vs \(row["text"]!)")
         }
         check(WebKeyJCS.encode(NSNumber(value: 1.5)) == nil && WebKeyJCS.encode(NSNumber(value: 9_007_199_254_740_992 as Int64)) == nil, "jcs", "floats and unsafe integers are not signable")
+        // Numerical equality also rejects 1.5; integral floats exercise the distinct type guard.
+        let integralFloats = try! JSONSerialization.jsonObject(with: Data("[1.0,-0.0,1e3,9007199254740990.0]".utf8)) as! [NSNumber]
+        check(integralFloats.allSatisfy { ["d", "f"].contains(String(cString: $0.objCType)) }, "jcs", "JSON fixtures retain floating NSNumber types")
+        check(integralFloats.allSatisfy { WebKeyJCS.encode($0) == nil }, "jcs", "integral-valued floating numbers are not signable")
         check(WebKeyJCS.encode(["a": Date()]) == nil, "jcs", "other types are not signable")
         check(WebKeyB64.decode("AQ") == Data([1]) && WebKeyB64.decode("AR") == nil && WebKeyB64.decode("AQ==") == nil && WebKeyB64.decode("A") == nil
               && WebKeyB64.decode("a+b/") == nil && WebKeyB64.decode("") == nil, "b64", "strict base64url")
