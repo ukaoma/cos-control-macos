@@ -1610,6 +1610,7 @@ PY
 # Tests/run-activity-today-render.sh (PNGs against activity-canvas).
 # Tests/run-command-center-render.sh (the ⌘K panel: PNGs of every state, by hand, never a gate).
 "$ROOT/Tests/run-activity-today.sh"
+"$ROOT/Tests/run-today-refresh-integration.sh"
 "$ROOT/Tests/run-today-summary-subagents.sh"
 "$ROOT/Tests/run-held-groups-read-queue.sh"
 /usr/bin/python3 "$ROOT/Tests/activity-today-pins.py" "$ROOT"
@@ -6437,7 +6438,7 @@ projection = body(helper, "static func claudePeerProjection(")
 for need in ('"createdAt": peerTimeISO(row["startedAt"])', '"updatedAt": peerTimeISO(row["lastActiveAt"])'):
     if need not in projection:
         fail(f"the server sends peer times as epoch milliseconds; claudePeerProjection lost {need!r}")
-prepass = code(model[model.index("func loadPetSessions() async"):model.index('helper.run(["session-pet-live"]')])
+prepass = code(model[model.index("func loadPetSessions(force: Bool = false) async"):model.index('helper.run(["session-pet-live"]')])
 if "lastAuthoritativeRaw == nil, petSessions.isEmpty, !claudeSessions.isEmpty" not in prepass:
     fail("the pet may paint Activity's snapshot only before the helper's first live answer")
 refresh = body(helper, "static func refreshClaudeTranscriptActivity(")

@@ -735,6 +735,15 @@ import Foundation
         let noIntake = TodayHome.compose(dayInputs(run, need, sources: intake))
         check(noIntake.states[.work] == .failed && noIntake.counts.olderToSort == nil && !noIntake.needs.contains { $0.kind == .olderToSort },
               "a failed Intake read fails Work and its counts")
+        let unavailableIntake = WorkIntakeSnapshot(details: ["available": .bool(false), "storeUnavailable": .bool(true), "items": .array([])])
+        var storeDown = answeredSources()
+        storeDown.intakeFailed = TodayHome.intakeReadFailed(unavailableIntake, readError: nil, actionError: nil)
+        let storeDownFrame = TodayHome.compose(dayInputs(run, need, sources: storeDown))
+        check(storeDownFrame.states[.work] == .failed && !storeDownFrame.counts.settled && storeDownFrame.counts.olderToSort == nil, "helper Intake503 reaches Work incompleteness even with no thrown error")
+        let olderIntake = WorkIntakeSnapshot(details: ["available": .bool(false), "storeUnavailable": .bool(false), "items": .array([])])
+        check(!TodayHome.intakeReadFailed(olderIntake, readError: nil, actionError: nil), "Intake404 remains a compatible unavailable capability")
+        check(!TodayHome.intakeReadFailed(olderIntake, readError: "Task refused", actionError: "Task refused"), "an action refusal does not fail a healthy source read")
+        check(TodayHome.intakeReadFailed(olderIntake, readError: "Read timed out", actionError: "Task refused"), "a distinct read failure fails Intake")
         var pending = answeredSources(); pending.voices = .pending
         let voicing = TodayHome.compose(dayInputs(quietRun, TodayHome.NeedInputs(), sources: pending))
         check(voicing.line == .loading && voicing.counts.voicesToName == nil, "voices still loading: no Every voice has a name, no caught up")
@@ -1018,6 +1027,33 @@ import Foundation
         check(TodaySummary.componentReadFailed([.object(["available": .bool(false), "status": .number(503)])]), "a component 503 warns despite a successful helper tick")
         check(!TodaySummary.componentReadFailed([nil, .object(["available": .bool(false), "status": .number(404)])]), "unsupported components do not warn")
         check(!TodaySummary.componentReadFailed([.object(["available": .bool(true)])]), "healthy components do not warn")
+        for status in [0, 401, 403, 408, 429, 500, 503] {
+            check(TodaySummary.componentReadFailed([.object(["available": .bool(true)]),
+                   .object(["available": .bool(false), "reason": .string(status == 0 ? "unreachable" : "status"), "status": .number(Double(status))])]),
+                  "a partial component failure cannot be hidden by a successful sibling", "HTTP \(status)")
+        }
+        check(TodaySummary.componentReadFailed([.object(["available": .bool(false), "reason": .string("malformed"), "status": .number(200)])]), "a malformed 200 is an incomplete read")
+        check(!TodaySummary.componentReadFailed([.object(["available": .bool(true), "status": .number(200)])]), "a usable 200 is complete")
+        check(!TodaySummary.componentReadFailed([.object(["available": .bool(false)])]), "an unavailable legacy capability without failure evidence stays quiet")
+        check(TodaySummary.liveSessionReadState(complete: true) == .answered, "live freshness uses its own successful receipt even with cached titles")
+        check(TodaySummary.liveSessionReadState(complete: false) == .failed, "an unsuccessful live read fails even when it retains rows")
+        check(TodaySummary.liveSessionReadState(complete: nil) == .pending, "an older helper without a receipt cannot certify live freshness")
+        for catalog in [ActivityHome.SourceState.pending, .answered, .failed] {
+            for live in [ActivityHome.SourceState.pending, .answered, .failed] {
+                let state = TodaySummary.displayedSessionReadState(petEnabled: true, catalog: catalog, live: live)
+                check((state == .answered) == (catalog == .answered && live == .answered), "both displayed inventories must have answered")
+                check(TodaySummary.displayedSessionReadState(petEnabled: false, catalog: catalog, live: live) == catalog, "pet-off Today depends only on its displayed catalog")
+            }
+        }
+        let catalogFive = (1...5).map { session("s\($0)", "running", name: "Work \($0)") }
+        let retainedTwo = Array(catalogFive.prefix(2))
+        let staleRows = TodayHome.liveSessions(list: catalogFive, live: retainedTwo)
+        var incomplete = answeredSources()
+        incomplete.sessions = TodaySummary.displayedSessionReadState(petEnabled: true, catalog: .answered, live: .failed)
+        var staleRun = TodayHome.RunInputs(); staleRun.now = now; staleRun.sessions = staleRows
+        let staleFrame = TodayHome.compose(dayInputs(staleRun, TodayHome.NeedInputs(), sources: incomplete))
+        check(staleRows.count == 2 && !staleFrame.counts.sessionsKnown && !staleFrame.counts.settled, "fresh catalog of five cannot certify a retained live list of two")
+        check(TodaySummary.shown(reply(["text": .string("Two agents are working"), "state": .string("fresh")]), sessionsRead: staleFrame.counts.sessionsKnown) == nil, "stale live count never appears under a freshly certified summary")
         let fresh = reply(["text": .string("You are finishing the pricing work and QA is idle."), "at": .string(ago(3)), "basis": .string("3 sessions"),
                            "model": .string("sonnet"), "state": .string("fresh"), "enabled": .bool(true), "source": .string("settings")])
         check(fresh != nil && fresh?.text.hasPrefix("You are") == true, "a brief reply parses")

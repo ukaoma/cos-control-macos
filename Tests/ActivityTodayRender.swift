@@ -131,6 +131,7 @@ import SwiftUI
         model.claudeSessions = sessions
         // Fixture rows represent a completed read, except the explicit loading scene.
         model.claudeSessionsReadState = scene == .loading ? .pending : .answered
+        model.petSessionsReadState = scene == .loading ? .pending : .answered
         store.hosts = ["claude:t1": TodayHome.Host(app: "Terminal", terminal: true)]
         store.jobsSupported = true
         store.jobs = [TodayHome.ActiveJob(.object(["jobId": .string("qj1"), "origin": .string("person"),

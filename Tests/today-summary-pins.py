@@ -30,7 +30,14 @@ need(tick.count("today.askSummary(") == 1 and "if section == nil && !showingSett
 need(win.count("today.askSummary(") == 1 and win.count("today.refreshToday(") == 1, "one automatic ask and one Refresh path")
 refresh = body(win, "    func todayRefresh() async {", "    func todayHeader(now: Date)")
 need("Self.allowsLiveSectionLoads(" in refresh, "Refresh never reaches a server from a preview or render")
-need("await model.refresh(quiet: true)" in refresh and "await model.loadWorkTasks(force: true)" in refresh and "await today.tick(model: model, force: true)" in refresh, "Refresh rereads Memories, Work, calendar and intake before the forced summary")
+reload_sources = body(win, "    func todayReloadSources() async {", "    /// Refresh: all source reads again")
+need("await todayReloadSources()" in refresh and "await model.refresh(quiet: true)" in reload_sources
+     and "await model.loadWorkTasks(force: true)" in reload_sources and "await today.tick(model: model, force: true)" in reload_sources,
+     "Refresh rereads Memories, Work, calendar and intake before the forced summary")
+need("await model.loadClaudeSessions(force: true)" in reload_sources and "await model.loadPetSessions(force: true)" in reload_sources,
+     "Refresh awaits fresh catalog and live inventories")
+retry = body(win, "    func todayRetryLine(", "    func todayNeedRow(")
+need("await todayReloadSources()" in retry and "todayRefresh()" not in retry, "source retry reloads both session inventories without the summary floor")
 need("input.yourMovePending = !model.workYourMoveAvailable && !model.workYourMoveFailed" in win, "pending handoffs keep Work pending")
 store_refresh = body(win, "    func refreshToday(", "    /// Ordinary ticks coalesce;")
 need("guard refresh.begin(now: Date()) else { return }" in store_refresh and "TodaySummary.forced(rows)" in store_refresh
@@ -53,12 +60,24 @@ need(".toggleStyle(COSCheckStyle())" in blk and ".disabled(settings.locked || st
 need("TodaySummarySettingsBlock(model: model)" in (root / "Sources/Views.swift").read_text(), "Settings, Activity home draws the switch")
 need("summaryEpoch != TodaySummarySettingsStore.epoch" in win and "Self.epoch &+= 1" in body(win, "@MainActor final class TodaySummarySettingsStore", "struct TodaySummarySettingsBlock"), "a change in Settings resets the Today summary")
 src_inputs = body(win, "    func todaySourceInputs() -> TodayHome.SourceInputs {", "    func todayCardFacts(")
-need("input.sessions = model.claudeSessionsReadState" in src_inputs, "retained rows never hide a failed fresh session read")
+need("TodaySummary.displayedSessionReadState(petEnabled: model.petEnabled" in src_inputs
+     and "catalog: model.claudeSessionsReadState, live: model.petSessionsReadState" in src_inputs,
+     "fresh catalog state cannot certify retained live rows")
+need("TodayHome.intakeReadFailed(model.workIntake, readError: model.workIntakeError, actionError: today.lastResolveError)" in src_inputs,
+     "an Intake503 reaches source completeness without a thrown helper error")
 need("input.yourMoveFailed = model.workYourMoveFailed" in src_inputs, "a failed your-move read reaches Today's Work source")
 cm = (root / "Sources/ControllerModel.swift").read_text()
 session_read = body(cm, "    private func fetchClaudeSessions(quick: Bool) async {", "    /// 0.5.254 resize pass:")
 need('TodaySummary.sessionReadState(partial: partial, cached: cached)' in session_read and 'if !quick, !partial, !cached {' in session_read,
      "cached and partial session inventories never certify freshness or advance the fresh-cache clock")
+pet_read = body(cm, "    func loadPetSessions(force: Bool = false) async {", "    /// `authoritative` gates the prune.")
+need("petSessionReads.run(force: force)" in pet_read and "if !force, claudeSessionsLoading" in pet_read
+     and 'TodaySummary.liveSessionReadState(complete: response.details["liveReadComplete"]?.bool)' in pet_read
+     and "authoritative: state == .answered" in pet_read,
+     "forced pet reads wait, bypass a catalog poll and retain independent freshness")
+live_helper = body(helper, "    private func emitLiveClaudeSessions(", "    private func emitQuickClaudeSessions(")
+need("Self.petLiveReadComplete(body)" in live_helper and "partial: !serverAnswered, liveReadComplete: serverAnswered" in live_helper,
+     "the helper emits live provenance only from a structurally valid server response")
 need('TodaySummary.componentReadFailed([' in win, "component server failures reach the Today refresh warning")
 ym = body(cm, "    func loadYourMove() async {", "    @Published var workTasksLoading")
 need("workYourMoveFailed = !workYourMoveAvailable" in ym and ym.count("workYourMoveFailed = true") == 1, "your move unavailable or failed is recorded as failed")

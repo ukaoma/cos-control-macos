@@ -14589,6 +14589,11 @@ enum TodayHome {
         var dictation: ActivityHome.SourceState = .answered
     }
 
+    /// A 503 is an answered helper command but an unread Intake store. An action refusal alone is not a read failure.
+    static func intakeReadFailed(_ snapshot: WorkIntakeSnapshot, readError: String?, actionError: String?) -> Bool {
+        snapshot.storeUnavailable || (readError != nil && readError != actionError)
+    }
+
     /// The states every surface reads. Unreachable: the server's sources failed (sessions are this Mac's). Intake failing
     /// fails Work.
     static func sourceStates(_ input: SourceInputs) -> [Source: ActivityHome.SourceState] {
@@ -15942,11 +15947,31 @@ enum TodaySummary {
         partial || cached ? .pending : .answered
     }
 
-    /// An unsupported route is quiet; a component's server failure is an incomplete refresh.
+    /// The displayed list uses both inventories when the pet is on. A fresh catalog cannot certify retained live rows.
+    static func displayedSessionReadState(petEnabled: Bool, catalog: ActivityHome.SourceState,
+                                          live: ActivityHome.SourceState) -> ActivityHome.SourceState {
+        guard petEnabled else { return catalog }
+        if catalog == .failed || live == .failed { return .failed }
+        return catalog == .answered && live == .answered ? .answered : .pending
+    }
+
+    /// Cached titles may accompany a fresh live read, so freshness comes from the live request's own receipt.
+    static func liveSessionReadState(complete: Bool?) -> ActivityHome.SourceState {
+        guard let complete else { return .pending }
+        return complete ? .answered : .failed
+    }
+
+    /// A missing compatibility route is quiet. Transport, auth, throttling and malformed replies are incomplete reads.
     static func componentReadFailed(_ blocks: [JSONValue?]) -> Bool {
         blocks.contains { block in
-            guard let status = block?.object?["status"]?.double else { return false }
-            return status >= 500
+            guard let object = block?.object else { return false }
+            let reason = object["reason"]?.string
+            if reason == "unreachable" || reason == "malformed" { return true }
+            if let status = object["status"]?.double {
+                if status == 404 { return false }
+                return status < 200 || status >= 300 || object["available"]?.bool == false
+            }
+            return false
         }
     }
 

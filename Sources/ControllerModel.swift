@@ -767,7 +767,7 @@ final class ControllerModel: ObservableObject {
     private var memorySearchTask: Task<Void, Never>?
     private var threadSearchTask: Task<Void, Never>?
     private var sessionSearchTask: Task<Void, Never>?
-    private var petPollInFlight = false
+    private let petSessionReads = TodayReadQueue()
     private var meetingAudioLedger = MeetingAudioAlertLedger()
     private var meetingAudioGeneration = 0
     private var meetingAudioAskedAgainAt: Date?
@@ -2853,6 +2853,8 @@ final class ControllerModel: ObservableObject {
     @Published var petCompleting = false
     private var petCompletionTask: Task<Void, Never>?
     @Published var petSessions: [ClaudeSession] = []
+    /// Kept rows stay visible after a failed read, but cannot certify Today's current count.
+    @Published var petSessionsReadState: ActivityHome.SourceState = .pending
     /// Unfiltered snapshot. `dismissPetSession` re-applies from THIS, because
     /// re-applying from `petSessions` would prune against a list the dismissed
     /// row is already missing from and hand it straight back.
@@ -5373,6 +5375,7 @@ final class ControllerModel: ObservableObject {
 
     func setPetEnabled(_ enabled: Bool) {
         petEnabled = enabled
+        petSessionsReadState = enabled ? .pending : .off
         UserDefaults.standard.set(enabled, forKey: Self.petEnabledKey)
         if enabled {
             requestPetJumpAccessibility()
@@ -5875,41 +5878,44 @@ final class ControllerModel: ObservableObject {
         }
     }
 
-    func loadPetSessions() async {
+    func loadPetSessions(force: Bool = false) async {
+        await petSessionReads.run(force: force) { await self.fetchPetSessions(force: force) }
+    }
+
+    private func fetchPetSessions(force: Bool) async {
         guard petEnabled else {
+            petSessionsReadState = .off
             if !petSessions.isEmpty { petSessions = [] }
             return
         }
-        if petPollInFlight { return }
-        petPollInFlight = true
-        defer { petPollInFlight = false }
-        // 0.5.225: Activity's snapshot paints the pet only until the live helper has
-        // answered once. Re-applying it on every poll showed its older state for the length
-        // of each helper call, and its stamps never matched the helper's, so a dismissal
-        // made on one pass came back on the other.
+        // Activity may seed the figure before the first live reply, never certify it as a current live inventory.
         if lastAuthoritativeRaw == nil, petSessions.isEmpty, !claudeSessions.isEmpty {
             applyPetSessions(ClaudeSession.petVisibleSessions(in: claudeSessions))
         }
-        // Skip the extra helper only when Activity already gave us live rows.
-        // Empty + loading used to return here and hide the pet for another 20s.
-        if claudeSessionsLoading, !petSessions.isEmpty { return }
+        // Periodic polls may coalesce with Activity; explicit Refresh waits and reads live state again.
+        if !force, claudeSessionsLoading, !petSessions.isEmpty { return }
+        petSessionsReadState = .pending
         do {
             let response = try await helper.run(["session-pet-live"], timeout: Self.petLiveHelperTimeout)
-            // The helper answered, so this list is current and may retire
-            // stamps for sessions that are genuinely gone. Keep-warm ids are
-            // computed BEFORE petVisibleSessions filters them out, so a
-            // keep-warm reclassification never reads as a finish.
-            let decoded = (response.details["sessions"]?.array ?? []).compactMap(ClaudeSession.init)
+            guard !Task.isCancelled else { throw CancellationError() }
+            guard petEnabled else { petSessionsReadState = .off; return }
+            guard response.ok, let rows = response.details["sessions"]?.array else {
+                throw HelperClientError.commandFailed(response.message)
+            }
+            let decoded = rows.compactMap(ClaudeSession.init)
+            guard decoded.count == rows.count else { throw HelperClientError.commandFailed("Live sessions could not be read.") }
+            let state = TodaySummary.liveSessionReadState(complete: response.details["liveReadComplete"]?.bool)
+            petSessionsReadState = state
+            // Partial local activity may still update the figure, but only a fresh server read retires stamps.
             let keepWarmIDs = Set(decoded.filter(\.isKeepWarm).map(\.id))
             applyPetSessions(
                 ClaudeSession.petVisibleSessions(in: decoded),
-                authoritative: true,
+                authoritative: state == .answered,
                 suppressedIDs: keepWarmIDs
             )
-        } catch is CancellationError {
-            return
         } catch {
-            // Keep the last snapshot. A timeout must not flash the pet away.
+            petSessionsReadState = petEnabled ? .failed : .off
+            // Keep the last snapshot. A timeout must not flash the pet away or claim a complete Today read.
         }
     }
 

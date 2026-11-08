@@ -5582,9 +5582,12 @@ final class COSControlHelper {
 
     /// Only the listed fields of each job: never an answer, a prompt or a trail, whatever a server sends.
     static func activityTodayJobs(_ body: [String: Any]?) -> [String: Any] {
-        guard let body, jsonInt(body["protocolVersion"]) == 1, let items = body["items"] as? [[String: Any]] else { return ["available": false] }
-        let kept = items.prefix(50).compactMap { row -> [String: Any]? in
-            guard let id = row["jobId"] as? String, !id.isEmpty, id.count <= 200 else { return nil }
+        guard let body, jsonInt(body["protocolVersion"]) == 1, let items = body["items"] as? [[String: Any]] else { return ["available": false, "reason": "malformed", "status": 200] }
+        guard items.allSatisfy({ row in
+            guard let id = row["jobId"] as? String else { return false }
+            return !id.isEmpty && id.count <= 200
+        }) else { return ["available": false, "reason": "malformed", "status": 200] }
+        let kept = items.prefix(50).map { row -> [String: Any] in
             var out = row.filter { activityTodayJobKeys.contains($0.key) }
             if let title = out["title"] as? String { out["title"] = String(title.prefix(120)) }
             return out
@@ -5596,7 +5599,10 @@ final class COSControlHelper {
 
     /// The routine runs still going, each with its routine's name when the list has it.
     static func activityTodayRoutineRuns(_ runs: [String: Any]?, routines: [String: Any]?) -> [String: Any] {
-        guard let rows = runs?["runs"] as? [[String: Any]] else { return ["available": false] }
+        guard let rows = runs?["runs"] as? [[String: Any]], rows.allSatisfy({ row in
+            guard activityTodayRunningStatuses.contains(row["status"] as? String ?? "") else { return true }
+            return (row["id"] as? String)?.isEmpty == false
+        }) else { return ["available": false, "reason": "malformed", "status": 200] }
         var names: [String: String] = [:]
         for routine in routines?["routines"] as? [[String: Any]] ?? [] {
             if let id = routine["id"] as? String, let name = routine["name"] as? String { names[id] = String(name.prefix(80)) }
@@ -5614,12 +5620,29 @@ final class COSControlHelper {
 
     /// welcome-context's one `nextEvent { title, time, inMinutes }` and, from a server that says so, `calendarRead` (true only
     /// when the calendar was actually read). Nothing else from that route (never the weather).
+    static func activityTodayEventTimeValid(_ time: String) -> Bool {
+        guard time.utf8.count <= 64,
+              time.range(of: #"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})?$"#, options: .regularExpression) != nil else { return false }
+        if parseISODate(time) != nil { return true }
+        // Older calendar bridges send an exact local timestamp without a zone. Do not accept arbitrary trailing text.
+        guard time.range(of: #"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?$"#, options: .regularExpression) != nil else { return false }
+        let whole = String(time.prefix(19))
+        let local = DateFormatter(); local.locale = Locale(identifier: "en_US_POSIX"); local.isLenient = false
+        local.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        guard let date = local.date(from: whole) else { return false }
+        return local.string(from: date) == whole
+    }
+
     static func activityTodayNextEvent(_ body: [String: Any]?) -> [String: Any] {
-        guard let body else { return ["available": false] }
+        guard let body else { return ["available": false, "reason": "malformed", "status": 200] }
         var out: [String: Any] = ["available": true, "nextEvent": NSNull()]
         if let read = body["calendarRead"] as? Bool { out["calendarRead"] = read }
-        guard let event = body["nextEvent"] as? [String: Any], let title = event["title"] as? String,
-              let time = event["time"] as? String, !time.isEmpty else { return out }
+        guard let rawEvent = body["nextEvent"], !(rawEvent is NSNull) else { return out }
+        guard let event = rawEvent as? [String: Any], let title = event["title"] as? String,
+              !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let time = event["time"] as? String, activityTodayEventTimeValid(time) else {
+            return ["available": false, "reason": "malformed", "status": 200]
+        }
         var next: [String: Any] = ["title": String(title.prefix(160)), "time": String(time.prefix(64))]
         if let minutes = jsonInt(event["inMinutes"]) { next["inMinutes"] = minutes }
         out["nextEvent"] = next
@@ -14327,6 +14350,11 @@ final class COSControlHelper {
         try emitFreshClaudeSessions(home: home, composerMeta: composerMeta)
     }
 
+    static func petLiveReadComplete(_ body: [String: Any]?) -> Bool {
+        guard let body, body["enabled"] is Bool, let peers = body["peers"] as? [[String: Any]] else { return false }
+        return peers.allSatisfy { claudePeerProjection($0) != nil }
+    }
+
     private func emitLiveClaudeSessions(home: URL, composerMeta: CursorComposerMeta) throws {
         var enabled = false
         var reason = ""
@@ -14346,7 +14374,7 @@ final class COSControlHelper {
         if let token = try? speakerReviewToken(),
            let response = request("/api/claude-sessions", token: token, timeout: 12),
            response.status == 200,
-           let body = response.body {
+           let body = response.body, Self.petLiveReadComplete(body) {
             serverAnswered = true
             enabled = body["enabled"] as? Bool ?? enabled
             reason = body["reason"] as? String ?? reason
@@ -14396,7 +14424,7 @@ final class COSControlHelper {
         peers = annotatedScheduledJobs(peers, home: home, previous: previousRows)
         emitSessionList(
             peers, liveOnly: true, enabled: enabled, reason: reason, counts: counts,
-            dropped: dropped, cached: cached, partial: false
+            dropped: dropped, cached: cached, partial: !serverAnswered, liveReadComplete: serverAnswered
         )
     }
 
@@ -14561,7 +14589,8 @@ final class COSControlHelper {
         counts: Any,
         dropped: [String: Int],
         cached: Bool,
-        partial: Bool
+        partial: Bool,
+        liveReadComplete: Bool? = nil
     ) {
         var rows = peers
         if liveOnly {
@@ -14575,7 +14604,7 @@ final class COSControlHelper {
         } else {
             message = liveOnly ? "\(rows.count) live session(s)" : "\(rows.count) session(s)"
         }
-        emit(ok: true, message: message, details: [
+        var details: [String: Any] = [
             "enabled": true,
             "reason": reason,
             "sessions": rows,
@@ -14584,7 +14613,9 @@ final class COSControlHelper {
             "dropped": dropped,
             "cached": cached,
             "partial": partial,
-        ])
+        ]
+        if let liveReadComplete { details["liveReadComplete"] = liveReadComplete }
+        emit(ok: true, message: message, details: details)
     }
 
     private func saveSessionListCache(
@@ -24206,6 +24237,41 @@ final class COSControlHelper {
         try expect(Self.agentSessionDroppedProjection(loadedCache ?? [:])["age"] == 1691, "session list cache keeps dropped.age")
         try expect(Self.readSessionListCache(from: cacheURL, now: indexNow.addingTimeInterval(8 * 24 * 3600)) == nil,
                    "session list cache older than 7 days is ignored")
+
+        try expect(Self.petLiveReadComplete(["enabled": true, "peers": []]), "an empty current live inventory is complete")
+        try expect(Self.petLiveReadComplete(["enabled": false, "peers": []]), "explicitly disabled live Claude presence is an answered read")
+        let malformedLiveBodies: [[String: Any]] = [[:], ["enabled": true], ["peers": []], ["enabled": true, "peers": "bad"],
+                                                     ["enabled": true, "peers": [["id": ""]]]]
+        for malformed in malformedLiveBodies {
+            try expect(!Self.petLiveReadComplete(malformed), "a malformed live reply cannot certify cached rows")
+        }
+        try expect(Self.activityTodayJobs(nil)["reason"] as? String == "malformed", "missing jobs200 JSON is an incomplete component")
+        try expect(Self.activityTodayRoutineRuns([:], routines: nil)["reason"] as? String == "malformed", "missing runs200 shape is an incomplete component")
+        try expect(Self.activityTodayNextEvent(nil)["reason"] as? String == "malformed", "missing calendar200 JSON is an incomplete component")
+
+        try expect(Self.activityTodayJobs(["protocolVersion": 1, "items": [["jobId": "valid"], [:]]])["reason"] as? String == "malformed",
+                   "a valid jobs subset cannot hide an unread job row")
+        try expect(Self.activityTodayJobs(["protocolVersion": 1, "items": []])["available"] as? Bool == true, "valid empty jobs remains answered")
+        let malformedEvents: [Any] = ["bad", ["title": "Call", "time": 17], ["title": "Call", "time": "bad-date"], ["time": "2026-11-08T16:00:00Z"]]
+        for malformed in malformedEvents {
+            try expect(Self.activityTodayNextEvent(["calendarRead": true, "nextEvent": malformed])["reason"] as? String == "malformed",
+                       "a present malformed event never becomes a clear calendar")
+        }
+        try expect(Self.activityTodayNextEvent(["calendarRead": true])["available"] as? Bool == true, "a successful calendar read may omit nextEvent")
+        try expect(Self.activityTodayNextEvent(["calendarRead": true, "nextEvent": NSNull()])["available"] as? Bool == true, "a successful calendar read may have null nextEvent")
+        try expect((Self.activityTodayNextEvent(["calendarRead": true, "nextEvent": ["title": "Call", "time": "2026-11-08T16:00:00.123Z"]])["nextEvent"] as? [String: Any])?["title"] as? String == "Call",
+                   "calendar projection accepts fractional ISO times from welcome-context")
+
+        try expect(Self.activityTodayEventTimeValid("2026-10-21T15:30:00") && Self.activityTodayEventTimeValid("2026-10-21T15:30:00.123"),
+                   "legacy exact local calendar times remain supported")
+        for badTime in ["2026-10-21T15:30:00junk", "2026-02-30T15:30:00", "2026-10-21T15:30:00Z junk", String(repeating: "1", count: 65)] {
+            try expect(!Self.activityTodayEventTimeValid(badTime), "malformed calendar time cannot claim no next meeting")
+        }
+
+        try expect(Self.activityTodayRoutineRuns(["runs": [["status": "running"]]], routines: nil)["reason"] as? String == "malformed",
+                   "a running routine without its id cannot disappear from a complete read")
+        try expect((Self.activityTodayRoutineRuns(["runs": [["id": "done", "status": "completed"]]], routines: nil)["runs"] as? [[String: Any]])?.isEmpty == true,
+                   "valid completed routines remain filtered from running work")
 
         var fallbackIndexReads = 0
         let fallbackIndex = { () -> (rows: [[String: Any]], dropped: [String: Int]) in

@@ -8432,11 +8432,12 @@ extension ActivityWindow {
     func todaySourceInputs() -> TodayHome.SourceInputs {
         var input = TodayHome.SourceInputs()
         input.reachable = model.status.running && today.reachable != false
-        input.sessions = model.claudeSessionsReadState
+        input.sessions = TodaySummary.displayedSessionReadState(petEnabled: model.petEnabled,
+                                                                 catalog: model.claudeSessionsReadState, live: model.petSessionsReadState)
         input.voices = model.heldGroupsError != nil ? .failed : (model.heldGroupsState == nil ? .pending : .answered)
         input.memories = model.status.learningToReview == nil ? .off : .answered
         input.work = ActivityHome.sourceState(enabled: workConnectionsEnabled && !isolatedWorkPreview, loaded: homeLoads[.work], hasData: !model.workTasks.isEmpty)
-        input.intakeFailed = model.workIntakeError != nil && model.workIntakeError != today.lastResolveError
+        input.intakeFailed = TodayHome.intakeReadFailed(model.workIntake, readError: model.workIntakeError, actionError: today.lastResolveError)
         input.yourMoveFailed = model.workYourMoveFailed
         input.yourMovePending = !model.workYourMoveAvailable && !model.workYourMoveFailed
         return input
@@ -8904,20 +8905,27 @@ extension ActivityWindow {
                                    settled: frame.counts.settled, failed: frame.counts.failedSources, recording: !frame.recordings.isEmpty, now: now)
     }
 
-    /// Refresh: the sessions, Work's your move, the voices and the tick's reads again, then a forced summary.
+    /// Shared by Refresh and source retries. A retry bypasses the summary's 30-second floor and does no model ask.
+    func todayReloadSources() async {
+        guard Self.allowsLiveSectionLoads(isolatedWorkPreview: isolatedWorkPreview, backgroundWorkEnabled: model.activityLoadsEnabled) else { return }
+        // Status supplies Memories' review count. Both displayed session inventories must finish their own fresh read.
+        await model.refresh(quiet: true)
+        await model.loadClaudeSessions(force: true)
+        await model.loadPetSessions(force: true)
+        homeLoads[.sessions] = model.claudeSessionsReadState
+        if workConnectionsEnabled && !isolatedWorkPreview {
+            await model.loadWorkTasks(force: true)
+            homeLoads[.work] = model.workTasksError == nil ? .answered : .failed
+        }
+        await model.loadHeldGroups(force: true)
+        await today.tick(model: model, force: true)
+    }
+
+    /// Refresh: all source reads again, then a forced summary within its existing rate limit.
     func todayRefresh() async {
         guard Self.allowsLiveSectionLoads(isolatedWorkPreview: isolatedWorkPreview, backgroundWorkEnabled: model.activityLoadsEnabled) else { return }
         await today.refreshToday(model: model, reload: {
-            // Status supplies Memories' review count. Read it again even inside the normal five-minute cadence.
-            await model.refresh(quiet: true)
-            await model.loadClaudeSessions(force: true)
-            homeLoads[.sessions] = model.claudeSessionsReadState
-            if workConnectionsEnabled && !isolatedWorkPreview {
-                await model.loadWorkTasks(force: true) // includes a fresh your-move read
-                homeLoads[.work] = model.workTasksError == nil ? .answered : .failed
-            }
-            await model.loadHeldGroups(force: true)
-            await today.tick(model: model, force: true)
+            await todayReloadSources()
         }, body: { todaySummaryBody(now: Date()) })
     }
 
@@ -9091,10 +9099,7 @@ extension ActivityWindow {
             todayRetrying = true
             Task {
                 defer { todayRetrying = false }
-                await model.refresh(quiet: true)
-                await model.loadHeldGroups()
-                await model.loadWorkIntake()
-                await today.tick(model: model)
+                await todayReloadSources()
             }
         }
         .buttonStyle(TodayLinkStyle(color: TodayInk.hot, size: 13))
