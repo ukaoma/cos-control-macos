@@ -5225,7 +5225,7 @@ final class COSControlHelper {
         let candidate = try reviewCandidateTransport()
         let token = try candidate?.token ?? readToken()
         guard let response = request("/api/work-board/your-move", token: token, timeout: Self.workYourMoveRequestTimeout, reviewCandidatePort: candidate?.port) else { throw HelperError.message("Server stopped") }
-        if response.status == 404 { emit(ok: true, message: "Not available on this server", details: ["available": false, "items": []]); return }
+        if response.status == 404 { emit(ok: true, message: "Not available on this server", details: ["available": false, "reason": "older_server", "items": []]); return }
         guard response.status == 200, let body = response.body else { throw HelperError.message("Your move could not be read") }
         emit(ok: true, message: "Your move", details: body)
     }
