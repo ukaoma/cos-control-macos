@@ -168,6 +168,9 @@ window = code("Sources/ActivityWindow.swift")
 pin(window.count("LensAnswerStructure.structure(") == 2, "messages", "applied at exactly the two places a COS answer is drawn")
 pin('messageBlock(label: "COS", text: LensAnswerStructure.structure(turn.text),' in window, "messages", "the recent reader's COS answer")
 pin('messageBlock(label: "COS", text: LensAnswerStructure.structure(message.text),' in window, "messages", "the archive chat's COS answer")
+# The COS chat (Drop it) answer card: the Mac side of the web chat card in Miles's 11/08 screenshot.
+dropit = code("Sources/DropItViews.swift")
+pin(dropit.count("LensAnswerStructure.structure(") == 1 and "COSMarkdownView(text: LensAnswerStructure.structure(answer))" in dropit, "messages", "the COS chat answer card")
 pin('messageBlock(label: "You", text: turn.query,' in window and 'messageBlock(label: "You", text: message.query,' in window,
     "your words", "what you said is shown as you typed it")
 model = code("Sources/ControllerModel.swift")

@@ -647,7 +647,7 @@ struct DropItChatPane: View {
                             if ["failed", "refused", "canceled"].contains(ask.status) {
                                 Text(DropIt.askFailedLine).font(COSType.body(13)).foregroundStyle(TodayInk.hot).fixedSize(horizontal: false, vertical: true)
                             } else if let answer = ask.answer, !answer.isEmpty {
-                                COSMarkdownView(text: answer).font(COSType.body(13.5)).foregroundStyle(TodayInk.ink).textSelection(.enabled)
+                                COSMarkdownView(text: LensAnswerStructure.structure(answer)).font(COSType.body(13.5)).foregroundStyle(TodayInk.ink).textSelection(.enabled)
                             } else {
                                 Text(DropIt.askWaiting).font(COSType.body(13)).foregroundStyle(TodayInk.sub)
                             }
