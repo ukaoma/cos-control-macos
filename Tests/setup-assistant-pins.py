@@ -129,7 +129,10 @@ pin(read("Tests/run.sh").count('zsh "$ROOT/Tests/run-setup-assistant.sh"') == 1,
 # 9. The command center's view half.
 window = code(read("Sources/ActivityWindow.swift"))
 ext = block(window, "    func commandSnapshot() -> SetupAssistant.Snapshot {", "struct CommandCenterKeyHint: View {")
-panel = window[window.index("struct CommandCenterPanel: View {"):]
+# Only the command panel owns these invariants. Settings views follow it in
+# ActivityWindow.swift; their model calls and disabled controls are unrelated.
+# Swift's unindented closing brace bounds this top-level declaration.
+panel = block(window, "struct CommandCenterPanel: View {", "\n}\n") + "\n}\n"
 frame = block(window, "    var todayFrameView: some View {", "    func todayResetExpansions()")
 
 # Placement: at frame level, in the TimelineView closure, above the clipped content, with this tick's rows.
