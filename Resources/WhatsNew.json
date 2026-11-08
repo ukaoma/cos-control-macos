@@ -12,7 +12,9 @@
           "Cards follow “Show files and images your sessions make” in Settings, Privacy, on COS Control Web. When it is off, Sessions shows no cards and fetches nothing.",
           "Linked files need the matching COS server update. With an older server Sessions shows no cards, as before.",
           "Settings, Activity home: Summaries per day sets how many Today summaries COS may write a day, from 1 to 100. It starts at 100.",
-          "When COS reconnects after it could not read your sessions, Today asks for a fresh summary right away, once."
+          "When COS reconnects after it could not read your sessions, Today asks for a fresh summary right away, once.",
+          "Messages: numbered lists in a COS answer now sit on their own lines, as on COS Control Web.",
+          "Settings, Sessions: Extra folders for previews lists the folders a session’s files may also open from. Add a project folder or remove one. It starts empty."
         ]
       },
       {
