@@ -25,6 +25,7 @@
 #   run-env              this file run the way run.sh runs it (the top of run.sh executed first, so its exports are
 #                        set), for compile-slots and kit-compile; it must pass. Standalone runs missed the failure that
 #                        run.sh's COS_COMPILE_PROFILE=bounded caused in compile-slots.
+#   coord-lease          Tests/test-run-coord-lease.py: run.sh's COORD lease block against coord.py in scratch state
 #   compile-bounded, compile-slots, kit-compile, reuse-compile
 #                        the compile-guard self-tests, which run stand-in compilers and never ran in the suite; each runs
 #                        under GUARD_SCRUB, an environment without the suite's COS_COMPILE_* and COS_TEST_KIT_* variables
@@ -75,6 +76,19 @@ check compile-bounded          "${GUARD_SCRUB[@]}" "$PY" "$ROOT/Tests/test-compi
 check compile-slots            "${GUARD_SCRUB[@]}" "$PY" "$ROOT/Tests/test-compile-slots.py"
 check kit-compile              "${GUARD_SCRUB[@]}" "$PY" "$ROOT/Tests/test-kit-compile.py"
 check reuse-compile            "${GUARD_SCRUB[@]}" "$PY" "$ROOT/Tests/test-reuse-compile.py"
+# QA 0.5.379: run.sh's COORD lease block (Tests/coord-swift-lease.zsh) against the real coord.py in scratch state; it never
+# touches the live leases. coord.py: COS_COORD_PY, else COS_SCRIPTS_DIR, else the MU checkout. None found fails, never skips.
+coord_lease() {
+  local coord="${COS_COORD_PY:-}"
+  [[ -n "$coord" ]] || coord="${COS_SCRIPTS_DIR:+$COS_SCRIPTS_DIR/coord.py}"
+  [[ -n "$coord" ]] || coord="$HOME/Documents/GitHub/Ukaoma Chief Of Staff/MU-Chief-Staff/operations/scripts/coord.py"
+  if [[ ! -r "$coord" ]]; then
+    print -u2 "coord-lease: coord.py not found; set COS_COORD_PY or COS_SCRIPTS_DIR"
+    return 1
+  fi
+  "${GUARD_SCRUB[@]}" "$PY" "$ROOT/Tests/test-run-coord-lease.py" --root "$ROOT" --coord-py "$coord"
+}
+check coord-lease              coord_lease
 
 if (( RAN == 0 )); then
   print -u2 "PREFLIGHT FAIL: COS_PREFLIGHT_ONLY=$ONLY names no check"

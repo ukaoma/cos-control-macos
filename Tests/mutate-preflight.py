@@ -86,6 +86,8 @@ MUTANTS = [
     ("compile-slots", ["Tests/compile-bounded.py", "Tests/test-compile-slots.py"], lambda s: edit(s / "Tests/compile-bounded.py",
         "max(live, key=lambda o: (o['acquiredNs'], o['pid']))['pid'] != me", "min(live, key=lambda o: (o['acquiredNs'], o['pid']))['pid'] != me")),
     ("kit-compile", ["Tests/kit-compile.py"], lambda s: edit(s / "Tests/kit-compile.py", "if source_digests(files) != digests:", "if False:")),
+    ("coord-lease", ["Tests/coord-swift-lease.zsh"], lambda s: edit(s / "Tests/coord-swift-lease.zsh",
+        "set COS_COORD_PY to coord.py or set COS_SCRIPTS_DIR'\n    return 2", "set COS_COORD_PY to coord.py or set COS_SCRIPTS_DIR'\n    return 0")),
     ("reuse-compile", ["Tests/reuse-compile.py"], lambda s: edit(s / "Tests/reuse-compile.py", "if fingerprint(root, command, toolchain, args.output, scratch) != before:", "if False:")),
 ]
 
