@@ -55,7 +55,9 @@ import Foundation
         let asked = TodaySummary.reconnecting(rows)
         check(asked.object?["reason"]?.string == "reconnect", "the reconnect body carries reason reconnect")
         check(TodaySummary.key(asked) == TodaySummary.key(rows), "reason never changes what counts as the same rows")
-        check(TodaySummary.unforced(TodaySummary.forced(rows)).object?["force"] == nil, "force still comes off for a 7.0.0 server")
+        // Dropping force (a 7.0.0 server) and then reason (before 7.0.5) on a 400 lives in the helper since the 0.5.379
+        // merge (HelperSources todayBriefExchange); its self-test drives both orders.
+        check(TodaySummary.forced(rows).object?["force"] != nil, "a forced ask carries force")
 
         print("today cap checks: \(checks) passed")
     }
