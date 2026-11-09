@@ -58,7 +58,9 @@ let cases: [(String, String)] = [
         // ── Miles's screenshot: the image line goes, the four links read as their cards' words, nothing else moves.
         let shown = f(MILES)
         check(same(shown, MILES_READER), "Miles's reply: \(shown.debugDescription)")
-        check(!shown.contains("/Users/") && !shown.contains("![") && !shown.contains("]("), "no Mac path and no Markdown link is left")
+        // Outside code spans (the reply quotes `[name](cos-file:0)` in one, and code is left as written, as on the server).
+        let prose = shown.replacingOccurrences(of: "`[^`\n]*`", with: "", options: .regularExpression)
+        check(!prose.contains("/Users/") && !prose.contains("![") && !prose.contains("]("), "no Mac path and no Markdown link is left outside code")
         for line in ["- Preview test note: Markdown", "- Preview test page: HTML", "- Preview test table: a CSV", "- preview-test-code.ts:7: a code file"] {
             check(shown.contains(line), "the card words read \(line)")
         }
@@ -116,7 +118,8 @@ let cases: [(String, String)] = [
 
         // ── The golden replies.
         guard CommandLine.arguments.count > 1, let data = FileManager.default.contents(atPath: CommandLine.arguments[1]),
-              let golden = try? JSONSerialization.jsonObject(with: data) as? [[String]] else {
+              // JSONDecoder, not JSONSerialization: the latter drops a leading U+FEFF from a string value (0.5.380 first run).
+              let golden = try? JSONDecoder().decode([[String]].self, from: data) else {
             preconditionFailure("pass Tests/fixtures/session-reply-links-golden.json")
         }
         check(golden.count >= 300, "the golden fixture holds 300 replies")

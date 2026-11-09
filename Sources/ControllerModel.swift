@@ -757,10 +757,9 @@ final class ControllerModel: ObservableObject {
     private let mediaFetchGate = MediaFetchGate()
     /// 0.5.380 (preview engine phase 1): the open session's file and image cards (Sources/SessionPreviews.swift), fetched
     /// through the helper into a private copy that Quick Look shows.
-    lazy var sessionPreviews: SessionPreviewStore = {
-        let helper = self.helper
-        return SessionPreviewStore { arguments, stdin in try await helper.run(arguments, timeout: 45, stdinData: stdin).details }
-    }()
+    /// Built in init, right after `helper` (a `lazy var` whose initializer reads self.helper does not compile under Swift 6:
+    /// "default argument cannot be both main actor-isolated and actor-isolated", 0.5.380 first compile).
+    let sessionPreviews: SessionPreviewStore
     private var refreshTask: Task<Void, Never>?
     private var updateCheckTask: Task<Void, Never>?
     private var speakerReviewTask: Task<Void, Never>?
@@ -833,6 +832,7 @@ final class ControllerModel: ObservableObject {
     let workActivity: WorkActivityJournal
     init(startBackgroundWork: Bool = true, allowActivityLoads: Bool = false, helper: HelperClient = HelperClient()) {
         self.helper = helper
+        sessionPreviews = SessionPreviewStore { arguments, stdin in try await helper.run(arguments, timeout: 45, stdinData: stdin).details }
         backgroundWorkEnabled = startBackgroundWork
         activityLoadsEnabled = startBackgroundWork || allowActivityLoads
         workActivity = WorkActivityJournal(url: WorkActivityJournal.defaultURL(background: startBackgroundWork))

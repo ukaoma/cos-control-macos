@@ -36,7 +36,7 @@ helper = code("HelperSources/main.swift")
 run_sh = code("Tests/run.sh")
 
 # ── The model: one store, loaded on open, told the local turns, cleared on close, swept at launch.
-pin("lazy var sessionPreviews: SessionPreviewStore" in model and 'helper.run(arguments, timeout: 45, stdinData: stdin).details' in model,
+pin("    let sessionPreviews: SessionPreviewStore\n" in model and "sessionPreviews = SessionPreviewStore { arguments, stdin in" in model and 'helper.run(arguments, timeout: 45, stdinData: stdin).details' in model,
     "model store", "ControllerModel owns one SessionPreviewStore that runs the helper")
 opening = body(model, "func openClaudeSession(_ session: ClaudeSession) {")
 pin("sessionPreviews.load(provider: session.provider, sessionID: session.sessionId)" in opening, "load on open",
