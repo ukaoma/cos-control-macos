@@ -161,7 +161,7 @@ struct MarkdownPaneUIContract {
     /// The Messages detail as the pane lays it out: header, YOU card, COS card.
     /// `markdown: false` is the pre-2026-10-09 COS card (one plain Text), for the before shot.
     @ViewBuilder
-    static func messageDetail(text: String, markdown: Bool, highlight: String = "", id: String = "turn:9dcc19f0:356") -> some View {
+    static func messageDetail(text: String, markdown: Bool, highlight: String = "", id: String = "turn:9dcc19f0:356", lensLists: Bool = false) -> some View {
         ScrollView {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top) {
@@ -175,7 +175,7 @@ struct MarkdownPaneUIContract {
             }
             .controlSize(.small)
             ActivityMessageCard(label: "You", text: query356, tint: ActivitySection.messages.tint, highlight: highlight)
-            ActivityMessageCard(label: "COS", text: text, tint: COSPalette.green, highlight: highlight, markdownID: markdown ? id : nil)
+            ActivityMessageCard(label: "COS", text: text, tint: COSPalette.green, highlight: highlight, markdownID: markdown ? id : nil, lensLists: lensLists)
         }
         .padding(28)
         .frame(maxWidth: 820, alignment: .leading)
@@ -344,6 +344,16 @@ struct MarkdownPaneUIContract {
         let copied = board.string(forType: .string)
         precondition(copied == message356, "[copy reply] Copy reply and Copy answer copy the stored Markdown byte for byte: \(String(describing: copied?.prefix(40)))")
         precondition(copied?.contains("**Take Varesa.**") == true && copied?.contains("](https://allthings.how") == true, "[copy reply] the copy keeps the Markdown markers")
+
+        // 0.5.380 final QA W1: a lens answer's inline list draws on its own lines, and the card keeps the stored answer,
+        // which is what its Copy answer menu copies (ActivityCopyMenu gets the card's `text`).
+        let lensAnswer = "Here is the plan: 1. Draft it. 2. Send it."
+        let lensCard = ActivityMessageCard(label: "COS", text: lensAnswer, tint: COSPalette.green, markdownID: "turn:lens", lensLists: true)
+        precondition(lensCard.text == lensAnswer, "[copy raw] the COS card keeps the stored answer; only its Markdown view is structured")
+        let (_, lensHost) = try render(messageDetail(text: lensAnswer, markdown: true, id: "turn:lens", lensLists: true), size: NSSize(width: 760, height: 600), name: "message-lens-list", output: output, dark: false)
+        let lensFrames = textFrames(lensHost, in: lensHost).map(\.0)
+        precondition(lensFrames.contains { $0.contains("Draft it.") } && !lensFrames.contains { $0.contains("plan: 1.") },
+                     "[lens lists] the answer's inline list draws on its own lines: \(lensFrames)")
 
         // The session chat reply renders as Markdown, and its bubble hugs a short reply while a
         // long one takes the row, as the plain Text it replaced did.

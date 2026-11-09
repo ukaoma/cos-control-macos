@@ -7366,14 +7366,15 @@ if 'case "error": failure.isEmpty ? "Failed"' not in label or "queued" not in la
 # 6. Messages (2026-10-09): a COS answer renders as Markdown, what you said stays as typed,
 # links open through SwiftUI's own action (web only), and the copies stay raw.
 card = body(activity, "struct ActivityMessageCard")
-if "COSMarkdownView(text: text, cacheID: markdownID" not in card:
-    fail("[messages] the COS card renders through COSMarkdownView under its message id")
+if "COSMarkdownView(text: lensLists ? LensAnswerStructure.structure(text) : text, cacheID: markdownID" not in card:
+    fail("[messages] the COS card renders through COSMarkdownView under its message id (a lens answer's lists structured there only)")
 if "} else if let markdownID {" not in card or "Text(highlighted(text, query: highlight))" not in card:
     fail("[messages] a card with no markdownID shows its text as typed (the YOU side)")
 detail = body(activity, "private func messageDetail(")
-# 0.5.380: the COS answer goes through LensAnswerStructure first (lens answers read as lists, as on Control Web).
-if 'messageBlock(label: "COS", text: LensAnswerStructure.structure(turn.text),\n                             tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id)' not in detail:
-    fail("[messages] Recent's COS card passes its turn id")
+# 0.5.380: the COS answer's lens lists are structured in the card's Markdown view only (as on Control Web); the card
+# itself gets the stored answer, so Copy answer copies it as stored (final QA W1).
+if 'messageBlock(label: "COS", text: turn.text, lensLists: true,\n                             tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id)' not in detail:
+    fail("[messages] Recent's COS card passes its turn id and the stored answer")
 if 'messageBlock(label: "You", text: turn.query,\n                             tint: ActivitySection.messages.tint, highlight: recentQuery)\n' not in detail:
     fail("[messages] Recent's YOU card stays as typed")
 chat = body(activity, "@ViewBuilder private func archiveChatDetail(")

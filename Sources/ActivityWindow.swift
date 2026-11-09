@@ -5702,7 +5702,8 @@ struct ActivityWindow: View {
                                 messageBlock(label: "You", text: message.query,
                                              tint: ActivitySection.messages.tint, highlight: chatQuery)
                                 // 0.5.380: the lens's inline numbered lists on their own lines, as Control Web draws them.
-                                messageBlock(label: "COS", text: LensAnswerStructure.structure(message.text),
+                                // The card gets the stored answer; only its Markdown view draws it structured (Copy answer).
+                                messageBlock(label: "COS", text: message.text, lensLists: true,
                                              tint: COSPalette.green, highlight: chatQuery, markdownID: "archive:\(date)/\(index)/\(message.id)")
                             }
                             .padding(hit ? 10 : 0)
@@ -5887,8 +5888,9 @@ struct ActivityWindow: View {
                 attachmentStrip(attachments: turn.attachments.filter(\.isUserPhoto), fallback: "Your attachments")
                 // 0.5.380 (server 7.0.5 parity): a COS answer is written for the lens as plain text, so its inline numbered
                 // lists go on their own lines before Markdown draws them (Sources/LensAnswerStructure.swift, the web's
-                // structureLensAnswer). Only whitespace changes; Copy turn still reads the stored text.
-                messageBlock(label: "COS", text: LensAnswerStructure.structure(turn.text),
+                // structureLensAnswer). Only whitespace changes, and only in the card's Markdown view: Copy turn and
+                // Copy answer read the stored text (final QA W1).
+                messageBlock(label: "COS", text: turn.text, lensLists: true,
                              tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id)
                 attachmentStrip(attachments: turn.attachments.filter { !$0.isUserPhoto }, fallback: "From COS")
             }
@@ -5971,11 +5973,12 @@ struct ActivityWindow: View {
     }
 
     /// One side of a turn. `markdownID` renders the text as Markdown (what COS answered);
-    /// nil shows it as typed (what you said). See ActivityMessageCard.
+    /// nil shows it as typed (what you said). `lensLists` draws a lens answer's inline lists on
+    /// their own lines (LensAnswerStructure) in the Markdown view only. See ActivityMessageCard.
     private func messageBlock(
-        label: String, text: String, tint: Color, highlight: String = "", markdownID: String? = nil
+        label: String, text: String, lensLists: Bool = false, tint: Color, highlight: String = "", markdownID: String? = nil
     ) -> some View {
-        ActivityMessageCard(label: label, text: text, tint: tint, highlight: highlight, markdownID: markdownID)
+        ActivityMessageCard(label: label, text: text, tint: tint, highlight: highlight, markdownID: markdownID, lensLists: lensLists)
     }
 
     /// Titles itself from what it holds, because a turn can now carry a video
@@ -6251,6 +6254,9 @@ struct ActivityMessageCard: View {
     var highlight: String = ""
     /// nil shows the text as typed; an id renders it as Markdown under that cache slot.
     var markdownID: String? = nil
+    /// 0.5.380 (final QA W1): a COS answer's inline numbered lists go on their own lines in the Markdown view only.
+    /// `text` stays the stored answer, so Copy answer copies it byte for byte.
+    var lensLists = false
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -6264,7 +6270,7 @@ struct ActivityMessageCard: View {
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             } else if let markdownID {
-                COSMarkdownView(text: text, cacheID: markdownID, bodySize: 13)
+                COSMarkdownView(text: lensLists ? LensAnswerStructure.structure(text) : text, cacheID: markdownID, bodySize: 13)
                     .environment(\.cosMarkdownHighlight, highlight)
             } else {
                 // Marks every occurrence of the query inside the text. A tinted ROW says
