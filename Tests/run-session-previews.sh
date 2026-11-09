@@ -11,6 +11,6 @@ mkdir -p "$OUT/home"
 /usr/bin/python3 "$ROOT/Tests/session-previews-pins.py" "$ROOT"
 COS_COMPILE_PROFILE=bounded /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc \
   -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
-  "$ROOT/Sources/Models.swift" "$ROOT/Sources/SessionPreviews.swift" "$ROOT/Tests/SessionPreviewsChecks.swift" \
+  "$ROOT/Sources/Models.swift" "$ROOT/Sources/SessionPreviews.swift" "$ROOT/Sources/SessionReplyLinks.swift" "$ROOT/Tests/SessionPreviewsChecks.swift" \
   -framework AppKit -o "$OUT/checks"
 CFFIXED_USER_HOME="$OUT/home" COS_CONTROL_TEST_HOME="$OUT/home" "$OUT/checks"

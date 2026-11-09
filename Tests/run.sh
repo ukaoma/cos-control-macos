@@ -328,6 +328,10 @@ zsh "$ROOT/Tests/run-today-cap.sh"
 # 0.5.380 (server 7.0.5 parity): a COS answer's inline numbered lists on their own lines in Messages, as Control Web draws
 # them. The parity pins (both repos: patterns, the web's cases, where the pane applies it) then the rules compiled alone.
 zsh "$ROOT/Tests/run-lens-answer.sh"
+# 0.5.380 (preview engine phase 1): the Sessions reader shows a reply's local links as their cards' words and drops its local
+# image tokens, as Control Web does. The parity pins (the server's scanners and limits, the call site, the compile lists) then
+# the rules compiled alone against the table and the golden replies the server's own functions produced.
+zsh "$ROOT/Tests/run-session-reply-links.sh"
 # 0.5.366 Title steer (server 6.99.0): meeting-title-steer through the compiled helper against a loopback fixture (the route, the
 # query and the body exactly, the title on stdin only, every status an answer, only the contract's keys, the file's titleSteer).
 python3 "$ROOT/Tests/title-steer-helper-checks.py" "$TMP/cos-control-helper"
@@ -382,7 +386,7 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
   "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/KeyLanes.swift" "$ROOT/Sources/KeyLanesViews.swift" "$ROOT/Sources/WorkSessionLinks.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/Sources/AskWorkPlan.swift" "$ROOT/Sources/MeetingPrep.swift" "$ROOT/Sources/MeetingPrepStore.swift" "$ROOT/Sources/MeetingPrepViews.swift" "$ROOT/Sources/WorkOrchestrator.swift" "$ROOT/Sources/WorkLensPlans.swift" "$ROOT/Sources/WorkLensPlansPump.swift" "$ROOT/Sources/WorkChatQueue.swift" "$ROOT/Sources/WorkReferences.swift" "$ROOT/Sources/WorkTaskContext.swift" "$ROOT/Sources/WorkContextMeter.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" "$ROOT/Sources/MeetingSpeakerPolicy.swift" "$ROOT/Sources/MeetingAskCore.swift" "$ROOT/Sources/MeetingAsk.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
-  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/SessionPreviews.swift" "$ROOT/Sources/LensAnswerStructure.swift" "$ROOT/Sources/LiveTranscript.swift" "$ROOT/Sources/DropIt.swift" "$ROOT/Sources/DropItViews.swift" "$ROOT/Sources/DropItP2.swift" "$ROOT/Sources/DropItP2Views.swift" "$ROOT/Sources/CalendarSource.swift" "$ROOT/Sources/CalendarSnapshotCore.swift" \
+  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/SessionPreviews.swift" "$ROOT/Sources/LensAnswerStructure.swift" "$ROOT/Sources/SessionReplyLinks.swift" "$ROOT/Sources/LiveTranscript.swift" "$ROOT/Sources/DropIt.swift" "$ROOT/Sources/DropItViews.swift" "$ROOT/Sources/DropItP2.swift" "$ROOT/Sources/DropItP2Views.swift" "$ROOT/Sources/CalendarSource.swift" "$ROOT/Sources/CalendarSnapshotCore.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/ControlSetup.swift" \
   "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift" \
@@ -527,7 +531,7 @@ zsh "$ROOT/Tests/run-illustrated-pet.sh"
   "$ROOT/Sources/COSBrand.swift" "$ROOT/Sources/COSMotion.swift" "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/KeyLanes.swift" "$ROOT/Sources/KeyLanesViews.swift" "$ROOT/Sources/WorkSessionLinks.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/Sources/AskWorkPlan.swift" "$ROOT/Sources/MeetingPrep.swift" "$ROOT/Sources/MeetingPrepStore.swift" "$ROOT/Sources/MeetingPrepViews.swift" "$ROOT/Sources/WorkOrchestrator.swift" "$ROOT/Sources/WorkLensPlans.swift" "$ROOT/Sources/WorkLensPlansPump.swift" "$ROOT/Sources/WorkChatQueue.swift" "$ROOT/Sources/WorkReferences.swift" "$ROOT/Sources/WorkTaskContext.swift" "$ROOT/Sources/WorkContextMeter.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/ActivityMeetings.swift" "$ROOT/Sources/MeetingSpeakerPolicy.swift" "$ROOT/Sources/MeetingAskCore.swift" "$ROOT/Sources/MeetingAsk.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
-  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/SessionPreviews.swift" "$ROOT/Sources/LensAnswerStructure.swift" "$ROOT/Sources/LiveTranscript.swift" "$ROOT/Sources/DropIt.swift" "$ROOT/Sources/DropItViews.swift" "$ROOT/Sources/DropItP2.swift" "$ROOT/Sources/DropItP2Views.swift" "$ROOT/Sources/CalendarSource.swift" "$ROOT/Sources/CalendarSnapshotCore.swift" \
+  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/SessionPreviews.swift" "$ROOT/Sources/LensAnswerStructure.swift" "$ROOT/Sources/SessionReplyLinks.swift" "$ROOT/Sources/LiveTranscript.swift" "$ROOT/Sources/DropIt.swift" "$ROOT/Sources/DropItViews.swift" "$ROOT/Sources/DropItP2.swift" "$ROOT/Sources/DropItP2Views.swift" "$ROOT/Sources/CalendarSource.swift" "$ROOT/Sources/CalendarSnapshotCore.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/ControlSetup.swift" "$ROOT/Sources/ControlInstance.swift" \
   "$ROOT/Tests/JediIdleContract.swift" -framework AppKit -framework SwiftUI -o "$TMP/jedi-idle-contract"
@@ -3090,7 +3094,7 @@ python3 "$ROOT/Tests/reuse-compile.py" --root "$ROOT" --receipt "$TMP/app-compil
   "$ROOT/Sources/Control2Foundation.swift" "$ROOT/Sources/WorkHandoffStore.swift" "$ROOT/Sources/KeyLanes.swift" "$ROOT/Sources/KeyLanesViews.swift" "$ROOT/Sources/WorkSessionLinks.swift" "$ROOT/Sources/WorkProgress.swift" "$ROOT/Sources/WorkCardFiles.swift" "$ROOT/Sources/WorkProgressTracker.swift" "$ROOT/Sources/WorkTrackingViews.swift" "$ROOT/Sources/WorkHandoffView.swift" "$ROOT/Sources/WorkReviewStore.swift" "$ROOT/Sources/WorkWorkspaceView.swift" "$ROOT/Sources/WorkTaskChat.swift" "$ROOT/Sources/AskWorkPlan.swift" "$ROOT/Sources/MeetingPrep.swift" "$ROOT/Sources/MeetingPrepStore.swift" "$ROOT/Sources/MeetingPrepViews.swift" "$ROOT/Sources/WorkOrchestrator.swift" "$ROOT/Sources/WorkLensPlans.swift" "$ROOT/Sources/WorkLensPlansPump.swift" "$ROOT/Sources/WorkChatQueue.swift" "$ROOT/Sources/WorkReferences.swift" "$ROOT/Sources/WorkTaskContext.swift" "$ROOT/Sources/WorkContextMeter.swift" "$ROOT/Sources/PermissionGuideModel.swift" "$ROOT/Sources/PermissionGuideSystem.swift" "$ROOT/Sources/PermissionFlowVendored.swift" "$ROOT/Sources/PermissionDragFlow.swift" "$ROOT/Sources/PermissionGuideViews.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Sources/ProviderConnectViews.swift" "$ROOT/Sources/ActivityWindow.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" "$ROOT/Sources/MeetingSpeakerPolicy.swift" "$ROOT/Sources/MeetingAskCore.swift" "$ROOT/Sources/MeetingAsk.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
-  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/SessionPreviews.swift" "$ROOT/Sources/LensAnswerStructure.swift" "$ROOT/Sources/LiveTranscript.swift" "$ROOT/Sources/DropIt.swift" "$ROOT/Sources/DropItViews.swift" "$ROOT/Sources/DropItP2.swift" "$ROOT/Sources/DropItP2Views.swift" "$ROOT/Sources/CalendarSource.swift" "$ROOT/Sources/CalendarSnapshotCore.swift" \
+  "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/SessionPreviews.swift" "$ROOT/Sources/LensAnswerStructure.swift" "$ROOT/Sources/SessionReplyLinks.swift" "$ROOT/Sources/LiveTranscript.swift" "$ROOT/Sources/DropIt.swift" "$ROOT/Sources/DropItViews.swift" "$ROOT/Sources/DropItP2.swift" "$ROOT/Sources/DropItP2Views.swift" "$ROOT/Sources/CalendarSource.swift" "$ROOT/Sources/CalendarSnapshotCore.swift" \
   "$ROOT/Sources/SessionPet.swift" \
   "$ROOT/Sources/ControlSetup.swift" \
   "$ROOT/Sources/ControlInstance.swift" "$ROOT/Sources/COSControlApp.swift" \
@@ -7312,7 +7316,8 @@ if "COSMarkdownView(text: record.body, dropLeadingTitle: true" not in ctx:
 if 'Text(record.body.isEmpty ? "(no stored body)" : record.body)' in ctx:
     fail("the raw thread body Text is still there")
 sessions = body(activity, "struct ClaudeSessionDetailPane")
-if "COSMarkdownView(text: turn.text)" not in sessions or "if turn.isUser {" not in sessions:
+# 0.5.380: the reply goes through SessionReplyLinks.readerText first (local links read as their cards' words).
+if "COSMarkdownView(text: SessionReplyLinks.readerText(turn.text))" not in sessions or "if turn.isUser {" not in sessions:
     fail("an assistant turn renders as Markdown and a user turn as typed")
 
 # 3. Copy actions copy the stored text: no copy path goes through the renderer.
