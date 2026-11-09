@@ -15,7 +15,7 @@ token = 'b' * 64
 (root / '.cos-glasses').mkdir(mode=0o700)
 (root / '.cos-glasses/.env').write_text('COS_API_TOKEN=' + token + '\n'); (root / '.cos-glasses/.env').chmod(0o600)
 calls = []
-state = {'features': {'activeQueryJobs': True, 'activeQueryJobsProtocol': 1}, 'active': 200, 'runs': 200, 'welcome': 200, 'health': 200, 'calendarRead': None}
+state = {'features': {'activeQueryJobs': True, 'activeQueryJobsProtocol': 1}, 'active': 200, 'runs': 200, 'welcome': 200, 'health': 200, 'calendarRead': None, 'calToday': 200}
 JOB = {'jobId': 'qj_1', 'generation': 1, 'origin': 'person', 'state': 'running', 'status': 'running', 'acceptedAt': '2026-10-21T19:46:20Z',
        'elapsedMs': 40000, 'provider': 'claude', 'model': 'opus', 'messageNo': 3120, 'title': 'What did Dana say about renewal timing?',
        'response': 'SECRET ANSWER', 'query': 'SECRET PROMPT', 'trail': ['x']}
@@ -46,6 +46,14 @@ class Handler(BaseHTTPRequestHandler):
             body = {'weather': {'temp': 71}, 'nextEvent': {'title': 'Northwind renewal', 'time': '2026-10-21T20:30:00Z', 'inMinutes': 43}}
             if state['calendarRead'] is not None: body['calendarRead'] = state['calendarRead']
             return self.reply(200, body)
+        if self.path == '/api/calendar/today':
+            # 0.5.384: Next up's five rows. Only the listed fields leave the helper, never a meeting URL; a bad row is dropped.
+            if state['calToday'] != 200: return self.reply(state['calToday'], {'error': 'not_found'})
+            return self.reply(200, {'connected': True, 'source': 'snapshot', 'asOf': '2026-10-21T19:30:00Z', 'stale': True, 'remainingCount': 7,
+                                    'next': [{'title': 'Northwind renewal', 'start': '2026-10-21T20:30:00Z', 'end': '2026-10-21T21:00:00Z', 'allDay': False,
+                                              'calendar': 'Work', 'meetingUrl': 'https://meet.example.invalid/SECRET'},
+                                             {'title': 'Bad row', 'start': 'not a time'}],
+                                    'endedRecently': [{'title': 'SECRET earlier', 'start': '2026-10-21T18:00:00Z', 'end': '2026-10-21T18:30:00Z'}]})
         self.reply(404, {})
 
 server = HTTPServer(('127.0.0.1', 0), Handler); threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -77,7 +85,10 @@ try:
     runs = full['details']['routines']
     assert runs['available'] and [r['id'] for r in runs['runs']] == ['rr_1'] and runs['runs'][0]['label'] == 'Morning brief' and runs['runs'][0]['messageNo'] == 3100, runs
     assert full['details']['calendar'] == {'available': True, 'nextEvent': {'title': 'Northwind renewal', 'time': '2026-10-21T20:30:00Z', 'inMinutes': 43}}, 'no calendarRead field: none passed'
-    assert calls == ['/api/query-jobs/active', '/api/routines/runs?limit=20', '/api/routines', '/api/welcome-context'], ('serial reads, in order', calls)
+    assert calls == ['/api/query-jobs/active', '/api/routines/runs?limit=20', '/api/routines', '/api/welcome-context', '/api/calendar/today'], ('serial reads, in order', calls)
+    assert full['details']['calendarToday'] == {'available': True, 'connected': True, 'stale': True, 'remainingCount': 7, 'asOf': '2026-10-21T19:30:00Z',
+                                                'next': [{'title': 'Northwind renewal', 'start': '2026-10-21T20:30:00Z', 'end': '2026-10-21T21:00:00Z',
+                                                          'allDay': False, 'calendar': 'Work'}]}, ('calendar/today: listed fields only, bad rows dropped', full['details']['calendarToday'])
     assert full['details']['unreachable'] is False
     state['calendarRead'] = False
     assert run(['activity-today', '--calendar'])['details']['calendar']['calendarRead'] is False, 'the server says whether the calendar was read'
@@ -93,19 +104,21 @@ try:
     assert old['ok'] and old['details']['queryJobs'] == {'available': False, 'reason': 'status', 'status': 400}, 'an older server is unavailable, never an error'
     assert old['details']['unreachable'] is False
     state['active'] = 200
-    state['runs'] = 404; state['welcome'] = 404
+    state['runs'] = 404; state['welcome'] = 404; state['calToday'] = 404
     older = run(['activity-today', '--calendar'])
+    assert older['details']['calendarToday'] == {'available': False, 'reason': 'status', 'status': 404}, 'a server without /api/calendar/today: Next up keeps its one event'
     assert older['ok'] and older['details']['routines'] == {'available': False, 'reason': 'status', 'status': 404} and older['details']['calendar']['available'] is False, older
     assert older['details']['unreachable'] is False, 'a source that answered with an error is that source unavailable, never the server down'
-    state['runs'] = 200; state['welcome'] = 200
+    state['runs'] = 200; state['welcome'] = 200; state['calToday'] = 200
     calls.clear()
     run(['activity-today'])
+    assert '/api/calendar/today' not in calls, 'the rest of today only with the calendar tick'
     assert '/api/welcome-context' not in calls and '/api/query-jobs/active' not in calls, 'the calendar and the jobs only when asked'
     server.shutdown(); server.server_close()
     down = run(['activity-today', '--jobs'])
     assert down['ok'] and down['details']['unreachable'] is True and down['message'] == 'Server not reachable', down
     assert down['details']['queryJobs']['reason'] == 'unreachable' and down['details']['routines']['reason'] == 'unreachable', down
-    print('PASS compiled helper: activity-today probe by capability (200 only, 12 s, never blocking other reads), listed job fields only, running routine runs with names, one calendar event and calendarRead, per-source reasons, unreachable only when nothing answered')
+    print('PASS compiled helper: activity-today probe by capability (200 only, 12 s, never blocking other reads), listed job fields only, running routine runs with names, one calendar event and calendarRead, the listed calendar/today fields (0.5.384), per-source reasons, unreachable only when nothing answered')
 finally:
     try: server.shutdown()
     except Exception: pass
