@@ -6483,7 +6483,9 @@ struct ClaudeSessionDetailPane: View {
                                         .textSelection(.enabled)
                                         .fixedSize(horizontal: false, vertical: true)
                                 } else {
-                                    COSMarkdownView(text: turn.text)
+                                    // 0.5.380: a local link reads as its card's words and a local image token goes (its card
+                                    // is below), as on Control Web. Copy session still copies the stored text.
+                                    COSMarkdownView(text: SessionReplyLinks.readerText(turn.text))
                                 }
                                 // 0.5.380: the files and images this turn made, as cards that open with Quick Look.
                                 SessionPreviewTurnCards(store: model.sessionPreviews, turnID: turn.id)
