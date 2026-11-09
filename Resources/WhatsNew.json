@@ -1,8 +1,17 @@
 {
-  "version": "0.5.380",
+  "version": "0.5.383",
   "whatsNew": {
-    "summary": "Sessions shows the files and images a session made, under the reply that made them, and opens each with Quick Look on a copy that is deleted when you close it. A file whose name says it may hold secrets never opens. Today summaries now go up to 100 a day, set in Settings. Plus everything in 0.5.379.",
+    "summary": "Settings, Devices can register this Mac's Touch ID key for phone approvals before approvals are turned on, so its 24 hour clock starts early. It shows only when your COS server turns it on. Plus everything in 0.5.380.",
     "sections": [
+      {
+        "title": "0.5.383",
+        "items": [
+          "Settings, Glasses and iPhone, Devices: Phone approvals. Your iPhone can approve agent actions with its passkey, and Touch ID on this Mac enrolls the phone. It shows only when your COS server turns phone approvals on.",
+          "Registration only: when your COS server 7.0.9 or later turns on just the registration switch, Devices shows only this Mac's key. Register it with Touch ID to start its 24 hour clock. Phone enrollment and approvals stay off.",
+          "The full key hash and the time the server registered the key are shown, to check against the pin. Commit the pin by hand as web_key_anchor.json. COS Control never writes or commits it.",
+          "Cancelling Touch ID registers nothing. Both switches are off by default, and with them off nothing new shows."
+        ]
+      },
       {
         "title": "0.5.380",
         "items": [
