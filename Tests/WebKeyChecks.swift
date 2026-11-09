@@ -87,6 +87,7 @@ func scratchDir(_ name: String) -> URL {
 @MainActor final class FakeServer {
     var answers: [String: (Int, [String: Any])] = [:]
     var listeners: [String: Any] = [:]
+    var anchorListeners: [String: Any] = [:]
     var calls: [(op: String, body: [String: Any])] = []
     var onCall: ((String, [String: Any]) -> Void)?
     var pauseOp: String?
@@ -106,6 +107,7 @@ func scratchDir(_ name: String) -> URL {
         calls.append((op, parsed))
         onCall?(op, parsed)
         if op == "listeners" { return WebKeyHelperAnswer(ok: true, message: "", details: json(viaJSONValue(listeners))) }
+        if op == "anchor-listeners" { return WebKeyHelperAnswer(ok: true, message: "", details: json(viaJSONValue(anchorListeners))) }
         guard let (status, b) = answers[op] else { return WebKeyHelperAnswer(ok: true, message: "", details: json(["transport": "unavailable"])) }
         return WebKeyHelperAnswer(ok: true, message: "", details: json(viaJSONValue(WebKeyHelperCore.answer(status: status, body: b))))
     }
@@ -138,6 +140,8 @@ struct WebKeyChecks {
         await cancellation()
         await flow(pending: pending, anchorG: anchorG, anchorDER: anchorDER, anchorRaw: anchorRaw, selfDns: selfDns)
         await recoveryFlow(anchorRaw: anchorRaw, selfDns: selfDns)
+        bootstrapRules(selfDns: selfDns)
+        await bootstrapFlow(anchorG: anchorG, anchorDER: anchorDER, anchorRaw: anchorRaw, selfDns: selfDns)
 
         print("web key checks: \(passes) passed, \(failures) failed")
         if failures > 0 { exit(1) }
@@ -443,7 +447,7 @@ struct WebKeyChecks {
         check(body("revoke", #"{"kid":"abc","reason":"revoked_in_control"}"#) != nil && body("revoke", #"{"kid":"abc","reason":"Lost Phone"}"#) == nil, "helper body", "revoke reason")
         check(body("revoke-all", "{}") == "{}" && body("revoke-all", "") == "{}" && body("revoke-all", #"{"epoch":"1"}"#) == nil, "helper body", "revoke-all takes nothing")
         check(body("status", "{}") == nil && body("nope", "{}") == nil, "helper body", "reads take no body")
-        check(WebKeyHelperCore.ops == ["status", "pending", "keys", "anchor", "approve", "revoke", "revoke-all", "listeners"], "helper ops")
+        check(WebKeyHelperCore.ops == ["status", "pending", "keys", "anchor", "approve", "revoke", "revoke-all", "listeners", "anchor-listeners"], "helper ops")
         check(WebKeyHelperCore.calls["anchor"] == .init(method: "POST", path: "/api/web-key/anchor", bodyKeys: ["anchorPub", "statement", "signature"])
               && WebKeyHelperCore.calls["pending"]?.path == "/api/web-key/enroll/pending" && WebKeyHelperCore.calls["approve"]?.path == "/api/web-key/enroll/approve",
               "helper ops", "the server's routes")
@@ -606,6 +610,163 @@ struct WebKeyChecks {
         let thirdDER = try! P256.Signing.PrivateKey(rawRepresentation: thirdRaw).publicKey.derRepresentation
         check(damaged.protectionReady && damaged.controlState?.epoch == 2 && damaged.controlState?.anchorSpkiSha256 == WebKeyHash.sha256Hex(thirdDER),
               "damaged mirror recovery", "only a newly signed anchor registration replaces the damaged record")
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    /// 0.5.383 (server 7.0.9, COS_WEB_KEY_ANCHOR_BOOTSTRAP): the mode reader, the audit scopes and the helper's anchor audit.
+    static func bootstrapRules(selfDns: String) {
+        let origin = "https://\(selfDns):3144"
+        func mode(_ status: Int, _ body: [String: Any]) -> WebKeyServerMode { WebKeyServerMode.read(status: status, body: obj(json(viaJSONValue(body)))) }
+        check(mode(200, ["enabled": true, "origin": origin]) == .authority, "bootstrap mode reader", "today's authority reply is authority")
+        check(mode(200, ["enabled": true, "mode": "authority", "origin": origin]) == .authority, "bootstrap mode reader", "an explicit authority mode")
+        check(mode(200, ["enabled": false, "mode": "bootstrap", "origin": origin]) == .bootstrap, "bootstrap mode reader", "enabled false plus mode bootstrap")
+        check(mode(200, ["enabled": true, "mode": "bootstrap", "origin": origin]) == .off, "bootstrap mode reader", "a contradiction hides the section")
+        check(mode(200, ["enabled": false, "origin": origin]) == .off && mode(200, ["enabled": false, "mode": "Bootstrap", "origin": origin]) == .off
+              && mode(200, ["mode": "bootstrap", "origin": origin]) == .off, "bootstrap mode reader", "both off, an older server, or a misspelt mode: off")
+        check(mode(200, ["enabled": false, "mode": "bootstrap"]) == .off && mode(200, ["enabled": false, "mode": "bootstrap", "origin": "https://\(selfDns):3143"]) == .off
+              && mode(404, ["enabled": false, "mode": "bootstrap", "origin": origin]) == .off, "bootstrap mode reader", "no signer origin or no 200: off")
+        let at = Date(timeIntervalSince1970: 1_786_000_000)
+        let mine: [[String: Any]] = [["pid": 4243, "underService": true]]
+        func anchorAudit(_ ports: [String: Any], stable: Bool = true, scope: String? = "anchor") -> WebKeyListenerAudit {
+            var d: [String: Any] = ["servicePID": 4242, "ports": ports, "stable": stable]
+            if let scope { d["scope"] = scope }
+            return WebKeyListenerAudit.judgeAnchor(obj(json(viaJSONValue(d))), at: at)
+        }
+        let good = anchorAudit(["3141": mine, "3143": mine])
+        check(good.genuine && good.scope == .anchor && good.freshForAnchorRegistration(now: at.addingTimeInterval(59)), "bootstrap anchor audit", "one service PID on 3141 and 3143")
+        check(!good.fresh(now: at), "bootstrap anchor audit never approves", "an anchor-scope audit is never a fresh signer audit")
+        check(!good.freshForAnchorRegistration(now: at.addingTimeInterval(61)), "bootstrap anchor audit", "61 s old")
+        check(!anchorAudit(["3141": mine]).genuine && !anchorAudit(["3141": mine, "3143": mine + [["pid": 9, "underService": false]]]).genuine
+              && !anchorAudit(["3141": mine, "3143": [["pid": 5000, "underService": true]]]).genuine, "bootstrap anchor audit", "missing, foreign or split listeners refuse")
+        let outsider: [[String: Any]] = [["pid": 4243, "underService": false]]
+        check(!anchorAudit(["3141": outsider, "3143": outsider]).genuine, "bootstrap anchor audit", "one PID that is not under the COS LaunchAgent refuses")
+        check(!anchorAudit(["3141": mine, "3143": mine], stable: false).genuine && !anchorAudit(["3141": mine, "3143": mine], scope: nil).genuine,
+              "bootstrap anchor audit", "a listener that changed, or a full-audit answer, refuses")
+        let signer = WebKeyListenerAudit(genuine: true, reason: "ok", checkedAt: at)
+        check(signer.fresh(now: at) && !signer.freshForAnchorRegistration(now: at), "bootstrap anchor audit", "the signer audit stays the signer audit")
+        check(good.line == WebKeyListenerAudit.anchorNotGenuineLine && signer.line == WebKeyListenerAudit.notGenuineLine, "bootstrap anchor audit", "each scope says its own line")
+        let helper = WebKeyHelperCore.anchorListeners(servicePID: 4242, owners: [3141: [4243], 3143: [4243], 3144: [66]], underService: { $0 == 4243 }, stable: true)
+        let ports = helper["ports"] as? [String: Any] ?? [:]
+        check(Set(helper.keys) == ["servicePID", "ports", "scope", "stable"] && Set(ports.keys) == ["3141", "3143"] && helper["assets"] == nil
+              && WebKeyHelperCore.ops.contains("anchor-listeners") && WebKeyHelperCore.calls["anchor-listeners"] == nil,
+              "bootstrap helper audit", "3141 and 3143 only, no signer assets, a local op")
+        check(WebKeyListenerAudit.judgeAnchor(obj(json(viaJSONValue(helper))), at: at).genuine, "bootstrap helper audit", "the helper's answer round trips")
+        check(!WebKeyListenerAudit.judge(obj(json(viaJSONValue(helper))), at: at).genuine, "bootstrap anchor audit never approves", "the full judge refuses the anchor answer")
+    }
+
+    /// 0.5.383 bootstrap: the Mac anchor alone, then authority on later with no reset.
+    @MainActor
+    static func bootstrapFlow(anchorG: [String: Any], anchorDER: Data, anchorRaw: Data, selfDns: String) async {
+        let origin = "https://\(selfDns):3144"
+        let aud = anchorG["aud"] as! String
+        let sha = anchorG["spkiSha256"] as! String
+        let reasons = Reasons()
+        let fake = FakeServer()
+        let mem = MemoryStore()
+        let dir = scratchDir("bootstrap")
+        func make() -> WebKeyState {
+            let s = WebKeyState()
+            s.runHelper = { args, body in await fake.run(args, body) }
+            s.secure = mem; s.stateDirectory = dir
+            s.makeAnchor = { SoftAnchor(raw: anchorRaw, reasons: reasons) }
+            s.loadAnchor = { SoftAnchor(raw: $0, reasons: reasons) }
+            s.anchorBlob = { ($0 as? SoftAnchor)?.raw }
+            return s
+        }
+        let mine: [[String: Any]] = [["pid": 4243, "underService": true]]
+        fake.anchorListeners = ["servicePID": 4242, "ports": ["3141": mine, "3143": mine], "scope": "anchor", "stable": true]
+        fake.listeners = audited(["servicePID": 4242, "ports": ["3141": mine, "3143": mine, "3144": mine]])
+        fake.answers["status"] = (200, ["ok": true, "enabled": false, "mode": "bootstrap", "anchorRegistered": false, "anchorMature": false, "aud": NSNull(), "origin": origin, "epoch": 3])
+        fake.answers["keys"] = (200, ["ok": true, "epoch": 3, "keys": [Any]()])
+        fake.answers["pending"] = (200, ["ok": true, "pending": NSNull()])
+        let state = make()
+        await state.refresh()
+        check(state.visible && state.bootstrapOnly && !state.authority && !state.anchorRegisteredHere && fake.calls.map(\.op) == ["status"]
+              && mem.writes == 0, "bootstrap shows the anchor only", "visible, nothing asked but status, nothing written")
+        // Cancel or deny Touch ID: nothing registered, no key kept, no record.
+        reasons.refuse = true
+        await state.createOrRegisterAnchor()
+        check(fake.count("anchor") == 0 && mem.items[SecureEnclaveWebKeyAnchor.blobAccount] == nil && mem.items[WebKeyStateStore.mirrorAccount] == nil
+              && !state.anchorRegisteredHere, "bootstrap cancel creates nothing", "a cancelled sheet posts nothing and keeps nothing")
+        reasons.refuse = false
+        check(fake.count("listeners") == 0 && fake.count("anchor-listeners") == 1, "bootstrap anchor audit", "registration ran the anchor audit, never the signer audit")
+        // A foreign listener on 3143 stops registration before Touch ID.
+        fake.anchorListeners = ["servicePID": 4242, "ports": ["3141": mine, "3143": mine + [["pid": 77, "underService": false]]], "scope": "anchor", "stable": true]
+        reasons.list = []
+        await state.createOrRegisterAnchor()
+        check(fake.count("anchor") == 0 && reasons.list.isEmpty && state.message == WebKeyListenerAudit.anchorNotGenuineLine,
+              "bootstrap anchor audit", "a foreign listener refuses before Touch ID")
+        fake.anchorListeners = ["servicePID": 4242, "ports": ["3141": mine, "3143": mine], "scope": "anchor", "stable": true]
+        // Register: the 201 carries setAt; this status reply does not report anchorSetAt.
+        fake.onCall = { op, body in
+            guard op == "anchor" else { return }
+            let st = WebKeyB64.decode(body["statement"] as? String ?? ""), sig = WebKeyB64.decode(body["signature"] as? String ?? "")
+            let okSig = st.flatMap { s in sig.map { verifies(anchorDER, s, $0) } } ?? false
+            fake.answers["anchor"] = okSig ? (201, ["ok": true, "setAt": 1_786_000_123_000, "spkiSha256": sha]) : (403, ["ok": false])
+            fake.answers["status"] = (200, ["ok": true, "enabled": false, "mode": "bootstrap", "anchorRegistered": true, "anchorMature": false, "aud": aud, "origin": origin, "epoch": 4])
+        }
+        await state.createOrRegisterAnchor()
+        fake.onCall = nil
+        check(fake.count("anchor") == 1 && state.anchorRegisteredHere && state.anchorSpkiSha256 == sha && state.anchorFingerprint == anchorG["fingerprint"] as? String
+              && reasons.list.last == WebKeyProtocol.anchorReason(fingerprint: anchorG["fingerprint"] as! String), "bootstrap registers with Touch ID", "registered here, full key hash shown")
+        check(state.anchorSetAt == 1_786_000_123_000, "bootstrap shows setAt", "the registration answer's setAt when status has none")
+        check(state.controlState == WebKeyControlState.parse(mem.items[WebKeyStateStore.mirrorAccount] ?? Data()) && state.controlState?.epoch == 4
+              && state.controlState?.anchorSpkiSha256 == sha && state.controlState?.revoked.isEmpty == true, "bootstrap starts the protected record", "epoch from status, this anchor, no revocations")
+        check(["keys", "pending", "listeners", "approve", "revoke", "revoke-all"].allSatisfy { fake.count($0) == 0 }, "bootstrap hides enrollment and approval",
+              "no key list, pending request, signer audit, approval or revocation call")
+        check(state.pinJSON().map { obj(Data($0.utf8))["spkiSha256"] as? String } == sha, "bootstrap pin", "Copy pin names this anchor")
+        // A pending request exists on the server: bootstrap never reads it, never shows a card, never approves.
+        fake.answers["status"] = (200, ["ok": true, "enabled": false, "mode": "bootstrap", "anchorRegistered": true, "anchorMature": false, "aud": aud, "origin": origin, "epoch": 4, "anchorSetAt": 1_786_000_124_000])
+        await state.refresh()
+        check(state.anchorSetAt == 1_786_000_124_000, "bootstrap shows setAt", "the server's anchorSetAt wins")
+        state.typedCode = "123456"
+        await state.approve()
+        await state.revoke("AAAAAAAAAAAAAAAAAAAAAA")
+        await state.revokeAll()
+        await state.createOrRegisterAnchor(recovery: true)
+        check(state.card == nil && !state.approveAllowed && !state.protectionReady && state.keys.isEmpty
+              && ["keys", "pending", "listeners", "approve", "revoke", "revoke-all"].allSatisfy { fake.count($0) == 0 } && fake.count("anchor") == 1
+              && state.controlState?.revoked.isEmpty == true && state.controlState?.epoch == 4, "bootstrap hides enrollment and approval",
+              "approve, revoke, revoke all and reset called directly do nothing")
+        // Relaunch in bootstrap: the same anchor, nothing rewritten.
+        let writes = mem.writes
+        let relaunched = make()
+        await relaunched.refresh()
+        check(relaunched.anchorRegisteredHere && relaunched.bootstrapOnly && mem.writes == writes, "bootstrap relaunch", "the anchor is found, the record left alone")
+        // Authority turns on later: today's lane, with this anchor's record and no reset.
+        fake.answers["status"] = (200, ["ok": true, "enabled": true, "anchorRegistered": true, "anchorMature": true, "aud": aud, "origin": origin, "epoch": 4])
+        fake.answers["keys"] = (200, ["ok": true, "epoch": 4, "keys": [Any]()])
+        let later = make()
+        await later.refresh()
+        check(later.authority && !later.bootstrapOnly && later.protectionReady && !later.recoveryRequired && later.controlState?.anchorSpkiSha256 == sha
+              && fake.count("keys") == 1, "bootstrap then authority needs no reset", "authority adopts the server's list for the bootstrap anchor")
+        // A server that says enabled true with mode bootstrap is a contradiction: hidden, as with both off.
+        fake.answers["status"] = (200, ["ok": true, "enabled": true, "mode": "bootstrap", "anchorRegistered": true, "aud": aud, "origin": origin, "epoch": 4])
+        await later.refresh()
+        check(!later.visible && later.mode == .off && later.anchorSetAt == nil, "bootstrap mode reader", "a contradictory reply hides the section")
+        // The server resets setAt on a same-key registration: a plain Register never runs over a registered anchor.
+        fake.answers["status"] = (200, ["ok": true, "enabled": false, "mode": "bootstrap", "anchorRegistered": false, "anchorMature": false, "aud": NSNull(), "origin": origin, "epoch": 4])
+        let stale = make()
+        await stale.refresh()
+        fake.answers["status"] = (200, ["ok": true, "enabled": false, "mode": "bootstrap", "anchorRegistered": true, "anchorMature": false, "aud": aud, "origin": origin, "epoch": 4])
+        let postsBefore = fake.count("anchor")
+        reasons.list = []
+        await stale.createOrRegisterAnchor()
+        check(fake.count("anchor") == postsBefore && reasons.list.isEmpty, "never registers twice", "an anchor registered since the last read is not registered over, and Touch ID is not asked")
+        await stale.refresh()
+        await stale.createOrRegisterAnchor()
+        check(stale.anchorRegisteredHere && fake.count("anchor") == postsBefore, "never registers twice", "registered here: Register does nothing")
+        fake.answers["status"] = (200, ["ok": true, "enabled": false, "mode": "bootstrap", "anchorRegistered": true, "anchorMature": true, "aud": String(repeating: "f", count: 64), "origin": origin, "epoch": 4])
+        await stale.refresh()
+        stale.startRegistration()
+        await stale.createOrRegisterAnchor()
+        check(stale.foreignAnchor && fake.count("anchor") == postsBefore, "never registers twice", "another key on the server: plain Register refuses")
+        fake.onCall = { op, _ in
+            if op == "anchor" { fake.answers["status"] = (200, ["ok": true, "enabled": false, "mode": "bootstrap", "anchorRegistered": true, "anchorMature": false, "aud": aud, "origin": origin, "epoch": 5]) }
+        }
+        await stale.createOrRegisterAnchor(replace: true)
+        fake.onCall = nil
+        check(fake.count("anchor") == postsBefore + 1 && stale.anchorRegisteredHere, "confirmed replace", "only the confirmed replace registers over another key")
         try? FileManager.default.removeItem(at: dir)
     }
 

@@ -45,7 +45,7 @@ mutants = [
     ("W6-1 any code matches", C, "        return diff == 0\n", "        return true\n", "[W6 typed code]"),
     ("W6-2 the gate skips the code", C, "        return WebKeyCodeEntry.matches(typed: typed, card: card)\n", "        return true\n", "[W6 approve needs the code]"),
     ("W6-3 approve() trusts the button", C, "        guard current(expectedRead), approveAllowed, let card, let anchor else", "        guard current(expectedRead), let card, let anchor else", "[W6 approve needs the code]"),
-    ("W6-4 approve() does not audit again (pins)", C, "        if !(audit?.fresh(now: now()) ?? false) { await runAudit() }\n        guard current(expectedRead), approveAllowed", "        guard current(expectedRead), approveAllowed", "[W6 approve rechecks]"),
+    ("W6-4 approve() does not audit again (pins)", C, "        if !(audit?.fresh(now: now()) ?? false) { await runAudit() }\n        guard current(expectedRead), approveAllowed", "        guard current(expectedRead), approveAllowed", "[cancelled approval cannot post]"),
     ("W6-5 the button ignores the gate (pins)", V, ".disabled(!state.approveAllowed || state.busy)", ".disabled(state.busy)", "[W6 approve rechecks]"),
     # Review W9: the listener audit.
     ("W9-1 the gate skips freshness", C, "        guard anchor, let card, let audit, audit.fresh(now: now) else { return false }", "        guard anchor, let card, audit != nil else { return false }", "[W9 approve needs a fresh audit]"),
@@ -53,7 +53,7 @@ mutants = [
     ("W9-3 split listeners pass", C, '        guard owners.count == 1 else { return refuse("listeners_split") }\n', "", "[W9 listener audit]"),
     ("W9-4 a foreign listener passes", C, 'object["underService"] as? Bool == true else { return refuse("port_\\(port)_foreign_listener") }', 'true else { return refuse("port_\\(port)_foreign_listener") }', "[W9 listener audit]"),
     ("W9-5 3144 not audited", C, "    static let ports = [3141, 3143, 3144]\n", "    static let ports = [3141, 3143]\n", "[W9 listener audit]"),
-    ("W9-6 an old audit is fresh", C, "        return genuine && age <= Self.maxAge && age >= -5\n", "        return genuine\n", "[W9 audit freshness]"),
+    ("W9-6 an old audit is fresh", C, "        return age <= Self.maxAge && age >= -5\n", "        return true\n", "[W9 audit freshness]"),
     ("W9-7 the helper skips 3144", P, "    static let auditPorts = [3141, 3143, 3144]\n", "    static let auditPorts = [3141, 3143]\n", "[W9 helper answer]"),
     # Review W5: Control's record.
     ("W5-2 a rolled-back file is kept", C, "            if let fileState, fileState.sameRecord(as: mirror), !isSymlink() { return .ok(mirror) }\n", "            if fileState != nil { return .ok(mirror) }\n", "[W5 rollback caught]"),
@@ -73,7 +73,7 @@ mutants = [
      '        controlState = s\n        let answer = await ask("revoke-all",', "[epoch intent before HTTP]"),
     ("W5-11 the state file is not strict", C, '              Set(object.keys) == ["v", "epoch", "revoked", "anchorSpkiSha256", "updatedAt"] else { return nil }', '              object["v"] != nil else { return nil }', "[W5 state file]"),
     # Hidden unless the flag; the bootstrap.
-    ("F-1 shown when the flag is off", C, 'status.status == 200, status.body["enabled"] as? Bool == true,', "status.status == 200,", "[hidden unless the flag]"),
+    ("F-1 shown when the flag is off", C, 'case false?: return mode as? String == "bootstrap" ? .bootstrap : .off', "case false?: return .bootstrap", "[hidden unless the flag]"),
     ("B1-1 the statement's time is wrong", C, '"createdAt": NSNumber(value: createdAtMs),', '"createdAt": NSNumber(value: createdAtMs + 1),', "[anchor statement]"),
     ("B1-2 the anchor without current biometry (pins)", C, "[.privateKeyUsage, .biometryCurrentSet]", "[.privateKeyUsage]", "[B1 anchor key]"),
     ("B1-3 the blob not kept", C, "guard secure.write(SecureEnclaveWebKeyAnchor.blobAccount, newBlob) else {", "guard !newBlob.isEmpty else {", "[anchor bootstrap]"),
@@ -86,7 +86,7 @@ mutants = [
      'visible && anchorRegisteredHere && protectionReady && controlState != nil &&',
      'visible && anchorRegisteredHere && controlState != nil &&', "[protected persistence gate]"),
     ("P-2 failed mirror save adopted", C,
-     'if next != saved, !store.save(next) {', 'if false {', "[protected persistence gate]"),
+     'if next != saved, !store.save(next) {', 'if false {', "[W5 state written]"),
     ("A-1 listener ownership without asset proof", C,
      '        guard let assets = details["assets"] as? [String: Any] else { return refuse("signer_assets_unverified") }',
      '        let assets = details["assets"] as? [String: Any] ?? ["verified": true, "webControlManifestSha256": String(repeating: "a", count: 64), "webSignerManifestSha256": String(repeating: "b", count: 64)]', "[immutable asset gate]"),
@@ -107,7 +107,30 @@ mutants = [
     ("C-2 disappearing Settings does not cancel", C,
      '    func cancelActions() {\n        actionTask?.cancel(); actionTask = nil\n        readID = nil; card = nil; typedCode = ""; protectionReady = false; audit = nil\n    }',
      '    func cancelActions() {}', "[cancelled approval cannot post]"),
-
+ 
+    # 0.5.383 bootstrap (server 7.0.9, COS_WEB_KEY_ANCHOR_BOOTSTRAP): the Mac anchor alone.
+    ("BS-1 enrollment drawn in bootstrap (pins)", V, "if state.authority && state.anchorRegisteredHere {", "if state.anchorRegisteredHere {", "[bootstrap shows the anchor only]"),
+    ("BS-2 bootstrap reads the key list and pending", C, "        if served == .bootstrap {\n", "        if served == .off {\n", "[bootstrap hides enrollment and approval]"),
+    ("BS-3 approval ignores the mode (pins)", C, "mode == .authority && visible && anchorRegisteredHere", "visible && anchorRegisteredHere", "[bootstrap hides enrollment and approval]"),
+    ("BS-4 revoke in bootstrap", C, "        guard mode == .authority, visible, !busy, let anchor,\n", "        guard visible, !busy, let anchor,\n", "[bootstrap hides enrollment and approval]"),
+    ("BS-5 revoke all in bootstrap", C, "        guard mode == .authority, visible, !busy, let anchor else { return }", "        guard visible, !busy, let anchor else { return }", "[bootstrap hides enrollment and approval]"),
+    ("BS-6 an anchor audit passes the signer gate", C, "        scope == .signer && genuine && young(now: now)\n", "        genuine && young(now: now)\n", "[bootstrap anchor audit never approves]"),
+    ("BS-7 bootstrap runs the signer audit", C, "mode == .bootstrap ? .anchor : .signer", ".signer", "[bootstrap anchor audit]"),
+    ("BS-8 anchor audit takes a foreign listener", C, '(object["underService"] as? Bool) == true else', "true else", "[bootstrap anchor audit]"),
+    ("BS-9 anchor audit ignores a changed listener", C, '        guard details["stable"] as? Bool == true else { return refuse("listener_changed") }\n', "", "[bootstrap anchor audit]"),
+    ("BS-10 helper anchor audit reaches 3144", P, "    static let anchorAuditPorts = [3141, 3143]\n", "    static let anchorAuditPorts = [3141, 3143, 3144]\n", "[bootstrap helper audit]"),
+    ("BS-11 no protected record after bootstrap registration", C, "            if let anchor, anchorRegisteredHere { bindBootstrapRecord(", "            if let anchor, anchorRegisteredHere, anchor.publicKeyDER.isEmpty { bindBootstrapRecord(", "[bootstrap starts the protected record]"),
+    ("BS-12 record seeded without this run's registration (pins)", C, "        guard registeredAnchorNeedsStateRebind else { return }\n        let sha", "        let sha", "[bootstrap starts the protected record]"),
+    ("BS-13 a contradiction reads as authority", C, 'case true?: return mode == nil || mode as? String == "authority" ? .authority : .off', "case true?: return .authority", "[bootstrap mode reader]"),
+    ("BS-14 setAt from the registration answer dropped", C, '        if let at = WebKeyServerMode.int(answer.body["setAt"]) { anchorSetAt = at }\n', "", "[bootstrap shows setAt]"),
+    ("BS-15 the pin note says Control commits (pins)", V, "Control never writes or commits it.", "Control commits it for you.", "[bootstrap pin by hand]"),
+    ("BS-16 reset offered in bootstrap (pins)", C, "        guard registering != .off, !recovery || registering == .authority else { return }\n", "        guard registering != .off else { return }\n", "[bootstrap hides enrollment and approval]"),
+    ("BS-17 no full key hash (pins)", V, "WebKeyLine(label: WebKeyCopy.keyHash, value: sha, mono: true, lines: 3)", "EmptyView()", "[bootstrap shows the anchor only]"),
+    ("BS-18 bootstrap seed takes the server's epoch away", C, "        let seed = WebKeyControlState(epoch: statusEpoch ?? 0,", "        let seed = WebKeyControlState(epoch: 0,", "[bootstrap starts the protected record]"),
+    # The server resets setAt on a same-key registration: never register twice.
+    ("RR-1 Register runs over a registered anchor", C, "        guard recovery || replace || (!anchorRegisteredHere && !foreignAnchor) else {", "        guard true else {", "[never registers twice]"),
+    ("RR-2 no fresh status before registering", C, '                  fresh.body["anchorRegistered"] as? Bool == false else {', "                  true else {", "[never registers twice]"),
+    ("RR-3 replace without confirmation (pins)", V, "Button(WebKeyCopy.replace) { confirmReplace = true }", "Button(WebKeyCopy.replace) { state.startReplace() }", "[confirmed replace]"),
 ]
 
 only = [part for part in os.environ.get("MUTATE_ONLY", "").split("|") if part]

@@ -2,8 +2,10 @@ import AppKit
 import SwiftUI
 
 // Phone approvals in Settings (Glasses and iPhone, Devices, under Open COS on your phone). Drawn only while the server says
-// COS_WEB_KEY_AUTHORITY is on (WebKeyState.visible); with the flag off this view is zero height and asks the server one
-// status question when it appears. Rules and state live in Sources/WebKeyCore.swift.
+// COS_WEB_KEY_AUTHORITY is on, or (0.5.383, server 7.0.9) COS_WEB_KEY_ANCHOR_BOOTSTRAP is on with authority off
+// (WebKeyState.visible). Bootstrap draws the Mac anchor alone: no enrollment, no code, no approval, no key list. With both
+// off this view is zero height and asks the server one status question when it appears. Rules and state live in
+// Sources/WebKeyCore.swift.
 //
 // The enrollment card draws ONLY a WebKeyApprovalCard, which WebKeyApprovalCheck builds from the approvalJcs bytes the
 // anchor signs (review W4). It never draws the 6-digit code: Miles types the code his phone shows (review W6), and Touch
@@ -18,7 +20,7 @@ struct WebKeySettingsBlock: View {
         VStack(alignment: .leading, spacing: 0) {
             if state.visible {
                 SettingsHubBlock { WebKeyAnchorSection(state: state) }
-                if state.anchorRegisteredHere {
+                if state.authority && state.anchorRegisteredHere {
                     SettingsHubBlock { WebKeyEnrollmentSection(state: state) }
                     if !state.keys.isEmpty { SettingsHubBlock { WebKeyKeysSection(state: state) } }
                 }
@@ -38,6 +40,13 @@ enum WebKeyCopy {
     static let foreign = "The server holds an approval key this Mac did not make. Registering this Mac's key replaces it and revokes every phone key."
     static let young = "A new key approves nothing for 24 hours."
     static let pinNote = "Commit the pin yourself as operations/scripts/web_key_anchor.json. Control never writes the repo."
+    // 0.5.383 bootstrap (registration only).
+    static let bootstrapSubtitle = "Registration only. Register this Mac's Touch ID key now so its 24 hour clock starts. Phone enrollment and approvals stay off on the COS server."
+    static let bootstrapPinNote = "Copy the pin and commit it by hand as operations/scripts/web_key_anchor.json in the receiver's checkout. Control never writes or commits it."
+    static let keyHash = "Key hash"
+    static let replace = "Replace with Touch ID…"
+    static let replaceMessage = "The server holds an approval key this Mac did not make. Replacing it registers this Mac's key, revokes every phone key and starts a new 24 hour clock. Commit the new pin by hand."
+    static let registeredAt = "Registered"
     static let copyPin = "Copy pin"
     static let enrollTitle = "Enroll a phone"
     static let nothingPending = "Start enrollment on your phone. The request shows here."
@@ -47,17 +56,24 @@ enum WebKeyCopy {
     static let keysTitle = "Enrolled phones"
     static let revoke = "Revoke"
     static let revokeAll = "Revoke all…"
+
+    /// The server's setAt as a local date and time, then the raw milliseconds as the server's record holds them.
+    static func setAtLine(_ ms: Int64) -> String {
+        let date = Date(timeIntervalSince1970: Double(ms) / 1000)
+        return date.formatted(date: .abbreviated, time: .standard) + ", setAt \(ms)"
+    }
 }
 
 private struct WebKeyLine: View {
     let label: String
     let value: String
     var mono = false
+    var lines = 2
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(label).font(COSType.body(12)).foregroundStyle(TodayInk.sub).frame(width: 74, alignment: .leading)
             Text(value).font(mono ? COSType.mono(12) : COSType.body(12.5)).foregroundStyle(TodayInk.ink)
-                .lineLimit(2).textSelection(.enabled)
+                .lineLimit(lines).textSelection(.enabled)
             Spacer(minLength: 0)
         }
     }
@@ -66,16 +82,24 @@ private struct WebKeyLine: View {
 private struct WebKeyAnchorSection: View {
     @ObservedObject var state: WebKeyState
     @State private var confirmReset = false
+    @State private var confirmReplace = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(WebKeyCopy.title).font(COSType.body(14.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
-                Text(WebKeyCopy.subtitle).font(COSType.body(13)).foregroundStyle(TodayInk.sub).fixedSize(horizontal: false, vertical: true)
+                Text(state.bootstrapOnly ? WebKeyCopy.bootstrapSubtitle : WebKeyCopy.subtitle).font(COSType.body(13)).foregroundStyle(TodayInk.sub).fixedSize(horizontal: false, vertical: true)
             }
             .accessibilityElement(children: .combine)
             if let fingerprint = state.anchorFingerprint {
                 WebKeyLine(label: "This Mac", value: fingerprint, mono: true)
+            }
+            if state.bootstrapOnly, let sha = state.anchorSpkiSha256 {
+                // The pin's spkiSha256 in full, to check against the pin and the server by another view.
+                WebKeyLine(label: WebKeyCopy.keyHash, value: sha, mono: true, lines: 3)
+            }
+            if state.bootstrapOnly, state.anchorRegisteredHere, let at = state.anchorSetAt {
+                WebKeyLine(label: WebKeyCopy.registeredAt, value: WebKeyCopy.setAtLine(at))
             }
             if state.foreignAnchor {
                 Text(WebKeyCopy.foreign).font(COSType.body(12)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
@@ -84,12 +108,17 @@ private struct WebKeyAnchorSection: View {
                 Text(WebKeyCopy.young).font(COSType.body(12)).foregroundStyle(TodayInk.sub)
             }
             HStack(spacing: 14) {
-                if !state.anchorRegisteredHere {
+                if !state.anchorRegisteredHere && !state.foreignAnchor {
                     Button(state.anchorFingerprint == nil ? WebKeyCopy.create : WebKeyCopy.register) { state.startRegistration() }
                         .buttonStyle(TodayButtonStyle(small: true))
                         .disabled(state.busy)
                 }
-                if state.anchorRegisteredHere && state.recoveryRequired {
+                if state.foreignAnchor {
+                    Button(WebKeyCopy.replace) { confirmReplace = true }
+                        .buttonStyle(TodayButtonStyle(small: true))
+                        .disabled(state.busy)
+                }
+                if state.authority && state.anchorRegisteredHere && state.recoveryRequired {
                     Button("Reset phone approvals…") { confirmReset = true }
                         .buttonStyle(COSTextButtonStyle()).disabled(state.busy)
                 }
@@ -104,7 +133,7 @@ private struct WebKeyAnchorSection: View {
                 Spacer(minLength: 0)
             }
             if state.anchorRegisteredHere {
-                Text(WebKeyCopy.pinNote).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
+                Text(state.bootstrapOnly ? WebKeyCopy.bootstrapPinNote : WebKeyCopy.pinNote).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).fixedSize(horizontal: false, vertical: true)
             }
             if let note = state.rollbackNote {
                 Text(note).font(COSType.body(12)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
@@ -117,6 +146,9 @@ private struct WebKeyAnchorSection: View {
         .cosConfirm("Reset phone approvals?", isPresented: $confirmReset,
             message: "Create a new Mac key with Touch ID and revoke every enrolled phone. Commit the new pin and wait 24 hours before phone approvals can work again.",
             actions: [.destructive("Reset with Touch ID") { state.startReset() }, .cancel()])
+        .cosConfirm("Replace the approval key?", isPresented: $confirmReplace,
+            message: WebKeyCopy.replaceMessage,
+            actions: [.destructive("Replace with Touch ID") { state.startReplace() }, .cancel()])
     }
 }
 

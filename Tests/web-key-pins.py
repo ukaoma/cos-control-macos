@@ -112,8 +112,68 @@ block = body_of(views, views.index("struct WebKeySettingsBlock: View"))
 need(re.search(r"VStack\(alignment: \.leading, spacing: 0\) \{\s*if state\.visible \{", block) is not None, "hidden unless the flag",
      "nothing is drawn unless the server says the flag is on")
 refresh_fn = body_of(core, core.index("    func refresh() async"))
-need('status.status == 200, status.body["enabled"] as? Bool == true,' in refresh_fn and 'else { clear(); return }' in refresh_fn, "hidden unless the flag",
-     "visible only on a 200 with enabled true")
+need("let served = WebKeyServerMode.read(status: status.status, body: status.body)" in refresh_fn
+     and "guard served != .off, let suppliedOrigin" in refresh_fn and 'else { clear(); return }' in refresh_fn, "hidden unless the flag",
+     "visible only when the server reports authority or bootstrap")
+mode_fn = body_of(core, core.index("static func read(status: Int, body: [String: Any]) -> WebKeyServerMode"))
+need('guard status == 200, let origin = body["origin"] as? String, WebKeyProtocol.signerHost(origin) != nil else { return .off }' in mode_fn
+     and 'case true?: return mode == nil || mode as? String == "authority" ? .authority : .off' in mode_fn
+     and 'case false?: return mode as? String == "bootstrap" ? .bootstrap : .off' in mode_fn and "case nil: return .off" in mode_fn,
+     "mode reader", "authority is enabled true; bootstrap is enabled false plus mode bootstrap; anything else is off")
+
+# 6b. 0.5.383 bootstrap (server 7.0.9, COS_WEB_KEY_ANCHOR_BOOTSTRAP): the Mac anchor alone.
+need(re.search(r"SettingsHubBlock \{ WebKeyAnchorSection\(state: state\) \}\s*if state\.authority && state\.anchorRegisteredHere \{\s*"
+               r"SettingsHubBlock \{ WebKeyEnrollmentSection\(state: state\) \}\s*if !state\.keys\.isEmpty \{ SettingsHubBlock \{ WebKeyKeysSection\(state: state\) \} \}", block) is not None
+     and block.count("WebKeyEnrollmentSection(") == 1 and block.count("WebKeyKeysSection(") == 1,
+     "bootstrap shows the anchor only", "enrollment and the key list draw only with authority on")
+boot_at = refresh_fn.find("if served == .bootstrap {")
+boot_branch = body_of(refresh_fn, boot_at) if boot_at >= 0 else ""
+need(0 <= boot_at < refresh_fn.find("syncState(") and boot_at < refresh_fn.find("loadPending(") and boot_branch.rstrip("}").rstrip().endswith("return")
+     and "card = nil; cardRefusal = nil; pendingWithoutAudit = false; keys = []; typedCode = \"\"" in boot_branch
+     and not re.search(r"ask\(|runAudit|syncState|loadPending", boot_branch), "bootstrap hides enrollment and approval",
+     "bootstrap returns before the key list and the pending request, and asks nothing more")
+approve_allowed = body_of(core, core.index("    var approveAllowed: Bool"))
+need("mode == .authority && visible && anchorRegisteredHere" in approve_allowed, "bootstrap hides enrollment and approval", "approval needs authority")
+for fn in ("    func revoke(_ kid: String) async", "    func revokeAll() async"):
+    need("guard mode == .authority, visible, !busy" in body_of(core, core.index(fn)), "bootstrap hides enrollment and approval", f"{fn.strip()} needs authority")
+need("guard !busy, actionTask == nil, recoveryRequired, mode == .authority else { return }" in core
+     and "guard registering != .off, !recovery || registering == .authority else { return }" in core,
+     "bootstrap hides enrollment and approval", "reset is authority's alone")
+audit_struct = body_of(core, core.index("struct WebKeyListenerAudit: Equatable, Sendable"))
+need("scope == .signer && genuine && young(now: now)" in body_of(audit_struct, audit_struct.index("func fresh(now: Date) -> Bool"))
+     and "scope == .anchor && genuine && young(now: now)" in audit_struct and "static let anchorPorts = [3141, 3143]" in audit_struct,
+     "bootstrap anchor audit never approves", "an anchor-scope audit never passes the signer gate")
+run_audit = body_of(core, core.index("    func runAudit() async"))
+need('let scope: WebKeyListenerAudit.Scope = mode == .bootstrap ? .anchor : .signer' in run_audit
+     and '"--op", scope == .anchor ? "anchor-listeners" : "listeners"' in run_audit, "bootstrap anchor audit", "bootstrap asks the anchor audit, authority the signer audit")
+reg_audit = body_of(core, core.index("private func registrationAuditFresh(_ registering: WebKeyServerMode) -> Bool"))
+need("case .authority: return audit?.fresh(now: now()) == true" in reg_audit and "case .bootstrap: return audit?.freshForAnchorRegistration(now: now()) == true" in reg_audit
+     and "case .off: return false" in reg_audit and "guard mode == registering else { return false }" in reg_audit, "bootstrap anchor audit", "registration's audit follows the mode")
+anchor_helper = helper[helper.index('if op == "anchor-listeners" {'):helper.index('if op == "listeners" {')]
+need("WebKeyHelperCore.anchorAuditPorts" in anchor_helper and "webKeyAssetAudit" not in anchor_helper and "3144" not in anchor_helper
+     and "anchorAuditPorts = [3141, 3143]" in pairing, "bootstrap helper audit", "the anchor audit lists 3141 and 3143, never 3144 or the signer files")
+anchor_view = body_of(views, views.index("private struct WebKeyAnchorSection: View"))
+need("if state.bootstrapOnly, let sha = state.anchorSpkiSha256" in anchor_view and "WebKeyLine(label: WebKeyCopy.keyHash, value: sha, mono: true, lines: 3)" in anchor_view
+     and "state.anchorSetAt" in anchor_view and "state.bootstrapOnly ? WebKeyCopy.bootstrapPinNote : WebKeyCopy.pinNote" in anchor_view
+     and "state.authority && state.anchorRegisteredHere && state.recoveryRequired" in anchor_view, "bootstrap shows the anchor only",
+     "the full key hash, setAt and the commit-by-hand line; no reset")
+need(re.search(r'bootstrapPinNote = "[^"]*committ?\w* it by hand[^"]*Control never writes or commits it\."', views) is not None,
+     "bootstrap pin by hand", "the pin is committed by hand, never by Control")
+bind_fn = body_of(core, core.index("private func bindBootstrapRecord(anchorSpki: Data, statusEpoch: Int64?)"))
+need("guard registeredAnchorNeedsStateRebind else { return }" in bind_fn and "case .mirrorUnavailable:" in bind_fn and "case .mirrorMissing:" in bind_fn
+     and "revoked: []" in bind_fn, "bootstrap starts the protected record", "only right after this run registered, never over an unreadable record")
+
+# 6c. The server resets setAt on a same-key registration (coordinator, 2026-11-08): a plain Register never runs over a
+# registered anchor; replacing another key needs its confirmation.
+create_fn = body_of(core, core.index("    func createOrRegisterAnchor(recovery: Bool = false, replace: Bool = false) async"))
+need("guard recovery || replace || (!anchorRegisteredHere && !foreignAnchor) else {" in create_fn
+     and create_fn.find('fresh.body["anchorRegistered"] as? Bool == false') < create_fn.find("candidate.sign(statement")
+     and 'guard let fresh = await ask("status")' in create_fn, "never registers twice", "Register re-reads status and refuses a registered anchor before Touch ID")
+need("guard !busy, actionTask == nil, !anchorRegisteredHere, !foreignAnchor else { return }" in core
+     and "await createOrRegisterAnchor(replace: true)" in body_of(core, core.index("    func startReplace()")), "never registers twice", "Register and Replace start only in their own state")
+need("if !state.anchorRegisteredHere && !state.foreignAnchor {" in anchor_view and "Button(WebKeyCopy.replace) { confirmReplace = true }" in anchor_view
+     and '.destructive("Replace with Touch ID") { state.startReplace() }' in anchor_view and views.count("state.startReplace()") == 1,
+     "confirmed replace", "replacing another key runs only from its confirmation")
 
 # 7. GOTCOS theme: no stock toggles; a field is plain plus cosField.
 need("Toggle(" not in views or "COSCheckStyle()" in views, "theme", "a toggle here uses COSCheckStyle")

@@ -337,21 +337,92 @@ enum WebKeyCodeEntry {
     }
 }
 
+// MARK: - The server's mode (0.5.383, server 7.0.9)
+
+/// What the server's GET /api/web-key/status says it serves. Authority (COS_WEB_KEY_AUTHORITY on) is today's full lane.
+/// Bootstrap (COS_WEB_KEY_ANCHOR_BOOTSTRAP on, authority off) serves only anchor status and anchor registration, so Control
+/// shows only the Mac anchor: register it with Touch ID and start its 24 hour clock, with no phone enrollment, no code, no
+/// approval, no key list and no signer audit. Anything else, an older server or a contradiction, is off: hidden, as before.
+/// Bootstrap keeps `enabled` false, so a phone-lane Control older than 0.5.383 reads it as off and hides everything.
+enum WebKeyServerMode: String, Equatable, Sendable {
+    case off
+    case bootstrap
+    case authority
+
+    static func read(status: Int, body: [String: Any]) -> WebKeyServerMode {
+        guard status == 200, let origin = body["origin"] as? String, WebKeyProtocol.signerHost(origin) != nil else { return .off }
+        let mode = body["mode"]
+        switch body["enabled"] as? Bool {
+        case true?: return mode == nil || mode as? String == "authority" ? .authority : .off
+        case false?: return mode as? String == "bootstrap" ? .bootstrap : .off
+        case nil: return .off
+        }
+    }
+
+    /// A non-negative safe integer from a server answer (ms times, the epoch), never a boolean or a fraction.
+    static func int(_ value: Any?) -> Int64? {
+        guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else { return nil }
+        let d = n.doubleValue
+        guard d >= 0, d <= Double(WebKeyJCS.maxSafe), d == d.rounded() else { return nil }
+        return Int64(d)
+    }
+}
+
 // MARK: - The listener audit (review W9)
 
 /// Whether the server Control talks to also owns the signer ports, on every address: one PID, under the COS LaunchAgent,
 /// listening on 3141, 3143 and 3144, and nobody else listening on any of them. From the helper's `web-key --op listeners`.
 struct WebKeyListenerAudit: Equatable, Sendable {
     static let ports = [3141, 3143, 3144]
+    /// 0.5.383 bootstrap: the anchor registration's narrower audit (the helper's `anchor-listeners`). Port 3144 does not
+    /// listen with authority off, and no signer page is served, so there are no signer files to check.
+    static let anchorPorts = [3141, 3143]
     static let maxAge: TimeInterval = 60
+    enum Scope: String, Equatable, Sendable {
+        /// The full audit: 3141, 3143 and 3144 and the pinned signer files. The only scope that opens a card or approves.
+        case signer
+        /// Bootstrap anchor registration only: 3141 and 3143 under one service PID. Never opens a card or approves.
+        case anchor
+    }
     let genuine: Bool
     let reason: String
     let checkedAt: Date
+    var scope: Scope = .signer
 
-    /// Genuine and checked within the last 60 s (a clock that went backwards more than 5 s is not fresh either).
-    func fresh(now: Date) -> Bool {
+    private func young(now: Date) -> Bool {
         let age = now.timeIntervalSince(checkedAt)
-        return genuine && age <= Self.maxAge && age >= -5
+        return age <= Self.maxAge && age >= -5
+    }
+
+    /// A genuine full (signer) audit checked within the last 60 s (a clock that went backwards more than 5 s is not fresh
+    /// either). An anchor-scope audit is never fresh here, so it can never show a card or approve a phone.
+    func fresh(now: Date) -> Bool {
+        scope == .signer && genuine && young(now: now)
+    }
+
+    /// Bootstrap registration only: a genuine anchor-scope audit checked within the last 60 s.
+    func freshForAnchorRegistration(now: Date) -> Bool {
+        scope == .anchor && genuine && young(now: now)
+    }
+
+    /// The anchor-scope judgment: one PID under the COS LaunchAgent listens on 3141 and 3143 on every address, nobody else.
+    static func judgeAnchor(_ details: [String: Any], at: Date) -> WebKeyListenerAudit {
+        func refuse(_ reason: String) -> WebKeyListenerAudit { WebKeyListenerAudit(genuine: false, reason: reason, checkedAt: at, scope: .anchor) }
+        guard details["scope"] as? String == "anchor" else { return refuse("no_answer") }
+        guard let service = (details["servicePID"] as? NSNumber)?.intValue, service > 1 else { return refuse("no_service") }
+        guard let ports = details["ports"] as? [String: Any] else { return refuse("no_ports") }
+        var owners = Set<Int>()
+        for port in Self.anchorPorts {
+            guard let rows = ports[String(port)] as? [Any], !rows.isEmpty else { return refuse("port_\(port)_not_listening") }
+            for row in rows {
+                guard let object = row as? [String: Any], let pid = (object["pid"] as? NSNumber)?.intValue, pid > 1,
+                      (object["underService"] as? Bool) == true else { return refuse("port_\(port)_foreign_listener") }
+                owners.insert(pid)
+            }
+        }
+        guard owners.count == 1 else { return refuse("listeners_split") } // one service PID
+        guard details["stable"] as? Bool == true else { return refuse("listener_changed") }
+        return WebKeyListenerAudit(genuine: true, reason: "ok", checkedAt: at, scope: .anchor)
     }
 
     static func judge(_ details: [String: Any], at: Date) -> WebKeyListenerAudit {
@@ -382,7 +453,9 @@ struct WebKeyListenerAudit: Equatable, Sendable {
     }
 
     static let notGenuineLine = "Cannot confirm the signer page is genuine"
+    static let anchorNotGenuineLine = "Cannot confirm the COS server on this Mac is the real one. Nothing was registered."
     var line: String {
+        if scope == .anchor { return Self.anchorNotGenuineLine }
         switch reason {
         case "release_not_pinned": return "This Control release has not approved the installed server's signer files. Update the matched Control and server pair."
         case "unsigned_bundle": return "Phone enrollment requires the signed COS Control app."
@@ -779,6 +852,10 @@ struct WebKeyHelperAnswer: Sendable {
 @MainActor
 final class WebKeyState: ObservableObject {
     @Published private(set) var visible = false
+    /// 0.5.383: what the server serves (WebKeyServerMode.read). `visible` is mode != .off.
+    @Published private(set) var mode: WebKeyServerMode = .off
+    /// The server's anchorSetAt (ms), or this session's registration answer's setAt when the server does not report it.
+    @Published private(set) var anchorSetAt: Int64?
     @Published private(set) var anchorFingerprint: String?
     @Published private(set) var anchorRegisteredHere = false
     @Published private(set) var foreignAnchor = false
@@ -813,6 +890,12 @@ final class WebKeyState: ObservableObject {
     var log: @MainActor (String) -> Void = { _ in }
 
     init() {}
+    /// Bootstrap: the server serves only anchor status and registration.
+    var bootstrapOnly: Bool { mode == .bootstrap }
+    /// Authority: today's full lane (enrollment, codes, approvals, the key list, the signer audit).
+    var authority: Bool { mode == .authority }
+    /// The full SHA-256 of this Mac anchor's SPKI DER, the pin's spkiSha256.
+    var anchorSpkiSha256: String? { anchor.map { WebKeyHash.sha256Hex($0.publicKeyDER) } }
     private func nowMs() -> Int64 { Int64((now().timeIntervalSince1970 * 1000).rounded(.down)) }
     private func current(_ id: UUID) -> Bool { readID == id && !Task.isCancelled }
 
@@ -835,18 +918,25 @@ final class WebKeyState: ObservableObject {
         protectionReady = false
         recoveryRequired = false
         guard let status = await ask("status"), current(id) else { if current(id) { clear() }; return }
-        guard status.status == 200, status.body["enabled"] as? Bool == true,
-              let suppliedOrigin = status.body["origin"] as? String,
-              WebKeyProtocol.signerHost(suppliedOrigin) != nil else { clear(); return }
+        let served = WebKeyServerMode.read(status: status.status, body: status.body)
+        guard served != .off, let suppliedOrigin = status.body["origin"] as? String else { clear(); return }
         visible = true
-        if origin != suppliedOrigin { card = nil; typedCode = ""; audit = nil }
+        if origin != suppliedOrigin || mode != served { card = nil; typedCode = ""; audit = nil }
         origin = suppliedOrigin
+        mode = served
         anchorMature = status.body["anchorMature"] as? Bool == true
         loadLocalAnchor()
         let serverAud = status.body["aud"] as? String
         let ourAud = anchor.flatMap { a in WebKeyProtocol.signerHost(suppliedOrigin).map { WebKeyProtocol.aud(anchorDER: a.publicKeyDER, rpId: $0) } }
         anchorRegisteredHere = ourAud != nil && serverAud == ourAud
         foreignAnchor = status.body["anchorRegistered"] as? Bool == true && !anchorRegisteredHere
+        if let at = WebKeyServerMode.int(status.body["anchorSetAt"]) { anchorSetAt = at } else if !anchorRegisteredHere { anchorSetAt = nil }
+        if served == .bootstrap {
+            // Bootstrap: the anchor only. No key list, no pending request, no audit, no card; nothing here can approve.
+            card = nil; cardRefusal = nil; pendingWithoutAudit = false; keys = []; typedCode = ""
+            if let anchor, anchorRegisteredHere { bindBootstrapRecord(anchorSpki: anchor.publicKeyDER, statusEpoch: WebKeyServerMode.int(status.body["epoch"])) }
+            return
+        }
         guard let anchor, anchorRegisteredHere else {
             card = nil; cardRefusal = nil; pendingWithoutAudit = false; keys = []; typedCode = ""
             return
@@ -861,9 +951,35 @@ final class WebKeyState: ObservableObject {
 
     private func clear() {
         readID = nil
+        mode = .off; anchorSetAt = nil
         visible = false; card = nil; cardRefusal = nil; pendingWithoutAudit = false; keys = []; typedCode = ""
         anchorRegisteredHere = false; foreignAnchor = false; protectionReady = false
         controlState = nil; audit = nil; origin = nil; anchorMature = false; recoveryRequired = false
+    }
+
+    /// Bootstrap, right after THIS run registered the anchor (the same condition as authority's rebind): start Control's
+    /// protected record for it, so turning authority on later finds a record for this anchor instead of asking for a reset.
+    /// The epoch is the status reply's (0 when it has none) and the revocation list is empty: both are at or below an honest
+    /// server's, so authority's first read adopts the server's list exactly as a fresh registration would. A record that
+    /// already belongs to this anchor is kept as it is. An unreadable or damaged keychain record is never overwritten.
+    private func bindBootstrapRecord(anchorSpki: Data, statusEpoch: Int64?) {
+        guard registeredAnchorNeedsStateRebind else { return }
+        let sha = WebKeyHash.sha256Hex(anchorSpki)
+        switch store.load() {
+        case .mirrorUnavailable:
+            message = "Control cannot read its keychain record, so it could not start its phone record."; return
+        case .mirrorMissing:
+            message = "Control's protected phone record is damaged. Once phone approvals are on, reset them to enroll."; return
+        case .ok(let saved), .repaired(let saved, _):
+            if saved.anchorSpkiSha256 == sha { controlState = saved; registeredAnchorNeedsStateRebind = false; return }
+        case .none:
+            break
+        }
+        let seed = WebKeyControlState(epoch: statusEpoch ?? 0, revoked: [], anchorSpkiSha256: sha, updatedAt: nowMs())
+        guard store.save(seed) else { message = "Control could not save its protected phone record."; return }
+        controlState = seed
+        registeredAnchorNeedsStateRebind = false
+        log("web-key bootstrap record started")
     }
 
     private func loadLocalAnchor() {
@@ -978,31 +1094,39 @@ final class WebKeyState: ObservableObject {
 
     func runAudit() async {
         let expectedRead = readID
+        // Bootstrap asks only for the anchor-scope audit, whose answer can never pass the signer gate (fresh(now:)).
+        let scope: WebKeyListenerAudit.Scope = mode == .bootstrap ? .anchor : .signer
         do {
-            let answer = try await runHelper(["web-key", "--op", "listeners"], nil)
+            let answer = try await runHelper(["web-key", "--op", scope == .anchor ? "anchor-listeners" : "listeners"], nil)
             guard !Task.isCancelled, expectedRead == readID else { return }
             guard answer.ok, let details = (try? JSONSerialization.jsonObject(with: answer.details)) as? [String: Any] else {
-                audit = WebKeyListenerAudit(genuine: false, reason: "no_answer", checkedAt: now()); return
+                audit = WebKeyListenerAudit(genuine: false, reason: "no_answer", checkedAt: now(), scope: scope); return
             }
-            audit = WebKeyListenerAudit.judge(details, at: now())
+            audit = scope == .anchor ? WebKeyListenerAudit.judgeAnchor(details, at: now()) : WebKeyListenerAudit.judge(details, at: now())
         } catch {
             guard !Task.isCancelled, expectedRead == readID else { return }
-            audit = WebKeyListenerAudit(genuine: false, reason: "no_answer", checkedAt: now())
+            audit = WebKeyListenerAudit(genuine: false, reason: "no_answer", checkedAt: now(), scope: scope)
         }
         if audit?.genuine != true { log("web-key signer audit refused \(audit?.reason ?? "")") }
     }
 
     var approveAllowed: Bool {
-        visible && anchorRegisteredHere && protectionReady && controlState != nil &&
+        mode == .authority && visible && anchorRegisteredHere && protectionReady && controlState != nil &&
         WebKeyApproveGate.allowed(card: card, typed: typedCode, audit: audit, anchor: anchor != nil, now: now())
     }
 
     func startRegistration() {
-        guard !busy, actionTask == nil else { return }
+        guard !busy, actionTask == nil, !anchorRegisteredHere, !foreignAnchor else { return }
         actionTask = Task { await createOrRegisterAnchor(); actionTask = nil }
     }
+    /// Replacing the server's anchor (it is not this Mac's) revokes every phone key and restarts the 24 hour clock, so it
+    /// runs only from its confirmation (WebKeyAnchorSection's "Replace the approval key?").
+    func startReplace() {
+        guard !busy, actionTask == nil, foreignAnchor else { return }
+        actionTask = Task { await createOrRegisterAnchor(replace: true); actionTask = nil }
+    }
     func startReset() {
-        guard !busy, actionTask == nil, recoveryRequired else { return }
+        guard !busy, actionTask == nil, recoveryRequired, mode == .authority else { return }
         actionTask = Task { await createOrRegisterAnchor(recovery: true); actionTask = nil }
     }
     func startApproval() {
@@ -1014,12 +1138,39 @@ final class WebKeyState: ObservableObject {
         readID = nil; card = nil; typedCode = ""; protectionReady = false; audit = nil
     }
 
-    func createOrRegisterAnchor(recovery: Bool = false) async {
+    /// Registration's audit by mode: the full signer audit with authority on (today's), the anchor-scope audit in bootstrap.
+    private func registrationAuditFresh(_ registering: WebKeyServerMode) -> Bool {
+        guard mode == registering else { return false }
+        switch registering {
+        case .authority: return audit?.fresh(now: now()) == true
+        case .bootstrap: return audit?.freshForAnchorRegistration(now: now()) == true
+        case .off: return false
+        }
+    }
+
+    func createOrRegisterAnchor(recovery: Bool = false, replace: Bool = false) async {
         guard visible, !busy, let expectedRead = readID else { return }
+        // The server resets setAt even when the SAME key registers again (and a replacement revokes every phone), so a
+        // plain Register never runs over an anchor the server already holds: only a confirmed replace or reset does.
+        guard recovery || replace || (!anchorRegisteredHere && !foreignAnchor) else {
+            message = "The server already holds an approval key. Nothing was registered."; return
+        }
+        // Reset is authority's recovery; bootstrap never offers it.
+        let registering = mode
+        guard registering != .off, !recovery || registering == .authority else { return }
         busy = true; defer { busy = false }
         message = nil
         await runAudit()
-        guard current(expectedRead), audit?.fresh(now: now()) == true else { message = audit?.line ?? WebKeyListenerAudit.notGenuineLine; return }
+        guard current(expectedRead), registrationAuditFresh(registering) else { message = audit?.line ?? WebKeyListenerAudit.notGenuineLine; return }
+        if !(recovery || replace) {
+            // Read the server again: an anchor registered since the last read (another press, another Control) is never
+            // registered over. Only a reply that says no anchor goes on.
+            guard let fresh = await ask("status"), current(expectedRead), fresh.status == 200,
+                  WebKeyServerMode.read(status: fresh.status, body: fresh.body) == registering,
+                  fresh.body["anchorRegistered"] as? Bool == false else {
+                message = "The server already holds an approval key, or did not say. Nothing was registered."; return
+            }
+        }
         loadLocalAnchor()
         var candidate = anchor
         var newBlob: Data?
@@ -1044,7 +1195,7 @@ final class WebKeyState: ObservableObject {
         let signature: Data
         do { signature = try await candidate.sign(statement, reason: reason) }
         catch { message = "Touch ID did not sign. Nothing was registered."; return }
-        guard current(expectedRead), audit?.fresh(now: now()) == true else { message = "The approval check expired or was cancelled. Nothing was registered."; return }
+        guard current(expectedRead), registrationAuditFresh(registering) else { message = "The approval check expired or was cancelled. Nothing was registered."; return }
         if let newBlob {
             guard secure.write(SecureEnclaveWebKeyAnchor.blobAccount, newBlob) else { message = "Control could not keep the new key in its keychain."; return }
             anchor = candidate; anchorFingerprint = WebKeySPKI.fingerprint(spki)
@@ -1054,8 +1205,11 @@ final class WebKeyState: ObservableObject {
         }
         guard answer.status == 201 else { message = "The server refused the Mac key. Nothing was registered."; return }
         registeredAnchorNeedsStateRebind = true; recoveryRegistration = recovery
+        if let at = WebKeyServerMode.int(answer.body["setAt"]) { anchorSetAt = at }
         log("web-key anchor registered")
-        message = "Registered. Copy the pin and commit it yourself. New keys approve nothing for 24 hours."
+        message = registering == .bootstrap
+            ? "Registered. Its 24 hour clock started. Copy the pin and commit it yourself."
+            : "Registered. Copy the pin and commit it yourself. New keys approve nothing for 24 hours."
         await refresh()
     }
 
@@ -1098,7 +1252,7 @@ final class WebKeyState: ObservableObject {
 
     /// Persist local revocation BEFORE awaiting the server; a crash or cancellation cannot erase the user's intent.
     func revoke(_ kid: String) async {
-        guard visible, !busy, let anchor,
+        guard mode == .authority, visible, !busy, let anchor,
               kid.range(of: #"\A[A-Za-z0-9_-]{22}\z"#, options: .regularExpression) != nil else { return }
         busy = true; defer { busy = false }
         protectionReady = false; card = nil; typedCode = ""
@@ -1113,7 +1267,7 @@ final class WebKeyState: ObservableObject {
     }
 
     func revokeAll() async {
-        guard visible, !busy, let anchor else { return }
+        guard mode == .authority, visible, !busy, let anchor else { return }
         busy = true; defer { busy = false }
         protectionReady = false; card = nil; typedCode = ""
         let sha = WebKeyHash.sha256Hex(anchor.publicKeyDER)

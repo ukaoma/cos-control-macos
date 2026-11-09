@@ -337,9 +337,11 @@ enum WebKeyHelperCore {
         "revoke": Call(method: "POST", path: "/api/web-key/revoke", bodyKeys: ["kid", "reason"]),
         "revoke-all": Call(method: "POST", path: "/api/web-key/revoke-all", bodyKeys: []),
     ]
-    /// The listener audit (review W9) is local, not a server call.
-    static let ops: Set<String> = Set(calls.keys).union(["listeners"])
+    /// The listener audit (review W9) is local, not a server call. `anchor-listeners` (0.5.383) is bootstrap's narrower
+    /// audit for anchor registration alone: 3141 and 3143, no 3144 and no signer files (authority off serves no signer).
+    static let ops: Set<String> = Set(calls.keys).union(["listeners", "anchor-listeners"])
     static let auditPorts = [3141, 3143, 3144]
+    static let anchorAuditPorts = [3141, 3143]
     static let bodyMax = 4_096
 
     /// The JSON body to send, or nil when stdin is not exactly the op's shape: an object with the op's keys only, each value
@@ -364,12 +366,21 @@ enum WebKeyHelperCore {
 
     /// The listener audit's answer: the COS LaunchAgent's PID, and for each audited port every PID listening on it on any
     /// address, each with whether it runs under that LaunchAgent.
-    static func listeners(servicePID: Int?, owners: [Int: [Int]], underService: (Int) -> Bool) -> [String: Any] {
+    static func listeners(servicePID: Int?, owners: [Int: [Int]], underService: (Int) -> Bool, ports audited: [Int] = auditPorts) -> [String: Any] {
         var ports: [String: Any] = [:]
-        for port in auditPorts {
+        for port in audited {
             ports[String(port)] = (owners[port] ?? []).sorted().map { pid -> [String: Any] in ["pid": pid, "underService": underService(pid)] }
         }
         return ["servicePID": servicePID ?? 0, "ports": ports]
+    }
+
+    /// Bootstrap's anchor-scope answer: the same rows for 3141 and 3143 only, marked `scope: anchor`, with `stable` false
+    /// when the service PID or any listener changed between the two lsof passes. It never carries signer `assets`.
+    static func anchorListeners(servicePID: Int?, owners: [Int: [Int]], underService: (Int) -> Bool, stable: Bool) -> [String: Any] {
+        var details = listeners(servicePID: servicePID, owners: owners, underService: underService, ports: anchorAuditPorts)
+        details["scope"] = "anchor"
+        details["stable"] = stable
+        return details
     }
 }
 

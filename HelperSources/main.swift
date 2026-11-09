@@ -9120,6 +9120,25 @@ final class COSControlHelper {
     /// loopback with the pairing token, and the listener audit (review W9). WebKeyHelperCore holds the op table and shapes.
     private func emitWebKey(args: [String]) throws {
         guard let op = option("--op", in: args), WebKeyHelperCore.ops.contains(op) else { throw HelperError.message("Use --op and one of the web key operations") }
+        if op == "anchor-listeners" {
+            // 0.5.383 bootstrap (server COS_WEB_KEY_ANCHOR_BOOTSTRAP, authority off): before anchor registration, every PID
+            // listening on 3141 and 3143 on ANY address, under the COS LaunchAgent or not. No 3144 and no signer files:
+            // the signer does not listen with authority off. The app accepts this answer only for registration.
+            let service = servicePID()
+            func listening(_ port: Int) -> [Int]? {
+                guard fm.isExecutableFile(atPath: "/usr/sbin/lsof"),
+                      let result = try? execute("/usr/sbin/lsof", ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-t"], timeout: 5), result.code == 0 else { return nil }
+                return Array(Set(result.output.split(separator: "\n").compactMap { Int($0) }))
+            }
+            var owners: [Int: [Int]] = [:]
+            for port in WebKeyHelperCore.anchorAuditPorts { owners[port] = listening(port) ?? [] }
+            var stable = servicePID() == service
+            for port in WebKeyHelperCore.anchorAuditPorts where Set(listening(port) ?? []) != Set(owners[port] ?? []) { stable = false }
+            emit(ok: true, message: "Anchor audit", details: WebKeyHelperCore.anchorListeners(servicePID: service, owners: owners, underService: { pid in
+                service.map { self.isDescendant(pid, of: $0) } ?? false
+            }, stable: stable))
+            return
+        }
         if op == "listeners" {
             // Every PID listening on 3141, 3143 and 3144 on ANY address (lsof without an address filter), and whether each
             // runs under the COS LaunchAgent. The app requires one PID for all three.

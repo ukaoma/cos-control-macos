@@ -13,5 +13,5 @@ OUT="$(TMPDIR="$DIR/" "$DIR/web-key-checks" "$ROOT/Tests/fixtures/web-key/golden
 print -r -- "$OUT"
 COUNT="${${OUT##*checks: }%% passed*}"
 # A floor on the count: a check that silently stops running must fail this, not pass it.
-(( COUNT >= 135 )) || { print -u2 "web key checks ran only $COUNT (expected at least 135)"; exit 1; }
+(( COUNT >= 232 )) || { print -u2 "web key checks ran only $COUNT (expected at least 232)"; exit 1; }
 /usr/bin/python3 "$ROOT/Tests/web-key-pins.py" "$ROOT"
