@@ -111,7 +111,7 @@ private func children(_ url: URL) -> [String] {
             let pdf = SessionPreviewItem(item("file", "af_" + hexA, name: "Q3 plan.pdf", kind: "pdf"))
             check(pdf?.badge == "PDF" && pdf?.unavailableLine == nil, "a PDF card opens with its badge")
             for copy in [secret?.unavailableLine, missing?.unavailableLine, outside?.unavailableLine, folder?.unavailableLine,
-                         SessionPreviewStore.offLine] + ["secret", "off", "missing", "absent", "too_large", "unauthorized", "offline", "invalid", "x"].map(SessionPreviewStore.refusalLine) {
+                         SessionPreviewStore.offLine] + ["secret", "off", "missing", "absent", "too_large", "unauthorized", "offline", "invalid", "x"].map({ SessionPreviewStore.refusalLine($0) }) {
                 let text = copy ?? ""
                 check(!text.contains("\u{2014}") && !text.contains("\u{2192}") && !text.contains("->"), "no em dash or arrow in copy: \(text)")
             }

@@ -9,7 +9,7 @@ import Foundation
 // routes, which re-authorize the id on every call, into a private copy under Control's cache. Control is never handed the
 // real path. The copy is opened with Quick Look and deleted when Quick Look closes; leftovers are swept at launch.
 //
-// Previews off (Control Web, Settings, Privacy, "Show files and images your sessions make") means no cards and no fetch:
+// Previews off (Control Web, Settings, Privacy, "Show session files, screenshots and images") means no cards and no fetch:
 // the server sends no ids or names, and this store refuses to fetch anything while the session says previews are off.
 // A server without the descriptors (older than 6.99.28, or without recent turns) shows no cards and no error.
 
@@ -416,7 +416,9 @@ final class SessionPreviewStore: ObservableObject {
         try? FileManager.default.removeItem(at: folder)
     }
 
-    static func refusalLine(_ state: String) -> String {
+    /// Pure (string constants only), so it is `nonisolated`: callers off the main actor and function references (the
+    /// checks' `.map`) compile under strict concurrency.
+    nonisolated static func refusalLine(_ state: String) -> String {
         switch state {
         case "secret": return SessionPreviewItem.secretLine
         case "off": return "Previews are off. Turn them on in Settings, Privacy, on COS Control Web."
