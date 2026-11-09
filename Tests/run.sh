@@ -3303,8 +3303,11 @@ need('if connectedWorkTest {\n                await model.refresh(quiet: true)\n
      "connected candidate startup must load capabilities and Work rather than every unrelated Activity source")
 # 0.5.259: four paths. The fourth is the home's once-a-minute sessions refresh with the pet off (refreshHomeSessions).
 # Activity Today (plan v2): the fifth is the Today home's 60 s tick (todayTickLoop), guarded the same way.
-need(activity.count('backgroundWorkEnabled: model.activityLoadsEnabled)') == 5,
-     "foreground Activity load permission must guard all five load paths independently of background services")
+# 0.5.379 (215f842): the sixth and seventh are Today's source retries (todayReloadSources) and Refresh (todayRefresh).
+need(activity.count('backgroundWorkEnabled: model.activityLoadsEnabled)') == 7
+     and 'func todayReloadSources() async {\n        guard Self.allowsLiveSectionLoads(isolatedWorkPreview: isolatedWorkPreview, backgroundWorkEnabled: model.activityLoadsEnabled) else { return }' in activity
+     and 'func todayRefresh() async {\n        guard Self.allowsLiveSectionLoads(isolatedWorkPreview: isolatedWorkPreview, backgroundWorkEnabled: model.activityLoadsEnabled) else { return }' in activity,
+     "foreground Activity load permission must guard all seven load paths (incl. Today's retries and Refresh) independently of background services")
 workspace = (root / "Sources/WorkWorkspaceView.swift").read_text()
 need('receiptFallback(id)' in workspace and 'no item has been recreated' in workspace,
      "missing canonical items must preserve read-only receipt history")
@@ -6183,7 +6186,10 @@ if '"voice-held-preview"' not in controller or 'Button("Apply")' not in activity
     fail("every suggestion must preview before explicit Apply")
 if "static let heldDiscardBatchSize = 200" not in controller or "Self.heldDiscardBatchSize" not in controller:
     fail("discard must be sent in bounded slices: a full loose set exceeds one request")
-if "heldGroupsReloadRequested = true" not in controller:
+# 0.5.379: the queue moved into Models.swift HeldGroupsReadQueue (its behaviour runs in HeldGroupsReadQueueChecks).
+if ("private let heldGroupsReads = HeldGroupsReadQueue()" not in controller
+        or "if !force { reloadRequested = true; return }" not in models
+        or "} while self.reloadRequested" not in models):
     fail("a reload requested during a load must be queued, not dropped")
 if ".onChange(of: model.heldGroupsGeneration)" not in activity:
     fail("cursors and armed confirmations must reset after a naming or discard")
