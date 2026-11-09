@@ -91,6 +91,7 @@ import Foundation
         await refreshReadQueueChecks()
         nextUpChecks()
         askAboutChecks()
+        prepRowsChecks()
         print("PASS: Activity Today home: \(ran) checks (predicates, five pin tests, tool-name guard, platform table, finished hour and cap, intake split and midnight, quiet hours, cost guards, capability gating, layout, dismiss and undo)")
     }
 
@@ -1506,5 +1507,117 @@ import Foundation
         check(!TodayAskAbout.available(summaryShown: true, reachable: false, chatAvailable: true, workRunsOn: true, preview: false), "[field hidden] the server is offline")
         check(!TodayAskAbout.available(summaryShown: false, reachable: true, chatAvailable: true, workRunsOn: true, preview: false), "[field hidden] no summary on screen")
         check(!TodayAskAbout.available(summaryShown: true, reachable: true, chatAvailable: true, workRunsOn: true, preview: true), "[field hidden] an isolated preview")
+    }
+
+    // MARK: 0.5.385 Prep on every Next up row
+
+    static func prepRowsChecks() {
+        let n = at("2026-10-21 09:10")
+        func t(_ local: String) -> String { iso(at(local)) }
+        // Rows 2 to 5 are offered Prep; a "Blocked" hold is not; the first row too.
+        let rows: [(String, String, String?, Bool)] = [
+            ("Weatherford call", t("2026-10-21 09:00"), t("2026-10-21 09:45"), false),
+            ("Pricing review", t("2026-10-21 10:00"), t("2026-10-21 10:30"), false),
+            ("Blocked", t("2026-10-21 11:00"), t("2026-10-21 11:30"), false),
+            ("Lunch with Graham", t("2026-10-21 12:00"), nil, false),
+            ("Silas sync", t("2026-10-21 13:00"), t("2026-10-21 13:30"), false),
+        ]
+        let up = TodayHome.nextUp(calendar: TodayHome.CalendarToday(calendarToday(rows, remaining: 5)), single: nil, now: n, day: calendar)
+        check(up.events.count == 5, "[prep rows] five rows to prep from", "\(up.events.map(\.title))")
+        let offered = up.events.map { TodayPrep.offered($0, available: true) }
+        check(offered == [true, true, false, true, true], "[prep rows] Prep on rows 2 to 5, none on a Blocked hold", "\(offered)")
+        check(!TodayPrep.offered(up.events[2], available: true) && TodayPrep.isHold(up.events[2]), "[no prep on holds] Blocked")
+        for hold in ["Blocked", "BLOCK", "Busy", "Hold for Q4 offsite", "holds", "Focus time", "Travel", "Personal", "Private", "OOO",
+                     "Out of office", "out   of office: Friday", "Lunch", "PTO", "Vacation", "Commute", "DND", "Do not book", "Do not schedule",
+                     "  [Busy]", "*Focus*", "Busy: hold", "Hold up: Weatherford"] {
+            check(TodayPrep.isHold(hold), "[no prep on holds] \"\(hold)\" is a hold")
+        }
+        for meeting in ["Lunch with Graham", "Focus group with Jewel360 customers", "Pricing review", "Holiday promo kickoff", "Busybody standup",
+                        "Blockchain briefing", "Personalization review", "Weatherford hold review", "1:1 Gina", "Travel sync with Ryan"] {
+            check(!TodayPrep.isHold(meeting), "[no prep on holds] \"\(meeting)\" is a meeting")
+        }
+        // The server's mark wins over the words, both ways, and travels from calendar/today and welcome-context.
+        let marked = TodayHome.CalendarToday(.object(["available": .bool(true), "connected": .bool(true), "remainingCount": .number(2), "next": .array([
+            .object(["title": .string("Pricing review"), "start": .string(t("2026-10-21 10:00")), "hold": .bool(true)]),
+            .object(["title": .string("Busy"), "start": .string(t("2026-10-21 11:00")), "hold": .bool(false)])])]))
+        let up2 = TodayHome.nextUp(calendar: marked, single: nil, now: n, day: calendar)
+        check(up2.events.map(\.hold) == [true, false] && !TodayPrep.offered(up2.events[0], available: true) && TodayPrep.offered(up2.events[1], available: true),
+              "[no prep on holds] the server's hold mark decides when it is sent", "\(up2.events)")
+        let welcome = TodayHome.nextEvent(.object(["title": .string("Focus"), "time": .string(t("2026-10-21 10:00")), "hold": .bool(false)]), now: n, calendar: calendar)
+        check(welcome?.hold == false && welcome.map { !TodayPrep.isHold($0) } == true, "[no prep on holds] welcome-context's mark is kept")
+        // Hidden when unavailable.
+        check(TodayPrep.available(reachable: true, chatAvailable: true, workRunsOn: true, preview: false), "[prep hidden] shown when everything is on")
+        check(!TodayPrep.available(reachable: false, chatAvailable: true, workRunsOn: true, preview: false), "[prep hidden] the server is offline")
+        check(!TodayPrep.available(reachable: true, chatAvailable: false, workRunsOn: true, preview: false), "[prep hidden] the COS chat is off")
+        check(!TodayPrep.available(reachable: true, chatAvailable: true, workRunsOn: false, preview: false), "[prep hidden] Ask (Work runs from Today) is off")
+        check(!TodayPrep.available(reachable: true, chatAvailable: true, workRunsOn: true, preview: true), "[prep hidden] an isolated preview")
+        check(!up.events.contains { TodayPrep.offered($0, available: false) }, "[prep hidden] no row offers Prep while it is unavailable")
+
+        // One panel at a time; Escape (close) keeps the words; Cancel drops them.
+        var panels = TodayPrep.Panels()
+        let k1 = TodayPrep.key(up.events[1]), k4 = TodayPrep.key(up.events[4])
+        panels.toggle(k1); panels.setText(k1, "Close the Q4 price list")
+        panels.toggle(k4)
+        check(panels.open == k4, "[one panel] opening another row's panel closes the first", "\(String(describing: panels.open))")
+        check(panels.draft(k1).text == "Close the Q4 price list", "[one panel] the closed panel keeps its words")
+        panels.toggle(k4)
+        check(panels.open == nil, "[one panel] Prep again closes its own panel")
+        panels.toggle(k1); panels.close()
+        check(panels.open == nil && panels.draft(k1).text == "Close the Q4 price list", "[one panel] Escape closes and keeps the words")
+        panels.toggle(k4); panels.setText(k4, "x"); panels.cancel(k4)
+        check(panels.open == nil && panels.draft(k4).isEmpty && panels.drafts[k4] == nil, "[one panel] Cancel closes and drops the words")
+
+        // The draft survives Today's refresh: the rows are rebuilt from a new read (one meeting ended, one added), and the
+        // same meeting's key finds its words; a same-title meeting at another time does not.
+        let refreshed = TodayHome.nextUp(calendar: TodayHome.CalendarToday(calendarToday(Array(rows.dropFirst()) + [("Ryan creative", t("2026-10-21 14:00"), nil, false)], remaining: 5)),
+                                         single: nil, now: at("2026-10-21 09:50"), day: calendar)
+        let again = refreshed.events.first { $0.title == "Pricing review" }
+        check(again.map { TodayPrep.key($0) == k1 && panels.draft(TodayPrep.key($0)).text == "Close the Q4 price list" } == true,
+              "[draft survives refresh] the rebuilt row finds its words by title and start")
+        check(TodayPrep.key(TodayHome.NextEvent(title: "Pricing review", start: at("2026-10-21 16:00"))) != k1, "[draft survives refresh] another time is another draft")
+        check(TodayPrep.key(TodayHome.NextEvent(title: "Pricing review", start: at("2026-10-21 10:00").addingTimeInterval(20))) == k1,
+              "[draft survives refresh] seconds inside the minute are the same meeting")
+
+        // Files: once each, at most five; Remove.
+        let files = (1...6).map { URL(fileURLWithPath: "/tmp/prep-fixture/agenda \($0).pdf") }
+        var filed = TodayPrep.Panels()
+        let refused = filed.add(k1, files: files + [files[0]])
+        check(filed.draft(k1).files == Array(files.prefix(5)) && refused == ["agenda 6.pdf"], "[files] up to five, once each", "\(refused)")
+        filed.remove(k1, file: files[1])
+        check(filed.draft(k1).files.count == 4 && !filed.draft(k1).files.contains(files[1]), "[files] Remove takes one off")
+
+        // Start prep: the seed for THAT meeting, with its time, context and files.
+        filed.setText(k1, "  Goals: lock the Q4 list.\nPeople: Dana, Sam.\n ```oops``` ")
+        let seed = TodayPrep.seed(up.events[1], draft: filed.draft(k1), calendar: calendar)
+        check(seed.context == "Goals: lock the Q4 list.\nPeople: Dana, Sam.\n ```oops```", "[start prep] the context becomes the prep's notes, trimmed", seed.context)
+        check(seed.files == filed.draft(k1).files, "[start prep] the files go with it")
+        let lines = seed.askWords.components(separatedBy: "\n")
+        check(lines.first == "Prep me for Pricing review at 10:00 AM.", "[start prep] the Ask names the meeting and its time", seed.askWords)
+        check(lines.count > 3 && lines[1].isEmpty && lines[2] == "```prep-context" && lines[3] == "Context:" && lines.contains("Goals: lock the Q4 list.")
+              && lines.contains(" '''oops'''") && lines.contains("Files attached (4):") && lines.contains("- agenda 1.pdf") && lines.last == "```",
+              "[start prep] the context and file names go in one fenced block", seed.askWords)
+        check(seed.askWords.components(separatedBy: "```").count == 3, "[start prep] exactly one fence", seed.askWords)
+        let bare = TodayPrep.seed(up.events[4], draft: TodayPrep.Draft(), calendar: calendar)
+        check(bare.askWords == "Prep me for Silas sync at 1:00 PM." && bare.context.isEmpty && bare.files.isEmpty, "[start prep] no context: just the meeting", bare.askWords)
+        // The composer took it: the draft goes, and only that one.
+        var started = panels
+        started.toggle(k1)
+        started.started(k1, launch: "launch-1")
+        check(started.open == nil && started.draft(k1).text == "Close the Q4 price list", "[start prep] the panel closes and keeps the words until the composer takes them")
+        started.carried(launch: "other")
+        check(started.draft(k1).text == "Close the Q4 price list", "[start prep] another launch leaves this draft")
+        started.carried(launch: "launch-1")
+        check(started.draft(k1).isEmpty, "[start prep] once the composer took them, the draft goes")
+        // One draft per meeting (Control Web's today-next item key), and the context joins its notes.
+        check(TodayPrep.draftKey(up.events[1]) == "today-next:" + t("2026-10-21 10:00") + ":Pricing review", "[draft reuse] the meeting's item key is today-next, start, title",
+              TodayPrep.draftKey(up.events[1]))
+        check(TodayPrep.draftKey(TodayHome.NextEvent(title: " Pricing review ", start: at("2026-10-21 10:00"))) == TodayPrep.draftKey(up.events[1])
+              && TodayPrep.draftKey(up.events[1]) != TodayPrep.draftKey(up.events[4]), "[draft reuse] same meeting, same key; another meeting, another")
+        check(TodayPrep.mergeSteer("", "  New context ") == "New context", "[merge notes] empty notes take the context")
+        check(TodayPrep.mergeSteer("Existing notes  \n", "New context") == "Existing notes\n\nNew context", "[merge notes] the context follows the notes after a blank line")
+        check(TodayPrep.mergeSteer("Existing notes\n\nNew context", "New context") == "Existing notes\n\nNew context", "[merge notes] notes that hold it stay as they are")
+        check(TodayPrep.mergeSteer("Existing notes", "   ") == "Existing notes", "[merge notes] nothing typed keeps the notes")
+        check(TodayPrep.mergeSteer(String(repeating: "a", count: 3_998), "bcd").count == 4_000, "[merge notes] clipped to the notes' limit")
+        check(TodayPrep.placeholder == "Add context for this prep (goals, people, what you want out of it)", "[copy] the placeholder")
     }
 }

@@ -51,7 +51,7 @@ class Handler(BaseHTTPRequestHandler):
             if state['calToday'] != 200: return self.reply(state['calToday'], {'error': 'not_found'})
             return self.reply(200, {'connected': True, 'source': 'snapshot', 'asOf': '2026-10-21T19:30:00Z', 'stale': True, 'remainingCount': 7,
                                     'next': [{'title': 'Northwind renewal', 'start': '2026-10-21T20:30:00Z', 'end': '2026-10-21T21:00:00Z', 'allDay': False,
-                                              'calendar': 'Work', 'meetingUrl': 'https://meet.example.invalid/SECRET'},
+                                              'calendar': 'Work', 'meetingUrl': 'https://meet.example.invalid/SECRET', 'hold': False},
                                              {'title': 'Bad row', 'start': 'not a time'}],
                                     'endedRecently': [{'title': 'SECRET earlier', 'start': '2026-10-21T18:00:00Z', 'end': '2026-10-21T18:30:00Z'}]})
         self.reply(404, {})
@@ -88,7 +88,7 @@ try:
     assert calls == ['/api/query-jobs/active', '/api/routines/runs?limit=20', '/api/routines', '/api/welcome-context', '/api/calendar/today'], ('serial reads, in order', calls)
     assert full['details']['calendarToday'] == {'available': True, 'connected': True, 'stale': True, 'remainingCount': 7, 'asOf': '2026-10-21T19:30:00Z',
                                                 'next': [{'title': 'Northwind renewal', 'start': '2026-10-21T20:30:00Z', 'end': '2026-10-21T21:00:00Z',
-                                                          'allDay': False, 'calendar': 'Work'}]}, ('calendar/today: listed fields only, bad rows dropped', full['details']['calendarToday'])
+                                                          'allDay': False, 'calendar': 'Work', 'hold': False}]}, ('calendar/today: listed fields only (0.5.385: and the hold mark), bad rows dropped', full['details']['calendarToday'])
     assert full['details']['unreachable'] is False
     state['calendarRead'] = False
     assert run(['activity-today', '--calendar'])['details']['calendar']['calendarRead'] is False, 'the server says whether the calendar was read'

@@ -109,6 +109,9 @@ final class MeetingPrepStore: ObservableObject {
         var title: String
         var startsAt: String?
         var resume: MeetingPrep.Draft?
+        /// 0.5.385: Today's Start prep (TodayPrep.Seed): its context and files, carried once into the composer this launch
+        /// opens, then sent. Nil for Prep me and every other way in, which open the composer and wait.
+        var seed: TodayPrep.Seed? = nil
     }
     struct Failure: LocalizedError {
         let message: String
@@ -127,6 +130,8 @@ final class MeetingPrepStore: ObservableObject {
     @Published private(set) var jobState: String?
     @Published private(set) var recoveryDrafts: [MeetingPrepJournal.Entry] = []
     @Published private(set) var uploads = DropItStore()
+    /// 0.5.385: the last launch whose Today seed the composer took (Today then drops that meeting's draft).
+    @Published private(set) var carriedLaunch: String?
     var run: Run = { _, _ in throw CancellationError() }
     var plainAsk: (@MainActor (String, [DropIt.Attachment]) async -> Bool)?
     var plainUpload: Run?
@@ -262,9 +267,30 @@ final class MeetingPrepStore: ObservableObject {
         }
     }
 
+    /// 0.5.385: the stable clientDraftId for one Today meeting (TodayPrep.draftKey), so Prep me and Start prep for it open
+    /// one server draft and one journal entry: a UUID (version 4 shape, as the server requires) from its SHA-256.
+    nonisolated static func clientDraftID(for itemKey: String) -> String {
+        var hex = Array(SHA256.hash(data: Data("cos-control-today-prep:v1:\(itemKey)".utf8)).prefix(16).map { String(format: "%02x", $0) }.joined())
+        hex[12] = "4"; hex[16] = Array("89ab")[hex[16].hexDigitValue! & 3]
+        return [hex[0..<8], hex[8..<12], hex[12..<16], hex[16..<20], hex[20..<32]].map { String($0) }.joined(separator: "-")
+    }
+    /// The open composer's draft key (its clientDraftId), nil when closed.
+    var openKey: String? { activeKey }
+    /// 0.5.385: Start prep for the meeting whose Prep is already open: its context and files join that composer.
+    func carryOpen(_ seed: TodayPrep.Seed, launch launchID: String) async {
+        guard let key = activeKey, key == launchID else { return }
+        await carry(seed, key: key, launch: launchID)
+    }
+
     func open(_ requested: Launch, ordinary: Flow.Draft) async {
         guard !isOpen else { return }
         let key = requested.resume?.clientDraftId ?? requested.id
+        await prepare(requested, key: key, ordinary: ordinary)
+        // 0.5.385: only the call that opened this launch carries its seed, once.
+        if let seed = requested.seed, activeKey == key { await carry(seed, key: key, launch: requested.id) }
+    }
+
+    private func prepare(_ requested: Launch, key: String, ordinary: Flow.Draft) async {
         uploads = uploadStores[key] ?? DropItStore()
         uploadStores[key] = uploads
         if uploadObservers[key] == nil {
@@ -321,6 +347,44 @@ final class MeetingPrepStore: ObservableObject {
             if !Task.isCancelled { notice = error.localizedDescription; _ = flow.failPreparation(ticket, message: error.localizedDescription) }
         }
     }
+
+    /// 0.5.385: Today's Start prep. With Prep on the server the context becomes the prep's notes and the files go through
+    /// Prep's own upload store (DropItStore.attach, the COS Ask's file handling) and are saved to the draft; on a plain-Ask
+    /// server the words are "Prep me for <title> at <time>" with the context fenced, and the files go with that Ask. Then it
+    /// sends once, as the Prep button would. Anything that stops it (a refused file, an upload that failed, a refusal from
+    /// the server, three minutes without the files saved) leaves the words and files in the composer with a line, unsent.
+    private func carry(_ seed: TodayPrep.Seed, key: String, launch launchID: String) async {
+        guard flow.presentation?.phase == .ready, let generation = flow.presentation?.generation else {
+            notice = (notice.map { $0 + " " } ?? "") + Self.carryHeld; return
+        }
+        // The same meeting's draft may already hold notes (Prep me, an earlier Start prep): the context joins them.
+        let words = supported ? TodayPrep.mergeSteer(text, seed.context, limit: 4000) : seed.askWords
+        if words != text { setText(words) }
+        let before = uploads.attachments.count
+        if !seed.files.isEmpty { uploads.attach(seed.files.map { (url: $0, name: $0.lastPathComponent) }) }
+        carriedLaunch = launchID
+        func current() -> Bool { activeKey == key && flow.presentation?.generation == generation }
+        guard uploads.line == nil, uploads.attachments.count == before + seed.files.count, pending == nil else { notice = Self.carryHeld; return }
+        let deadline = Date().addingTimeInterval(180)
+        var saves = 0
+        while current() {
+            if uploads.attachments.contains(where: { $0.state == .failed }) { notice = Self.carryHeld; return }
+            let uploading = uploads.attachments.contains(where: \.busy)
+            if supported {
+                if !uploading, !busy, saves < 3, !uploads.attachments.isEmpty || hasQueuedFiles {
+                    saves += 1; await saveUploadedFiles()
+                } else if !uploading, !busy, uploads.attachments.isEmpty, !hasQueuedFiles, canSend {
+                    await send(); return
+                }
+            } else if !uploading, canSend {
+                if await sendPlainAsk() { _ = close() }
+                return
+            }
+            if Date() > deadline || (saves >= 3 && !busy && (!uploads.attachments.isEmpty || hasQueuedFiles)) { notice = notice ?? Self.carryHeld; return }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+    }
+    static let carryHeld = "Prep did not start on its own. Your context and files are here: check them, then choose Prep."
 
     func setText(_ value: String) {
         let bounded = String(value.prefix(4000))

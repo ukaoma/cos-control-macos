@@ -270,6 +270,54 @@ need(in_order(send_fn, "TodayAskAbout.prompt(typed: todayAskAboutDraft, summary:
               "shown.sessions ?? (todaySummaryBody(now: now)", "select(.messages)", "openDropItChat()", "await store.ask(prompt, files: [])", 'todayAskAboutDraft = ""'),
      "[ask about] Send opens the COS chat and runs its Ask with the context, then clears")
 
+# 0.5.385: Prep on every Next up row. The rules (holds, availability, one panel, the draft across a refresh, the seed)
+# execute in ActivityTodayChecks and MeetingPrepStoreChecks; these pin the view and store wiring.
+prep_store = strip((root / "Sources/MeetingPrepStore.swift").read_text())
+need("let prepOn = TodayPrep.available(reachable: frame.reachable, chatAvailable: model.status.dropIt.available," in next_fn
+     and "workRunsOn: TodayHome.workRunsOn(.standard), preview: isolatedWorkPreview)" in next_fn,
+     "[prep wiring] Next up gates Prep on TodayPrep.available (server, COS chat, Ask, never a preview)")
+need("todayLaterRow(later, prepOn: prepOn)" in next_fn and "todayPrepButtons(event, target: target, admission: admission, prepOn: prepOn)" in next_fn
+     and "if TodayPrep.offered(event, available: prepOn), todayPrep.open == TodayPrep.key(event) { todayPrepPanel(event, bottom: 12) }" in next_fn,
+     "[prep wiring] every row gets Prep, and the first row's panel opens under it")
+later_fn = body(today, "    func todayLaterRow(", "\n    func todayEventWords(")
+need(in_order(later_fn, "let offered = TodayPrep.offered(event, available: prepOn)", "if offered {", 'Button("Prep") { todayPrep.toggle(key) }',
+              "if offered, todayPrep.open == key { todayPrepPanel(event, bottom: 7) }"),
+     "[prep wiring] a later row shows Prep only when offered, and its panel under it")
+buttons_fn = body(today, "    func todayPrepButtons(", "\n    func todayPrepPanel(")
+need(in_order(buttons_fn, "if !TodayPrep.isHold(event) {", 'Button("Prep me")', 'Button("Open meeting")',
+              "if TodayPrep.offered(event, available: prepOn) {", 'Button("Add context") { todayPrep.toggle(TodayPrep.key(event)) }'),
+     "[prep wiring] the first row: Prep me (never on a hold), Open meeting, then Add context")
+panel_fn = body(today, "    func todayPrepPanel(", "\n    func todayPrepAddFiles(")
+need(all(p in panel_fn for p in ("TextEditor(text: Binding(get: { todayPrep.draft(key).text }, set: { todayPrep.setText(key, $0) }))",
+                                  "Text(TodayPrep.placeholder)", '{ Label("Add files", systemImage: "paperclip").frame(minHeight: 32) }', 'Button { todayPrep.cancel(key) } label: { Text("Cancel").frame(minHeight: 32) }',
+                                  'Button("Start prep") { todayStartPrep(event) }', ".onKeyPress(.escape) { todayPrep.close(); return .handled }")),
+     "[prep wiring] the panel: context, Add files, Cancel, Start prep; Escape closes it")
+need(".padding(.bottom, bottom)\n" in panel_fn and ".padding(.top" not in panel_fn and "Rectangle()" not in panel_fn,
+     "[prep layout] the row and its panel are one block: no rule inside it, and the space under it is the row's own")
+need("if section == nil, todayPrep.open != nil { todayPrep.close(); return true }" in win,
+     "[prep wiring] the window's Escape closes an open Prep panel first")
+files_fn = body(today, "    func todayPrepAddFiles(", "\n    func todayStartPrep(")
+need("NSOpenPanel()" in files_fn and "todayPrep.add(key, files: panel.urls)" in files_fn, "[prep wiring] Add files is an open panel into this meeting's draft")
+start_fn = body(today, "    func todayStartPrep(", "\n    @ViewBuilder\n    func todayMeetingsPanel(")
+need(in_order(start_fn, "let draftID = MeetingPrepStore.clientDraftID(for: TodayPrep.draftKey(event))", "let seed = TodayPrep.seed(event, draft: todayPrep.draft(key))",
+              "if model.meetingPrep.isOpen, model.meetingPrep.openKey == draftID {", "await prep.carryOpen(seed, launch: draftID)",
+              "guard !model.meetingPrep.isOpen else {", "MeetingPrepStore.Launch(id: draftID, title: event.title, startsAt: TodayPrep.startsAt(event), seed: seed)", "select(.messages)",
+              "guard section == .messages else { return }", "openDropItChat()", "model.meetingPrep.launch = launch", "todayPrep.started(key, launch: launch.id)"),
+     "[prep wiring] Start prep opens Messages, then the COS chat, then this meeting's Prep with the seed")
+need("openMeetingPrep(title: event.title, startsAt: TodayPrep.startsAt(event),\n                                    draftID: MeetingPrepStore.clientDraftID(for: TodayPrep.draftKey(event)))" in buttons_fn,
+     "[draft reuse] Prep me and Start prep open the meeting's one draft")
+need(".onReceive(model.meetingPrep.$carriedLaunch) { launch in if let launch { todayPrep.carried(launch: launch) } }" in win,
+     "[prep wiring] the draft leaves only once the composer took it")
+need("if let seed = requested.seed, activeKey == key { await carry(seed, key: key, launch: requested.id) }" in prep_store,
+     "[prep wiring] only the call that opened the launch carries its seed")
+carry_fn = body(prep_store, "    private func carry(", "\n    static let carryHeld")
+need(in_order(carry_fn, "let words = supported ? TodayPrep.mergeSteer(text, seed.context, limit: 4000) : seed.askWords", "uploads.attach(seed.files.map", "carriedLaunch = launchID",
+              "guard uploads.line == nil, uploads.attachments.count == before + seed.files.count, pending == nil else", "await saveUploadedFiles()", "await send(); return",
+              "if await sendPlainAsk() { _ = close() }"),
+     "[prep wiring] the composer takes the context and files, saves the files, then sends once")
+need('if let hold = row["hold"] as? Bool { kept["hold"] = hold }' in helper and 'if let hold = event["hold"] as? Bool { next["hold"] = hold }' in helper,
+     "[prep wiring] the helper keeps the server's hold mark")
+
 # Copy rules: no em dash, arrows or attribution in Today's words; no eyebrow, no vanity totals.
 literals = re.findall(r'"((?:[^"\\]|\\.)*)"', today + "\n" + logic)
 for bad, label in (("—", "em dash"), ("→", "arrow"), ("You said", "attribution"), ("known", "vanity total"), ("this week", "vanity total")):

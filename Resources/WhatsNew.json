@@ -1,8 +1,17 @@
 {
-  "version": "0.5.384",
+  "version": "0.5.385",
   "whatsNew": {
-    "summary": "Today's Next up lists your next five meetings, with a line for the rest of the day, and a new Ask about this box under the Today summary takes a question or an instruction for a session straight to COS. Plus everything in 0.5.383.",
+    "summary": "Every meeting in Today's Next up now has Prep. Add context and files right under the meeting, then Start prep runs it in the COS chat. Plus everything in 0.5.384.",
     "sections": [
+      {
+        "title": "0.5.385",
+        "items": [
+          "Today, Next up: every meeting has Prep, not just the first. It opens a small panel under that meeting: add context (goals, people, what you want out of it) and files, then Start prep.",
+          "Start prep opens the COS chat with that meeting's prep, keeps your context as its notes and its files with it, and starts it. With an older COS server it asks COS to prep you for that meeting, with your context and files.",
+          "The first meeting keeps Prep me and Open meeting, and adds Add context. Holds and blocks (Blocked, Busy, Hold, Focus, Travel, Personal, OOO, Lunch and the like) get no Prep.",
+          "One panel opens at a time, Escape closes it, and what you typed stays while Today refreshes. Prep shows only when the server answers and the COS chat can ask."
+        ]
+      },
       {
         "title": "0.5.384",
         "items": [

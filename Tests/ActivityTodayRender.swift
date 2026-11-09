@@ -45,6 +45,10 @@ import SwiftUI
         try render(.summaryLimit, width: 1440, height: 1240, name: "today-summary-daily-limit-1440")
         try render(.summaryOff, width: 1440, height: 1240, name: "today-summary-off-1440")
         try render(.summaryUnreachable, width: 1440, height: 1240, name: "today-summary-unreachable-1440")
+        // 0.5.385: Next up with Prep on every meeting row (none on the Blocked hold), the Pricing review panel open with context
+        // and one file, at the window's narrow and wide sizes.
+        try render(.prepRows, width: 920, height: 1900, name: "today-prep-rows-920")
+        try render(.prepRows, width: 1440, height: 1240, name: "today-prep-rows-1440")
         UserDefaults.standard.set(true, forKey: TodayHome.quietHoursKey)
         // The fold reads the real clock (the window's own tick), so these two fold only after 6 PM, before 6 AM or on a weekend. 0.5.361: the busy
         // day has real tier 2 to 5 needs (voices, a meeting to review, Work's move, older suggestions), so the rail, the headline and the Needs you
@@ -60,7 +64,10 @@ import SwiftUI
         }
     }
 
-    enum Scene { case busy, caughtUp, many, loading, oneFailed, unreachable, firstRun, olderServer, foldedOnly, summary, summaryLimit, summaryOff, summaryUnreachable }
+    enum Scene { case busy, caughtUp, many, loading, oneFailed, unreachable, firstRun, olderServer, foldedOnly, summary, summaryLimit, summaryOff, summaryUnreachable, prepRows }
+
+    /// 0.5.385: the Prep panels the prep-rows scene opens with.
+    static var prepFixture: TodayPrep.Panels?
 
     static func iso(_ minutesAgo: Double) -> String { ISO8601DateFormatter().string(from: now.addingTimeInterval(-minutesAgo * 60)) }
 
@@ -73,6 +80,7 @@ import SwiftUI
     }
 
     static func setup(_ scene: Scene) -> (ControllerModel, TodayHomeStore, WorkHandoffStore) {
+        prepFixture = nil
         let model = ControllerModel(startBackgroundWork: false)
         model.petEnabled = false
         var status = model.status
@@ -192,6 +200,26 @@ import SwiftUI
                 store.refresh.finish(reply: cap, words: TodaySummary.refreshWords(cap), now: now)
             }
         }
+        if scene == .prepRows {
+            var status = model.status
+            status.dropIt = DropItCapability(protocolVersion: 1, enabled: true)
+            model.status = status
+            let base = soon
+            func row(_ title: String, _ minutes: Double, end: Double? = 30) -> JSONValue {
+                var o: [String: JSONValue] = ["title": .string(title), "start": .string(ISO8601DateFormatter().string(from: base.addingTimeInterval(minutes * 60))), "allDay": .bool(false)]
+                if let end { o["end"] = .string(ISO8601DateFormatter().string(from: base.addingTimeInterval((minutes + end) * 60))) }
+                return .object(o)
+            }
+            store.calendarToday = TodayHome.CalendarToday(.object(["available": .bool(true), "connected": .bool(true), "remainingCount": .number(7), "next": .array([
+                row("Northwind renewal", 0), row("Pricing review", 30), row("Blocked", 60), row("Lunch with Graham", 90, end: nil), row("Silas sync", 120)])]))
+            let pricing = TodayHome.NextEvent(title: "Pricing review", start: base.addingTimeInterval(30 * 60))
+            var panels = TodayPrep.Panels()
+            let key = TodayPrep.key(pricing)
+            panels.toggle(key)
+            panels.setText(key, "Goal: lock the Q4 price list. Dana and Sam join. I want a yes on the bundle tier.")
+            panels.add(key, files: [URL(fileURLWithPath: "/tmp/fixture/Q4 price list.pdf")])
+            prepFixture = panels
+        }
         switch scene {
         case .oneFailed: model.workIntakeError = "Work intake is temporarily unavailable."
         case .unreachable: store.reachable = false
@@ -207,7 +235,7 @@ import SwiftUI
             model.activityOpenSection = tab
             let view = scene == .loading
                 ? ActivityWindow.todayFixture(model: model, store: store, handoff: handoff, loads: [:])
-                : ActivityWindow.todayFixture(model: model, store: store, handoff: handoff)
+                : ActivityWindow.todayFixture(model: model, store: store, handoff: handoff, prep: prepFixture)
             let host = NSHostingView(rootView: view.frame(width: width, height: height))
             let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: height), styleMask: [.borderless], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false

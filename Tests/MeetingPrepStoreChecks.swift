@@ -1141,6 +1141,96 @@ private func prepHash(_ data: Data) -> String {
                   "Retry confirms the exact frozen binding after a later draft edit, without starting Prep")
         }
 
+        // 0.5.385: Today's Start prep. The seed's context becomes the prep's notes, its file goes through Prep's upload and
+        // is saved to the draft, and then it runs once, for THAT meeting's title and start. A plain-Ask server gets the
+        // "Prep me for <title> at <time>" words with the fenced context, and the file with that Ask.
+        do {
+            let h = try await prepHarness(root, "today-seed")
+            _ = h.store.close()
+            let file = h.root.appendingPathComponent("Q4 price list.pdf")
+            try Data("fixture price list".utf8).write(to: file)
+            let seed = TodayPrep.Seed(context: "Goals: lock the Q4 list. People: Dana.", files: [file],
+                                      askWords: "Prep me for Pricing review at 10:00 AM.\n\n```prep-context\nContext:\nGoals: lock the Q4 list. People: Dana.\n```")
+            let launch = MeetingPrepStore.Launch(title: "Pricing review", startsAt: "2026-10-21T15:00:00Z", seed: seed)
+            await h.store.open(launch, ordinary: h.ordinary)
+            try await eventually("the seeded prep ran") { h.fixture.providerStarts == 1 && !h.store.busy }
+            check(h.store.active?.title == "Pricing review" && h.store.active?.startsAt == "2026-10-21T15:00:00Z",
+                  "[start prep] the prep is THAT meeting's title and start")
+            check(h.fixture.admittedSteers == ["Goals: lock the Q4 list. People: Dana."] && h.fixture.count("run") == 1,
+                  "[start prep] the context is the prep's notes, sent once")
+            check(h.store.active?.currentFiles.map(\.name) == ["Q4 price list.pdf"] && h.fixture.count("files") == 1,
+                  "[start prep] the file is saved to the prep before it runs")
+            check(h.store.carriedLaunch == launch.id, "[start prep] the composer says it took this launch")
+            _ = h.store.close()
+            let again = MeetingPrepStore.Launch(id: launch.id, title: "Pricing review", startsAt: "2026-10-21T15:00:00Z")
+            await h.store.open(again, ordinary: h.ordinary)
+            check(h.fixture.count("run") == 1, "[start prep] reopening without a seed never runs it again")
+        }
+        do {
+            let h = try await prepHarness(root, "today-seed-plain")
+            _ = h.store.close()
+            h.fixture.available = false
+            var asked: [(String, [String])] = []
+            h.store.plainAsk = { text, files in asked.append((text, files.map(\.name))); return true }
+            let fixture = h.fixture
+            h.store.plainUpload = { _, data in
+                let payload = try JSONSerialization.jsonObject(with: data ?? Data("{}".utf8))
+                let wrapped = try JSONSerialization.data(withJSONObject: ["payload": payload, "serverInstanceId": fixture.server])
+                return try await fixture.run(["meeting-prep", "--op", "upload"], wrapped)
+            }
+            let file = h.root.appendingPathComponent("Agenda.pdf")
+            try Data("fixture agenda".utf8).write(to: file)
+            let words = "Prep me for Silas sync at 1:00 PM.\n\n```prep-context\nContext:\nBudget asks.\n```"
+            let launch = MeetingPrepStore.Launch(title: "Silas sync", startsAt: "2026-10-21T18:00:00Z",
+                                                 seed: TodayPrep.Seed(context: "Budget asks.", files: [file], askWords: words))
+            await h.store.open(launch, ordinary: h.ordinary)
+            try await eventually("the plain Ask went") { !asked.isEmpty && !h.store.busy }
+            check(asked.count == 1 && asked[0].0 == words && asked[0].1 == ["Agenda.pdf"], "[start prep] a plain-Ask server gets the words and the file in one Ask")
+            check(!h.store.isOpen && h.fixture.providerStarts == 0, "[start prep] the composer closes onto the chat; no Prep run")
+        }
+        do {
+            // 0.5.385: one draft per Today meeting. Prep me opens it and leaves notes; Start prep for the same meeting
+            // resumes that draft (no second create), keeps the notes and adds the context after a blank line.
+            let h = try await prepHarness(root, "today-seed-reuse")
+            _ = h.store.close()
+            let itemKey = "today-next:2026-10-21T15:00:00Z:Pricing review"
+            let id = MeetingPrepStore.clientDraftID(for: itemKey)
+            check(UUID(uuidString: id) != nil && id == id.lowercased() && id == MeetingPrepStore.clientDraftID(for: itemKey)
+                  && id != MeetingPrepStore.clientDraftID(for: "today-next:2026-10-21T16:00:00Z:Pricing review"),
+                  "[draft reuse] a stable UUID per meeting, another per meeting")
+            let creates = h.fixture.count("create")
+            await h.store.open(MeetingPrepStore.Launch(id: id, title: "Pricing review", startsAt: "2026-10-21T15:00:00Z"), ordinary: h.ordinary)
+            h.store.setText("Existing notes from Prep me")
+            _ = await h.store.saveNotes()
+            _ = h.store.close()
+            let seed = TodayPrep.Seed(context: "New context from Today", files: [], askWords: "x")
+            await h.store.open(MeetingPrepStore.Launch(id: id, title: "Pricing review", startsAt: "2026-10-21T15:00:00Z", seed: seed), ordinary: h.ordinary)
+            try await eventually("the reused draft ran") { h.fixture.providerStarts == 1 && !h.store.busy }
+            check(h.fixture.count("create") == creates + 1, "[draft reuse] Start prep resumes the meeting's draft, never a second one")
+            check(h.fixture.admittedSteers == ["Existing notes from Prep me\n\nNew context from Today"], "[draft reuse] the notes are kept and the context follows them")
+            h.fixture.settle(h.fixture.runRequestIDs.last!, status: "completed", response: "Prep answer")
+            await h.store.checkRequest()
+            try await eventually("the first run settled") { h.store.pending == nil && !h.store.busy }
+            _ = h.store.close()
+            // Start prep again with the same words: the notes already hold them, so nothing is appended twice.
+            await h.store.open(MeetingPrepStore.Launch(id: id, title: "Pricing review", startsAt: "2026-10-21T15:00:00Z", seed: seed), ordinary: h.ordinary)
+            try await eventually("the second run settled") { h.fixture.count("run") == 2 && !h.store.busy }
+            check(h.fixture.count("create") == creates + 1 && h.fixture.admittedSteers.last == "Existing notes from Prep me\n\nNew context from Today",
+                  "[draft reuse] the same context is not added twice")
+        }
+        do {
+            // A refused file stops it: nothing runs, the words stay.
+            let h = try await prepHarness(root, "today-seed-refused")
+            _ = h.store.close()
+            let secret = h.root.appendingPathComponent("fixture.pem")
+            try Data("{}".utf8).write(to: secret)
+            let launch = MeetingPrepStore.Launch(title: "Pricing review", startsAt: "2026-10-21T15:00:00Z",
+                                                 seed: TodayPrep.Seed(context: "Notes", files: [secret], askWords: "x"))
+            await h.store.open(launch, ordinary: h.ordinary)
+            check(h.fixture.count("run") == 0 && h.store.text == "Notes" && h.store.notice == MeetingPrepStore.carryHeld,
+                  "[start prep] a refused file leaves the words unsent with a line")
+        }
+
         print("PASS MeetingPrep real store: \(checks) assertions covering admission recovery, frozen downloads, transformed uploads, job DTOs, journal CAS, draft isolation, and server identity")
     }
 }

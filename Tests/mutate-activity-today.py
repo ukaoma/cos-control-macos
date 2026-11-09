@@ -16,6 +16,7 @@ W = "Sources/ActivityWindow.swift"
 H = "HelperSources/main.swift"
 CM = "Sources/ControllerModel.swift"
 WW = "Sources/WorkWorkspaceView.swift"
+P = "Sources/MeetingPrepStore.swift"
 MUTANTS = [
     # The recording section (Miles, 2026-10-31): recordings leave Running, and nothing counts them twice
     ("recording: also in Running", M, "        let running = inFlightRows.filter { $0.recording == nil }\n", "        let running = inFlightRows\n", "[a recording is never also in Running]"),
@@ -192,6 +193,44 @@ MUTANTS = [
     ("384: field not under the summary", W, "                    todayAskAboutField(frame)\n", "", "[ask about] the field sits under the summary line"),
     ("384: helper skips calendar/today", H, '            let today = get("/api/calendar/today", timeout: 12)\n', "            let today: HTTPResponse? = nil\n", "[next up] the helper reads /api/calendar/today"),
     ("384: +N more opens nothing", W, "                    Button(more) { select(.meetings) }\n", "                    Button(more) { }\n", "[next up] +N more today opens Meetings"),
+    # 0.5.385 Prep on every Next up row
+    ("385: holds get Prep", M, "    static func offered(_ event: TodayHome.NextEvent, available: Bool) -> Bool { available && !isHold(event) }", "    static func offered(_ event: TodayHome.NextEvent, available: Bool) -> Bool { available }", "[prep rows]"),
+    ("385: a meeting with someone is a hold", M, '        return !tokens.contains("with")\n', "        return true\n", "[prep rows]"),
+    ("385: the hold words are not whole words", M, "        guard holdWords.contains(where: { t.hasPrefix($0) && !word(t.dropFirst($0.count).first) }) else { return false }", "        guard holdWords.contains(where: { t.hasPrefix($0) }) else { return false }", "[no prep on holds]"),
+    ("385: leading punctuation hides a hold", M, "        let t = String(words.drop(while: { !($0.isASCII && ($0.isLetter || $0.isNumber)) }))\n", "        let t = words\n", "[no prep on holds]"),
+    ("385: the server's mark is ignored", M, "    static func isHold(_ event: TodayHome.NextEvent) -> Bool { event.hold ?? isHold(event.title) }", "    static func isHold(_ event: TodayHome.NextEvent) -> Bool { isHold(event.title) }", "[no prep on holds]"),
+    ("385: calendar rows drop the mark", M, '                           hold: r["hold"]?.bool)', "                           hold: nil)", "[no prep on holds]"),
+    ("385: welcome-context drops the mark", M, '        return NextEvent(title: ActivityHome.clip(title, 120), start: start, hold: o["hold"]?.bool)', "        return NextEvent(title: ActivityHome.clip(title, 120), start: start)", "[no prep on holds]"),
+    ("385: Prep offline", M, "        reachable && chatAvailable && workRunsOn && !preview\n    }\n\n    /// Prep shows", "        chatAvailable && workRunsOn && !preview\n    }\n\n    /// Prep shows", "[prep hidden]"),
+    ("385: Prep with the chat off", M, "        reachable && chatAvailable && workRunsOn && !preview\n    }\n\n    /// Prep shows", "        reachable && workRunsOn && !preview\n    }\n\n    /// Prep shows", "[prep hidden]"),
+    ("385: Prep with Ask off", M, "        reachable && chatAvailable && workRunsOn && !preview\n    }\n\n    /// Prep shows", "        reachable && chatAvailable && !preview\n    }\n\n    /// Prep shows", "[prep hidden]"),
+    ("385: Prep in a preview", M, "        reachable && chatAvailable && workRunsOn && !preview\n    }\n\n    /// Prep shows", "        reachable && chatAvailable && workRunsOn\n    }\n\n    /// Prep shows", "[prep hidden]"),
+    ("385: a second panel stays open", M, "        mutating func toggle(_ key: String) { open = open == key ? nil : key; note = nil }", "        mutating func toggle(_ key: String) { if open == nil || open == key { open = open == key ? nil : key }; note = nil }", "[one panel]"),
+    ("385: Escape drops the words", M, "        mutating func close() { open = nil; note = nil }", "        mutating func close() { if let o = open { drafts[o] = nil }; open = nil; note = nil }", "[one panel]"),
+    ("385: Cancel keeps the words", M, "        mutating func cancel(_ key: String) { drafts[key] = nil; if open == key { open = nil }; note = nil }", "        mutating func cancel(_ key: String) { if open == key { open = nil }; note = nil }", "[one panel]"),
+    ("385: drafts keyed by title only", M, '        event.title.lowercased() + "|" + String(Int((event.start.timeIntervalSince1970 / 60).rounded(.down)))', "        event.title.lowercased()", "[draft survives refresh]"),
+    ("385: drafts keyed to the second", M, '        event.title.lowercased() + "|" + String(Int((event.start.timeIntervalSince1970 / 60).rounded(.down)))', '        event.title.lowercased() + "|" + String(Int(event.start.timeIntervalSince1970))', "[draft survives refresh]"),
+    ("385: more than five files", M, "                if d.files.count >= TodayPrep.filesMax { refused.append(url.lastPathComponent); continue }\n", "", "[files]"),
+    ("385: Start prep drops the files", M, "        return Seed(context: String(context.prefix(contextMax)), files: Array(draft.files.prefix(filesMax)),", "        return Seed(context: String(context.prefix(contextMax)), files: [],", "[start prep]"),
+    ("385: the Ask has no time", M, '        var lines = ["Prep me for " + name + " at " + TodayHome.clock(start, calendar: calendar) + "."]', '        var lines = ["Prep me for " + name + "."]', "[start prep]"),
+    ("385: the context breaks the fence", M, '        if !words.isEmpty { lines += ["Context:", TodayAskAbout.defenced(String(words.prefix(contextMax)))] }', '        if !words.isEmpty { lines += ["Context:", String(words.prefix(contextMax))] }', "[start prep]"),
+    ("385: the Ask leaves out the files", M, '            lines += files.prefix(filesMax).map { "- " + TodayAskAbout.defenced($0).replacingOccurrences(of: "\\n", with: " ") }\n', "", "[start prep]"),
+    ("385: Start prep drops the words at once", M, "        mutating func started(_ key: String, launch: String) { starting[launch] = key; if open == key { open = nil }; note = nil }", "        mutating func started(_ key: String, launch: String) { drafts[key] = nil; starting[launch] = key; if open == key { open = nil }; note = nil }", "[start prep]"),
+    ("385: any carried launch drops the draft", M, "        mutating func carried(launch: String) { if let key = starting.removeValue(forKey: launch) { drafts[key] = nil } }", "        mutating func carried(launch: String) { for key in starting.values { drafts[key] = nil } }", "[start prep]"),
+    ("385: later rows have no Prep", W, "todayLaterRow(later, prepOn: prepOn)", "todayLaterRow(later, prepOn: false)", "[prep wiring]"),
+    ("385: Prep me on a hold", W, "            if !TodayPrep.isHold(event) {\n", "            if true {\n", "[prep wiring]"),
+    ("385: Escape ignores the panel", W, "        if section == nil, todayPrep.open != nil { todayPrep.close(); return true }\n", "", "[prep wiring]"),
+    ("385: Start prep skips the chat", W, "        openDropItChat()\n        model.meetingPrep.launch = launch\n", "        model.meetingPrep.launch = launch\n", "[prep wiring]"),
+    ("385: Start prep replaces an open prep", W, "        guard !model.meetingPrep.isOpen else {\n            todayPrep.note", "        guard true else {\n            todayPrep.note", "[prep wiring]"),
+    ("385: every open call carries the seed", P, "        if let seed = requested.seed, activeKey == key { await carry(seed, key: key, launch: requested.id) }", "        if let seed = requested.seed { await carry(seed, key: key, launch: requested.id) }", "[prep wiring]"),
+    ("385: sends before the files are saved", P, "                if !uploading, !busy, saves < 3, !uploads.attachments.isEmpty || hasQueuedFiles {\n                    saves += 1; await saveUploadedFiles()\n                } else if", "                if false {\n                } else if", "[prep wiring]"),
+    ("385: merge replaces the notes", M, '        return String((head + "\\n\\n" + a).prefix(limit))\n', "        return String(a.prefix(limit))\n", "[merge notes]"),
+    ("385: merge repeats the context", M, "        if old.contains(a) { return old }\n", "", "[merge notes]"),
+    ("385: the draft key forgets the start", M, '        "today-next:" + startsAt(event) + ":" + event.title.trimmingCharacters(in: .whitespacesAndNewlines)', '        "today-next:" + event.title.trimmingCharacters(in: .whitespacesAndNewlines)', "[draft reuse]"),
+    ("385: Start prep opens a new draft", W, "        let draftID = MeetingPrepStore.clientDraftID(for: TodayPrep.draftKey(event))\n", "        let draftID = UUID().uuidString.lowercased()\n", "[prep wiring]"),
+    ("385: Prep me opens its own draft", W, "                    openMeetingPrep(title: event.title, startsAt: TodayPrep.startsAt(event),\n                                    draftID: MeetingPrepStore.clientDraftID(for: TodayPrep.draftKey(event)))", "                    openMeetingPrep(title: event.title, startsAt: TodayPrep.startsAt(event))", "[draft reuse]"),
+    ("385: a rule between the row and its panel", W, "        .padding(.bottom, bottom)\n        .onKeyPress(.escape)", "        .padding(.bottom, bottom)\n        .overlay(alignment: .top) { Rectangle().fill(TodayInk.rowBorder).frame(height: 1) }\n        .onKeyPress(.escape)", "[prep layout]"),
+    ("385: helper drops the row's mark", H, '            if let hold = row["hold"] as? Bool { kept["hold"] = hold }\n', "", "[prep wiring]"),
 ]
 
 def run(cmd, cwd):

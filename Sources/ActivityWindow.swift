@@ -584,6 +584,9 @@ struct ActivityWindow: View {
     @State private var homeLoads: [ActivityHome.Source: ActivityHome.SourceState] = [:]
     /// 0.5.384: the words in "Ask about this" under the Today summary.
     @State private var todayAskAboutDraft = ""
+    /// 0.5.385: Next up's Prep panels: at most one open, each meeting's context and files kept by title and start, so a
+    /// Today refresh (which rebuilds the rows) keeps them (TodayPrep.Panels).
+    @State private var todayPrep = TodayPrep.Panels()
     /// Activity Today home (plan v2): the opt-in switch (the integrated candidate; off keeps the 0.5.259 home and the
     /// top lens rail), its store, the Ask box, and Needs you's expansions and Next ⌘] cursor.
     @AppStorage(TodayHome.enabledKey) private var todayEnabled = false
@@ -631,12 +634,14 @@ struct ActivityWindow: View {
     /// Activity Today (plan v2) offscreen fixture: the production window with a filled Today store and Work journal, and no
     /// live loads (Tests/ActivityTodayRender.swift).
     static func todayFixture(model: ControllerModel, store: TodayHomeStore, handoff: WorkHandoffStore,
-                             loads: [ActivityHome.Source: ActivityHome.SourceState] = [.sessions: .answered, .voices: .answered, .memories: .answered, .work: .answered]) -> ActivityWindow {
+                             loads: [ActivityHome.Source: ActivityHome.SourceState] = [.sessions: .answered, .voices: .answered, .memories: .answered, .work: .answered],
+                             prep: TodayPrep.Panels? = nil) -> ActivityWindow {
         precondition(!model.backgroundWorkEnabled)
         var view = ActivityWindow(model: model)
         view._today = StateObject(wrappedValue: store)
         view._handoffStore = StateObject(wrappedValue: handoff)
         view._homeLoads = State(initialValue: loads)
+        if let prep { view._todayPrep = State(initialValue: prep) }
         return view
     }
 
@@ -1074,6 +1079,8 @@ struct ActivityWindow: View {
         )
         .background(ActivityEscapeHandler(onEscape: handleActivityEscape).frame(width: 0, height: 0))
         .onExitCommand { if !handleActivityEscape() { goBack() } }
+        // 0.5.385: the Prep composer took a Start prep's words and files; that meeting's Today draft goes.
+        .onReceive(model.meetingPrep.$carriedLaunch) { launch in if let launch { todayPrep.carried(launch: launch) } }
         .onAppear { applyLaunchSection() }
         .onChange(of: model.activityOpenSection) { _, _ in applyLaunchSection() }
         .onChange(of: model.activityOpenSettings) { _, _ in applyLaunchSection() }
@@ -1361,6 +1368,8 @@ struct ActivityWindow: View {
         }
         // 0.5.366: an open title field on the live recording takes Escape first: it closes the field, not the live pane.
         if model.titleSteer.escape() { return true }
+        // 0.5.385: an open Prep panel on Today's Next up closes first; its words stay.
+        if section == nil, todayPrep.open != nil { todayPrep.close(); return true }
         // 0.5.244: Work's Start work overlay sits above everything in Work; Escape closes it first (not mid-send).
         if workWorkspaceState.startItemID != nil {
             if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil }
@@ -9625,13 +9634,20 @@ extension ActivityWindow {
                         ? TodayRunGuard(defaults: .standard).admission(target: target, inFlight: TodayHomeStore.inFlightTargets(handoffStore.receipts),
                                                                       switchOn: TodayHome.workRunsOn(.standard), now: now)
                         : .switchOff
-                    ViewThatFits(in: .horizontal) {
-                        HStack(alignment: .center, spacing: 12) { todayEventWords(event, now: now); Spacer(minLength: 8); todayPrepButtons(event, target: target, admission: admission) }
-                        VStack(alignment: .leading, spacing: 10) { todayEventWords(event, now: now); todayPrepButtons(event, target: target, admission: admission) }
+                    // 0.5.385: Prep on every row that is a meeting (not a hold), while the COS chat's Ask is on and the server answers.
+                    let prepOn = TodayPrep.available(reachable: frame.reachable, chatAvailable: model.status.dropIt.available,
+                                                     workRunsOn: TodayHome.workRunsOn(.standard), preview: isolatedWorkPreview)
+                    VStack(alignment: .leading, spacing: 0) {
+                        ViewThatFits(in: .horizontal) {
+                            HStack(alignment: .center, spacing: 12) { todayEventWords(event, now: now); Spacer(minLength: 8); todayPrepButtons(event, target: target, admission: admission, prepOn: prepOn) }
+                            VStack(alignment: .leading, spacing: 10) { todayEventWords(event, now: now); todayPrepButtons(event, target: target, admission: admission, prepOn: prepOn) }
+                        }
+                        .padding(.vertical, 12)
+                        if TodayPrep.offered(event, available: prepOn), todayPrep.open == TodayPrep.key(event) { todayPrepPanel(event, bottom: 12) }
                     }
-                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .overlay(alignment: .top) { Rectangle().fill(TodayInk.rowBorder).frame(height: 1) }
-                    ForEach(Array(next.events.dropFirst().enumerated()), id: \.offset) { _, later in todayLaterRow(later) }
+                    ForEach(Array(next.events.dropFirst().enumerated()), id: \.offset) { _, later in todayLaterRow(later, prepOn: prepOn) }
                 } else {
                     Text("Nothing else on your calendar today.").font(COSType.body(13.5)).foregroundStyle(TodayInk.sub).padding(.top, 6).padding(.bottom, 6)
                 }
@@ -9652,18 +9668,31 @@ extension ActivityWindow {
         }
     }
 
-    /// 0.5.384: one compact line per later event (the panel is 390 pt wide): its time, then its title.
-    func todayLaterRow(_ event: TodayHome.NextEvent) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(TodayHome.clock(event.start)).font(COSType.body(13).monospacedDigit()).foregroundStyle(TodayInk.sub)
-                .frame(minWidth: 62, alignment: .leading)
-            Text(event.title).font(COSType.body(13.5)).foregroundStyle(TodayInk.ink).lineLimit(1).truncationMode(.tail)
-            Spacer(minLength: 0)
+    /// 0.5.384: one compact line per later event (the panel is 390 pt wide): its time, then its title. 0.5.385: then Prep,
+    /// which opens this row's panel under it (TodayPrep.offered: never on a hold, only while Prep is available).
+    func todayLaterRow(_ event: TodayHome.NextEvent, prepOn: Bool) -> some View {
+        let offered = TodayPrep.offered(event, available: prepOn)
+        let key = TodayPrep.key(event)
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(TodayHome.clock(event.start)).font(COSType.body(13).monospacedDigit()).foregroundStyle(TodayInk.sub)
+                    .frame(minWidth: 62, alignment: .leading)
+                Text(event.title).font(COSType.body(13.5)).foregroundStyle(TodayInk.ink).lineLimit(1).truncationMode(.tail)
+                    .help(event.title)
+                Spacer(minLength: 0)
+                if offered {
+                    Button("Prep") { todayPrep.toggle(key) }
+                        .buttonStyle(TodayLinkStyle(size: 13)).fixedSize()
+                        .help("Prep for " + event.title + ", with context and files")
+                        .accessibilityLabel("Prep for " + event.title)
+                }
+            }
+            .padding(.vertical, 7)
+            .accessibilityElement(children: .contain)
+            if offered, todayPrep.open == key { todayPrepPanel(event, bottom: 7) }
         }
-        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(alignment: .top) { Rectangle().fill(TodayInk.rowBorder).frame(height: 1) }
-        .help(event.title)
-        .accessibilityElement(children: .combine)
     }
 
     func todayEventWords(_ event: TodayHome.NextEvent, now: Date) -> some View {
@@ -9675,13 +9704,115 @@ extension ActivityWindow {
     }
 
     @ViewBuilder
-    func todayPrepButtons(_ event: TodayHome.NextEvent, target: String, admission: TodayRunGuard.Admission) -> some View {
+    func todayPrepButtons(_ event: TodayHome.NextEvent, target: String, admission: TodayRunGuard.Admission, prepOn: Bool) -> some View {
         HStack(spacing: 8) {
-            Button("Prep me") {
-                openMeetingPrep(title: event.title, startsAt: ISO8601DateFormatter().string(from: event.start))
-            }.buttonStyle(TodayButtonStyle(primary: true, small: true)).disabled(isolatedWorkPreview)
+            // 0.5.385: no Prep on a hold or status block (TodayPrep.isHold); Open meeting stays.
+            if !TodayPrep.isHold(event) {
+                Button("Prep me") {
+                    // 0.5.385: the meeting's one draft, shared with Start prep (TodayPrep.draftKey).
+                    openMeetingPrep(title: event.title, startsAt: TodayPrep.startsAt(event),
+                                    draftID: MeetingPrepStore.clientDraftID(for: TodayPrep.draftKey(event)))
+                }.buttonStyle(TodayButtonStyle(primary: true, small: true)).disabled(isolatedWorkPreview)
+            }
             Button("Open meeting") { select(.meetings) }.buttonStyle(TodayLinkStyle(size: 13))
+            if TodayPrep.offered(event, available: prepOn) {
+                Button("Add context") { todayPrep.toggle(TodayPrep.key(event)) }
+                    .buttonStyle(TodayLinkStyle(size: 13)).fixedSize()
+                    .help("Add context and files, then start the prep")
+                    .accessibilityLabel("Add context for the prep of " + event.title)
+            }
         }
+    }
+
+    /// 0.5.385: the Prep panel under a Next up row: the context, its files, Start prep and Cancel. Escape closes it and keeps
+    /// the words; Cancel drops them. The row and its panel are one block: no rule between them, and the space under the
+    /// panel (`bottom`) is the row's own top padding, so the block sits evenly between the rules above and below it.
+    func todayPrepPanel(_ event: TodayHome.NextEvent, bottom: CGFloat) -> some View {
+        let key = TodayPrep.key(event)
+        let draft = todayPrep.draft(key)
+        return VStack(alignment: .leading, spacing: 8) {
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: Binding(get: { todayPrep.draft(key).text }, set: { todayPrep.setText(key, $0) }))
+                    .font(COSType.body(13.5))
+                    .foregroundStyle(TodayInk.ink)
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 58, maxHeight: 120)
+                    .accessibilityLabel("Context for the prep of " + event.title)
+                if draft.text.isEmpty {
+                    Text(TodayPrep.placeholder).font(COSType.body(13.5)).foregroundStyle(TodayInk.sub)
+                        .padding(.leading, 5).allowsHitTesting(false).accessibilityHidden(true)
+                }
+            }
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(TodayInk.qopen))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(TodayInk.btnBorder, lineWidth: 1))
+            ForEach(draft.files, id: \.self) { url in
+                HStack(spacing: 8) {
+                    Image(systemName: "paperclip").font(.system(size: 11)).foregroundStyle(TodayInk.sub).accessibilityHidden(true)
+                    Text(url.lastPathComponent).font(COSType.body(12.5)).foregroundStyle(TodayInk.ink).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 6)
+                    Button("Remove") { todayPrep.remove(key, file: url) }
+                        .buttonStyle(TodayLinkStyle(color: TodayInk.sub, size: 12)).accessibilityLabel("Remove " + url.lastPathComponent)
+                }
+            }
+            if let note = todayPrep.note {
+                Text(note).font(COSType.body(12)).foregroundStyle(TodayInk.hot).fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 12) {
+                // Add files, Cancel and Start prep share Start prep's 32 pt height (TodayButtonStyle small).
+                Button { todayPrepAddFiles(key) } label: { Label("Add files", systemImage: "paperclip").frame(minHeight: 32) }
+                    .buttonStyle(TodayLinkStyle(size: 12.5)).disabled(draft.files.count >= TodayPrep.filesMax)
+                Spacer(minLength: 8)
+                Button { todayPrep.cancel(key) } label: { Text("Cancel").frame(minHeight: 32) }
+                    .buttonStyle(TodayLinkStyle(color: TodayInk.sub, size: 12.5))
+                Button("Start prep") { todayStartPrep(event) }
+                    .buttonStyle(TodayButtonStyle(primary: true, small: true))
+                    .help("Start the prep in the COS chat with this context and these files")
+            }
+        }
+        .padding(.bottom, bottom)
+        .onKeyPress(.escape) { todayPrep.close(); return .handled }
+    }
+
+    /// Add files: the open panel, as the Prep composer's own. The files go up through the COS Ask's upload when Start prep
+    /// hands them over (MeetingPrepStore carry, DropItStore.attach).
+    func todayPrepAddFiles(_ key: String) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = true
+        panel.prompt = "Add to prep"
+        guard panel.runModal() == .OK else { return }
+        let refused = todayPrep.add(key, files: panel.urls)
+        todayPrep.note = refused.isEmpty ? nil : "Up to \(TodayPrep.filesMax) files a prep. Not added: " + refused.joined(separator: ", ") + "."
+    }
+
+    /// Start prep: Messages, then the COS chat, then the Prep composer for THIS meeting (its title and start), carrying the
+    /// context and files (TodayPrep.seed), which it saves and sends (MeetingPrepStore carry). With a prep already open in
+    /// the chat nothing is replaced: the panel says so and keeps its words.
+    func todayStartPrep(_ event: TodayHome.NextEvent) {
+        guard !isolatedWorkPreview else { return }
+        let key = TodayPrep.key(event)
+        // One draft per meeting, the one Prep me opens: its notes are kept and this context joins them.
+        let draftID = MeetingPrepStore.clientDraftID(for: TodayPrep.draftKey(event))
+        let seed = TodayPrep.seed(event, draft: todayPrep.draft(key))
+        if model.meetingPrep.isOpen, model.meetingPrep.openKey == draftID {
+            select(.messages)
+            guard section == .messages else { return }
+            openDropItChat()
+            todayPrep.started(key, launch: draftID)
+            let prep = model.meetingPrep
+            Task { @MainActor in await prep.carryOpen(seed, launch: draftID) }
+            return
+        }
+        guard !model.meetingPrep.isOpen else {
+            todayPrep.note = "A prep is already open in the COS chat. Finish or close it there, then Start prep again."
+            return
+        }
+        let launch = MeetingPrepStore.Launch(id: draftID, title: event.title, startsAt: TodayPrep.startsAt(event), seed: seed)
+        select(.messages)
+        guard section == .messages else { return }
+        openDropItChat()
+        model.meetingPrep.launch = launch
+        todayPrep.started(key, launch: launch.id)
     }
 
     @ViewBuilder
@@ -10833,12 +10964,14 @@ extension ActivityWindow {
 
     /// An open action on a chat item: Work with the card selected, the session, Threads, Memories To review, or Messages. Each
     /// leaves "Back to the chat" on the pane it opened.
-    func openMeetingPrep(title: String, startsAt: String?) {
+    func openMeetingPrep(title: String, startsAt: String?, draftID: String? = nil) {
         guard !isolatedWorkPreview else { return }
         select(.messages)
         guard section == .messages else { return }
         openDropItChat()
-        if !model.meetingPrep.isOpen { model.meetingPrep.launch = .init(title: title, startsAt: startsAt) }
+        if !model.meetingPrep.isOpen {
+            model.meetingPrep.launch = draftID.map { .init(id: $0, title: title, startsAt: startsAt) } ?? .init(title: title, startsAt: startsAt)
+        }
     }
 
     private func closeMeetingPrepRoute() {

@@ -5764,6 +5764,8 @@ final class COSControlHelper {
         }
         var next: [String: Any] = ["title": String(title.prefix(160)), "time": String(time.prefix(64))]
         if let minutes = jsonInt(event["inMinutes"]) { next["inMinutes"] = minutes }
+        // 0.5.385: the server's hold mark (no Prep on a hold); absent from an older server.
+        if let hold = event["hold"] as? Bool { next["hold"] = hold }
         out["nextEvent"] = next
         return out
     }
@@ -5783,6 +5785,8 @@ final class COSControlHelper {
             var kept: [String: Any] = ["title": String(title.prefix(160)), "start": start, "allDay": row["allDay"] as? Bool == true]
             if let end = row["end"] as? String, activityTodayEventTimeValid(end) { kept["end"] = end }
             if let calendar = row["calendar"] as? String { kept["calendar"] = String(calendar.prefix(80)) }
+            // 0.5.385: the server's hold mark (no Prep on a hold); absent from an older server.
+            if let hold = row["hold"] as? Bool { kept["hold"] = hold }
             return kept
         }
         out["next"] = Array(rows)
@@ -24847,13 +24851,16 @@ final class COSControlHelper {
         try expect(Self.activityTodayCalendarToday(["next": []])["reason"] as? String == "malformed", "calendar/today without connected is malformed")
         let calendarToday = Self.activityTodayCalendarToday(["connected": true, "stale": true, "asOf": "2026-11-09T14:00:00Z", "remainingCount": 7,
                                                              "next": [["title": "Standup", "start": "2026-11-09T15:00:00Z", "end": "2026-11-09T15:30:00Z", "allDay": false,
-                                                                       "calendar": "Work", "meetingUrl": "https://example.invalid/m"],
+                                                                       "calendar": "Work", "meetingUrl": "https://example.invalid/m", "hold": true],
                                                                       ["title": "Bad", "start": "nope"]]])
         let todayRows = calendarToday["next"] as? [[String: Any]] ?? []
         try expect(calendarToday["connected"] as? Bool == true && calendarToday["stale"] as? Bool == true && calendarToday["remainingCount"] as? Int == 7
                    && calendarToday["asOf"] as? String == "2026-11-09T14:00:00Z", "calendar/today keeps connected, stale, asOf and remainingCount")
         try expect(todayRows.count == 1 && todayRows[0]["meetingUrl"] == nil && todayRows[0]["end"] as? String == "2026-11-09T15:30:00Z",
                    "calendar/today keeps good rows without a meeting URL and drops a row with a bad time")
+        try expect(todayRows.first?["hold"] as? Bool == true
+                   && (Self.activityTodayNextEvent(["nextEvent": ["title": "Busy", "time": "2026-11-08T16:00:00Z", "hold": true]])["nextEvent"] as? [String: Any])?["hold"] as? Bool == true,
+                   "0.5.385: calendar/today rows and welcome-context's nextEvent keep the server's hold mark")
 
         try expect(Self.activityTodayEventTimeValid("2026-10-21T15:30:00") && Self.activityTodayEventTimeValid("2026-10-21T15:30:00.123"),
                    "legacy exact local calendar times remain supported")

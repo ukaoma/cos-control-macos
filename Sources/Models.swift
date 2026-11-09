@@ -14289,6 +14289,8 @@ enum TodayHome {
     struct NextEvent: Equatable, Sendable {
         let title: String
         let start: Date
+        /// 0.5.385: the server's hold mark (calendar/today `hold`, welcome-context `nextEvent.hold`); nil from an older server.
+        var hold: Bool? = nil
         func minutes(until now: Date) -> Int { max(0, Int((start.timeIntervalSince(now) / 60).rounded())) }
     }
 
@@ -14297,7 +14299,7 @@ enum TodayHome {
         guard let o = value?.object, let title = o["title"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty,
               let time = o["time"]?.string, let start = ActivityHome.stamp(time) ?? localStamp(time),
               calendar.isDate(start, inSameDayAs: now), start.timeIntervalSince(now) > -3600 else { return nil }
-        return NextEvent(title: ActivityHome.clip(title, 120), start: start)
+        return NextEvent(title: ActivityHome.clip(title, 120), start: start, hold: o["hold"]?.bool)
     }
     /// A calendar time without a zone ("2026-10-21T15:30:00"): local.
     static func localStamp(_ text: String) -> Date? {
@@ -14322,6 +14324,7 @@ enum TodayHome {
             let start: Date
             let end: Date?
             let allDay: Bool
+            var hold: Bool? = nil
         }
         let rows: [Row]
         /// The server's count of timed meetings left today, the one in progress included (calendarToday's `remainingCount`).
@@ -14339,7 +14342,8 @@ enum TodayHome {
             rows = (o["next"]?.array ?? []).compactMap { row in
                 guard let r = row.object, let title = r["title"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty,
                       let start = date(r["start"]?.string) else { return nil }
-                return Row(title: ActivityHome.clip(title, 120), start: start, end: date(r["end"]?.string), allDay: r["allDay"]?.bool == true)
+                return Row(title: ActivityHome.clip(title, 120), start: start, end: date(r["end"]?.string), allDay: r["allDay"]?.bool == true,
+                           hold: r["hold"]?.bool)
             }
             remainingCount = max(0, o["remainingCount"]?.int ?? 0)
             stale = o["stale"]?.bool == true
@@ -14381,7 +14385,7 @@ enum TodayHome {
         let ended = timed.count - live.count
         let dropped = counted.count - timed.count
         let more = max(0, calendar.remainingCount - ended - dropped - shown.count)
-        return NextUp(events: shown.map { NextEvent(title: $0.title, start: $0.start) }, more: more,
+        return NextUp(events: shown.map { NextEvent(title: $0.title, start: $0.start, hold: $0.hold) }, more: more,
                       asOf: calendar.stale ? calendar.asOf : nil, fromCalendar: true)
     }
 
@@ -16596,6 +16600,148 @@ enum TodayAskAbout {
             lines.append("- " + parts.joined(separator: " | "))
         }
         if rows.count > sessionsMax { lines.append("- and \(rows.count - sessionsMax) more") }
+        lines.append("```")
+        return lines.joined(separator: "\n")
+    }
+}
+
+// MARK: - Prep on every Next up row (0.5.385)
+
+/// 0.5.385 (Miles 2026-11-09): every Next up row that is a real meeting gets a compact Prep. Tapping it opens a small panel
+/// under that row for added context and files; Start prep carries both into the desktop Prep composer (MeetingPrepStore),
+/// which keeps them as the prep's notes and files and starts it. A server without Prep takes the same words and files as
+/// one COS Ask: "Prep me for <title> at <time>" and the context in a fenced block (`askWords`). Control Web's prep-rows uses
+/// the same hold list.
+enum TodayPrep {
+    static let placeholder = "Add context for this prep (goals, people, what you want out of it)"
+    static let fence = "prep-context"
+    static let contextMax = 4_000
+    /// The COS Ask takes up to five files a message (DropIt.maxAttachments); the panel stops at the same number.
+    static let filesMax = 5
+    /// Holds and status blocks never get Prep. The server marks each row (`hold`, prep-rows-server, isCalendarHold); a server
+    /// without the field gets this copy of its rule: the title, lowercased with its spaces collapsed and leading punctuation
+    /// gone, starts with one of these as a whole word, and has no word "with" ("Lunch with Jeremy" is a meeting).
+    static let holdWords: [String] = ["blocked", "block", "busy", "hold", "holds", "focus", "travel", "personal", "private", "ooo",
+                                      "out of office", "lunch", "pto", "vacation", "commute", "dnd", "do not book", "do not schedule"]
+
+    static func isHold(_ title: String) -> Bool {
+        let words = title.lowercased().split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        let t = String(words.drop(while: { !($0.isASCII && ($0.isLetter || $0.isNumber)) }))
+        func word(_ c: Character?) -> Bool { c.map { $0.isASCII && ($0.isLetter || $0.isNumber) } ?? false }
+        guard holdWords.contains(where: { t.hasPrefix($0) && !word(t.dropFirst($0.count).first) }) else { return false }
+        let tokens = t.split(whereSeparator: { !($0.isASCII && ($0.isLetter || $0.isNumber)) })
+        return !tokens.contains("with")
+    }
+
+    /// The server's mark when it sent one, else the rule above.
+    static func isHold(_ event: TodayHome.NextEvent) -> Bool { event.hold ?? isHold(event.title) }
+
+    /// The same gate as Ask about this, without the summary: a server that answers, the COS chat on, Work runs from Today
+    /// on, and never in an isolated preview.
+    static func available(reachable: Bool, chatAvailable: Bool, workRunsOn: Bool, preview: Bool) -> Bool {
+        reachable && chatAvailable && workRunsOn && !preview
+    }
+
+    /// Prep shows on a row only when it is available and the row is a meeting, not a hold.
+    static func offered(_ event: TodayHome.NextEvent, available: Bool) -> Bool { available && !isHold(event) }
+
+    /// A draft is keyed by the meeting's title and start (to the minute), so Today's refresh, which rebuilds the rows,
+    /// finds it again, and two meetings with one title at different times keep their own words.
+    static func key(_ event: TodayHome.NextEvent) -> String {
+        event.title.lowercased() + "|" + String(Int((event.start.timeIntervalSince1970 / 60).rounded(.down)))
+    }
+
+    /// The meeting's start as the Prep draft carries it (`startsAt`).
+    static func startsAt(_ event: TodayHome.NextEvent) -> String { ISO8601DateFormatter().string(from: event.start) }
+
+    /// One Prep draft per Today meeting, shared by Prep me and Start prep: Control Web's item key for a Next up row
+    /// (`today-next:<startISO>:<title>`). MeetingPrepStore.clientDraftID turns it into the draft's stable clientDraftId.
+    static func draftKey(_ event: TodayHome.NextEvent) -> String {
+        "today-next:" + startsAt(event) + ":" + event.title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The context typed on Today joins the draft's notes as Control Web's mergeSteer does: nothing typed keeps them; empty
+    /// notes take it; notes that already hold it stay as they are; otherwise it follows them after a blank line. Clipped.
+    static func mergeSteer(_ old: String, _ add: String, limit: Int = contextMax) -> String {
+        let a = add.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !a.isEmpty else { return old }
+        if old.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return String(a.prefix(limit)) }
+        if old.contains(a) { return old }
+        var head = old
+        while let last = head.last, last.isWhitespace { head.removeLast() }
+        return String((head + "\n\n" + a).prefix(limit))
+    }
+
+    struct Draft: Equatable {
+        var text = ""
+        var files: [URL] = []
+        var isEmpty: Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && files.isEmpty }
+    }
+
+    /// The panels' state on the window: at most one open, each meeting's words and files kept by key until its prep
+    /// starts, and the Start prep waiting for the composer to take it.
+    struct Panels: Equatable {
+        private(set) var open: String?
+        private(set) var drafts: [String: Draft] = [:]
+        /// A started prep's launch id to the draft it carries; the draft leaves once the composer took it.
+        private(set) var starting: [String: String] = [:]
+        /// One line under the open panel ("A prep is already open in the COS chat...").
+        var note: String?
+
+        /// Opens this row's panel and closes any other. Its words stay.
+        mutating func toggle(_ key: String) { open = open == key ? nil : key; note = nil }
+        mutating func close() { open = nil; note = nil }
+        func draft(_ key: String) -> Draft { drafts[key] ?? Draft() }
+        mutating func setText(_ key: String, _ text: String) {
+            var d = draft(key); d.text = String(text.prefix(TodayPrep.contextMax)); store(key, d)
+        }
+        /// Adds files by path, once each, up to `filesMax`. Returns the names that did not fit.
+        @discardableResult mutating func add(_ key: String, files: [URL]) -> [String] {
+            var d = draft(key); var refused: [String] = []
+            for url in files where !d.files.contains(url) {
+                if d.files.count >= TodayPrep.filesMax { refused.append(url.lastPathComponent); continue }
+                d.files.append(url)
+            }
+            store(key, d); return refused
+        }
+        mutating func remove(_ key: String, file: URL) { var d = draft(key); d.files.removeAll { $0 == file }; store(key, d) }
+        /// Cancel: the panel closes and this meeting's words and files go.
+        mutating func cancel(_ key: String) { drafts[key] = nil; if open == key { open = nil }; note = nil }
+        /// Start prep handed the draft to the composer under `launch`: the panel closes; the words stay until it took them.
+        mutating func started(_ key: String, launch: String) { starting[launch] = key; if open == key { open = nil }; note = nil }
+        /// The composer took the launch's words and files: its draft goes.
+        mutating func carried(launch: String) { if let key = starting.removeValue(forKey: launch) { drafts[key] = nil } }
+        private mutating func store(_ key: String, _ d: Draft) { drafts[key] = d.isEmpty ? nil : d }
+    }
+
+    /// What Start prep hands the Prep composer for one meeting.
+    struct Seed: Equatable, Sendable {
+        /// The prep's notes on a server with Prep (its title and start travel as the draft's own).
+        let context: String
+        let files: [URL]
+        /// The plain Ask's words on a server without Prep.
+        let askWords: String
+    }
+
+    static func seed(_ event: TodayHome.NextEvent, draft: Draft, calendar: Calendar = .current) -> Seed {
+        let context = draft.text.replacingOccurrences(of: "\r\n", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return Seed(context: String(context.prefix(contextMax)), files: Array(draft.files.prefix(filesMax)),
+                    askWords: askWords(title: event.title, start: event.start, context: context, files: draft.files.map(\.lastPathComponent), calendar: calendar))
+    }
+
+    /// "Prep me for <title> at <time>", then the context and the file names in one fenced data block (none when both are empty).
+    static func askWords(title: String, start: Date, context: String, files: [String], calendar: Calendar = .current) -> String {
+        let name = title.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+        var lines = ["Prep me for " + name + " at " + TodayHome.clock(start, calendar: calendar) + "."]
+        let words = context.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !words.isEmpty || !files.isEmpty else { return lines[0] }
+        lines += ["", "```" + fence]
+        if !words.isEmpty { lines += ["Context:", TodayAskAbout.defenced(String(words.prefix(contextMax)))] }
+        if !files.isEmpty {
+            if !words.isEmpty { lines.append("") }
+            lines.append("Files attached (\(min(files.count, filesMax))):")
+            lines += files.prefix(filesMax).map { "- " + TodayAskAbout.defenced($0).replacingOccurrences(of: "\n", with: " ") }
+        }
         lines.append("```")
         return lines.joined(separator: "\n")
     }
