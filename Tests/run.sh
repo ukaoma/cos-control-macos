@@ -7371,7 +7371,8 @@ if "COSMarkdownView(text: text, cacheID: markdownID" not in card:
 if "} else if let markdownID {" not in card or "Text(highlighted(text, query: highlight))" not in card:
     fail("[messages] a card with no markdownID shows its text as typed (the YOU side)")
 detail = body(activity, "private func messageDetail(")
-if 'messageBlock(label: "COS", text: turn.text,\n                             tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id)' not in detail:
+# 0.5.380: the COS answer goes through LensAnswerStructure first (lens answers read as lists, as on Control Web).
+if 'messageBlock(label: "COS", text: LensAnswerStructure.structure(turn.text),\n                             tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id)' not in detail:
     fail("[messages] Recent's COS card passes its turn id")
 if 'messageBlock(label: "You", text: turn.query,\n                             tint: ActivitySection.messages.tint, highlight: recentQuery)\n' not in detail:
     fail("[messages] Recent's YOU card stays as typed")
