@@ -14311,6 +14311,89 @@ enum TodayHome {
         return "In " + duration(Double(m * 60))
     }
 
+    // MARK: Next up, the rest of today (0.5.384)
+
+    /// 0.5.384: GET /api/calendar/today as the helper kept it (Control Web's loadCalendarLater). `init` is nil, and Next up
+    /// keeps welcome-context's one event exactly as before, when the route was missing (404), did not answer, was malformed,
+    /// or the calendar is not connected.
+    struct CalendarToday: Equatable, Sendable {
+        struct Row: Equatable, Sendable {
+            let title: String
+            let start: Date
+            let end: Date?
+            let allDay: Bool
+        }
+        let rows: [Row]
+        /// The server's count of timed meetings left today, the one in progress included (calendarToday's `remainingCount`).
+        let remainingCount: Int
+        let stale: Bool
+        let asOf: Date?
+
+        init(rows: [Row], remainingCount: Int, stale: Bool = false, asOf: Date? = nil) {
+            self.rows = rows; self.remainingCount = max(0, remainingCount); self.stale = stale; self.asOf = asOf
+        }
+
+        init?(_ value: JSONValue?) {
+            guard let o = value?.object, o["available"]?.bool == true, o["connected"]?.bool == true else { return nil }
+            func date(_ text: String?) -> Date? { text.flatMap { ActivityHome.stamp($0) ?? TodayHome.localStamp($0) } }
+            rows = (o["next"]?.array ?? []).compactMap { row in
+                guard let r = row.object, let title = r["title"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty,
+                      let start = date(r["start"]?.string) else { return nil }
+                return Row(title: ActivityHome.clip(title, 120), start: start, end: date(r["end"]?.string), allDay: r["allDay"]?.bool == true)
+            }
+            remainingCount = max(0, o["remainingCount"]?.int ?? 0)
+            stale = o["stale"]?.bool == true
+            asOf = date(o["asOf"]?.string)
+        }
+    }
+
+    /// Next up shows the current or next event plus up to four more.
+    static let nextUpRows = 5
+
+    struct NextUp: Equatable {
+        /// The first keeps "Started at" / "In N min", Prep me and Open meeting; the rest show their time.
+        let events: [NextEvent]
+        /// "+N more today": counted meetings left that are not shown.
+        let more: Int
+        /// "Calendar as of": only for a stale snapshot.
+        let asOf: Date?
+        let fromCalendar: Bool
+        var moreLine: String? { more > 0 ? "+\(more) more today" : nil }
+    }
+
+    /// No calendar list: welcome-context's one event, exactly as before. With one: no all-day rows, nothing that has ended
+    /// since the read (the calendar is read every five minutes), at most `nextUpRows`, and "+N more" for counted meetings
+    /// past those (those that ended since the read come off the count too).
+    static func nextUp(calendar: CalendarToday?, single: NextEvent?, now: Date, day: Calendar = .current) -> NextUp {
+        guard let calendar else { return NextUp(events: single.map { [$0] } ?? [], more: 0, asOf: nil, fromCalendar: false) }
+        let counted = calendar.rows.filter { !$0.allDay }
+        // The server counts one meeting on two calendars twice, and "Canceled: ..." events too (today-r2-server, live replay
+        // 2026-11-09): neither takes a row, and each comes off "+N more".
+        var seen = Set<String>()
+        let timed = counted.filter { row in
+            guard !isCanceled(row.title) else { return false }
+            return seen.insert(row.title.lowercased() + "|" + String(Int(row.start.timeIntervalSince1970 / 60))).inserted
+        }
+        let live = timed.filter { row in
+            day.isDate(row.start, inSameDayAs: now) && (row.end.map { $0 > now } ?? (row.start.timeIntervalSince(now) > -3600))
+        }
+        let shown = Array(live.prefix(nextUpRows))
+        let ended = timed.count - live.count
+        let dropped = counted.count - timed.count
+        let more = max(0, calendar.remainingCount - ended - dropped - shown.count)
+        return NextUp(events: shown.map { NextEvent(title: $0.title, start: $0.start) }, more: more,
+                      asOf: calendar.stale ? calendar.asOf : nil, fromCalendar: true)
+    }
+
+    /// "Canceled: Weekly sync" (Outlook and Google both prefix a cancelled invite this way).
+    static func isCanceled(_ title: String) -> Bool {
+        let t = title.trimmingCharacters(in: .whitespaces).lowercased()
+        return t.hasPrefix("canceled:") || t.hasPrefix("cancelled:")
+    }
+
+    /// "Calendar as of 9:05 AM".
+    static func calendarAsOf(_ date: Date) -> String { "Calendar as of " + clock(date) }
+
     // MARK: Needs you (B1, B3, B4)
 
     enum NeedKind: String { case session, voice, meetingVoices, heldVoices, work, memories, olderToSort, dictation }
@@ -16035,8 +16118,12 @@ enum TodaySummary {
         let enabled: Bool
         let retryAfterMs: Int?
         let message: String?
+        /// 0.5.384 (server Today round 2): the sessions this summary read, stored with it ({title, provider, state, movedAt,
+        /// lastAsk}). Nil from an older server: Ask about this uses the inputs Today sent.
+        let sessions: [TodayAskAbout.Row]?
         init?(_ value: JSONValue) {
             guard let o = value.object, let state = o["state"]?.string else { return nil }
+            sessions = o["sessions"]?.array.map { $0.compactMap(TodayAskAbout.Row.init) }
             text = (o["text"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             at = o["at"]?.string.flatMap(WorkIntakeItem.stamp)
             basis = o["basis"]?.string ?? ""
@@ -16436,5 +16523,80 @@ struct HeldGroupsReadSnapshot {
         }
         pending = current
         await current.value
+    }
+}
+
+// MARK: - Ask about this (0.5.384)
+
+/// 0.5.384 (Miles 2026-11-09): a one-line field under the Today summary. Its words go to the COS chat's Ask with the summary
+/// and the sessions the summary read, so COS can answer about them or pass an instruction on to a session ("review the
+/// transcript, then move to the next step"). The context block is the same shape Control Web's askAbout sends.
+enum TodayAskAbout {
+    static let placeholder = "Ask about this or tell a session what to do"
+    static let fence = "today-context"
+    static let sessionsMax = 12
+    static let typedMax = 4_000
+    static let summaryMax = 4_000
+
+    /// The field shows only with a summary on screen, a server that answers, and the COS chat's Ask on (Drop it available,
+    /// Work runs from Today on), never in an isolated preview.
+    static func available(summaryShown: Bool, reachable: Bool, chatAvailable: Bool, workRunsOn: Bool, preview: Bool) -> Bool {
+        summaryShown && reachable && chatAvailable && workRunsOn && !preview
+    }
+
+    /// Three backticks would close the fence early: they become three quotes.
+    static func defenced(_ text: String) -> String { text.replacingOccurrences(of: "```", with: "'''") }
+
+    /// One session the summary read: the server's stored row (title, provider, state, movedAt, lastAsk) or a summary input
+    /// row (title, provider, state, minutes).
+    struct Row: Equatable, Sendable {
+        let title: String
+        let provider: String
+        let state: String
+        let minutes: Int?
+        let movedAt: Date?
+        let lastAsk: String?
+        init?(_ value: JSONValue) {
+            guard let o = value.object else { return nil }
+            title = o["title"]?.string ?? "A session"
+            provider = o["provider"]?.string ?? "claude"
+            state = o["state"]?.string ?? "open"
+            minutes = o["minutes"]?.int
+            movedAt = o["movedAt"]?.string.flatMap(ActivityHome.stamp)
+            lastAsk = o["lastAsk"]?.string
+        }
+    }
+
+    static func lastActivity(_ minutes: Int) -> String {
+        minutes < 1 ? "just now" : TodaySummary.span(Double(minutes) * 60) + " ago"
+    }
+
+    /// The prompt: his words, a blank line, then the fenced context. `sessions` are the summary's own rows when the server
+    /// stored them (title, provider, state, movedAt, lastAsk), else the inputs Today sent (TodaySummary.inputs: title,
+    /// provider, state, minutes). Nil when there are no words or no summary text.
+    static func prompt(typed: String, summary: String, summaryAt: Date?, sessions: [Row], now: Date = Date(),
+                       calendar: Calendar = .current) -> String? {
+        let words = typed.replacingOccurrences(of: "\r\n", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !words.isEmpty, !text.isEmpty else { return nil }
+        var lines = [String(words.prefix(typedMax)), "", "```" + fence]
+        lines.append("Today summary" + (summaryAt.map { ", written " + TodayHome.clock($0, calendar: calendar) } ?? "") + ":")
+        lines.append(defenced(String(text.prefix(summaryMax))))
+        lines.append("")
+        let rows = sessions
+        lines.append("Sessions Today read (\(rows.count)):")
+        if rows.isEmpty { lines.append("- none") }
+        for row in rows.prefix(sessionsMax) {
+            let title = defenced(row.title).replacingOccurrences(of: "\n", with: " ")
+            let minutes = max(0, row.minutes ?? row.movedAt.map { Int((now.timeIntervalSince($0) / 60).rounded(.down)) } ?? 0)
+            var parts = [title, row.provider, row.state, "last activity " + lastActivity(minutes)]
+            if let ask = row.lastAsk?.trimmingCharacters(in: .whitespacesAndNewlines), !ask.isEmpty {
+                parts.append("last ask: \"" + defenced(String(ask.prefix(160))).replacingOccurrences(of: "\n", with: " ") + "\"")
+            }
+            lines.append("- " + parts.joined(separator: " | "))
+        }
+        if rows.count > sessionsMax { lines.append("- and \(rows.count - sessionsMax) more") }
+        lines.append("```")
+        return lines.joined(separator: "\n")
     }
 }

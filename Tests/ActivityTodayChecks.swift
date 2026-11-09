@@ -89,6 +89,8 @@ import Foundation
         yourMoveShapeChecks()
         summaryChecks()
         await refreshReadQueueChecks()
+        nextUpChecks()
+        askAboutChecks()
         print("PASS: Activity Today home: \(ran) checks (predicates, five pin tests, tool-name guard, platform table, finished hour and cap, intake split and midnight, quiet hours, cost guards, capability gating, layout, dismiss and undo)")
     }
 
@@ -1374,5 +1376,135 @@ import Foundation
         check(TodaySummary.kept(previous: reply, answer: (reply: nil, available: false))?.text == reply.text, "an unreachable server keeps the last summary")
         check(TodaySummary.kept(previous: reply, answer: (reply: failed, available: true))?.text.isEmpty == true, "an empty server view lets the counts line return")
         check(TodaySummary.shown(reply, sessionsRead: false) == nil, "never over a session list that was not read")
+    }
+
+    // MARK: 0.5.384 Next up from /api/calendar/today, and Ask about this
+
+    static func calendarToday(_ rows: [(String, String, String?, Bool)], remaining: Int, stale: Bool = false, asOf: String? = nil,
+                              connected: Bool = true, available: Bool = true) -> JSONValue {
+        var o: [String: JSONValue] = ["available": .bool(available), "connected": .bool(connected), "stale": .bool(stale),
+                                      "remainingCount": .number(Double(remaining))]
+        if let asOf { o["asOf"] = .string(asOf) }
+        o["next"] = .array(rows.map { title, start, end, allDay in
+            var r: [String: JSONValue] = ["title": .string(title), "start": .string(start), "allDay": .bool(allDay)]
+            if let end { r["end"] = .string(end) }
+            return .object(r)
+        })
+        return .object(o)
+    }
+
+    static func nextUpChecks() {
+        let n = at("2026-10-21 09:10")
+        func t(_ local: String) -> String { iso(at(local)) }
+        let single = TodayHome.NextEvent(title: "Weatherford call", start: at("2026-10-21 09:00"))
+        // Fallback: a 404, no answer, not connected or malformed keeps the one event exactly as before.
+        let fallbacks: [(String, JSONValue)] = [
+            ("404", .object(["available": .bool(false), "reason": .string("status"), "status": .number(404)])),
+            ("unreachable", .object(["available": .bool(false), "reason": .string("unreachable"), "status": .number(0)])),
+            ("not connected", calendarToday([("X", t("2026-10-21 10:00"), nil, false)], remaining: 1, connected: false)),
+            ("missing", .null),
+        ]
+        for (label, value) in fallbacks {
+            let parsed = TodayHome.CalendarToday(value)
+            check(parsed == nil, "[fallback to one event] \(label) gives no calendar list")
+            let up = TodayHome.nextUp(calendar: parsed, single: single, now: n, day: calendar)
+            check(up.events == [single] && up.more == 0 && up.asOf == nil && !up.fromCalendar && up.moreLine == nil,
+                  "[fallback to one event] \(label) shows only welcome-context's event", "\(up)")
+        }
+        check(TodayHome.nextUp(calendar: nil, single: nil, now: n, day: calendar).events.isEmpty, "[fallback to one event] nothing next is nothing")
+
+        // Seven timed meetings left (one in progress), one all-day row: five rows, "+2 more today".
+        let rows: [(String, String, String?, Bool)] = [
+            ("Holiday", t("2026-10-21 00:00"), t("2026-10-22 00:00"), true),
+            ("Weatherford call", t("2026-10-21 09:00"), t("2026-10-21 09:45"), false),
+            ("Pricing review", t("2026-10-21 10:00"), t("2026-10-21 10:30"), false),
+            ("Gina 1:1", t("2026-10-21 11:00"), t("2026-10-21 11:30"), false),
+            ("Lunch with Graham", t("2026-10-21 12:00"), nil, false),
+            ("Silas sync", t("2026-10-21 13:00"), t("2026-10-21 13:30"), false),
+            ("Ryan creative", t("2026-10-21 14:00"), t("2026-10-21 14:30"), false),
+            ("Niala check-in", t("2026-10-21 15:00"), t("2026-10-21 15:30"), false),
+        ]
+        guard let cal = TodayHome.CalendarToday(calendarToday(rows, remaining: 7)) else { check(false, "[5-row cap] a connected answer parses"); return }
+        let up = TodayHome.nextUp(calendar: cal, single: single, now: n, day: calendar)
+        check(!up.events.contains { $0.title == "Holiday" }, "[all-day filter] no all-day row")
+        check(up.fromCalendar && up.events.count == 5, "[5-row cap] five rows at most", "\(up.events.count)")
+        check(up.events.map(\.title) == ["Weatherford call", "Pricing review", "Gina 1:1", "Lunch with Graham", "Silas sync"],
+              "[5-row cap] in calendar order, the current one first", "\(up.events.map(\.title))")
+        check(TodayHome.eventWhen(up.events[0], now: n) == "Started at 9:00 AM", "[5-row cap] the first row keeps Started at", TodayHome.eventWhen(up.events[0], now: n))
+        check(up.more == 2 && up.moreLine == "+2 more today", "[+N more] counted meetings past the rows", "\(up.more)")
+        check(up.asOf == nil, "[stale as of] a fresh calendar says no as-of")
+        // Exactly five left: no "+N more".
+        let five = TodayHome.CalendarToday(calendarToday(Array(rows.prefix(6)), remaining: 5))!
+        check(TodayHome.nextUp(calendar: five, single: single, now: n, day: calendar).moreLine == nil, "[+N more] none when every meeting shows")
+        // An all-day row never takes one of the five slots.
+        let allDayFirst = TodayHome.CalendarToday(calendarToday(Array(rows.prefix(6)), remaining: 5))!
+        let up2 = TodayHome.nextUp(calendar: allDayFirst, single: nil, now: n, day: calendar)
+        check(up2.events.count == 5 && up2.events.first?.title == "Weatherford call" && up2.events.last?.title == "Silas sync",
+              "[all-day filter] an all-day row takes no slot", "\(up2.events.map(\.title))")
+        // A meeting that ended since the read leaves the rows and the count.
+        let later = TodayHome.nextUp(calendar: cal, single: nil, now: at("2026-10-21 09:50"), day: calendar)
+        check(later.events.first?.title == "Pricing review" && later.events.count == 5 && later.more == 1, "[+N more] a meeting that ended since the read comes off",
+              "\(later.events.map(\.title)) \(later.more)")
+        // Stale: "Calendar as of".
+        let stale = TodayHome.CalendarToday(calendarToday(rows, remaining: 7, stale: true, asOf: t("2026-10-21 08:55")))!
+        let up3 = TodayHome.nextUp(calendar: stale, single: nil, now: n, day: calendar)
+        check(up3.asOf == at("2026-10-21 08:55") && TodayHome.calendarAsOf(up3.asOf!) == "Calendar as of 8:55 AM", "[stale as of] a stale snapshot says when it was read",
+              "\(String(describing: up3.asOf))")
+        // One meeting on two calendars is one row, a "Canceled:" event is none, and both come off "+N more".
+        let noisy = TodayHome.CalendarToday(calendarToday([rows[1], ("Weatherford call", t("2026-10-21 09:00"), t("2026-10-21 09:45"), false),
+                                                           ("Canceled: Pricing review", t("2026-10-21 09:30"), t("2026-10-21 10:00"), false)] + Array(rows[2...7]),
+                                                          remaining: 9))!
+        let up4 = TodayHome.nextUp(calendar: noisy, single: nil, now: n, day: calendar)
+        check(up4.events.map(\.title) == ["Weatherford call", "Pricing review", "Gina 1:1", "Lunch with Graham", "Silas sync"] && up4.more == 2,
+              "[duplicates and cancellations] one row per meeting, none for a cancellation, and the count agrees", "\(up4.events.map(\.title)) \(up4.more)")
+        // A fresh snapshot carries asOf too: it says nothing (only a stale one shows the line).
+        let freshAsOf = TodayHome.CalendarToday(calendarToday(rows, remaining: 7, stale: false, asOf: t("2026-10-21 09:05")))!
+        check(freshAsOf.asOf != nil && TodayHome.nextUp(calendar: freshAsOf, single: nil, now: n, day: calendar).asOf == nil,
+              "[stale as of] a fresh snapshot with asOf shows no as-of line")
+        // Connected and empty: no rows, no more (the panel says nothing else is on the calendar).
+        let empty = TodayHome.nextUp(calendar: TodayHome.CalendarToday(calendarToday([], remaining: 0)), single: single, now: n, day: calendar)
+        check(empty.fromCalendar && empty.events.isEmpty && empty.moreLine == nil, "[fallback to one event] a connected empty day is not a fallback")
+    }
+
+    static func askAboutChecks() {
+        let sessions: [TodayAskAbout.Row] = (0..<14).compactMap { i in TodayAskAbout.Row(
+            .object(["title": .string(i == 0 ? "Weatherford ```prep```" : "Session \(i)"), "provider": .string(i == 1 ? "codex" : "claude"),
+                     "state": .string(i == 0 ? "waiting" : "working"), "minutes": .number(i == 0 ? 0 : Double(i * 5))]))
+        }
+        let at9 = at("2026-10-21 09:12")
+        guard let prompt = TodayAskAbout.prompt(typed: "  review the transcript, then move to the next step \n", summary: "Weatherford prep still needs a go.",
+                                                summaryAt: at9, sessions: sessions, now: at9, calendar: calendar) else {
+            check(false, "[ask context] words and a summary make a prompt"); return
+        }
+        let lines = prompt.components(separatedBy: "\n")
+        check(lines.first == "review the transcript, then move to the next step" && lines[1].isEmpty && lines[2] == "```today-context",
+              "[ask context] his words first, then the fenced block", prompt)
+        check(lines.contains("Today summary, written 9:12 AM:") && lines.contains("Weatherford prep still needs a go."), "[ask context] the summary and its time", prompt)
+        check(lines.contains("Sessions Today read (14):"), "[ask context] how many sessions it read", prompt)
+        check(lines.contains("- Weatherford '''prep''' | claude | waiting | last activity just now"), "[ask context] title, provider, state, last activity; the fence holds", prompt)
+        check(lines.contains("- Session 1 | codex | working | last activity 5 min ago"), "[ask context] a session row", prompt)
+        check(lines.filter { $0.hasPrefix("- Session") }.count == 11 && lines.contains("- and 2 more") && lines.last == "```",
+              "[ask context] at most twelve rows, then the rest counted, then the fence closes", prompt)
+        check(prompt.components(separatedBy: "```").count == 3, "[ask context] exactly one fence", prompt)
+        // The server's stored rows (round 2): minutes from movedAt, and the last ask.
+        // Read off the brief reply itself, as the app does (shown.sessions).
+        let brief = TodaySummary.Reply(.object(["state": .string("fresh"), "text": .string("All quiet."), "sessions": .array([
+            .object(["title": .string("Codex QA"), "provider": .string("codex"), "state": .string("open"),
+                     "movedAt": .string(iso(at("2026-10-21 08:42"))), "lastAsk": .string("run the full suite")])])]))
+        let stored = brief?.sessions ?? []
+        check(stored.count == 1, "[ask context] the brief reply carries the sessions it read")
+        let p2 = TodayAskAbout.prompt(typed: "status?", summary: "All quiet.", summaryAt: nil, sessions: stored, now: at9, calendar: calendar) ?? ""
+        check(p2.contains("\n- Codex QA | codex | open | last activity 30 min ago | last ask: \"run the full suite\"\n") && p2.contains("\nToday summary:\n"),
+              "[ask context] the server's stored rows carry their last ask", p2)
+        check(TodayAskAbout.prompt(typed: "  ", summary: "x", summaryAt: nil, sessions: [], calendar: calendar) == nil, "[ask context] no words, no ask")
+        check(TodayAskAbout.prompt(typed: "why", summary: " ", summaryAt: nil, sessions: [], calendar: calendar) == nil, "[ask context] no summary, no ask")
+        check(TodayAskAbout.placeholder == "Ask about this or tell a session what to do", "[ask context] the placeholder")
+        // Hidden when Ask is off, the server is offline, no summary shows, or in a preview.
+        check(TodayAskAbout.available(summaryShown: true, reachable: true, chatAvailable: true, workRunsOn: true, preview: false), "[field hidden] shown when everything is on")
+        check(!TodayAskAbout.available(summaryShown: true, reachable: true, chatAvailable: false, workRunsOn: true, preview: false), "[field hidden] the COS chat is off")
+        check(!TodayAskAbout.available(summaryShown: true, reachable: true, chatAvailable: true, workRunsOn: false, preview: false), "[field hidden] Work runs from Today is off")
+        check(!TodayAskAbout.available(summaryShown: true, reachable: false, chatAvailable: true, workRunsOn: true, preview: false), "[field hidden] the server is offline")
+        check(!TodayAskAbout.available(summaryShown: false, reachable: true, chatAvailable: true, workRunsOn: true, preview: false), "[field hidden] no summary on screen")
+        check(!TodayAskAbout.available(summaryShown: true, reachable: true, chatAvailable: true, workRunsOn: true, preview: true), "[field hidden] an isolated preview")
     }
 }

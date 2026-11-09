@@ -5768,6 +5768,27 @@ final class COSControlHelper {
         return out
     }
 
+    /// 0.5.384: GET /api/calendar/today `{connected, source, asOf, stale, remainingCount, next[]}` for Next up's five rows.
+    /// Only those fields, and of each row only title, start, end, allDay and calendar (never a meeting URL). A body without
+    /// a boolean `connected` is malformed; a row with a bad time is dropped, not the whole answer.
+    static let activityTodayCalendarRowsMax = 10
+    static func activityTodayCalendarToday(_ body: [String: Any]?) -> [String: Any] {
+        guard let body, let connected = body["connected"] as? Bool else { return ["available": false, "reason": "malformed", "status": 200] }
+        var out: [String: Any] = ["available": true, "connected": connected, "stale": body["stale"] as? Bool == true,
+                                  "remainingCount": max(0, jsonInt(body["remainingCount"]) ?? 0)]
+        if let asOf = body["asOf"] as? String, activityTodayEventTimeValid(asOf) { out["asOf"] = asOf }
+        let rows = (body["next"] as? [[String: Any]] ?? []).prefix(activityTodayCalendarRowsMax).compactMap { row -> [String: Any]? in
+            guard let title = row["title"] as? String, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let start = row["start"] as? String, activityTodayEventTimeValid(start) else { return nil }
+            var kept: [String: Any] = ["title": String(title.prefix(160)), "start": start, "allDay": row["allDay"] as? Bool == true]
+            if let end = row["end"] as? String, activityTodayEventTimeValid(end) { kept["end"] = end }
+            if let calendar = row["calendar"] as? String { kept["calendar"] = String(calendar.prefix(80)) }
+            return kept
+        }
+        out["next"] = Array(rows)
+        return out
+    }
+
     /// One tick's reads, serial. Each part says why it is missing (`reason`): `unreachable` when the request got no answer
     /// at all, `status` for any other answer. The call as a whole says `unreachable` only when every request it made got no
     /// answer; a probe answers `activeQueryJobs` only from a 200 health (anything else is `probe: "failed"`, read again).
@@ -5805,6 +5826,9 @@ final class COSControlHelper {
         if args.contains("--calendar") {
             let response = get("/api/welcome-context", timeout: 12)
             details["calendar"] = response?.status == 200 ? Self.activityTodayNextEvent(response?.body) : missing(response)
+            // 0.5.384: the rest of today. A 404 (an older server) or no answer leaves Next up on welcome-context's one event.
+            let today = get("/api/calendar/today", timeout: 12)
+            details["calendarToday"] = today?.status == 200 ? Self.activityTodayCalendarToday(today?.body) : missing(today)
         }
         details["unreachable"] = asked > 0 && answered == 0
         emit(ok: true, message: answered == 0 ? "Server not reachable" : "Today read", details: details)
@@ -24819,6 +24843,17 @@ final class COSControlHelper {
         try expect(Self.activityTodayNextEvent(["calendarRead": true, "nextEvent": NSNull()])["available"] as? Bool == true, "a successful calendar read may have null nextEvent")
         try expect((Self.activityTodayNextEvent(["calendarRead": true, "nextEvent": ["title": "Call", "time": "2026-11-08T16:00:00.123Z"]])["nextEvent"] as? [String: Any])?["title"] as? String == "Call",
                    "calendar projection accepts fractional ISO times from welcome-context")
+        // 0.5.384: /api/calendar/today's projection keeps its counts and rows, never a meeting URL, and drops bad rows only.
+        try expect(Self.activityTodayCalendarToday(["next": []])["reason"] as? String == "malformed", "calendar/today without connected is malformed")
+        let calendarToday = Self.activityTodayCalendarToday(["connected": true, "stale": true, "asOf": "2026-11-09T14:00:00Z", "remainingCount": 7,
+                                                             "next": [["title": "Standup", "start": "2026-11-09T15:00:00Z", "end": "2026-11-09T15:30:00Z", "allDay": false,
+                                                                       "calendar": "Work", "meetingUrl": "https://example.invalid/m"],
+                                                                      ["title": "Bad", "start": "nope"]]])
+        let todayRows = calendarToday["next"] as? [[String: Any]] ?? []
+        try expect(calendarToday["connected"] as? Bool == true && calendarToday["stale"] as? Bool == true && calendarToday["remainingCount"] as? Int == 7
+                   && calendarToday["asOf"] as? String == "2026-11-09T14:00:00Z", "calendar/today keeps connected, stale, asOf and remainingCount")
+        try expect(todayRows.count == 1 && todayRows[0]["meetingUrl"] == nil && todayRows[0]["end"] as? String == "2026-11-09T15:30:00Z",
+                   "calendar/today keeps good rows without a meeting URL and drops a row with a bad time")
 
         try expect(Self.activityTodayEventTimeValid("2026-10-21T15:30:00") && Self.activityTodayEventTimeValid("2026-10-21T15:30:00.123"),
                    "legacy exact local calendar times remain supported")

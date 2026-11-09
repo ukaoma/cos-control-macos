@@ -170,6 +170,28 @@ MUTANTS = [
     ("split: Work's Sort ignores Today's dismissals", WW, ", now: Date(), dismissed: model.workIntakeDismissedIDs) : TodayHome.IntakeSplit()", ", now: Date()) : TodayHome.IntakeSplit()", "[same predicate]"),
     ("capability: detected by status code", H, 'return features?["activeQueryJobs"] as? Bool == true && jsonInt(features?["activeQueryJobsProtocol"]) == 1', "return health != nil", "[capability]"),
     ("disk: the question cached on disk", H, '"sessions": sessions.map { $0.filter { $0.key != "waitingQuestion" && $0.key != "waitingQuestionCount" } },', '"sessions": sessions,', "[disk]"),
+    # 0.5.384 Today round 2: Next up from /api/calendar/today, and Ask about this
+    ("384: no 5-row cap", M, "        let shown = Array(live.prefix(nextUpRows))\n", "        let shown = live\n", "[5-row cap]"),
+    ("384: no +N more", M, "        let more = max(0, calendar.remainingCount - ended - dropped - shown.count)\n", "        let more = 0\n", "[+N more]"),
+    ("384: ended rows still counted", M, "        let more = max(0, calendar.remainingCount - ended - dropped - shown.count)\n", "        let more = max(0, calendar.remainingCount - dropped - shown.count)\n", "[+N more]"),
+    ("384: all-day rows kept", M, "        let counted = calendar.rows.filter { !$0.allDay }\n", "        let counted = calendar.rows\n", "[all-day filter]"),
+    ("384: not connected is a list", M, 'guard let o = value?.object, o["available"]?.bool == true, o["connected"]?.bool == true else { return nil }', 'guard let o = value?.object else { return nil }', "[fallback to one event]"),
+    ("384: connected is ignored", M, 'guard let o = value?.object, o["available"]?.bool == true, o["connected"]?.bool == true else { return nil }', 'guard let o = value?.object, o["available"]?.bool == true else { return nil }', "[fallback to one event] not connected"),
+    ("384: fallback drops the one event", M, "        guard let calendar else { return NextUp(events: single.map { [$0] } ?? [], more: 0, asOf: nil, fromCalendar: false) }", "        guard let calendar else { return NextUp(events: [], more: 0, asOf: nil, fromCalendar: false) }", "[fallback to one event]"),
+    ("384: duplicates shown", M, '            return seen.insert(row.title.lowercased() + "|" + String(Int(row.start.timeIntervalSince1970 / 60))).inserted\n', "            return true\n", "[duplicates and cancellations]"),
+    ("384: cancellations shown", M, "            guard !isCanceled(row.title) else { return false }\n", "", "[duplicates and cancellations]"),
+    ("384: dropped rows still counted", M, "        let more = max(0, calendar.remainingCount - ended - dropped - shown.count)\n", "        let more = max(0, calendar.remainingCount - ended - shown.count)\n", "[duplicates and cancellations]"),
+    ("384: no stale as-of", M, "asOf: calendar.stale ? calendar.asOf : nil, fromCalendar: true)", "asOf: nil, fromCalendar: true)", "[stale as of]"),
+    ("384: as-of on a fresh calendar", M, "asOf: calendar.stale ? calendar.asOf : nil, fromCalendar: true)", "asOf: calendar.asOf, fromCalendar: true)", "[stale as of]"),
+    ("384: ask without the sessions", M, '            lines.append("- " + parts.joined(separator: " | "))\n', "", "[ask context]"),
+    ("384: ask without the summary time", M, '        lines.append("Today summary" + (summaryAt.map { ", written " + TodayHome.clock($0, calendar: calendar) } ?? "") + ":")\n', '        lines.append("Today summary:")\n', "[ask context]"),
+    ("384: ask without the last ask", M, '            if let ask = row.lastAsk?.trimmingCharacters(in: .whitespacesAndNewlines), !ask.isEmpty {', '            if let ask = row.lastAsk?.trimmingCharacters(in: .whitespacesAndNewlines), ask.isEmpty {', "[ask context]"),
+    ("384: the fence breaks", M, '    static func defenced(_ text: String) -> String { text.replacingOccurrences(of: "```", with: "\'\'\'") }', "    static func defenced(_ text: String) -> String { text }", "[ask context]"),
+    ("384: field shown with the chat off", M, "        summaryShown && reachable && chatAvailable && workRunsOn && !preview\n", "        summaryShown && reachable && workRunsOn && !preview\n", "[field hidden]"),
+    ("384: field shown offline", M, "        summaryShown && reachable && chatAvailable && workRunsOn && !preview\n", "        summaryShown && chatAvailable && workRunsOn && !preview\n", "[field hidden]"),
+    ("384: field not under the summary", W, "                    todayAskAboutField(frame)\n", "", "[ask about] the field sits under the summary line"),
+    ("384: helper skips calendar/today", H, '            let today = get("/api/calendar/today", timeout: 12)\n', "            let today: HTTPResponse? = nil\n", "[next up] the helper reads /api/calendar/today"),
+    ("384: +N more opens nothing", W, "                    Button(more) { select(.meetings) }\n", "                    Button(more) { }\n", "[next up] +N more today opens Meetings"),
 ]
 
 def run(cmd, cwd):

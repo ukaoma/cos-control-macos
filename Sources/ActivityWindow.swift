@@ -582,6 +582,8 @@ struct ActivityWindow: View {
     @State private var homeNextCursor: ActivityHome.NextCursor?
     /// 0.5.259: how each source's load on opening came back, for the quiet line (ActivityHome.line).
     @State private var homeLoads: [ActivityHome.Source: ActivityHome.SourceState] = [:]
+    /// 0.5.384: the words in "Ask about this" under the Today summary.
+    @State private var todayAskAboutDraft = ""
     /// Activity Today home (plan v2): the opt-in switch (the integrated candidate; off keeps the 0.5.259 home and the
     /// top lens rail), its store, the Ask box, and Needs you's expansions and Next ⌘] cursor.
     @AppStorage(TodayHome.enabledKey) private var todayEnabled = false
@@ -8115,6 +8117,8 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
     enum VoiceState: Equatable { case working, listen, named(String, String?), failed(String) }
 
     @Published var nextEvent: TodayHome.NextEvent?
+    /// 0.5.384: GET /api/calendar/today, connected; nil keeps Next up on `nextEvent` alone (TodayHome.nextUp).
+    @Published var calendarToday: TodayHome.CalendarToday?
     /// The server said it read the calendar (welcome-context `calendarRead`); nil: it did not say.
     @Published var calendarRead: Bool?
     /// welcome-context answered at all (an older or standalone server does not): Next up shows only then.
@@ -8313,6 +8317,7 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
                 nextEvent = calendarAvailable ? TodayHome.nextEvent(block["nextEvent"], now: now) : nil
                 // 0.5.336: the live meeting view's title takes this event when it started near the recording.
                 model.liveMeetingCalendarEvent = nextEvent
+                calendarToday = TodayHome.CalendarToday(response.details["calendarToday"])
             }
             let failedComponent = TodaySummary.componentReadFailed([
                 response.details["queryJobs"], response.details["routines"], calendar ? response.details["calendar"] : nil,
@@ -8329,7 +8334,7 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
             lastError = error.localizedDescription
             tickFailed = true
             if calendar {
-                calendarAvailable = false; calendarRead = nil; nextEvent = nil
+                calendarAvailable = false; calendarRead = nil; nextEvent = nil; calendarToday = nil
                 model.liveMeetingCalendarEvent = nil
             }
             routines = []
@@ -9088,6 +9093,7 @@ extension ActivityWindow {
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityAddTraits(.isHeader)
                     todaySummaryLine(frame, now: now)
+                    todayAskAboutField(frame)
                 }
                 FinishSetupCard(model: model, provider: model.providerGuide, guide: model.setupGuide, permissions: model.permissionGuide) {
                     model.showSetupGuide?()
@@ -9156,6 +9162,51 @@ extension ActivityWindow {
             Spacer(minLength: 0)
         }
         .frame(maxWidth: 980, alignment: .leading)
+    }
+
+    /// 0.5.384: under the summary, one line to ask COS about it or hand a session an instruction. Only while the summary
+    /// shows, the server answers and the COS chat's Ask is on (TodayAskAbout.available).
+    @ViewBuilder
+    func todayAskAboutField(_ frame: TodayHome.Frame) -> some View {
+        if TodayAskAbout.available(summaryShown: todaySummaryShown(frame) != nil, reachable: frame.reachable,
+                                   chatAvailable: model.status.dropIt.available, workRunsOn: TodayHome.workRunsOn(.standard),
+                                   preview: isolatedWorkPreview) {
+            HStack(alignment: .center, spacing: 8) {
+                TextField(TodayAskAbout.placeholder, text: $todayAskAboutDraft)
+                    .textFieldStyle(.plain)
+                    .font(COSType.body(13.5))
+                    .foregroundStyle(TodayInk.ink)
+                    .onSubmit { todaySendAskAbout() }
+                    .padding(.horizontal, 12)
+                    .frame(minHeight: 34)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(TodayInk.panel))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(TodayInk.btnBorder, lineWidth: 1))
+                    .accessibilityLabel("Ask about this summary")
+                Button("Send") { todaySendAskAbout() }
+                    .buttonStyle(TodayButtonStyle(primary: true, small: true))
+                    .disabled(todayAskAboutDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .help("Ask COS in the chat, with this summary and the sessions it read")
+            }
+            .frame(maxWidth: 620, alignment: .leading)
+        }
+    }
+
+    /// Send: the COS chat opens and its Ask (DropItStore.ask, the composer's own Today Work run) takes the words with the
+    /// summary and its sessions in a fenced block (TodayAskAbout.prompt). The field clears once the run started.
+    func todaySendAskAbout() {
+        let now = Date()
+        let frame = todayFrame(now: now)
+        guard let shown = todaySummaryShown(frame),
+              let prompt = TodayAskAbout.prompt(typed: todayAskAboutDraft, summary: shown.text, summaryAt: shown.at,
+                                                sessions: shown.sessions ?? (todaySummaryBody(now: now).object?["sessions"]?.array ?? []).compactMap(TodayAskAbout.Row.init),
+                                                now: now) else { return }
+        select(.messages)
+        guard section == .messages else { return }
+        openDropItChat()
+        let store = model.dropIt
+        Task { @MainActor in
+            if await store.ask(prompt, files: []) { todayAskAboutDraft = "" }
+        }
     }
 
     /// The body Today sends for its summary (TodaySummary.inputs), from the same frame the home draws.
@@ -9561,12 +9612,13 @@ extension ActivityWindow {
     @ViewBuilder
     func todayNextUp(_ frame: TodayHome.Frame, now: Date) -> some View {
         // welcome-context missing (an older server) hides Next up; "Nothing else on your calendar today" only when the
-        // server said it read the calendar. No error text for a missing feature.
-        let event = frame.counts.nextEvent
-        if today.calendarAvailable && (event != nil || frame.counts.calendarRead) {
+        // server said it read the calendar. No error text for a missing feature. 0.5.384: a connected /api/calendar/today
+        // gives up to five rows and "+N more today"; without it, the one event exactly as before.
+        let next = TodayHome.nextUp(calendar: today.calendarToday, single: frame.counts.nextEvent, now: now)
+        if (today.calendarAvailable && (!next.events.isEmpty || frame.counts.calendarRead)) || next.fromCalendar {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Next up").font(COSType.body(17, weight: .semibold)).foregroundStyle(TodayInk.ink).accessibilityAddTraits(.isHeader)
-                if let event {
+                if let event = next.events.first {
                     let target = "today:prep:" + ActivityHome.dayKey(now) + ":" + event.title
                     // Server not reachable: Prep me would only be refused, so it is not offered.
                     let admission: TodayRunGuard.Admission = frame.reachable
@@ -9579,8 +9631,18 @@ extension ActivityWindow {
                     }
                     .padding(.vertical, 12)
                     .overlay(alignment: .top) { Rectangle().fill(TodayInk.rowBorder).frame(height: 1) }
+                    ForEach(Array(next.events.dropFirst().enumerated()), id: \.offset) { _, later in todayLaterRow(later) }
                 } else {
                     Text("Nothing else on your calendar today.").font(COSType.body(13.5)).foregroundStyle(TodayInk.sub).padding(.top, 6).padding(.bottom, 6)
+                }
+                if let more = next.moreLine {
+                    Button(more) { select(.meetings) }
+                        .buttonStyle(TodayLinkStyle(size: 13))
+                        .padding(.top, 6)
+                        .help("Open Meetings for the rest of today")
+                }
+                if let asOf = next.asOf {
+                    Text(TodayHome.calendarAsOf(asOf)).font(COSType.body(12)).foregroundStyle(TodayInk.sub).padding(.top, 4)
                 }
             }
             .padding(.horizontal, 18).padding(.top, 16).padding(.bottom, 12)
@@ -9588,6 +9650,20 @@ extension ActivityWindow {
             .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(TodayInk.panel))
             .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(TodayInk.panelBorder, lineWidth: 1))
         }
+    }
+
+    /// 0.5.384: one compact line per later event (the panel is 390 pt wide): its time, then its title.
+    func todayLaterRow(_ event: TodayHome.NextEvent) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(TodayHome.clock(event.start)).font(COSType.body(13).monospacedDigit()).foregroundStyle(TodayInk.sub)
+                .frame(minWidth: 62, alignment: .leading)
+            Text(event.title).font(COSType.body(13.5)).foregroundStyle(TodayInk.ink).lineLimit(1).truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 7)
+        .overlay(alignment: .top) { Rectangle().fill(TodayInk.rowBorder).frame(height: 1) }
+        .help(event.title)
+        .accessibilityElement(children: .combine)
     }
 
     func todayEventWords(_ event: TodayHome.NextEvent, now: Date) -> some View {

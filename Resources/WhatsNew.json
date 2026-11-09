@@ -1,8 +1,17 @@
 {
-  "version": "0.5.383",
+  "version": "0.5.384",
   "whatsNew": {
-    "summary": "Settings, Devices can register this Mac's Touch ID key for phone approvals before approvals are turned on, so its 24 hour clock starts early. It shows only when your COS server turns it on. Plus everything in 0.5.380.",
+    "summary": "Today's Next up lists your next five meetings, with a line for the rest of the day, and a new Ask about this box under the Today summary takes a question or an instruction for a session straight to COS. Plus everything in 0.5.383.",
     "sections": [
+      {
+        "title": "0.5.384",
+        "items": [
+          "Today, Next up: the meeting on now or next, then up to four more with their times. All-day events are left out. \"+N more today\" opens Meetings when there are more.",
+          "When the calendar was last read a while ago, Next up says \"Calendar as of\" and the time. With an older COS server, Next up shows the one event it did before.",
+          "Ask about this: under the Today summary, type a question or tell a session what to do. It opens the COS chat and asks there, with the summary and the sessions it read, so COS can answer or pass the instruction on.",
+          "The box shows only when a summary is on screen, the server answers, and the COS chat can ask (Work runs from Today on in Settings)."
+        ]
+      },
       {
         "title": "0.5.383",
         "items": [

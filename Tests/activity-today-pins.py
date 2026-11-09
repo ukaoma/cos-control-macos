@@ -245,6 +245,31 @@ need(win.count("if !model.petEnabled { await model.loadClaudeSessions() }") == 1
 need("SetupAssistant.Center.merged(live: newest(todaySessions()).map(item), listed: model.petEnabled ? newest(model.claudeSessions).map(item) : [])" in today
      and "static let commandSessionLimit = 80\n" in today, "[command center] the panel's sessions are the live rows and the loaded list, merged and bounded")
 
+# 0.5.384: Next up reads /api/calendar/today (five rows, "+N more today" opens Meetings, "Calendar as of"), falling back to
+# welcome-context's one event; and "Ask about this" under the summary goes into the COS chat's Ask with its context block.
+next_fn = body(today, "    func todayNextUp(", "\n    func todayLaterRow(")
+need("TodayHome.nextUp(calendar: today.calendarToday, single: frame.counts.nextEvent, now: now)" in next_fn
+     and "ForEach(Array(next.events.dropFirst().enumerated())" in next_fn and "todayPrepButtons(event," in next_fn,
+     "[next up] Next up draws TodayHome.nextUp: the first row keeps Prep me, the rest are later rows")
+need(in_order(next_fn, "if let more = next.moreLine", "Button(more) { select(.meetings) }"), "[next up] +N more today opens Meetings")
+need("TodayHome.calendarAsOf(asOf)" in next_fn, "[next up] a stale calendar says Calendar as of")
+need('let today = get("/api/calendar/today", timeout: 12)' in helper
+     and 'details["calendarToday"] = today?.status == 200 ? Self.activityTodayCalendarToday(today?.body) : missing(today)' in helper,
+     "[next up] the helper reads /api/calendar/today with the calendar tick, a non-200 is missing")
+need("calendarToday = TodayHome.CalendarToday(response.details[\"calendarToday\"])" in today
+     and "nextEvent = nil; calendarToday = nil" in today, "[next up] the store keeps the list, and a failed tick clears it")
+need(in_order(body(today, "    func todayHomeView(", "\n    func todaySummaryShown("), "todaySummaryLine(frame, now: now)", "todayAskAboutField(frame)"),
+     "[ask about] the field sits under the summary line")
+ask_fn = body(today, "    func todayAskAboutField(", "\n    func todaySendAskAbout(")
+need("TodayAskAbout.available(summaryShown: todaySummaryShown(frame) != nil, reachable: frame.reachable," in ask_fn
+     and "chatAvailable: model.status.dropIt.available, workRunsOn: TodayHome.workRunsOn(.standard)" in ask_fn
+     and "preview: isolatedWorkPreview" in ask_fn and "TextField(TodayAskAbout.placeholder" in ask_fn,
+     "[ask about] the field shows only when TodayAskAbout.available says so")
+send_fn = body(today, "    func todaySendAskAbout(", "\n    func todaySummaryBody(")
+need(in_order(send_fn, "TodayAskAbout.prompt(typed: todayAskAboutDraft, summary: shown.text, summaryAt: shown.at,",
+              "shown.sessions ?? (todaySummaryBody(now: now)", "select(.messages)", "openDropItChat()", "await store.ask(prompt, files: [])", 'todayAskAboutDraft = ""'),
+     "[ask about] Send opens the COS chat and runs its Ask with the context, then clears")
+
 # Copy rules: no em dash, arrows or attribution in Today's words; no eyebrow, no vanity totals.
 literals = re.findall(r'"((?:[^"\\]|\\.)*)"', today + "\n" + logic)
 for bad, label in (("—", "em dash"), ("→", "arrow"), ("You said", "attribution"), ("known", "vanity total"), ("this week", "vanity total")):
