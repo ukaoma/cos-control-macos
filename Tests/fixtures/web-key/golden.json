@@ -1,0 +1,155 @@
+{
+  "generatedBy": "gen_control_golden.mts (cos-glasses-server 6.99.31 worktree code)",
+  "selfDns": "ukaoma-mac-studio.tail38457f.ts.net",
+  "anchor": {
+    "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEV7jJ1zMuAeaZBSQ6zlgz3mUtUDjomm4e3CqaVylH7fFffg18D_DUmMwV_eSH-0yzShl09nU08qAUkSuzYVTI3Q",
+    "d": "d2mKLyvRBfKQE4liNE5nou10NHbAXXDAnU8_xRC8ku4",
+    "spkiSha256": "c946945f53631dbdff700710304c4b3b1d86c7320573f60a2abc6c4e74461ca6",
+    "fingerprint": "C946-945F-5363-1DBD",
+    "kid": "yUaUX1NjHb3_cAcQMExLOx",
+    "aud": "e2a142622cc06adfa081da4b993587db8027287925e0860022255fce53ee82f7",
+    "statement": "eyJjcmVhdGVkQXQiOjE3ODYwMDAwMDAwMDAsImZpbmdlcnByaW50IjoiQzk0Ni05NDVGLTUzNjMtMURCRCIsInNwa2lTaGEyNTYiOiJjOTQ2OTQ1ZjUzNjMxZGJkZmY3MDA3MTAzMDRjNGIzYjFkODZjNzMyMDU3M2Y2MGEyYWJjNmM0ZTc0NDYxY2E2IiwidiI6ImNvcy13ZWItYW5jaG9yLzEifQ",
+    "createdAt": 1786000000000,
+    "registered": true
+  },
+  "pending": {
+    "enrollId": "jS2y5cE-z-RI32_x1g-qzg",
+    "startedAt": 1786000000000,
+    "exp": 1786000300000,
+    "approval": {
+      "aud": "e2a142622cc06adfa081da4b993587db8027287925e0860022255fce53ee82f7",
+      "challenge": "-k-OoUAOq_1kQzcKAkAbDW5lhKYYDXBeqsato2c2sFI",
+      "enrollId": "jS2y5cE-z-RI32_x1g-qzg",
+      "enrolledAt": 1786000000000,
+      "epoch": 0,
+      "exp": 1786000300000,
+      "fingerprint": "BDBE-1452-64B4-D92D",
+      "kid": "vb4UUmS02S1wM9kNVN7ABl",
+      "kver": 1,
+      "label": "Miles’s iPhone \"Duo\" \\ é",
+      "origin": "https://ukaoma-mac-studio.tail38457f.ts.net:3144",
+      "passkey_credential_id": "cred-vb4UUmS02S1wM9kNVN7ABl",
+      "passkey_spki_sha256": "b2ab81a786b780157adf6587289ccba6d91c70df8b32cab032e8165ee118b559",
+      "phoneNonce": "eRGP5PMxXSRXuCojMRSW8Mx9gKOTtRHXn85J6CHId1U",
+      "remote": "100.64.0.9",
+      "rotates": null,
+      "sas": "007552",
+      "sasCommit": "a4a8cb211bf3df391e2472f8911edc9508400b9d743c35236d65e0a5a958f629",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEM3AUUTGX9pvLIygxZk7UeLIekFuQkSm6dhHpB7JxhweCEOPTckZg9_k_nHftjeAzsgTXhmbDtJJCUt1vmTCalw",
+      "spki_sha256": "bdbe145264b4d92d7033d90d54dec00651967954a4e2b787ee5aed2c923c257b",
+      "userAgent": "Mozilla/5.0 (iPhone) Safari tab end",
+      "v": "cos-web-enroll-approve/2"
+    },
+    "approvalJcs": "eyJhdWQiOiJlMmExNDI2MjJjYzA2YWRmYTA4MWRhNGI5OTM1ODdkYjgwMjcyODc5MjVlMDg2MDAyMjI1NWZjZTUzZWU4MmY3IiwiY2hhbGxlbmdlIjoiLWstT29VQU9xXzFrUXpjS0FrQWJEVzVsaEtZWURYQmVxc2F0bzJjMnNGSSIsImVucm9sbElkIjoialMyeTVjRS16LVJJMzJfeDFnLXF6ZyIsImVucm9sbGVkQXQiOjE3ODYwMDAwMDAwMDAsImVwb2NoIjowLCJleHAiOjE3ODYwMDAzMDAwMDAsImZpbmdlcnByaW50IjoiQkRCRS0xNDUyLTY0QjQtRDkyRCIsImtpZCI6InZiNFVVbVMwMlMxd005a05WTjdBQmwiLCJrdmVyIjoxLCJsYWJlbCI6Ik1pbGVz4oCZcyBpUGhvbmUgXCJEdW9cIiBcXCDDqSIsIm9yaWdpbiI6Imh0dHBzOi8vdWthb21hLW1hYy1zdHVkaW8udGFpbDM4NDU3Zi50cy5uZXQ6MzE0NCIsInBhc3NrZXlfY3JlZGVudGlhbF9pZCI6ImNyZWQtdmI0VVVtUzAyUzF3TTlrTlZON0FCbCIsInBhc3NrZXlfc3BraV9zaGEyNTYiOiJiMmFiODFhNzg2Yjc4MDE1N2FkZjY1ODcyODljY2JhNmQ5MWM3MGRmOGIzMmNhYjAzMmU4MTY1ZWUxMThiNTU5IiwicGhvbmVOb25jZSI6ImVSR1A1UE14WFNSWHVDb2pNUlNXOE14OWdLT1R0UkhYbjg1SjZDSElkMVUiLCJyZW1vdGUiOiIxMDAuNjQuMC45Iiwicm90YXRlcyI6bnVsbCwic2FzIjoiMDA3NTUyIiwic2FzQ29tbWl0IjoiYTRhOGNiMjExYmYzZGYzOTFlMjQ3MmY4OTExZWRjOTUwODQwMGI5ZDc0M2MzNTIzNmQ2NWUwYTVhOTU4ZjYyOSIsInNwa2kiOiJNRmt3RXdZSEtvWkl6ajBDQVFZSUtvWkl6ajBEQVFjRFFnQUVNM0FVVVRHWDlwdkxJeWd4Wms3VWVMSWVrRnVRa1NtNmRoSHBCN0p4aHdlQ0VPUFRja1pnOV9rX25IZnRqZUF6c2dUWGhtYkR0SkpDVXQxdm1UQ2FsdyIsInNwa2lfc2hhMjU2IjoiYmRiZTE0NTI2NGI0ZDkyZDcwMzNkOTBkNTRkZWMwMDY1MTk2Nzk1NGE0ZTJiNzg3ZWU1YWVkMmM5MjNjMjU3YiIsInVzZXJBZ2VudCI6Ik1vemlsbGEvNS4wIChpUGhvbmUpIFNhZmFyaeKAqHRhYiBlbmQiLCJ2IjoiY29zLXdlYi1lbnJvbGwtYXBwcm92ZS8yIn0"
+  },
+  "pendingJson": "{\"enrollId\":\"jS2y5cE-z-RI32_x1g-qzg\",\"startedAt\":1786000000000,\"exp\":1786000300000,\"approval\":{\"aud\":\"e2a142622cc06adfa081da4b993587db8027287925e0860022255fce53ee82f7\",\"challenge\":\"-k-OoUAOq_1kQzcKAkAbDW5lhKYYDXBeqsato2c2sFI\",\"enrollId\":\"jS2y5cE-z-RI32_x1g-qzg\",\"enrolledAt\":1786000000000,\"epoch\":0,\"exp\":1786000300000,\"fingerprint\":\"BDBE-1452-64B4-D92D\",\"kid\":\"vb4UUmS02S1wM9kNVN7ABl\",\"kver\":1,\"label\":\"Miles’s iPhone \\\"Duo\\\" \\\\ é\",\"origin\":\"https://ukaoma-mac-studio.tail38457f.ts.net:3144\",\"passkey_credential_id\":\"cred-vb4UUmS02S1wM9kNVN7ABl\",\"passkey_spki_sha256\":\"b2ab81a786b780157adf6587289ccba6d91c70df8b32cab032e8165ee118b559\",\"phoneNonce\":\"eRGP5PMxXSRXuCojMRSW8Mx9gKOTtRHXn85J6CHId1U\",\"remote\":\"100.64.0.9\",\"rotates\":null,\"sas\":\"007552\",\"sasCommit\":\"a4a8cb211bf3df391e2472f8911edc9508400b9d743c35236d65e0a5a958f629\",\"spki\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEM3AUUTGX9pvLIygxZk7UeLIekFuQkSm6dhHpB7JxhweCEOPTckZg9_k_nHftjeAzsgTXhmbDtJJCUt1vmTCalw\",\"spki_sha256\":\"bdbe145264b4d92d7033d90d54dec00651967954a4e2b787ee5aed2c923c257b\",\"userAgent\":\"Mozilla/5.0 (iPhone) Safari tab end\",\"v\":\"cos-web-enroll-approve/2\"},\"approvalJcs\":\"eyJhdWQiOiJlMmExNDI2MjJjYzA2YWRmYTA4MWRhNGI5OTM1ODdkYjgwMjcyODc5MjVlMDg2MDAyMjI1NWZjZTUzZWU4MmY3IiwiY2hhbGxlbmdlIjoiLWstT29VQU9xXzFrUXpjS0FrQWJEVzVsaEtZWURYQmVxc2F0bzJjMnNGSSIsImVucm9sbElkIjoialMyeTVjRS16LVJJMzJfeDFnLXF6ZyIsImVucm9sbGVkQXQiOjE3ODYwMDAwMDAwMDAsImVwb2NoIjowLCJleHAiOjE3ODYwMDAzMDAwMDAsImZpbmdlcnByaW50IjoiQkRCRS0xNDUyLTY0QjQtRDkyRCIsImtpZCI6InZiNFVVbVMwMlMxd005a05WTjdBQmwiLCJrdmVyIjoxLCJsYWJlbCI6Ik1pbGVz4oCZcyBpUGhvbmUgXCJEdW9cIiBcXCDDqSIsIm9yaWdpbiI6Imh0dHBzOi8vdWthb21hLW1hYy1zdHVkaW8udGFpbDM4NDU3Zi50cy5uZXQ6MzE0NCIsInBhc3NrZXlfY3JlZGVudGlhbF9pZCI6ImNyZWQtdmI0VVVtUzAyUzF3TTlrTlZON0FCbCIsInBhc3NrZXlfc3BraV9zaGEyNTYiOiJiMmFiODFhNzg2Yjc4MDE1N2FkZjY1ODcyODljY2JhNmQ5MWM3MGRmOGIzMmNhYjAzMmU4MTY1ZWUxMThiNTU5IiwicGhvbmVOb25jZSI6ImVSR1A1UE14WFNSWHVDb2pNUlNXOE14OWdLT1R0UkhYbjg1SjZDSElkMVUiLCJyZW1vdGUiOiIxMDAuNjQuMC45Iiwicm90YXRlcyI6bnVsbCwic2FzIjoiMDA3NTUyIiwic2FzQ29tbWl0IjoiYTRhOGNiMjExYmYzZGYzOTFlMjQ3MmY4OTExZWRjOTUwODQwMGI5ZDc0M2MzNTIzNmQ2NWUwYTVhOTU4ZjYyOSIsInNwa2kiOiJNRmt3RXdZSEtvWkl6ajBDQVFZSUtvWkl6ajBEQVFjRFFnQUVNM0FVVVRHWDlwdkxJeWd4Wms3VWVMSWVrRnVRa1NtNmRoSHBCN0p4aHdlQ0VPUFRja1pnOV9rX25IZnRqZUF6c2dUWGhtYkR0SkpDVXQxdm1UQ2FsdyIsInNwa2lfc2hhMjU2IjoiYmRiZTE0NTI2NGI0ZDkyZDcwMzNkOTBkNTRkZWMwMDY1MTk2Nzk1NGE0ZTJiNzg3ZWU1YWVkMmM5MjNjMjU3YiIsInVzZXJBZ2VudCI6Ik1vemlsbGEvNS4wIChpUGhvbmUpIFNhZmFyaeKAqHRhYiBlbmQiLCJ2IjoiY29zLXdlYi1lbnJvbGwtYXBwcm92ZS8yIn0\"}",
+  "expect": {
+    "sas": "007552",
+    "fingerprint": "BDBE-1452-64B4-D92D",
+    "kid": "vb4UUmS02S1wM9kNVN7ABl",
+    "label": "Miles’s iPhone \"Duo\" \\ é",
+    "userAgent": "Mozilla/5.0 (iPhone) Safari tab end",
+    "remote": "100.64.0.9",
+    "epoch": 0,
+    "nodeAnchorSig": "vODWFVZgTG5liFGT8tgf3mYSRGvE3G1j-STevx8wRDRLuR_C6oZ-6KUV6HfpBdns2UM-FclxS2Y97EpF_GbeWA",
+    "approveAccepted": true
+  },
+  "sasVector": {
+    "challenge": "vmCz3u06kLWntR_nrr0-PUiu0HBQ_4p1mnupStkBvdE",
+    "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEM3AUUTGX9pvLIygxZk7UeLIekFuQkSm6dhHpB7JxhweCEOPTckZg9_k_nHftjeAzsgTXhmbDtJJCUt1vmTCalw",
+    "r": "7z4fYwAQ09Z56XsMh93aJnNgzSdnYhhtrqojDyC_LUU",
+    "sas": "008456"
+  },
+  "revocation": {
+    "epoch": 0,
+    "list": [
+      {
+        "kid": "ftk-K5w1AGPmZ--ny-8JNv",
+        "label": "iPhone",
+        "fingerprint": "7ED9-3E2B-9C35-0063",
+        "enrolledAt": 1786000000000,
+        "kver": 1,
+        "lastUsedAt": null,
+        "active": false,
+        "state": "key_revoked",
+        "revokedAt": 1786000002000,
+        "revokeReason": "lost"
+      },
+      {
+        "kid": "MWrMQC7Gtz2lyd38r0n9iE",
+        "label": "iPhone",
+        "fingerprint": "316A-CC40-2EC6-B73D",
+        "enrolledAt": 1786000000000,
+        "kver": 1,
+        "lastUsedAt": null,
+        "active": false,
+        "state": "key_revoked",
+        "revokedAt": 1786000001000,
+        "revokeReason": "lost"
+      },
+      {
+        "kid": "TiVSfTrAKWQHiKSQ6x4xdV",
+        "label": "iPhone",
+        "fingerprint": "4E25-527D-3AC0-2964",
+        "enrolledAt": 1786000000000,
+        "kver": 1,
+        "lastUsedAt": null,
+        "active": true,
+        "state": "active"
+      }
+    ],
+    "revocations": [
+      {
+        "kid": "MWrMQC7Gtz2lyd38r0n9iE",
+        "revokedAt": 1786000001000
+      },
+      {
+        "kid": "ftk-K5w1AGPmZ--ny-8JNv",
+        "revokedAt": 1786000002000
+      }
+    ],
+    "digest": "481b7743cd0305255fb69989780f9d4f1099af6e45b37f613a85eaca2e8ea4a2"
+  },
+  "jcs": [
+    {
+      "value": {
+        "b": 1,
+        "a": [
+          true,
+          false,
+          null,
+          "x y"
+        ],
+        "é": "q\"\\\n\u0001",
+        "A": 0
+      },
+      "text": "{\"A\":0,\"a\":[true,false,null,\"x y\"],\"b\":1,\"é\":\"q\\\"\\\\\\n\\u0001\"}"
+    },
+    {
+      "value": {
+        "z": {
+          "y": [
+            1,
+            2,
+            {
+              "b": "c",
+              "a": "d"
+            }
+          ]
+        },
+        "aa": -5
+      },
+      "text": "{\"aa\":-5,\"z\":{\"y\":[1,2,{\"a\":\"d\",\"b\":\"c\"}]}}"
+    },
+    {
+      "value": {
+        "ctl": "\b\f\t\r\u001f\u0000 end",
+        "Z": "upper",
+        "_": "under",
+        "~": "tilde",
+        "été": "😀"
+      },
+      "text": "{\"Z\":\"upper\",\"_\":\"under\",\"ctl\":\"\\b\\f\\t\\r\\u001f\\u0000 end\",\"~\":\"tilde\",\"été\":\"😀\"}"
+    }
+  ]
+}

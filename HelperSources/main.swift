@@ -742,6 +742,7 @@ final class COSControlHelper {
         case "token": try copyPairingToken()
         case "web-handoff": try emitWebSignIn(handoff: true)
         case "web-device-code": try emitWebSignIn(handoff: false)
+        case "web-key": try emitWebKey(args: args)
         case "expire-clipboard": try expireClipboard(args: args)
         case "report": emit(ok: true, message: "Redacted report ready", details: ["report": redactedReport()])
         case "recent-messages": try emitRecentMessages(args: args)
@@ -9039,6 +9040,132 @@ final class COSControlHelper {
         let details = handoff ? WebSignInCore.handoffAnswer(status: response.status, body: response.body)
             : WebSignInCore.deviceCodeAnswer(status: response.status, body: response.body)
         emit(ok: true, message: handoff ? "Phone link answered (\(response.status))" : "Sign-in code answered (\(response.status))", details: details)
+    }
+
+    /// Reads immutable matched-server pins only from this helper's own sealed Developer ID app bundle.
+    private func webKeyAssetAudit() -> [String: Any] {
+        func refused(_ reason: String) -> [String: Any] { ["verified": false, "reason": reason] }
+        var size: UInt32 = 4096
+        var buffer = [CChar](repeating: 0, count: Int(size))
+        guard _NSGetExecutablePath(&buffer, &size) == 0,
+              let own = WebKeyAssetsCore.bundleResource(executable: URL(fileURLWithPath: String(cString: buffer))) else { return refused("unsigned_bundle") }
+        // Capture the pin bytes before signature validation, then compare them again afterwards. A resource swapped
+        // between the signature check and the read cannot supply an unsigned trust root.
+        guard let pinData = try? Data(contentsOf: own.resource), pinData.count <= 64 * 1024 else { return refused("release_not_pinned") }
+        // An ad-hoc/local test build, a copied helper, or a re-signed resource cannot supply authority.
+        guard let signature = try? execute("/usr/bin/codesign", ["--verify", "--deep", "--strict", "-R",
+              "=anchor apple generic and identifier \"com.gotcos.control\" and certificate leaf[subject.OU] = \"NV3X46LLCR\"", own.app.path], timeout: 30), signature.code == 0,
+              let info = NSDictionary(contentsOf: own.app.appendingPathComponent("Contents/Info.plist")),
+              info["CFBundleIdentifier"] as? String == "com.gotcos.control" else { return refused("unsigned_bundle") }
+        guard (try? Data(contentsOf: own.resource)) == pinData, let installed = loadManifest(),
+              let pins = WebKeyAssetsCore.pins(pinData, version: installed.version) else { return refused("release_not_pinned") }
+        guard let before = try? Data(contentsOf: manifestURL),
+              (try? verifyGeneration(at: installed.generationPath, expectedVersion: installed.version,
+                expectedIntegrity: installed.registryIntegrity, expectedLauncherHash: installed.launcherSHA256,
+                expectedPackageHash: installed.packageJSONSHA256)) != nil else { return refused("managed_identity") }
+        let root = packageRoot(for: installed.generationPath)
+        func safeBytes(_ file: URL, limit: Int) -> Data? {
+            guard file.standardizedFileURL.path == file.resolvingSymlinksInPath().path,
+                  let attributes = try? fm.attributesOfItem(atPath: file.path),
+                  attributes[.type] as? FileAttributeType == .typeRegular,
+                  let size = attributes[.size] as? NSNumber, size.int64Value >= 0, size.int64Value <= limit,
+                  let data = try? Data(contentsOf: file), data.count <= limit else { return nil }
+            return data
+        }
+        var signerFiles: [String: String]?
+        for (tree, expected, isSigner) in [("web-control", pins.webControlManifestSha256, false), ("web-signer", pins.webSignerManifestSha256, true)] {
+            let directory = root.appendingPathComponent("server/" + tree, isDirectory: true)
+            guard let raw = safeBytes(directory.appendingPathComponent(".manifest.json"), limit: 256 * 1024),
+                  let files = WebKeyAssetsCore.manifest(raw, sha: expected, signer: isSigner) else { return refused("installed_manifest") }
+            var bytes = 0
+            for (path, sha) in files {
+                guard let data = safeBytes(directory.appendingPathComponent(String(path.dropFirst())), limit: WebKeyAssetsCore.maximumFileBytes),
+                      data.count <= WebKeyAssetsCore.maximumTreeBytes - bytes, WebKeyAssetsCore.verified(data, sha: sha) else { return refused("installed_assets") }
+                bytes += data.count
+            }
+            if isSigner { signerFiles = files }
+        }
+        guard let token = try? readToken(),
+              let status = request("/api/web-key/status", token: token, timeout: 5, refuseRedirects: true), status.status == 200,
+              let body = status.body, WebKeyAssetsCore.statusMatches(body, pins: pins),
+              let origin = body["origin"] as? String,
+              let components = URLComponents(string: origin), components.scheme == "https", components.port == 3144,
+              components.user == nil, components.password == nil, components.query == nil, components.fragment == nil, components.path.isEmpty,
+              let host = components.host,
+              host.range(of: #"\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\.ts\.net\z"#, options: .regularExpression) != nil,
+              origin == "https://" + host + ":3144", let signerFiles else { return refused("reported_integrity") }
+        guard (try? validatePrivateRegularFile(managedCert)) != nil else { return refused("signer_tls") }
+        let scratch = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).appendingPathComponent("cos-signer-audit-" + UUID().uuidString, isDirectory: true)
+        do { try fm.createDirectory(at: scratch, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]) } catch { return refused("audit_storage") }
+        defer { try? fm.removeItem(at: scratch) }
+        for (path, sha) in signerFiles.sorted(by: { $0.key < $1.key }) {
+            let output = scratch.appendingPathComponent("asset")
+            // No token/cookie, no proxy/config inheritance, no redirect following, normal certificate+hostname validation.
+            // --resolve binds the expected HTTPS host to the very loopback PID whose listeners were audited.
+            guard let result = try? execute("/usr/bin/curl", ["-q", "--silent", "--show-error", "--fail", "--noproxy", "*",
+                  "--proto", "=https", "--max-redirs", "0", "--max-time", "5", "--max-filesize", String(WebKeyAssetsCore.maximumFileBytes),
+                  "--cacert", managedCert.path, "--resolve", host + ":3144:127.0.0.1", "--output", output.path,
+                  "--write-out", "%{http_code}", origin + (path == "/index.html" ? "/" : path)],
+                  environment: ["PATH": "/usr/bin:/bin", "CURL_HOME": "/var/empty"], timeout: 7),
+                  result.code == 0, result.output == "200",
+                  let served = safeBytes(output, limit: WebKeyAssetsCore.maximumFileBytes), WebKeyAssetsCore.verified(served, sha: sha) else { return refused("served_signer_assets") }
+            try? fm.removeItem(at: output)
+        }
+        guard (try? Data(contentsOf: manifestURL)) == before else { return refused("generation_changed") }
+        return ["verified": true, "reason": "ok", "webControlManifestSha256": pins.webControlManifestSha256,
+                "webSignerManifestSha256": pins.webSignerManifestSha256]
+    }
+
+    /// Phone approvals (server 6.99.31, flag COS_WEB_KEY_AUTHORITY, default off): COS Control's /api/web-key/* calls, over
+    /// loopback with the pairing token, and the listener audit (review W9). WebKeyHelperCore holds the op table and shapes.
+    private func emitWebKey(args: [String]) throws {
+        guard let op = option("--op", in: args), WebKeyHelperCore.ops.contains(op) else { throw HelperError.message("Use --op and one of the web key operations") }
+        if op == "listeners" {
+            // Every PID listening on 3141, 3143 and 3144 on ANY address (lsof without an address filter), and whether each
+            // runs under the COS LaunchAgent. The app requires one PID for all three.
+            let service = servicePID()
+            var owners: [Int: [Int]] = [:]
+            for port in WebKeyHelperCore.auditPorts {
+                guard fm.isExecutableFile(atPath: "/usr/sbin/lsof"),
+                      let result = try? execute("/usr/sbin/lsof", ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-t"], timeout: 5), result.code == 0 else {
+                    owners[port] = []; continue
+                }
+                owners[port] = Array(Set(result.output.split(separator: "\n").compactMap { Int($0) }))
+            }
+            var details = WebKeyHelperCore.listeners(servicePID: service, owners: owners, underService: { pid in
+                service.map { self.isDescendant(pid, of: $0) } ?? false
+            })
+            let unique = Set(owners.values.flatMap { $0 })
+            let oneOwned = unique.count == 1 && owners.count == 3 && owners.values.allSatisfy { !$0.isEmpty } &&
+                unique.allSatisfy { pid in service.map { self.isDescendant(pid, of: $0) } ?? false }
+            details["assets"] = oneOwned ? webKeyAssetAudit() : ["verified": false, "reason": "listener_ownership"]
+            // Never carry an audit across a service restart or listener replacement during the byte checks.
+            if servicePID() != service { details["assets"] = ["verified": false, "reason": "listener_changed"] }
+            for port in WebKeyHelperCore.auditPorts {
+                let result = try? execute("/usr/sbin/lsof", ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN", "-t"], timeout: 5)
+                let after = result?.code == 0 ? Set(result!.output.split(separator: "\n").compactMap { Int($0) }) : []
+                if after != Set(owners[port] ?? []) { details["assets"] = ["verified": false, "reason": "listener_changed"] }
+            }
+            emit(ok: true, message: "Signer audit", details: details)
+            return
+        }
+        guard let call = WebKeyHelperCore.calls[op] else { throw HelperError.message("Unknown web key operation") }
+        var payload: String?
+        if call.bodyKeys != nil {
+            guard let body = WebKeyHelperCore.body(op: op, stdin: try readBoundedStdin(WebKeyHelperCore.bodyMax)) else {
+                throw HelperError.message("That web key request is not valid")
+            }
+            payload = body
+        }
+        guard let token = try? readToken() else {
+            emit(ok: true, message: "No pairing token", details: ["transport": "no_token"])
+            return
+        }
+        guard let response = request(call.path, method: call.method, token: token, body: payload, timeout: 10, refuseRedirects: true) else {
+            emit(ok: true, message: "COS server unreachable", details: ["transport": "unavailable"])
+            return
+        }
+        emit(ok: true, message: "Web key answered (\(response.status))", details: WebKeyHelperCore.answer(status: response.status, body: response.body))
     }
 
     private func expireClipboard(args: [String]) throws {
