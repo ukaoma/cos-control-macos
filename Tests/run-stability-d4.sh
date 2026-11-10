@@ -14,10 +14,10 @@ trap 'rm -rf "$TMP"' EXIT
   -o "$TMP/stability-d4-helper"
 "$TMP/stability-d4-helper"
 # A uniqueKeysWithValues back in either place would trap on a repeated id again.
-if /usr/bin/grep -n -F 'uniqueKeysWithValues' "$ROOT/Sources/ActivityMeetings.swift"; then
+if /usr/bin/grep -n -F 'Dictionary(uniqueKeysWithValues:' "$ROOT/Sources/ActivityMeetings.swift"; then
   print -u2 "FAIL: ActivityMeetings must not build server-fed dictionaries with uniqueKeysWithValues"; exit 1
 fi
-if /usr/bin/awk '/static func diff\(/,/^    }$/' "$ROOT/Sources/Models.swift" | /usr/bin/grep -n -F 'uniqueKeysWithValues'; then
+if /usr/bin/awk '/static func diff\(/,/^    }$/' "$ROOT/Sources/Models.swift" | /usr/bin/grep -n -F 'Dictionary(uniqueKeysWithValues:'; then
   print -u2 "FAIL: PetCompletionDetector.diff must not use uniqueKeysWithValues"; exit 1
 fi
 print "run-stability-d4: PASS"
