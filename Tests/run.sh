@@ -1647,6 +1647,10 @@ PY
 # WorkHandoffTests incl. "an unchanged poll must not rewrite the handoff journal"), which no runner here admitted before.
 zsh "$ROOT/Tests/run-stability-d4.sh"
 zsh "$ROOT/Tests/run-work-handoff.sh"
+# 0.5.388 lane D4 item 7: the held-question answer card (parse, match, answer body, outcome) and its pins.
+zsh "$ROOT/Tests/run-session-question-card.sh"
+# 0.5.388 lane T1: Today's headline keeps its height and the summary holds through session-read polls.
+zsh "$ROOT/Tests/run-today-summary-headline.sh"
 # 0.5.379: the Today summary's wiring (view, store, helper); its rules execute in ActivityTodayChecks above.
 /usr/bin/python3 "$ROOT/Tests/today-summary-pins.py" "$ROOT"
 # QA 0.5.379: the numbers Control copies from server/lib/today-brief.ts, read from both repos (fails if the server file is absent).
