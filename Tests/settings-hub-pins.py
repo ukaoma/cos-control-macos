@@ -89,7 +89,7 @@ for item_id, group, _advanced, mount in items:
 # 2. Each piece mounts exactly once in the hub, and the panel keeps it.
 hub = code(body(views_raw, "private extension ControlPanel {", "\n// MARK: - Speaker review sheet"))
 status_card = body(views, "    private var statusCard: some View {", "\n    }\n")
-pieces_status = ["statusServerRows", "statusVoiceRows", "statusContextRows", "statusBackgroundRow", "statusMeetingPreviewRow",
+pieces_status = ["statusServerStateRow", "statusServerInternalsRows", "statusVoiceRows", "statusContextRows", "statusBackgroundRow", "statusMeetingPreviewRow",
                  "statusContinueRow", "statusIdleMetalRow", "statusAudioCleanupRow", "statusWhisperErrorLine",
                  "statusTranscriptionModelRows", "statusMeetingAudioRows", "statusMeetingAlertsRow", "statusMeetingSyncRows",
                  "statusEarlySyncRows", "statusHqPrefillRows", "statusFinalizationRows", "statusRetainedCaptureRows", "statusAgentRows",
@@ -97,7 +97,11 @@ pieces_status = ["statusServerRows", "statusVoiceRows", "statusContextRows", "st
                  "statusActiveWorkLine", "statusTransactionLine"]
 for name in pieces_status:
     pin(len(re.findall(rf"\b{name}\b", hub)) == 1, f"{name} mounts once in the hub")
-    pin(len(re.findall(rf"\b{name}\b", status_card)) == 1, f"{name} is still in the panel's status card")
+    # 0.5.387: the panel keeps statusServerRows, which is the two halves the hub mounts apart (the second under Advanced).
+    in_panel = "statusServerRows" if name in ("statusServerStateRow", "statusServerInternalsRows") else name
+    pin(len(re.findall(rf"\b{in_panel}\b", status_card)) == 1, f"{name} is still in the panel's status card")
+pin("@ViewBuilder private var statusServerRows: some View {\n        statusServerStateRow\n        statusServerInternalsRows\n    }" in views,
+    "the panel's server rows are the hub's two halves, nothing lost")
 pin(hub.count("statusVideoRows(clearButton: false)") == 1 and status_card.count("statusVideoRows(clearButton: true)") == 1,
     "video uploads' status: once in each, Clear stranded drawn once in the hub (on Reliable video uploads)")
 controls = body(views, "    private var controls: some View {", "\n    }\n")
@@ -121,8 +125,9 @@ for view in ["DockNoticeLine(", "FinishSetupCard(", "PanelConnectAIRow(", "Trans
              "DictationEngineControls(", "SettingsHubOwnKeyCard(", "SettingsHubSemanticSearchRow("]:
     pin(hub.count(view) == 1, f"{view[:-1]} mounts once in the hub")
 pin(hub.count("MeetingAskSettings(store: model.meetingAsk, model: model, part: .assistant)") == 1
-    and hub.count("MeetingAskSettings(store: model.meetingAsk, model: model, part: .liveCues)") == 1 and hub.count("MeetingAskSettings(") == 2,
-    "Meeting assistant and Live cues: one part each")
+    and hub.count("MeetingAskSettings(store: model.meetingAsk, model: model, part: .liveCues)") == 1
+    and hub.count("MeetingAskSettings(store: model.meetingAsk, model: model, part: .liveCuesLimits)") == 1 and hub.count("MeetingAskSettings(") == 3,
+    "Meeting assistant and Live cues: one part each, and Live cues' limits under its Advanced (0.5.387)")
 pin(hub.count("SettingsHubSetupRow(") == 2 and "id: .ollama)" in hub and "id: .voice)" in hub, "the guide's Ollama and Voice rows, once each")
 card = body(ask, "struct MeetingAskSettings: View {", "struct HomeCitySettings: View {")
 # 0.5.362: the cue mode, Grounded cues and the general limits are the hub's own rows in Live cues (extras), and search lands on them.
@@ -153,7 +158,7 @@ pin("model.loadDecisionSettings()" in opened and "model.loadJevStatus()" in open
 # Before the switch and for every page but AI, so no case can skip it (QA N2: Meetings kept the key).
 pin('if category != .ai { subQKeyDraft = ""; jevKeyDraft = "" }\n        switch category {' in opened
     and opened.count('jevKeyDraft = ""') == 1, "leaving AI and accounts for any page drops a typed key, as closing Decision models does")
-pin(not re.search(r'hubCard\("[a-z.]+", advanced: [0-9]', views) and views.count("advanced: hubAdvancedCount(") == 12,
+pin(not re.search(r'hubCard\("[a-z.]+", advanced: [0-9]', views) and views.count("advanced: hubAdvancedCount(") == 14,
     "every Advanced count is the catalog's rows the page draws, never a typed number")
 shown_adv = body(views, "    func hubAdvancedShown(_ id: String) -> Bool {", "\n    }\n")
 for rid in ("JV-03", "JV-04", "JV-05", "UT-05", "ST-08", "ST-13", "ST-19", "PT-08", "PT-11", "PT-12", "PT-13", "C-06", "C-07", "C-08"):
@@ -291,8 +296,41 @@ page = body(views, "    func hubPage(mode: SettingsHubLayout.Mode) -> some View 
 pin(page.index("SettingsHubSearchField(query: $hubQuery, focused: $hubSearchFocused)") < page.index("ScrollView(.vertical)"),
     "the narrow search field sits outside the ScrollView whose identity changes, so it keeps focus")
 pin("confirmHubRollback = false" in opened.split("switch category")[0], "a new page cancels an open inline confirm")
-pin("SettingsHubSearch.results(hubQuery, shown: hubGroupShown, itemShown: { ($0 != \"JV-13\" || meaningSearchShown) && ($0 != \"DROP-01\" || model.status.dropIt.supported) })" in hub and "guard let group = item.group, shown(group), itemShown(item.id) else { return nil }" in catalog,
-    "search leaves out rows in groups the page does not draw, Find sessions by meaning where its control is hidden, and Drop it (0.5.371) on a server without it")
+# 0.5.387 (lane D2, audit F2): search finds every row; a row the page is not drawing carries the reason, from the same tests the page
+# draws by (hubGroupShown, hubItemShown, hubOptionHidden, the view).
+pin("SettingsHubSearchResults(query: hubQuery, sections: SettingsHubSearch.results(hubQuery),\n                                                         open: { hubOpen($0, reader) }, note: hubSearchNote)" in views
+    and "guard item.group != nil else { return nil }" in catalog and "shown(" not in body(catalog, "    static func results(_ query: String) -> [Section] {", "\n    }\n"),
+    "search never leaves a hidden row out")
+pin("SettingsHubSearch.note(item, groupShown: item.group.map(hubGroupShown) ?? true, rowShown: hubItemShown(item.id)," in hub
+    and "(id != \"JV-13\" || meaningSearchShown) && (id != \"DROP-01\" || model.status.dropIt.supported)" in hub,
+    "the line beside a hidden result uses the page's own tests")
+# 0.5.387: Basic. The page's content reads the view; search results never do (they show every row).
+pin("hubCategoryContent(hubCategory)\n                                    .environment(\\.settingsHubView, hubView)" in views
+    and "SettingsHubViewSwitch(view: hubView, set: hubSetView)" in views, "the page draws in its view, with the one switch under its title")
+pin("SettingsHubView.resolved(stored: hubViewChoice.isEmpty ? nil : hubViewChoice, newInstall: InstallCohort.isNewInstall)" in views
+    and "@AppStorage(SettingsHubView.key) private var hubViewChoice = \"\"" in views_raw, "Basic for a new install, All otherwise, a choice wins")
+pin("func hubDraws(_ id: String) -> Bool { hubGroupShown(id) && (hubView == .all || SettingsHubCatalog.hasBasicRows(id)) }" in views
+    and "SettingsHubCatalog.groups(in: category).filter { hubDraws($0.id) }" in views, "On this page and the cards share one test, Basic included")
+pin("if SettingsHubCatalog.drawn(id, view: hubView), SettingsHubCatalog.inlineShown(id, open: inlineAdvancedOpen) { row }" in shell
+    and "if hosted, SettingsHubCatalog.drawn(id, view: hubView) { content.id(\"item.\" + id) } else if !hosted { content }" in shell,
+    "a hub row and a hosted anchor leave themselves out in Basic")
+pin("guard hubView == .all || inBasic else { return 0 }" in views and views.count("inBasic: legacy") == 1, "Basic draws no Advanced, but a legacy server's next step")
+pin("if !SettingsHubCatalog.drawn(item.id, view: hubView) { hubSetView(.all) }" in views, "a result Basic leaves out switches to All settings")
+# 0.5.387: the menu-bar panel. One clear door to every setting near its top; Reset message count only on the glasses path.
+main_panel = body(views, "    private var mainPanel: some View {", "    private var allSettingsRow: some View {")
+pin("if !hostedInActivity { allSettingsRow }" in main_panel and main_panel.index("if !hostedInActivity { allSettingsRow }") < main_panel.index("statusCard"),
+    "the menu-bar panel opens with an All settings row, above the status card")
+pin("Button { model.showSettings?() } label: {" in body(views, "    private var allSettingsRow: some View {", "\n    }\n"), "All settings opens Settings")
+head = body(views, "    private var header: some View {", "\n    }\n")
+pin("if voiceGuide.devicePath == .glasses {\n                Button { confirmResetMessageCount = true }" in head, "the header's Reset message count only on the glasses path")
+# 0.5.387: copy that points at a real screen, with the button beside it.
+pin("setup wizard" not in views and 'Button("Open Dictionary") { model.openDictionaryInActivity() }' in views, "no setup wizard: the Dictionary, with its button")
+pin("Turn on Live transcript in Settings" not in views and 'Button("Turn on Live transcript") { showLiveTranscript = true; model.liveTranscriptSettingChanged() }' in views,
+    "the recording card turns Live transcript on itself")
+# 0.5.387: the server notice sits in the top strip of every page, with its action.
+top = body(views, "    func hubTopStrip(_ reader: ScrollViewProxy) -> some View {", "    func hubLabel(_ id: String) -> String {")
+pin("SettingsHubServerNotice.line(checked: model.status.runtimeState != \"unknown\", running: model.status.running)" in top
+    and "SettingsHubServerNoticeLine(" in top, "the server notice on every page")
 pin('static let accessibilityRepairHint = "Already on? Use Reset and add again in Settings, Session pet."' in code(read("Sources/ControllerModel.swift"))
     and '.help("Turn the pet off. Turn it back on in Settings, Session pet.")' in connect_views,
     "the Accessibility repair hint names the Session pet card, right in both layouts")

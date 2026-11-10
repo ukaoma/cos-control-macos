@@ -570,12 +570,12 @@ struct MeetingAskSettings: View {
     private var modelControl: some View { MeetingAskModelControl(store: store, model: model) }
     private var homeCity: some View { HomeCitySettings(store: store.homeArea, model: model) }
     @ViewBuilder private var cuesRow: some View {
-        if part != .assistant { LiveCuesSettingsRow(store: store.liveCues, model: model) }
+        if part != .assistant { LiveCuesSettingsRow(store: store.liveCues, model: model, hubPart: part) }
     }
     /// Settings hub: the same controls as hub rows, without the card, its title or a loader. The hub's root loads the
     /// models and the home city once for both parts (ControlPanel.hubLoaders).
     @ViewBuilder private var hubBody: some View {
-        if part != .liveCues {
+        if part != .liveCues && part != .liveCuesLimits {
             modelControl.settingsHubRow(SettingsHubCatalog.item("MA-01")?.detail)
             if let web = store.config?.web {
                 SettingsHubRow("MA-02") {
@@ -611,7 +611,7 @@ struct HomeCitySettings: View {
     var body: some View {
         if store.visible, hosted {
             // Settings hub: the field and Save on the right of a row; the server's answer under it.
-            SettingsHubRow(label: "Home city", detail: store.error ?? HomeArea.caption) {
+            SettingsHubRow(label: "Home city", detail: store.error ?? HomeArea.caption, anchor: "item.MA-05") {
                 HStack(spacing: 8) {
                     TextField(HomeArea.placeholder, text: $store.draft)
                         .textFieldStyle(.plain).cosField().frame(width: 180)
@@ -831,6 +831,9 @@ struct LiveCuesGeneralRows: View {
 struct LiveCuesSettingsRow: View {
     @ObservedObject var store: LiveCuesStore
     @ObservedObject var model: ControllerModel
+    /// 0.5.387 (hub only): `.liveCues` draws the card without the limits, `.liveCuesLimits` only the limits, which the hub puts
+    /// behind Live cues' Advanced. The panel ignores it and draws everything.
+    var hubPart: MeetingAskSettingsPart = .all
     /// Settings hub: the same view in the hub's row grammar (settingsHubRow). No loader there: the hub's root reads the
     /// cue state once, on the same key (ControlPanel.hubLoaders).
     @Environment(\.settingsHubHosted) private var hosted
@@ -838,8 +841,22 @@ struct LiveCuesSettingsRow: View {
         { arguments, input in try await model.runHelper(arguments, timeout: 20, stdinData: input) }
     }
     var body: some View {
+        if hosted && hubPart == .liveCuesLimits { limitRows } else { mainBody }
+    }
+
+    /// The spend limits (0.5.329) and, while the mode searches the web, the general cue limits (0.5.362).
+    @ViewBuilder private var limitRows: some View {
+        if let limits = store.settings?.limits {
+            LiveCuesLimitsRows(store: store, limits: limits, run: Self.run(model))
+        }
+        if let v3 = store.settings?.v3, LiveCues.searchesWeb(v3.mode.value), let limits = store.settings?.limits {
+            LiveCuesGeneralRows(store: store, limits: limits, today: v3.today, clock: model.clockStyle, run: Self.run(model))
+        }
+    }
+
+    private var mainBody: some View {
         let problem = LiveCues.isProblem(store.state) && store.pending == nil
-        VStack(alignment: .leading, spacing: hosted ? 0 : 6) {
+        return VStack(alignment: .leading, spacing: hosted ? 0 : 6) {
             if let settings = store.settings {
                 Toggle(LiveCues.title, isOn: Binding(get: { store.pending ?? settings.enabled },
                                                      set: { on in Task { await store.set(on, run: Self.run(model)) } }))
@@ -884,13 +901,8 @@ struct LiveCuesSettingsRow: View {
                 LiveCuesModeRows(store: store, v3: v3, run: Self.run(model))
             }
             // 0.5.329: the spend limits, only from a server that reports them (6.79.2); an older one shows the switch alone.
-            if let limits = store.settings?.limits {
-                LiveCuesLimitsRows(store: store, limits: limits, run: Self.run(model))
-            }
-            // 0.5.362: the general cue limits, while the mode searches the web.
-            if let v3 = store.settings?.v3, LiveCues.searchesWeb(v3.mode.value), let limits = store.settings?.limits {
-                LiveCuesGeneralRows(store: store, limits: limits, today: v3.today, clock: model.clockStyle, run: Self.run(model))
-            }
+            // 0.5.362: the general cue limits, while the mode searches the web. 0.5.387: in the hub they are Live cues' Advanced.
+            if !hosted || hubPart == .all { limitRows }
             Text(LiveCues.glassesLine).font(COSType.body(11)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .settingsHubBlock()
@@ -1057,6 +1069,7 @@ struct TranscriptionSettingsCard: View {
         { arguments, input in try await model.runHelper(arguments, timeout: 20, stdinData: input) }
     }
     @Environment(\.settingsHubHosted) private var hosted
+    @Environment(\.settingsHubView) private var hubView
     var body: some View {
         if store.visible, let settings = store.settings {
             if hosted { hubCard(settings) } else { card(settings) }
@@ -1067,31 +1080,35 @@ struct TranscriptionSettingsCard: View {
     /// The dictation engine (TR-01) is not here: in the hub it has one home, Dictation (DictationEngineControls).
     @ViewBuilder private func hubCard(_ settings: SttSettings) -> some View {
         let recording = model.recordingCount > 0
-        SettingsHubRow(label: "Preview model", detail: Transcription.previewLine(settings) ?? "") { hubPicker(.preview, settings.preview) }
-        SettingsHubRow(label: "Saved meetings", detail: Transcription.effectiveLine(settings.hq) ?? "") { hubPicker(.hq, settings.hq) }
-        SettingsHubRow(label: "Second opinion", detail: Transcription.effectiveLine(settings.secondOpinion) ?? "") { hubPicker(.secondOpinion, settings.secondOpinion) }
-        SettingsHubRow(label: "Refine with second opinion", detail: Transcription.resolverInactiveLine(settings) ?? "") {
-            SettingsHubSwitch(label: "Refine with second opinion", isOn: Binding(
-                get: { store.settings?.resolverEnabled ?? false },
-                set: { on in Task { await store.set("resolver", .bool(on), run: Self.run(model)) } }))
-                .disabled(store.pending != nil)
-        }
+        // 0.5.387 (Miles's approved preview): the model pickers and the second opinion are this card's Advanced. Parakeet and
+        // the line on when changes apply stay on the card. Basic draws no Advanced.
         SettingsHubNote(text: Transcription.appliesLine(settings))
         if let error = store.error { SettingsHubNote(text: error, tone: .warning) }
         if store.rowState(recording: recording) != nil {
             parakeetRow(settings.parakeet, recording: recording)
                 .padding(EdgeInsets(top: 12, leading: 20, bottom: 12, trailing: 20))
                 .overlay(alignment: .top) { SettingsHubHairline() }
+                .id("item.TR-07")
         }
+        if hubView == .all {
         if showAdvanced {
-            SettingsHubRow(label: "Front end", detail: "", advanced: true) { hubPicker(.frontEnd, settings.frontEnd) }
-            SettingsHubRow(label: "Quiet detection", detail: "", advanced: true) { hubPicker(.quietGate, settings.quietGate) }
+            SettingsHubRow(label: "Preview model", detail: Transcription.previewLine(settings) ?? "", advanced: true, anchor: "item.TR-02") { hubPicker(.preview, settings.preview) }
+            SettingsHubRow(label: "Saved meetings", detail: Transcription.effectiveLine(settings.hq) ?? "", advanced: true, anchor: "item.TR-03") { hubPicker(.hq, settings.hq) }
+            SettingsHubRow(label: "Second opinion", detail: Transcription.effectiveLine(settings.secondOpinion) ?? "", advanced: true, anchor: "item.TR-04") { hubPicker(.secondOpinion, settings.secondOpinion) }
+            SettingsHubRow(label: "Refine with second opinion", detail: Transcription.resolverInactiveLine(settings) ?? "", advanced: true, anchor: "item.TR-06") {
+                SettingsHubSwitch(label: "Refine with second opinion", isOn: Binding(
+                    get: { store.settings?.resolverEnabled ?? false },
+                    set: { on in Task { await store.set("resolver", .bool(on), run: Self.run(model)) } }))
+                    .disabled(store.pending != nil)
+            }
+            SettingsHubRow(label: "Front end", detail: "", advanced: true, anchor: "item.TR-08") { hubPicker(.frontEnd, settings.frontEnd) }
+            SettingsHubRow(label: "Quiet detection", detail: "", advanced: true, anchor: "item.TR-09") { hubPicker(.quietGate, settings.quietGate) }
         } else {
             Button { showAdvanced = true } label: {
                 HStack(spacing: 10) {
                     Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
                     Text("Advanced").font(COSType.body(13, weight: .medium))
-                    Text("2").font(COSType.body(13)).foregroundStyle(TodayInk.grey)
+                    Text("\(Self.hubAdvancedCount)").font(COSType.body(13)).foregroundStyle(TodayInk.grey)
                     Spacer(minLength: 0)
                 }
                 .foregroundStyle(TodayInk.sub).padding(.horizontal, 20).padding(.vertical, 13)
@@ -1099,9 +1116,13 @@ struct TranscriptionSettingsCard: View {
                 .overlay(alignment: .top) { SettingsHubHairline() }.contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Advanced, 2 settings")
+            .accessibilityLabel("Advanced, \(Self.hubAdvancedCount) settings")
+        }
         }
     }
+    /// The rows behind this card's Advanced in the hub: the preview and saved-meeting models, the second opinion and its
+    /// refine switch, Front end and Quiet detection (TR-02, TR-03, TR-04, TR-06, TR-08, TR-09).
+    static let hubAdvancedCount = 6
     /// A model picker for a hub row: the same binding and rows as the card's, without its label (the row says it).
     private func hubPicker(_ key: Transcription.Key, _ choice: SttChoice) -> some View {
         COSDropdown("Model", selection: Binding(

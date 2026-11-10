@@ -807,6 +807,8 @@ final class ControllerModel: ObservableObject {
     var showDecisionKeySettings: (() -> Void)?
     /// 0.5.317: opens Settings on COS's Transcription card (a dictation card's action), never macOS Privacy.
     var showTranscriptionSettings: (() -> Void)?
+    /// 0.5.387: opens Settings on an anchor (SettingsOpener's route). The Dictation menu's Settings… uses it.
+    var showSettingsAt: ((String) -> Void)?
     /// The panel scrolls here when it appears ("settings"); the panel clears it.
     @Published var panelScrollTarget: String?
     /// 2026-10-28: where the Settings hub opens (an opener's anchor, routed by SettingsHubRoute), apart from the menu-bar
@@ -3445,7 +3447,18 @@ final class ControllerModel: ObservableObject {
         if !now { closeDropItChat() }
     }
 
-    /// From anywhere (a pane's "Dictation settings" button, the Dictation menu): Activity opens on Dictation, then Settings.
+    /// 0.5.387 (audit A3): the Dictation menu's Settings… opens the Settings hub's Dictation page, the place a search for
+    /// dictation lands. With classic Settings on it keeps its old route, the Dictation tab's own settings pane.
+    func openDictationSettingsFromMenu() {
+        if let target = SettingsHub.dictationMenuTarget(classic: UserDefaults.standard.bool(forKey: SettingsHub.classicKey)),
+           let open = showSettingsAt {
+            open(target)
+        } else {
+            openDictationSettingsInActivity()
+        }
+    }
+
+    /// From anywhere (a pane's "Dictation settings" button): Activity opens on Dictation, then Settings.
     func openDictationSettingsInActivity() {
         activityOpenDictationSettings = true
         openActivity?(.dictation)

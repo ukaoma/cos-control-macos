@@ -326,7 +326,11 @@ struct SettingsRowCard: View {
         for query in ["drop it", "file to work", "cos chat", "pinned"] {
             check(SettingsHubSearch.results(query).flatMap(\.items).map(\.id).contains("DROP-01"), "[settings search] found by \(query)")
         }
-        check(!SettingsHubSearch.results("drop it", itemShown: { $0 != "DROP-01" }).flatMap(\.items).map(\.id).contains("DROP-01"), "[settings search] hidden for a server without it")
+        // 0.5.387 (lane D2, audit F2): a server without Drop it still finds the row, with the reason beside it.
+        if let drop = SettingsHubCatalog.item("DROP-01") {
+            check(SettingsHubSearch.note(drop, groupShown: true, rowShown: false, conditions: SettingsHubConditions(), gateLine: nil, view: .all) == "Needs a newer COS server.",
+                  "[settings search] found for a server without it, with the reason")
+        } else { check(false, "[settings search] DROP-01 is in the catalog") }
         print("drop it wiring checks: \(passed) passed")
         print("PASS: drop it wiring checks complete")
     }

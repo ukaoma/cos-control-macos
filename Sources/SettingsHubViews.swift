@@ -23,12 +23,22 @@ struct SettingsHubRow<Control: View>: View {
     var advanced = false
     var anchor: String?
     let control: Control
+    /// 0.5.387: the page's view. In Basic a row whose anchor names a row outside the basic set draws nothing.
+    @Environment(\.settingsHubView) private var hubView
+    /// 0.5.387: inside a card whose Advanced rows sit among its others (COS reaching out), whether that Advanced is open. Nil
+    /// everywhere else, where a row's place decides.
+    @Environment(\.settingsHubInlineAdvancedOpen) private var inlineAdvancedOpen
 
     init(label: String, detail: String, advanced: Bool = false, anchor: String? = nil, @ViewBuilder control: () -> Control) {
         self.label = label; self.detail = detail; self.advanced = advanced; self.anchor = anchor; self.control = control()
     }
 
     var body: some View {
+        let id = SettingsHubCatalog.rowID(anchor: anchor) ?? ""
+        if SettingsHubCatalog.drawn(id, view: hubView), SettingsHubCatalog.inlineShown(id, open: inlineAdvancedOpen) { row }
+    }
+
+    private var row: some View {
         // One layout, never ViewThatFits: a measured second copy would give a stateful control (a recorder, a dropdown)
         // a second identity. The page keeps 480 pt or more (SettingsHubLayout), so the words wrap beside the control.
         HStack(alignment: .center, spacing: 16) {
@@ -353,8 +363,9 @@ struct SettingsHubSearchResults: View {
     let query: String
     let sections: [SettingsHubSearch.Section]
     let open: (SettingsHubItem) -> Void
-    /// Settings Release A: for a result whose row is not drawn (its switch is off), what to turn on first. Nil: drawn.
-    var gateLine: (SettingsHubItem) -> String? = { _ in nil }
+    /// Why a result's row is not drawn where it opens: its group is hidden (the server, dictation), its switch is off, or
+    /// Basic leaves it out (SettingsHubSearch.note). Nil: drawn.
+    var note: (SettingsHubItem) -> String? = { _ in nil }
     var body: some View {
         VStack(alignment: .leading, spacing: 26) {
             let count = sections.reduce(0) { $0 + $1.items.count }
@@ -390,8 +401,8 @@ struct SettingsHubSearchResults: View {
                 if let former = item.formerLabel, let rank = SettingsHubSearch.rank(item, query: query), rank == 2 {
                     Text("Was: " + former).font(COSType.body(12)).foregroundStyle(TodayInk.grey).lineLimit(1)
                 }
-                if let gate = gateLine(item) {
-                    Text(gate).font(COSType.body(12)).foregroundStyle(TodayInk.grey).lineLimit(2)
+                if let line = note(item) {
+                    Text(line).font(COSType.body(12)).foregroundStyle(TodayInk.grey).lineLimit(2)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -583,7 +594,9 @@ struct SettingsHubObserving<Object: ObservableObject, Content: View>: View {
 }
 
 /// Which part of MeetingAskSettings draws: both (the panel), or one of the hub's two groups.
-enum MeetingAskSettingsPart: Sendable { case all, assistant, liveCues }
+/// 0.5.387: `liveCuesLimits` is Live cues' Advanced (the cue limits, the general cue limits and their usage lines); `liveCues`
+/// in the hub is the card without them.
+enum MeetingAskSettingsPart: Sendable { case all, assistant, liveCues, liveCuesLimits }
 
 extension SettingsHubRow {
     /// A row in the catalog's words for inventory row `id`.
@@ -602,6 +615,7 @@ struct SettingsHubOwnKeyCard: View {
     let spy: SettingsHubSpyModel
     let space: String
     @Binding var advancedOpen: Bool
+    @Environment(\.settingsHubView) private var hubView
     static func shown(_ model: ControllerModel, _ store: KeyLanesStore = .shared) -> Bool {
         KeyLanes.rowVisible(serverVersion: model.status.version, enabled: store.enabled, savedKeys: store.savedKeys) || store.blockedInstall != nil
     }
@@ -617,7 +631,8 @@ struct SettingsHubOwnKeyCard: View {
     var body: some View {
         if Self.shown(model, store), let group = SettingsHubCatalog.group("ai.keys") {
             // A waiting install needs its row, so Advanced opens on its own then.
-            SettingsHubCard(group: group, advancedCount: Self.advancedCount(store),
+            // 0.5.387: Basic draws no Advanced, except a waiting install, whose row is the next step.
+            SettingsHubCard(group: group, advancedCount: hubView == .basic && store.blockedInstall == nil ? 0 : Self.advancedCount(store),
                             advancedOpen: Binding(get: { advancedOpen || store.blockedInstall != nil }, set: { advancedOpen = $0 })) {
                 KeyLanesSettingsRow(model: model, part: .main)
             } advanced: {
@@ -655,11 +670,65 @@ struct SettingsHubOwnKeyObserving<Content: View>: View {
 /// lay its switches and pickers out as hub rows. Absent (false) everywhere else, so the menu-bar panel, the Settings
 /// window and Activity's Dictation tab draw exactly as before.
 private struct SettingsHubHostedKey: EnvironmentKey { static let defaultValue = false }
+/// 0.5.387: Basic or All on the page being drawn. All everywhere else (search results, the panel, other hosts), so nothing
+/// outside the hub's page ever hides a row.
+private struct SettingsHubViewKey: EnvironmentKey { static let defaultValue = SettingsHubView.all }
+private struct SettingsHubInlineAdvancedKey: EnvironmentKey { static let defaultValue: Bool? = nil }
 
 extension EnvironmentValues {
     var settingsHubHosted: Bool {
         get { self[SettingsHubHostedKey.self] }
         set { self[SettingsHubHostedKey.self] = newValue }
+    }
+    var settingsHubView: SettingsHubView {
+        get { self[SettingsHubViewKey.self] }
+        set { self[SettingsHubViewKey.self] = newValue }
+    }
+    var settingsHubInlineAdvancedOpen: Bool? {
+        get { self[SettingsHubInlineAdvancedKey.self] }
+        set { self[SettingsHubInlineAdvancedKey.self] = newValue }
+    }
+}
+
+/// 0.5.387: the one control that moves between Basic and All settings, under each page's title. A switch with plain words,
+/// never a pair of pills. In Basic a short line says what Basic is.
+struct SettingsHubViewSwitch: View {
+    let view: SettingsHubView
+    let set: (SettingsHubView) -> Void
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(view == .basic ? SettingsHubView.basicLine : SettingsHubView.allLine)
+                .font(COSType.body(13)).foregroundStyle(TodayInk.grey)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(SettingsHubView.switchLabel).font(COSType.body(13, weight: .medium)).foregroundStyle(TodayInk.ink)
+            Toggle(isOn: Binding(get: { view == .all }, set: { set($0 ? .all : .basic) })) { EmptyView() }
+                .toggleStyle(COSSwitchStyle())
+                .accessibilityLabel(SettingsHubView.switchLabel)
+                .accessibilityIdentifier("settings-view-all")
+        }
+        .frame(maxWidth: SettingsHubLayout.pageMaxWidth, alignment: .leading)
+    }
+}
+
+/// 0.5.387 (audit F1): the server is not answering. One line at the top of every page, with the action that brings it back.
+struct SettingsHubServerNoticeLine: View {
+    let text: String
+    let actionTitle: String
+    let busy: Bool
+    let action: () -> Void
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(TodayInk.hot)
+            Text(text).font(COSType.body(13)).foregroundStyle(TodayInk.ink).fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button(actionTitle, action: action).buttonStyle(TodayButtonStyle(primary: true, small: true)).disabled(busy)
+        }
+        .padding(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
+        .frame(maxWidth: SettingsHubLayout.pageMaxWidth, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(TodayInk.panel))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(TodayInk.panelBorder, lineWidth: 1))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("settings-server-down")
     }
 }
 
@@ -739,8 +808,10 @@ extension View {
 private struct SettingsHubAnchorChrome: ViewModifier {
     let id: String
     @Environment(\.settingsHubHosted) private var hosted
+    @Environment(\.settingsHubView) private var hubView
     func body(content: Content) -> some View {
-        if hosted { content.id("item." + id) } else { content }
+        // 0.5.387: Basic leaves out a hosted row outside the basic set, as SettingsHubRow does.
+        if hosted, SettingsHubCatalog.drawn(id, view: hubView) { content.id("item." + id) } else if !hosted { content }
     }
 }
 

@@ -105,9 +105,10 @@ need(len(re.findall(r"\.write\(to:", core)) == 1, "never writes the repo", "the 
 
 # 6. Hidden unless the flag; mounted once, in Devices.
 need(main_views.count("WebKeySettingsBlock(state: model.webKey)") == 1, "hidden unless the flag", "mounted once")
-devices = body_of(main_views, main_views.index('hubCard("glasses.devices"'))
-need("WebKeySettingsBlock(state: model.webKey)" in devices and '.settingsHubAnchor("PK-01")' in devices, "hidden unless the flag",
-     "in Glasses and iPhone, Devices, with its search anchor")
+# 0.5.387 (lane D2): Phone and web, beside Open COS on your phone, never under Advanced.
+phone = body_of(main_views, main_views.index('hubCard("glasses.phone"'))
+need("WebKeySettingsBlock(state: model.webKey)" in phone and '.settingsHubAnchor("PK-01")' in phone and "advanced:" not in phone[:phone.index("WebKeySettingsBlock")],
+     "hidden unless the flag", "in Glasses, phone and web, Phone and web, beside the phone sign-in, with its search anchor")
 block = body_of(views, views.index("struct WebKeySettingsBlock: View"))
 need(re.search(r"VStack\(alignment: \.leading, spacing: 0\) \{\s*if state\.visible \{", block) is not None, "hidden unless the flag",
      "nothing is drawn unless the server says the flag is on")
@@ -199,9 +200,9 @@ need('"web_key_anchor.json"' not in core.replace("operations/scripts/web_key_anc
 
 # 10. Release and catalog.
 need('"$ROOT/Sources/WebKeyCore.swift" "$ROOT/Sources/WebKeyViews.swift"' in release, "source lists", "the release build has both files")
-need(re.search(r'\.init\("PK-01", "Phone approvals", [^\n]*group: "glasses\.devices"', catalog) is not None
+need(re.search(r'\.init\("PK-01", "Phone approvals", [^\n]*group: "glasses\.phone"', catalog) is not None
      and catalog.index('.init("PK-01"') > catalog.index("static let extras: [SettingsHubItem] = [")
-     and catalog.index('.init("PK-01"') < catalog.index("static let items: [SettingsHubItem] = ["), "catalog row", "a Devices hub row, outside the inventory")
+     and catalog.index('.init("PK-01"') < catalog.index("static let items: [SettingsHubItem] = ["), "catalog row", "a Phone and web hub row, outside the inventory")
 need('"$ROOT/Tests/run-web-key.sh"' in suite, "suite lane", "Tests/run.sh runs this lane")
 
 # Immutable audit and lifetime wiring complement the behavioral fixtures; neither a writable manifest nor HTTP can pin trust.

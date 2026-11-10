@@ -90,33 +90,36 @@ struct HubPage<Content: View>: View {
     }
 }
 
-/// The Devices card holding only the phone row (Just my Mac, so no glasses note).
+/// The Phone and web card (0.5.387) holding the phone row (Just my Mac, so no glasses note).
 struct PhoneOnlyCard: View {
     @ObservedObject var model: ControllerModel
     var body: some View {
         HubPage {
-            SettingsHubCard(group: SettingsHubCatalog.group("glasses.devices")!, advancedCount: 0, advancedOpen: .constant(false)) {
+            SettingsHubCard(group: SettingsHubCatalog.group("glasses.phone")!, advancedCount: 0, advancedOpen: .constant(false)) {
                 PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: false, polls: false)
             } advanced: { EmptyView() }
         }
     }
 }
 
-/// The Devices card as ControlPanel.hubGlasses draws it on the glasses path (0.5.368 order): the device choice, the phone row
-/// (UT-29), the glasses rows, Get the app (SG-13), and Advanced closed.
+/// The page as ControlPanel.hubGlasses draws it on the glasses path (0.5.387 order): Phone and web with the phone row (UT-29),
+/// then Devices with the device choice, the glasses rows, Get the app (SG-13), and Advanced closed.
 struct DevicesCard: View {
     @ObservedObject var model: ControllerModel
     var body: some View {
         let app = SettingsHubCatalog.item("SG-13")!
         let advanced = SettingsHubCatalog.items(inGroup: "glasses.devices").filter(\.advanced).count
-        HubPage {
+        HubPage { VStack(alignment: .leading, spacing: 26) {
+            // 0.5.387: Phone and web is its own card, first on the page, then Devices.
+            SettingsHubCard(group: SettingsHubCatalog.group("glasses.phone")!, advancedCount: 0, advancedOpen: .constant(false)) {
+                PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: true, polls: false)
+            } advanced: { EmptyView() }
             SettingsHubCard(group: SettingsHubCatalog.group("glasses.devices")!, advancedCount: advanced, advancedOpen: .constant(false)) {
                 SettingsHubBlock { SetupDeviceChoice(guide: model.setupGuide) }
-                PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: true, polls: false)
                 SettingsHubBlock { GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ in }, polls: false) }
                 SettingsHubRow(label: app.label, detail: app.detail) { Button("Get the app") {}.buttonStyle(TodayButtonStyle(small: true)) }
             } advanced: { EmptyView() }
-        }
+        } }
     }
 }
 

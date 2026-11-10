@@ -18,6 +18,8 @@ import Foundation
         routes()
         gates()
         search()
+        basicView()
+        honestSearch()
         layout()
         spy()
         status()
@@ -59,7 +61,7 @@ import Foundation
         check(items.filter { $0.mount == .outside }.count == 13, "13 rows stay outside Settings")
         check(items.filter { $0.mount == .topStrip }.map(\.id).sorted() == ["H-05", "H-07", "H-08", "H-09", "H-10", "SG-15"],
               "the top strip holds the update banner, notices, the Dock notice, Get started, the recording card and Finish setup")
-        check(SettingsHubCatalog.advancedCount("system.server") == 6, "Server's Advanced: adopt, manage in place, replace, health, roll back, finish change")
+        check(SettingsHubCatalog.advancedCount("system.server") == 8, "Server's Advanced: ownership, recovery (0.5.387), adopt, manage in place, replace, health, roll back, finish change")
         check(SettingsHubCatalog.advancedCount("general.app") == 1, "General's Advanced holds Use classic Settings")
         check(SettingsHubCatalog.item("HUB-CL")?.advanced == true && SettingsHubCatalog.item("HUB-CL")?.group == "general.app",
               "Use classic Settings is in General, Advanced")
@@ -70,7 +72,9 @@ import Foundation
         for id in cueRows {
             check(SettingsHubCatalog.extras.contains { $0.id == id } && !items.contains { $0.id == id }, "\(id) is a hub row, not an inventory row")
             let row = SettingsHubCatalog.item(id)
-            check(row?.group == "meetings.cues" && row?.advanced == false && row?.mount == .group, "\(id) is in Live cues, not Advanced")
+            // 0.5.387: the mode and Grounded cues stay on the card; the general limits and their usage are Live cues' Advanced.
+            let advanced = !["HUB-CM", "HUB-CG"].contains(id)
+            check(row?.group == "meetings.cues" && row?.advanced == advanced && row?.mount == .group, "\(id) is in Live cues, \(advanced ? "Advanced" : "not Advanced")")
             check(SettingsHubRoute.destination(id)?.group == "meetings.cues", "\(id) routes to Live cues")
         }
         check(SettingsHubCatalog.item("HUB-CM")?.label == "Cue mode" && SettingsHubCatalog.item("HUB-CG")?.label == "Grounded cues", "the two controls by name")
@@ -166,14 +170,8 @@ import Foundation
             check(SettingsHubSearch.rank(fast, query: "Meeting Turbo") == 2, "the old label finds Fast preview by its old name (rank 2)")
         } else { check(false, "UT-05 is in the catalog") }
         check(ids("Meeting Turbo") == ["UT-05"], "only the old label finds Meeting Turbo")
-        // A group the page does not draw (an older server, nothing to show) gives no results to land on.
-        let hidden = SettingsHubSearch.results("restart", shown: { $0 != "system.server" }).flatMap(\.items).map(\.id)
-        check(!hidden.contains("C-01") && SettingsHubSearch.results("restart").flatMap(\.items).map(\.id).contains("C-01"),
-              "search leaves out a row whose group is not drawn")
-        // Find sessions by meaning lives in a group that is drawn (Decision models) and is itself hidden with Today home off and on an older
-        // server: the page says so per row, and search leaves it out (QA 0.5.363).
-        check(SettingsHubSearch.results("find sessions by meaning").flatMap(\.items).map(\.id).contains("JV-13"), "JV-13 is found when its control is drawn")
-        check(!SettingsHubSearch.results("find sessions by meaning", itemShown: { $0 != "JV-13" }).flatMap(\.items).map(\.id).contains("JV-13"), "search leaves out a row whose control is hidden inside a drawn group")
+        // 0.5.387 (audit F2): a row the page is not drawing is still a result; honestSearch() checks the line beside it.
+        check(SettingsHubSearch.results("find sessions by meaning").flatMap(\.items).map(\.id).contains("JV-13"), "JV-13 is found")
         // "Was:" shows only a real former label, one that search finds the row by (QA copy 2026-10-28).
         for (id, former) in SettingsHubCatalog.formerLabels {
             let item = SettingsHubCatalog.item(id)
@@ -210,13 +208,18 @@ import Foundation
         check(ids("pairing token").contains("UT-21"), "every word must match: pairing token")
         check(!ids("pairing zebra").contains("UT-21"), "a word that matches nothing removes the row")
         check(ids("classic").contains("HUB-CL"), "search finds Use classic Settings")
-        // 0.5.367 (server 6.99.3): Open COS on your phone is the hub's own row in Glasses and iPhone, Devices, not Advanced, found by
-        // what someone locked out would type.
+        // 0.5.367 (server 6.99.3): Open COS on your phone is the hub's own row, not Advanced, found by what someone locked out would
+        // type. 0.5.387: its group is Phone and web, out from under Devices, with Phone approvals beside it.
         let phone = SettingsHubCatalog.item("UT-29")
-        check(phone?.label == "Open COS on your phone" && phone?.group == "glasses.devices" && phone?.advanced == false && phone?.mount == .group
-              && SettingsHubCatalog.extras.contains { $0.id == "UT-29" } && !SettingsHubCatalog.items.contains { $0.id == "UT-29" }, "Open COS on your phone is a Devices row, not Advanced")
-        check(SettingsHubRoute.destination("UT-29")?.group == "glasses.devices" && SettingsHubRoute.destination("UT-29")?.opensAdvanced == false,
-              "Open COS on your phone routes to Devices")
+        check(phone?.label == "Open COS on your phone" && phone?.group == "glasses.phone" && phone?.advanced == false && phone?.mount == .group
+              && SettingsHubCatalog.extras.contains { $0.id == "UT-29" } && !SettingsHubCatalog.items.contains { $0.id == "UT-29" }, "Open COS on your phone is a Phone and web row, not Advanced")
+        check(SettingsHubRoute.destination("UT-29")?.group == "glasses.phone" && SettingsHubRoute.destination("UT-29")?.opensAdvanced == false,
+              "Open COS on your phone routes to Phone and web")
+        check(SettingsHubCatalog.item("PK-01")?.group == "glasses.phone" && SettingsHubCatalog.item("PK-01")?.advanced == false
+              && SettingsHubCatalog.isBasic("PK-01"), "Phone approvals sits beside it, never Advanced, in Basic too")
+        check(SettingsHubCatalog.groups(in: .glasses).map(\.id) == ["glasses.phone", "glasses.devices", "glasses.video"],
+              "Phone and web comes first, so the Camera's QR is the first on the page")
+        check(SettingsHubCategory.glasses.title == "Glasses, phone and web", "the page is Glasses, phone and web")
         for query in ["phone", "browser", "sign in", "web", "QR", "Control Web", "open cos on your phone", "safari"] {
             check(ids(query).contains("UT-29"), "search finds Open COS on your phone by \(query)")
         }
@@ -245,6 +248,125 @@ import Foundation
         if let section = SettingsHubSearch.results("live cues").first(where: { $0.category == .meetings }) {
             check(section.items.first?.id == "MA-06", "Live cues ranks the Live cues switch first in Meetings, got \(section.items.first?.id ?? "none")")
         } else { check(false, "live cues finds Meetings rows") }
+    }
+
+    // 0.5.387 (Miles, 2026-11-09, "Basic view plus refile").
+    static func basicView() {
+        // Every basic id is a catalog row the hub draws, and none is Advanced.
+        for id in SettingsHubCatalog.basicIDs.sorted() {
+            let row = SettingsHubCatalog.item(id)
+            check(row != nil, "basic id \(id) is a catalog row")
+            check(row?.mount == .group && row?.group != nil, "basic id \(id) is drawn in a card")
+            check(row?.advanced == false, "basic id \(id) is not also Advanced")
+        }
+        // The page counts stay inside their stated ranges.
+        var total = 0
+        for category in SettingsHubCategory.allCases {
+            let n = SettingsHubCatalog.basicCount(category)
+            total += n
+            let range = SettingsHubCatalog.basicRange[category]
+            check(range?.contains(n) == true, "\(category.title) has \(n) basic rows, inside \(range.map { "\($0)" } ?? "no range")")
+            check(SettingsHubCatalog.groups(in: category).contains { SettingsHubCatalog.hasBasicRows($0.id) }, "\(category.title) draws a card in Basic")
+        }
+        check((45...60).contains(total), "about 45 basic rows across the ten pages, \(total)")
+        // A group with no basic row is left out of Basic; one with a basic row is drawn.
+        check(!SettingsHubCatalog.hasBasicRows("dictation.sounds") && !SettingsHubCatalog.hasBasicRows("ai.decision")
+              && !SettingsHubCatalog.hasBasicRows("meetings.cues") && SettingsHubCatalog.hasBasicRows("work.reach"),
+              "Sounds, Decision models and Live cues are not in Basic; COS reaching out is")
+        // The view: Basic for a new install, All otherwise, and a choice always wins.
+        check(SettingsHubView.key == "cos.settings.view", "the view's key")
+        check(SettingsHubView.resolved(stored: nil, newInstall: true) == .basic, "a new install opens Basic")
+        check(SettingsHubView.resolved(stored: nil, newInstall: false) == .all, "an existing install keeps every setting")
+        check(SettingsHubView.resolved(stored: "all", newInstall: true) == .all, "a new install that chose All gets All")
+        check(SettingsHubView.resolved(stored: "basic", newInstall: false) == .basic, "an existing install that chose Basic gets Basic")
+        check(SettingsHubView.resolved(stored: "nonsense", newInstall: false) == .all && SettingsHubView.resolved(stored: "nonsense", newInstall: true) == .basic,
+              "an unknown stored value falls back to the cohort")
+        // drawn: every row in All, the basic ones in Basic, and a line the catalog does not know never hidden.
+        check(SettingsHubCatalog.drawn("UT-25", view: .all) && !SettingsHubCatalog.drawn("UT-25", view: .basic) && SettingsHubCatalog.drawn("G-01", view: .basic)
+              && SettingsHubCatalog.drawn("", view: .basic) && SettingsHubCatalog.drawn("not-a-row", view: .basic), "Basic hides only catalog rows outside the basic set")
+        check(SettingsHubCatalog.rowID(anchor: "item.REACH-12.when") == "REACH-12" && SettingsHubCatalog.rowID(anchor: "item.G-01") == "G-01"
+              && SettingsHubCatalog.rowID(anchor: "hub.general.app") == nil && SettingsHubCatalog.rowID(anchor: nil) == nil && SettingsHubCatalog.rowID(anchor: "item.") == nil,
+              "a row anchor names its row, and only a row anchor does")
+        // COS reaching out: Pings and Quiet hours on the card, the other 15 in place behind Advanced.
+        let reach = SettingsHubCatalog.items(inGroup: "work.reach")
+        check(reach.count == 17 && reach.filter(\.advanced).count == 15 && reach.filter { SettingsHubCatalog.isBasic($0.id) }.map(\.id).sorted() == ["REACH-01", "REACH-05"],
+              "COS reaching out: 2 basic, 15 Advanced")
+        check(SettingsHubCatalog.inlineShown("REACH-02", open: false) == false && SettingsHubCatalog.inlineShown("REACH-02", open: true)
+              && SettingsHubCatalog.inlineShown("REACH-01", open: false) && SettingsHubCatalog.inlineShown("REACH-02", open: nil)
+              && SettingsHubCatalog.inlineShown("not-a-row", open: false), "an inline Advanced row draws only while that Advanced is open")
+        // Behind Advanced now: the Jev and SubQ keys, the cue limits, the model pickers, server internals, Use classic Settings.
+        for id in ["JV-08", "JV-09", "JV-10", "JV-11", "JV-12", "MA-08", "MA-09", "MA-10", "MA-11", "TR-02", "TR-03", "TR-04", "TR-06", "ST-02", "ST-03", "HUB-CL"] {
+            check(SettingsHubCatalog.item(id)?.advanced == true, "\(id) is Advanced")
+        }
+        check(SettingsHubRoute.destination("decision-models")?.opensAdvanced == true, "the anchor that asks for a Jev or SubQ key opens Decision models' Advanced")
+        check(SettingsHubRoute.destination("transcription")?.opensAdvanced == false, "the other panel anchors open no Advanced")
+        // The two Quiet hours: the one the person sets hours for keeps the name; Today's fixed fold says what it does.
+        check(SettingsHubCatalog.item("REACH-05")?.label == "Quiet hours" && SettingsHubCatalog.item("WK-07")?.label == "Fold evenings and weekends",
+              "one Quiet hours")
+        check(SettingsHubCatalog.all.filter { $0.mount != .outside }.filter { $0.label == "Quiet hours" }.count == 1, "no two drawn rows share the Quiet hours name")
+        check(ids("quiet hours").contains("WK-07") && SettingsHubSearch.results("quiet hours").first(where: { $0.category == .work })?.items.first?.id == "REACH-05",
+              "search still finds both, and Quiet hours by its name first in Work")
+        // E4: the catalog says what the page draws.
+        check(SettingsHubCatalog.item("JV-01")?.label == "Provider in use" && SettingsHubCatalog.item("PM-01")?.label == "Permission status"
+              && SettingsHubCatalog.item("C-01")?.label == "Restart and update" && SettingsHubCatalog.item("C-06")?.label == "Older server",
+              "the four rows search shows by the label the page draws")
+        check(ids("decision models").contains("JV-01") && ids("adopt safely").contains("C-06"), "and by their old names")
+        // The Dictation menu: the hub's Dictation page, or the classic route.
+        check(SettingsHub.dictationMenuTarget(classic: false) == "hub.dictation.dictation" && SettingsHub.dictationMenuTarget(classic: true) == nil,
+              "the Dictation menu lands on the hub's Dictation page unless classic Settings is on")
+        check(SettingsHubRoute.destination(SettingsHub.dictationMenuAnchor)?.category == .dictation, "that anchor routes to Dictation")
+        for line in [SettingsHubView.switchLabel, SettingsHubView.basicLine, SettingsHubView.allLine, SettingsHubView.hiddenByBasic] {
+            check(!line.contains("—") && !line.contains("→"), "\(line) is plain")
+        }
+    }
+
+    // 0.5.387 (audit F1, F2): search never says a row is missing when it is only hidden, and the page says why.
+    static func honestSearch() {
+        let states: [SettingsHubConditions] = [true, false].flatMap { server in [true, false].flatMap { drop in [true, false].map { today in
+            SettingsHubConditions(serverRunning: server, dropItOn: drop, todayHome: today)
+        } } }
+        for item in SettingsHubCatalog.searchable {
+            // Found by its own label, whatever the page draws.
+            check(SettingsHubSearch.results(item.label).flatMap(\.items).contains { $0.id == item.id }, "\(item.id) is a result for \(item.label)")
+            for c in states {
+                for view in SettingsHubView.allCases {
+                    // Its group hidden: a reason, never nothing.
+                    let groupNote = SettingsHubSearch.note(item, groupShown: false, rowShown: true, conditions: c, gateLine: nil, view: view)
+                    check(groupNote?.isEmpty == false, "\(item.id) with its group hidden says why")
+                    let rowNote = SettingsHubSearch.note(item, groupShown: true, rowShown: false, conditions: c, gateLine: nil, view: view)
+                    check(rowNote?.isEmpty == false, "\(item.id) hidden inside a drawn group says why")
+                    let drawnNote = SettingsHubSearch.note(item, groupShown: true, rowShown: true, conditions: c, gateLine: nil, view: view)
+                    check((drawnNote == nil) == SettingsHubCatalog.drawn(item.id, view: view), "\(item.id) drawn has no line; hidden by Basic says so")
+                }
+            }
+        }
+        let down = SettingsHubConditions(serverRunning: false)
+        check(SettingsHubSearch.hiddenLine(group: "work.brief", down) == "Shows when the server is running.", "server down: the server line")
+        check(SettingsHubSearch.hiddenLine(group: "work.brief", SettingsHubConditions()) == "Needs a newer COS server.", "server up, feature missing: a newer server")
+        check(SettingsHubSearch.hiddenLine(group: "dictation.shortcuts", SettingsHubConditions()) == "Shows when dictation is on.", "dictation off")
+        check(SettingsHubSearch.hiddenLine(group: "work.reach", SettingsHubConditions(dropItOn: false)) == "Shows when Drop it is on.", "Drop it off")
+        check(SettingsHubSearch.hiddenLine(group: "work.reach", down) == "Shows when the server is running.", "Drop it with the server down")
+        check(SettingsHubSearch.hiddenRowLine("JV-13", SettingsHubConditions(todayHome: false)) == "Shows with Today home on.", "meaning search needs Today home")
+        if let push = SettingsHubCatalog.item("DI-05"), let wait = SettingsHubCatalog.item("DI-25"), let format = SettingsHubCatalog.item("UT-25") {
+            check(SettingsHubSearch.note(push, groupShown: false, rowShown: true, conditions: SettingsHubConditions(), gateLine: nil, view: .all) == "Shows when dictation is on.",
+                  "push to talk with dictation off says to turn dictation on")
+            check(SettingsHubSearch.note(wait, groupShown: true, rowShown: true, conditions: SettingsHubConditions(), gateLine: "Turn on Paste then polish to change this.", view: .basic)
+                  == "Turn on Paste then polish to change this.", "a switch above it comes before Basic")
+            check(SettingsHubSearch.note(format, groupShown: true, rowShown: true, conditions: SettingsHubConditions(), gateLine: nil, view: .basic) == "In All settings",
+                  "a row Basic leaves out is in All settings")
+        } else { check(false, "DI-05, DI-25 and UT-25 are in the catalog") }
+        check(SettingsHubSearch.conditionLanding(group: "dictation.polish") == "DI-01" && SettingsHubSearch.conditionLanding(group: "pet.characters") == "PT-01"
+              && SettingsHubSearch.conditionLanding(group: "work.reach") == "DROP-01" && SettingsHubSearch.conditionLanding(group: "work.brief") == nil,
+              "a result in a hidden group opens the switch that shows it, or the page top")
+        // The server notice: only once checked and not answering, and the action that brings it back.
+        check(SettingsHubServerNotice.line(checked: false, running: false) == nil && SettingsHubServerNotice.line(checked: true, running: true) == nil
+              && SettingsHubServerNotice.line(checked: true, running: false) != nil, "the notice shows only while a checked server is not answering")
+        check(SettingsHubServerNotice.action(runtimeState: "notInstalled", installed: false) == .install
+              && SettingsHubServerNotice.action(runtimeState: "stopped", installed: true) == .start
+              && SettingsHubServerNotice.action(runtimeState: "managedDegraded", installed: true) == .repair, "install, start or repair")
+        let lines = [SettingsHubServerNotice.line(checked: true, running: false) ?? "", SettingsHubSearch.serverLine, SettingsHubSearch.newerServerLine]
+            + [SettingsHubServerNotice.Action.start, .install, .repair].map(SettingsHubServerNotice.title)
+        for line in lines { check(!line.contains("—") && !line.contains("→") && !line.isEmpty, "\(line) is plain") }
     }
 
     static func layout() {
