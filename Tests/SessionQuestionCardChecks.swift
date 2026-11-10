@@ -86,6 +86,9 @@ struct SessionQuestionCardChecks {
         precondition(TodayHome.answerOutcome(status: 200, error: nil) == .answered, "200: answered")
         precondition(TodayHome.answerOutcome(status: 409, error: "already_answered") == .settled("Already answered, here or at the Mac."), "409 already answered")
         precondition(TodayHome.answerOutcome(status: 409, error: "handed_to_desk") == .settled("Left for the Mac. Answer it in Claude."), "409 handed to the desk")
+        precondition(TodayHome.answerOutcome(status: 409, error: "not_shown")
+            == .failed("Not sent: this question is not on your devices yet. Answer it at the Mac, or try again in a minute."),
+            "409 not_shown: not on the devices yet, so it can be sent again")
         precondition(TodayHome.answerOutcome(status: 409, error: "expired") == .settled("This question can no longer be answered here. Answer it in Claude."), "409 expired")
         precondition(TodayHome.answerOutcome(status: 410, error: "hook_gone") == .settled("This question can no longer be answered here. Answer it in Claude."), "410")
         precondition(TodayHome.answerOutcome(status: 404, error: "not_found") == .settled("This question is gone. The session may have moved on."), "404")

@@ -14134,6 +14134,9 @@ enum TodayHome {
         case (200, _): return .answered
         case (409, "already_answered"?): return .settled("Already answered, here or at the Mac.")
         case (409, "handed_to_desk"?): return .settled("Left for the Mac. Answer it in Claude.")
+        // X1 final contract (053d01c): held, but no device is showing it yet. Not settled, so the same answer may be
+        // sent again; the words match Control Web's.
+        case (409, "not_shown"?): return .failed("Not sent: this question is not on your devices yet. Answer it at the Mac, or try again in a minute.")
         case (409, _), (410, _): return .settled("This question can no longer be answered here. Answer it in Claude.")
         case (404, _): return .settled("This question is gone. The session may have moved on.")
         case (400, _): return .failed("COS did not take that answer. Check the choices and send it again.")
