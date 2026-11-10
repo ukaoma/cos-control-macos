@@ -371,7 +371,8 @@ pin("func hubBasicCardHasRows(_ id: String) -> Bool { id != \"glasses.video\" ||
     "Video uploads draws in Basic only while an upload is stuck")
 # 0.5.387: the server notice sits in the top strip of every page, with its action.
 top = body(views, "    func hubTopStrip(_ reader: ScrollViewProxy) -> some View {", "    func hubLabel(_ id: String) -> String {")
-pin("SettingsHubServerNotice.line(checked: model.status.runtimeState != \"unknown\", running: model.status.running)" in top
+pin("SettingsHubServerNotice.line(checked: model.status.runtimeState != \"unknown\", running: model.status.running,\n                                                       needsFirstRun: model.status.needsFirstRun)" in top
+    and "needsFirstRun: model.status.needsFirstRun)\n                SettingsHubServerNoticeLine(" in top and "case .openSystem: hubSelect(.system)" in top
     and "SettingsHubServerNoticeLine(" in top, "the server notice on every page")
 pin('static let accessibilityRepairHint = "Already on? Use Reset and add again in Settings, Session pet."' in code(read("Sources/ControllerModel.swift"))
     and '.help("Turn the pet off. Turn it back on in Settings, Session pet.")' in connect_views,

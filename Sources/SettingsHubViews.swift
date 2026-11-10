@@ -768,15 +768,21 @@ struct SettingsHubWebRevokeRow: View {
 /// 0.5.387 (audit F1): the server is not answering. One line at the top of every page, with the action that brings it back.
 struct SettingsHubServerNoticeLine: View {
     let text: String
-    let actionTitle: String
+    /// Nil: the line alone (before first run, where Get started with COS is the one primary).
+    let actionTitle: String?
+    /// 0.5.388: only Start, Install and Repair are the primary; Open System and updates is a plain button.
+    var primary = true
+    var warning = true
     let busy: Bool
     let action: () -> Void
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(TodayInk.hot)
+            Image(systemName: warning ? "exclamationmark.triangle.fill" : "info.circle").foregroundStyle(warning ? TodayInk.hot : TodayInk.sub)
             Text(text).font(COSType.body(13)).foregroundStyle(TodayInk.ink).fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Button(actionTitle, action: action).buttonStyle(TodayButtonStyle(primary: true, small: true)).disabled(busy)
+            if let actionTitle {
+                Button(actionTitle, action: action).buttonStyle(TodayButtonStyle(primary: primary, small: true)).disabled(busy)
+            }
         }
         .padding(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
         .frame(maxWidth: SettingsHubLayout.pageMaxWidth, alignment: .leading)

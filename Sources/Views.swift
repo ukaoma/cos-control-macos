@@ -4109,13 +4109,20 @@ private extension ControlPanel {
                     .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(TodayInk.panelBorder, lineWidth: 1))
             }
             // 0.5.387 (audit F1): the server is not answering, so pages leave groups out. Say so once, with the way back.
-            if let line = SettingsHubServerNotice.line(checked: model.status.runtimeState != "unknown", running: model.status.running) {
-                let action = SettingsHubServerNotice.action(runtimeState: model.status.runtimeState, installed: model.status.installed)
-                SettingsHubServerNoticeLine(text: line, actionTitle: SettingsHubServerNotice.title(action), busy: model.busy) {
+            // 0.5.388 (final review C2, E2): a Mac never set up hears "not set up yet", with no button (Get started with COS below is
+            // the one primary); a legacy or foreign server is sent to System and updates, never to a Repair the helper refuses.
+            if let line = SettingsHubServerNotice.line(checked: model.status.runtimeState != "unknown", running: model.status.running,
+                                                       needsFirstRun: model.status.needsFirstRun) {
+                let action = SettingsHubServerNotice.action(runtimeState: model.status.runtimeState, installed: model.status.installed,
+                                                            needsFirstRun: model.status.needsFirstRun)
+                SettingsHubServerNoticeLine(text: line, actionTitle: SettingsHubServerNotice.title(action), primary: action != .openSystem,
+                                            warning: !model.status.needsFirstRun, busy: model.busy) {
                     switch action {
                     case .start: model.perform("start")
                     case .install: model.installCurrentRelease()
                     case .repair: serverConfirm = .repair
+                    case .openSystem: hubSelect(.system)
+                    case .none: break
                     }
                 }
             }

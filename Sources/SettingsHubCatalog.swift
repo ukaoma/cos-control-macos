@@ -746,7 +746,8 @@ enum SettingsHubRoute {
     /// LiveCues.decisionKeysAnchor) and the group each is in. "settings", the plain Settings… opener, is not one of
     /// them: it has no destination, so the hub stays on the category it opens on (the last one open, or General).
     /// 0.5.387: the Jev and SubQ key fields sit behind Decision models' Advanced, so the anchor that asks for a key opens it.
-    static let panelAnchorsOpeningAdvanced: Set<String> = ["decision-models"]
+    /// 0.5.388 (final review E7): "Open Transcription settings" lands on the model pickers, which sit under Models' Advanced.
+    static let panelAnchorsOpeningAdvanced: Set<String> = ["decision-models", "transcription"]
     static let panelAnchors: [String: String] = [
         "transcription": "voice.models",
         "decision-models": "ai.decision",
@@ -876,22 +877,36 @@ extension SettingsHubSearch {
 /// 0.5.387 (audit F1): the one line at the top of every Settings page while the COS server is not answering, beside the action
 /// that brings it back. Nil while it answers or before the first status read.
 enum SettingsHubServerNotice {
-    enum Action: Equatable, Sendable { case start, install, repair }
-    static func line(checked: Bool, running: Bool) -> String? {
+    /// 0.5.388 (final review C2, E2): `none` draws the line alone; `openSystem` opens System and updates, where a legacy or
+    /// foreign server's own steps (Adopt, Manage in place, Replace) are. Repair only where the helper can repair: a managed install.
+    enum Action: Equatable, Sendable { case start, install, repair, openSystem, none }
+    static let notSetUpLine = "COS is not set up on this Mac yet. Get started with COS to set it up."
+    static let notAnsweringLine = "The COS server is not answering. Settings that need it are hidden until it runs."
+    /// `needsFirstRun`: ServerStatus.needsFirstRun, a Mac that was never set up. It never hears "not answering" (C2).
+    static func line(checked: Bool, running: Bool, needsFirstRun: Bool) -> String? {
         guard checked, !running else { return nil }
-        return "The COS server is not answering. Settings that need it are hidden until it runs."
+        return needsFirstRun ? notSetUpLine : notAnsweringLine
     }
-    /// `runtimeState` as the helper reports it.
-    static func action(runtimeState: String, installed: Bool) -> Action {
+    /// `runtimeState` as the helper reports it. Before first run nothing here installs: Get started with COS is the one way in,
+    /// with its AI step (C2). The helper's repair needs a managed install (HelperSources/main.swift `repair()`, "No managed
+    /// installation exists to repair."), so a legacy or foreign server is sent to System and updates instead (E2).
+    static func action(runtimeState: String, installed: Bool, needsFirstRun: Bool) -> Action {
+        if needsFirstRun { return .none }
         if !installed && runtimeState == "notInstalled" { return .install }
         if runtimeState == "stopped" { return .start }
-        return .repair
+        if repairable.contains(runtimeState) { return .repair }
+        return .openSystem
     }
-    static func title(_ action: Action) -> String {
+    /// The runtime states the helper's repair accepts: a COS Control managed install with its manifest. Not managedInPlace (a
+    /// server COS Control manages without having installed it), the legacy states or ownerConflict.
+    static let repairable: Set<String> = ["managedDegraded", "managedHealthy"]
+    static func title(_ action: Action) -> String? {
         switch action {
         case .start: "Start server"
         case .install: "Install server"
         case .repair: "Repair server"
+        case .openSystem: "Open System and updates"
+        case .none: nil
         }
     }
 }
