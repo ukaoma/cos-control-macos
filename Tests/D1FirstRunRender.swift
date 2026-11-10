@@ -77,19 +77,27 @@ let d1SignedIn = d1Data(d1Row("claude", path: "/Users/you/.local/bin/claude", ve
         try render(ControlSetupView(model: d1FirstRun(await d1Guide(d1SignedIn), installed: true, connect: true)),
                    width: 560, height: 1000, name: "06-connect-signed-in-get-started", out: out)
 
-        // 7. Permissions list (Welcome's access step uses the same list): nothing asked yet, then a no while the feature is on.
-        let permModel = ControllerModel(startBackgroundWork: false)
-        var fresh = PermissionFacts()
-        fresh.microphone = .notAsked; fresh.systemAudio = .notAsked; fresh.calendars = .notAsked
-        permModel.permissionGuide.apply(fresh)
-        try render(OnboardingPermissionsStep(guide: permModel.permissionGuide) {}.padding(28).background(COSPalette.panel),
+        // 7. Permissions (Welcome's access step). The step re-reads its facts on appear, so the facts come from fixture
+        // probes the guide's own read() calls: nothing asked yet, then a no while the feature is on, unreadable, add only.
+        func permissionGuide(_ probes: PermissionProbes) -> PermissionGuide {
+            PermissionGuide(probes: probes, appName: "COS Control", appPath: "/Applications/COS Control.app",
+                            bundleID: "com.gotcos.control", currentBuild: 441,
+                            defaults: UserDefaults(suiteName: "cos.d1-render.perm.\(UUID().uuidString)")!)
+        }
+        var notAsked = PermissionProbes.inert
+        notAsked.microphone = { .notAsked }; notAsked.systemAudio = { .notAsked }; notAsked.calendars = { .notAsked }
+        let fresh = permissionGuide(notAsked)
+        await fresh.refresh()
+        try render(OnboardingPermissionsStep(guide: fresh) {}.padding(28).background(COSPalette.panel),
                    width: 560, height: 1100, name: "07-permissions-not-asked", out: out)
-        var denials = fresh
-        denials.accessibilityTrusted = true; denials.notifications = .allowed(alertsOn: true); denials.loginItem = .enabled
-        denials.microphone = .denied; denials.microphoneWanted = true; denials.systemAudio = nil; denials.calendars = .writeOnly; denials.calendarsWanted = true
-        let permModel2 = ControllerModel(startBackgroundWork: false)
-        permModel2.permissionGuide.apply(denials)
-        try render(OnboardingPermissionsStep(guide: permModel2.permissionGuide) {}.padding(28).background(COSPalette.panel),
+        var denials = PermissionProbes.inert
+        denials.accessibilityTrusted = { true }; denials.notifications = { .allowed(alertsOn: true) }; denials.loginItem = { .enabled }
+        denials.microphone = { .denied }; denials.microphoneWanted = { true }
+        denials.systemAudio = { nil }
+        denials.calendars = { .writeOnly }; denials.calendarsWanted = { true }
+        let denied2 = permissionGuide(denials)
+        await denied2.refresh()
+        try render(OnboardingPermissionsStep(guide: denied2) {}.padding(28).background(COSPalette.panel),
                    width: 560, height: 1100, name: "08-permissions-denied-unreadable-add-only", out: out)
 
         // 9. Dictation on with no shortcut: the whole settings view (panel width) and the Dictation section alone (hub card).
