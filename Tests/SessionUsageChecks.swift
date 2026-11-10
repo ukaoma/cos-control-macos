@@ -1758,9 +1758,9 @@ extension Checks {
         // U1 (Q1 M1): the total marks what Usage marks.
         check(P.headlineParts(report: report([m]), ran: 18_612, usage: .ready, ranPartial: true, ranEstimated: true).answer == "Measured: COS used $284 of the $18,612+ est. you ran in the last 30 days.", "the COS total says est. when Usage holds an estimate")
         let estimatedDay = SessionUsageBucket(day: "2026-10-20", provider: "Anthropic", model: "claude-fable-5-3", counts: SessionUsageCounts(input: 10), events: 1, pricedEvents: 1, estimatedUSD: 1, estimatedEvents: 1, floorEvents: 1)
-        let window = report([m])
-        check(P.ranEstimated(usageBuckets: [estimatedDay], report: window, usage: .ready) && P.ranPartial(usageBuckets: [estimatedDay], report: window, usage: .ready)
-              && !P.ranEstimated(usageBuckets: [estimatedDay], report: window, usage: .paused), "a floor makes the total partial and an estimate makes it est.")
+        let estimatedWindow = report([m])
+        check(P.ranEstimated(usageBuckets: [estimatedDay], report: estimatedWindow, usage: .ready) && P.ranPartial(usageBuckets: [estimatedDay], report: estimatedWindow, usage: .ready)
+              && !P.ranEstimated(usageBuckets: [estimatedDay], report: estimatedWindow, usage: .paused), "a floor makes the total partial and an estimate makes it est.")
         check(P.headline(report: report([e]), ran: 18_612, usage: .ready) == "COS made 1,685 calls in the last 30 days. This server doesn't measure their cost yet.", "with nothing measured the headline names no dollars")
         check(!P.headline(report: report([e]), ran: 18_612, usage: .ready).contains("$"), "an estimate never reaches the headline's dollars")
         check(P.headline(report: report([]), ran: 0, usage: .ready) == "COS made no calls in the last 30 days.", "no calls says so")
