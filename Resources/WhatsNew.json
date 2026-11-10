@@ -1,12 +1,12 @@
 {
   "version": "0.5.388",
   "whatsNew": {
-    "summary": "Answer a held session question right in COS Control, a Today page that holds still. Plus everything in 0.5.387.",
+    "summary": "A Today page that holds still, setup that tells the truth about signing in, and a question card for COS servers that hold questions (off by default). Plus everything in 0.5.387.",
     "sections": [
       {
         "title": "0.5.388",
         "items": [
-          "Answer a held session question from COS Control: when your glasses or phone hold a Claude session's question, Today and the session view show its choices. Pick, then Send answer. The first answer counts, here or at your Mac.",
+          "Answer a held session question from COS Control, on a COS server with a question hold switch turned on (both are off by default): Today and the session view show its choices. Pick, then Send answer. The first answer counts, here or at your Mac. With the switches off, nothing changes yet.",
           "Today holds still: the summary, the Ask box and the Updated line stay on screen while COS reads your sessions, and the headline no longer jumps when a shorter summary arrives.",
           "Setup tells the truth about signing in: Skip for now shows only when another AI is signed in, setup says it needs one signed-in AI, and if it stops it says which AI to sign in to.",
           "Settings no longer offers Install server or Repair where they cannot work: a Mac that is not set up yet points to Get started with COS, and an older or separately run server points to System and updates."
