@@ -26,6 +26,14 @@ struct SessionUsageBucket: Codable, Identifiable, Sendable {
     var events: Int
     var pricedEvents: Int
     var estimatedUSD: Double
+    /// Filled at view time only (UsagePriceFill); the helper never sends them. Records valued by a family estimate,
+    /// records whose value is a floor, and records of a model run on this Mac.
+    var estimatedEvents: Int? = nil
+    var floorEvents: Int? = nil
+    var localEvents: Int? = nil
+    var estimated: Int { estimatedEvents ?? 0 }
+    var floor: Int { floorEvents ?? 0 }
+    var local: Int { localEvents ?? 0 }
     var id: String { day + "|" + provider + "|" + model }
 }
 
@@ -93,48 +101,237 @@ enum SessionUsageDaySort: String, CaseIterable, Sendable {
     case records = "Records"
 }
 
-/// API-equivalent standard/global rates, verified 2026-10-25. NOT subscription invoices.
-/// Historical usage is valued at this snapshot; unknown ids remain unpriced (never zero-cost).
-enum SessionUsagePricing {
-    static let version = "2026-10-25-standard-v1"
-    static let sources = ["https://platform.claude.com/docs/en/about-claude/pricing", "https://developers.openai.com/api/docs/pricing"]
-    struct Rate { let input: Double; let output: Double; let read: Double; let write5: Double; let write1h: Double }
-    static func rate(provider: String, model: String, prompt: Int64) -> Rate? {
-        // Only documented aliases and dated snapshots. No fuzzy family fallback.
-        let name = model.replacingOccurrences(of: #"-\d{8}$"#, with: "", options: .regularExpression)
-        if provider == "Anthropic" {
-            let tuple: (Double, Double, Double)?
-            switch name {
-            case "claude-opus-5-5": tuple = (4,20,0.2)
-            case "claude-sonnet-5-5": tuple = (2,10,0.1)
-            case "claude-haiku-5-5": tuple = prompt > 100_000 ? (0.5,2.5,0.05) : (0.1,0.5,0.01)
-            case "claude-fable-5-1", "claude-mythos-5-1": tuple = (10,50,0.25)
-            case "claude-fable-5", "claude-mythos-5": tuple = (10,50,1)
-            case "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-opus-4-5": tuple = (5,25,0.5)
-            case "claude-opus-4-1", "claude-opus-4": tuple = (15,75,1.5)
-            case "claude-sonnet-5": tuple = (2,10,0.2)
-            case "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-sonnet-4": tuple = (3,15,0.3)
-            case "claude-haiku-4-5": tuple = (1,5,0.1)
-            case "claude-3-5-haiku": tuple = (0.8,4,0.08)
-            default: tuple = nil
-            }
-            guard let t = tuple else { return nil }
-            return Rate(input: t.0, output: t.1, read: t.2, write5: t.0*1.25, write1h: t.0*2)
-        }
-        guard provider == "OpenAI" else { return nil }
-        switch name {
-        case "gpt-6.1-sol": return Rate(input: 2, output: 10, read: 0.1, write5: 2.5, write1h: 5)
-        case "gpt-6-astra": return Rate(input: 10, output: 50, read: 1, write5: 12.5, write1h: 25)
-        case "gpt-6-luna": return Rate(input: 0.1, output: 0.5, read: 0.01, write5: 0.125, write1h: 0.25)
-        case "gpt-5.3-codex": return Rate(input: 1.75, output: 14, read: 0.175, write5: 0, write1h: 0)
-        default: return nil
+/// Model prices as data (U1, 2026-11-09). One schema for the table this build carries and the price file read from
+/// gotcos.com, so a new model gets a price without a new build. Every row names the page it was read from and the date.
+/// API-equivalent list rates, NOT subscription invoices. A model with no row is never $0: it stays unpriced, or, at view
+/// time only, is estimated from its family's nearest priced model and marked "est." wherever its dollars appear.
+struct UsagePriceTable: Codable, Equatable, Sendable {
+    struct Prices: Codable, Equatable, Sendable {
+        var promptOver: Int64? = nil
+        var input: Double
+        var output: Double
+        var cacheRead: Double
+        var cacheWrite: Double? = nil
+        var cacheWriteLong: Double? = nil
+    }
+    struct Model: Codable, Equatable, Sendable {
+        enum Status: String, Codable, Sendable { case priced, noPublicPrice, local }
+        var provider: String
+        /// Exact ids, or a prefix ending in "*". A dated snapshot suffix (-20251001) is removed before matching.
+        var ids: [String]
+        var status: Status
+        var input: Double? = nil
+        var output: Double? = nil
+        var cacheRead: Double? = nil
+        /// Short retention write (5 minutes at Anthropic, 30 minutes at OpenAI) and long retention write (1 hour, 12 hours).
+        var cacheWrite: Double? = nil
+        var cacheWriteLong: Double? = nil
+        /// Higher prices for a request whose prompt is over `promptOver` tokens (Haiku 5.5).
+        var tiers: [Prices]? = nil
+        /// A request whose prompt is over this many tokens has no price here (OpenAI lists only the short context).
+        var maxPricedPrompt: Int64? = nil
+        /// False where a log cannot say which write retention was used (Codex), so a record with writes stays unpriced.
+        var pricesCacheWrites: Bool? = nil
+        /// The day the source shows this price taking effect, when it shows one. Informational.
+        var effective: String? = nil
+        /// The last day this price is verified (a promotion). Usage after it has no price, never an old one.
+        var through: String? = nil
+        var source: String
+        var read: String
+        var note: String? = nil
+        var base: Prices? {
+            guard status == .priced, let input, let output, let cacheRead else { return nil }
+            return Prices(input: input, output: output, cacheRead: cacheRead, cacheWrite: cacheWrite, cacheWriteLong: cacheWriteLong)
         }
     }
+    var schema: Int
+    var version: String
+    var published: String
+    var models: [Model]
+
+    enum Invalid: Error, Equatable { case tooLarge, notJSON, schema, version, published, modelCount, row(Int, String) }
+    static let schemaVersion = 1
+    static let maxBytes = 262_144
+    static let maxModels = 500
+    static let maxPricePerMillion = 1000.0
+
+    /// Strict: the whole file is refused for any bad row, so a half-valid file can never price part of the page.
+    static func decode(_ data: Data) throws -> UsagePriceTable {
+        guard data.count <= maxBytes else { throw Invalid.tooLarge }
+        guard let table = try? JSONDecoder().decode(UsagePriceTable.self, from: data) else { throw Invalid.notJSON }
+        try table.validate()
+        return table
+    }
+    func validate() throws {
+        guard schema == Self.schemaVersion else { throw Invalid.schema }
+        guard version.range(of: #"^[0-9A-Za-z.\-]{1,40}$"#, options: .regularExpression) != nil else { throw Invalid.version }
+        guard Self.isDay(published) else { throw Invalid.published }
+        guard (1...Self.maxModels).contains(models.count) else { throw Invalid.modelCount }
+        var seen = Set<String>()
+        for (index, m) in models.enumerated() {
+            func fail(_ why: String) -> Invalid { .row(index, why) }
+            guard m.provider.range(of: #"^[A-Za-z][A-Za-z ]{0,39}$"#, options: .regularExpression) != nil else { throw fail("provider") }
+            guard (1...20).contains(m.ids.count) else { throw fail("ids") }
+            for id in m.ids {
+                guard id.range(of: #"^[a-z0-9][a-z0-9._:\-]{0,79}\*?$"#, options: .regularExpression) != nil else { throw fail("id") }
+                guard seen.insert(m.provider + "|" + id).inserted else { throw fail("duplicate id") }
+            }
+            guard m.source.count <= 300, let url = URL(string: m.source), url.scheme == "https", url.host?.isEmpty == false else { throw fail("source") }
+            guard Self.isDay(m.read) else { throw fail("read") }
+            if let through = m.through { guard Self.isDay(through) else { throw fail("through") } }
+            if let effective = m.effective { guard Self.isDay(effective) else { throw fail("effective") } }
+            if let note = m.note { guard note.count <= 400 else { throw fail("note") } }
+            if let cap = m.maxPricedPrompt { guard (1...10_000_000).contains(cap) else { throw fail("maxPricedPrompt") } }
+            let prices = [m.input, m.output, m.cacheRead, m.cacheWrite, m.cacheWriteLong]
+            switch m.status {
+            case .priced:
+                guard let base = m.base, Self.bounded(base) else { throw fail("prices") }
+                let tiers = m.tiers ?? []
+                guard tiers.count <= 4 else { throw fail("tiers") }
+                var last: Int64 = 0
+                for tier in tiers {
+                    guard let over = tier.promptOver, over > last, over <= 10_000_000, Self.bounded(tier) else { throw fail("tier") }
+                    last = over
+                }
+            case .noPublicPrice, .local:
+                // A stated fact, so it carries no numbers that a later reader could mistake for a price.
+                guard prices.allSatisfy({ $0 == nil }), m.tiers == nil, m.through == nil else { throw fail("prices on an unpriced row") }
+            }
+        }
+    }
+    private static func bounded(_ p: Prices) -> Bool {
+        [p.input, p.output, p.cacheRead, p.cacheWrite ?? 0, p.cacheWriteLong ?? 0].allSatisfy { $0.isFinite && $0 >= 0 && $0 <= maxPricePerMillion }
+    }
+    static func isDay(_ s: String) -> Bool { s.count == 10 && SessionUsageDay(s)?.key == s }
+
+    /// "claude-haiku-4-5-20251001" matches "claude-haiku-4-5". Exact ids win over prefixes; the longest prefix wins.
+    func entry(provider: String, model: String) -> Model? {
+        let name = Self.normalized(model)
+        var best: (model: Model, length: Int)?
+        for m in models where m.provider == provider {
+            for id in m.ids {
+                if id.hasSuffix("*") {
+                    let prefix = String(id.dropLast())
+                    if name.hasPrefix(prefix), prefix.count > (best?.length ?? -1) { best = (m, prefix.count) }
+                } else if id == name { return m }
+            }
+        }
+        return best?.model
+    }
+    static func normalized(_ model: String) -> String {
+        model.lowercased().replacingOccurrences(of: #"-\d{8}$"#, with: "", options: .regularExpression)
+    }
+
+    /// The family and version a model id names, or nil when it names none. Anthropic: "claude-<name>-<major>[-<minor>]"
+    /// is family "claude-<name>" (claude-fable-5-2: claude-fable, 5.2). OpenAI: "gpt-<major>[.<minor>][-<name>]" is
+    /// family "gpt-<name>", or "gpt" with no name (gpt-6.1-sol: gpt-sol, 6.1; gpt-5.5: gpt, 5.5). Version is
+    /// major * 100 + minor. Anything else (codex-auto-review, a local model, "Unknown model") has no family.
+    static func family(provider: String, model: String) -> (family: String, version: Int)? {
+        let name = normalized(model)
+        let pattern: String
+        switch provider {
+        case "Anthropic": pattern = #"^claude-([a-z]+)-([0-9]{1,2})(?:-([0-9]{1,2}))?$"#
+        case "OpenAI": pattern = #"^gpt-([0-9]{1,2})(?:\.([0-9]{1,2}))?(?:-([a-z]+))?$"#
+        default: return nil
+        }
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) else { return nil }
+        func group(_ i: Int) -> String? { Range(match.range(at: i), in: name).map { String(name[$0]) } }
+        if provider == "Anthropic" {
+            guard let family = group(1), let major = group(2).flatMap(Int.init) else { return nil }
+            return ("claude-" + family, major * 100 + (group(3).flatMap(Int.init) ?? 0))
+        }
+        guard let major = group(1).flatMap(Int.init) else { return nil }
+        return (group(3).map { "gpt-" + $0 } ?? "gpt", major * 100 + (group(2).flatMap(Int.init) ?? 0))
+    }
+
+    /// A model run on this Mac: Codex's Ollama provider, or an Ollama tag such as "qwen3.8:27b".
+    static func isLocal(provider: String, model: String) -> Bool {
+        provider == "Ollama" || normalized(model).range(of: #"^[a-z0-9][a-z0-9._\-]*:[0-9]+(\.[0-9]+)?[bm]$"#, options: .regularExpression) != nil
+    }
+
+    enum Resolution: Equatable, Sendable {
+        case listed(Model)
+        /// No row for this id: the nearest priced model of the same provider and family stands in, marked "est.".
+        case estimated(from: Model, id: String)
+        case local
+        case noPublicPrice(Model)
+        /// Known id, but its price is not verified for that day (a promotion ended).
+        case expired(Model)
+        case unknown
+    }
+    /// `day` is the usage day (yyyy-MM-dd), for a price that ends.
+    func resolve(provider: String, model: String, day: String) -> Resolution {
+        if let m = entry(provider: provider, model: model) {
+            switch m.status {
+            case .local: return .local
+            case .noPublicPrice: return .noPublicPrice(m)
+            case .priced:
+                if let through = m.through, !day.isEmpty, day > through { return .expired(m) }
+                return .listed(m)
+            }
+        }
+        if Self.isLocal(provider: provider, model: model) { return .local }
+        guard let target = Self.family(provider: provider, model: model) else { return .unknown }
+        // Nearest: the smallest version distance. A tie goes to the newer model. Rows with a price that ends are left
+        // out, so an estimate never leans on a promotion.
+        var best: (model: Model, id: String, distance: Int, version: Int)?
+        for m in models where m.provider == provider && m.status == .priced && m.through == nil {
+            for id in m.ids where !id.hasSuffix("*") {
+                guard let f = Self.family(provider: provider, model: id), f.family == target.family else { continue }
+                let distance = abs(f.version - target.version)
+                if best == nil || distance < best!.distance || (distance == best!.distance && f.version > best!.version) {
+                    best = (m, id, distance, f.version)
+                }
+            }
+        }
+        if let best { return .estimated(from: best.model, id: best.id) }
+        return .unknown
+    }
+}
+
+enum SessionUsagePricing {
+    /// The table this build carries. Recording a new event prices it from this table only, so a stored `usd` always
+    /// came from a reviewed build. The price file from gotcos.com fills only at view time (UsagePriceFill).
+    static let bundled: UsagePriceTable = {
+        guard let data = UsagePriceBundled.json.data(using: .utf8), let table = try? UsagePriceTable.decode(data) else {
+            // Never a crash and never a guessed price: an unreadable table prices nothing. A check pins that it reads.
+            return UsagePriceTable(schema: UsagePriceTable.schemaVersion, version: "unreadable", published: "1970-01-01", models: [])
+        }
+        return table
+    }()
+    static var version: String { bundled.version + "-table" }
+    static let sources = ["https://platform.claude.com/docs/en/about-claude/pricing", "https://developers.openai.com/api/docs/pricing"]
+    struct Rate {
+        let input: Double; let output: Double; let read: Double; let write5: Double; let write1h: Double
+        /// The source lists a write price, so writes can be valued. Missing means a record with writes has no price.
+        var hasWrite = true
+        var hasLongWrite = true
+    }
+    static func rate(_ m: UsagePriceTable.Model, prompt: Int64) -> Rate? {
+        guard let base = m.base else { return nil }
+        let p = (m.tiers ?? []).last { ($0.promptOver ?? .max) < prompt } ?? base
+        return Rate(input: p.input, output: p.output, read: p.cacheRead, write5: p.cacheWrite ?? 0, write1h: p.cacheWriteLong ?? p.cacheWrite ?? 0,
+                    hasWrite: p.cacheWrite != nil, hasLongWrite: p.cacheWriteLong != nil)
+    }
+    /// The bundled list price, for recording. A price that ends (a promotion) is left to view time, which knows the day.
+    static func rate(provider: String, model: String, prompt: Int64) -> Rate? {
+        guard let m = bundled.entry(provider: provider, model: model), m.status == .priced, m.through == nil else { return nil }
+        return rate(m, prompt: prompt)
+    }
     static func estimate(provider: String, model: String, counts: SessionUsageCounts, oneHour: Int64 = 0) -> Double? {
+        guard let m = bundled.entry(provider: provider, model: model), m.status == .priced, m.through == nil else { return nil }
+        return usd(m, counts: counts, oneHour: oneHour)
+    }
+    /// One record (or, at view time, one day's records) at a row's prices. Nil when the row cannot price it honestly.
+    static func usd(_ m: UsagePriceTable.Model, counts: SessionUsageCounts, oneHour: Int64 = 0) -> Double? {
         // Codex write retention and long-context tier are not reliably present in rollouts.
-        guard !(provider == "OpenAI" && (counts.cacheWrite > 0 || counts.input+counts.cacheRead > 272_000)),
-              let r = rate(provider: provider, model: model, prompt: counts.input+counts.cacheRead+counts.cacheWrite) else { return nil }
+        if m.pricesCacheWrites == false && counts.cacheWrite > 0 { return nil }
+        if let cap = m.maxPricedPrompt, counts.input + counts.cacheRead > cap { return nil }
+        guard let r = rate(m, prompt: counts.input+counts.cacheRead+counts.cacheWrite) else { return nil }
         let long = min(max(0, oneHour), counts.cacheWrite)
+        if counts.cacheWrite - long > 0 && !r.hasWrite { return nil }
+        if long > 0 && !r.hasLongWrite { return nil }
         return (Double(counts.input)*r.input + Double(counts.output)*r.output + Double(counts.cacheRead)*r.read + Double(counts.cacheWrite-long)*r.write5 + Double(long)*r.write1h) / 1_000_000
     }
     /// One bucket's stored estimatedUSD split across the disjoint token categories, reconciling to it.
@@ -145,9 +342,16 @@ enum SessionUsagePricing {
     /// Nil when the bucket cannot be split honestly: a partially priced bucket's dollars cover only some of its
     /// records (Codex cache writes and >272K prompts stay unpriced), so valuing all of its tokens would put dollars
     /// on categories that were never charged. Unpriced buckets and unknown rates are nil too.
-    static func categoryUSD(for row: SessionUsageBucket) -> CategoryUSD? {
-        guard row.events > 0, row.pricedEvents == row.events, row.estimatedUSD > 0,
-              let r = rate(provider: row.provider, model: row.model, prompt: 0) else { return nil }
+    static func categoryUSD(for row: SessionUsageBucket, table: UsagePriceTable = UsagePriceViewTable.shared.current) -> CategoryUSD? {
+        guard row.events > 0, row.pricedEvents == row.events, row.estimatedUSD > 0 else { return nil }
+        // The row the page priced with: a listed price, or the model an estimate stands on. Else the recorder's.
+        let viewRow: UsagePriceTable.Model?
+        switch table.resolve(provider: row.provider, model: row.model, day: row.day) {
+        case .listed(let m), .estimated(let m, _): viewRow = m
+        default: viewRow = nil
+        }
+        guard let r = viewRow.flatMap({ rate($0, prompt: 0) }) ?? rate(provider: row.provider, model: row.model, prompt: 0) else { return nil }
+        let tiered = !((viewRow ?? bundled.entry(provider: row.provider, model: row.model))?.tiers ?? []).isEmpty
         let inUSD = Double(row.counts.input) * r.input / 1_000_000
         let outUSD = Double(row.counts.output) * r.output / 1_000_000
         let readUSD = Double(row.counts.cacheRead) * r.read / 1_000_000
@@ -156,7 +360,7 @@ enum SessionUsagePricing {
         // Anthropic 1-hour cache writes raise only cacheWrite above the 5-minute baseline, and never past every
         // write at the 1-hour rate. A remainder above that cap means the stored value used other rates (or the
         // Haiku 5.5 long-prompt tier, which also moves input and output), so the split falls back to scaling.
-        if row.provider == "Anthropic", row.counts.cacheWrite > 0, !row.model.hasPrefix("claude-haiku-5-5") {
+        if row.provider == "Anthropic", row.counts.cacheWrite > 0, !tiered {
             let remainder = row.estimatedUSD - nonWrite
             let cap = Double(row.counts.cacheWrite) * r.write1h / 1_000_000
             if remainder >= write5USD * 0.999, remainder <= cap * 1.001 {
@@ -169,9 +373,601 @@ enum SessionUsagePricing {
         let scaledIn = inUSD * scale, scaledOut = outUSD * scale, scaledRead = readUSD * scale
         return CategoryUSD(input: scaledIn, output: scaledOut, cacheRead: scaledRead, cacheWrite: max(0, row.estimatedUSD - scaledIn - scaledOut - scaledRead))
     }
+    /// "+" when the true value is higher than shown (records with no price, or a floor); " est." when any of it is a
+    /// family estimate. Every dollar figure on the Usage page ends in these marks.
+    static func marks(priced: Int, events: Int, estimated: Int, floor: Int) -> String {
+        (priced < events || floor > 0 ? "+" : "") + (estimated > 0 ? " est." : "")
+    }
     static func tokens(_ n: Int64) -> String {
         n >= 1_000_000_000 ? String(format: "%.2fB", Double(n)/1e9) : n >= 1_000_000 ? String(format: "%.2fM", Double(n)/1e6) : n >= 1000 ? String(format: "%.1fK", Double(n)/1000) : String(n)
     }
+}
+
+/// View-time prices for days the recorder could not price: a price that arrived after the record (a new build's table
+/// or the price file), a family estimate, or a local model. Only a day with no priced record is filled, because a
+/// partly priced day holds one set of counts and the priced part cannot be taken out of it.
+enum UsagePriceFill {
+    /// The table the page prices with: the price file when it is newer than the table this build carries, else the
+    /// carried one. A tie goes to the carried table.
+    static func active(bundled: UsagePriceTable, fetched: UsagePriceTable?) -> UsagePriceTable {
+        guard let fetched, (fetched.published, fetched.version) > (bundled.published, bundled.version) else { return bundled }
+        return fetched
+    }
+    /// A whole day at a row's prices. Writes are valued at the short retention rate because a day does not keep how
+    /// many were long, and a day's prompt sizes are not kept either, so the figure is a floor (shown with +) whenever
+    /// those could raise it.
+    static func dayUSD(_ m: UsagePriceTable.Model, counts: SessionUsageCounts) -> (usd: Double, floor: Bool)? {
+        if m.pricesCacheWrites == false && counts.cacheWrite > 0 { return nil }
+        guard let r = SessionUsagePricing.rate(m, prompt: 0) else { return nil }
+        if counts.cacheWrite > 0 && !r.hasWrite { return nil }
+        let usd = (Double(counts.input)*r.input + Double(counts.output)*r.output + Double(counts.cacheRead)*r.read + Double(counts.cacheWrite)*r.write5) / 1_000_000
+        let prompt = counts.input + counts.cacheRead + counts.cacheWrite
+        let longWrites = counts.cacheWrite > 0 && r.hasLongWrite && r.write1h > r.write5
+        let longPrompts = (m.maxPricedPrompt.map { counts.input + counts.cacheRead > $0 } ?? false)
+            || (m.tiers?.first?.promptOver.map { prompt > $0 } ?? false)
+        return (usd, longWrites || longPrompts)
+    }
+    static func apply(_ buckets: [SessionUsageBucket], table: UsagePriceTable) -> [SessionUsageBucket] {
+        buckets.map { (bucket: SessionUsageBucket) -> SessionUsageBucket in
+            guard bucket.events > 0, bucket.pricedEvents == 0 else { return bucket }
+            var row = bucket
+            switch table.resolve(provider: row.provider, model: row.model, day: row.day) {
+            case .local:
+                // No API bill exists for it, so it is counted as priced at $0 and keeps + off the totals.
+                row.pricedEvents = row.events; row.estimatedUSD = 0; row.localEvents = row.events
+            case .listed(let m):
+                guard let value = dayUSD(m, counts: row.counts) else { return bucket }
+                row.pricedEvents = row.events; row.estimatedUSD = value.usd
+                if value.floor { row.floorEvents = row.events }
+            case .estimated(let m, _):
+                guard let value = dayUSD(m, counts: row.counts) else { return bucket }
+                row.pricedEvents = row.events; row.estimatedUSD = value.usd; row.estimatedEvents = row.events
+                if value.floor { row.floorEvents = row.events }
+            case .noPublicPrice, .expired, .unknown:
+                return bucket
+            }
+            return row
+        }
+    }
+    /// What a model's own price cell says when it has no dollar figure, or the figure's marks.
+    static func modelCell(_ row: SessionUsageBucket, table: UsagePriceTable, dollars: (Double) -> String) -> String {
+        if row.local > 0 && row.local == row.events { return "Local, no API cost" }
+        if row.pricedEvents == 0 {
+            if case .noPublicPrice = table.resolve(provider: row.provider, model: row.model, day: row.day) { return "No public price" }
+            return "No price"
+        }
+        return dollars(row.estimatedUSD) + SessionUsagePricing.marks(priced: row.pricedEvents, events: row.events, estimated: row.estimated, floor: row.floor)
+    }
+    /// The words behind "est." for a help tag: "Estimated from Fable 5.2's list price."
+    static func estimateNote(_ row: SessionUsageBucket, table: UsagePriceTable) -> String? {
+        guard row.estimated > 0, case .estimated(_, let id) = table.resolve(provider: row.provider, model: row.model, day: row.day) else { return nil }
+        return "No list price yet. Estimated from \(SessionUsagePresentation.modelName(id))'s list price."
+    }
+}
+
+/// The table the Usage page last priced with, for splits and labels that are not handed one. Set by the store.
+final class UsagePriceViewTable: @unchecked Sendable {
+    static let shared = UsagePriceViewTable()
+    private let lock = NSLock()
+    private var table = SessionUsagePricing.bundled
+    var current: UsagePriceTable {
+        get { lock.lock(); defer { lock.unlock() }; return table }
+        set { lock.lock(); table = newValue; lock.unlock() }
+    }
+}
+
+/// The price file: https://www.gotcos.com/control/prices.json, the host and cadence the update check already uses.
+/// A plain GET with no cookies, no query and no identifier. Kept only when it passes UsagePriceTable.decode; the last good
+/// copy stays on disk, and any failure leaves the page on that copy or the carried table.
+enum UsagePriceFeed {
+    static let url = URL(string: "https://www.gotcos.com/control/prices.json")!
+    static let lastAttemptKey = "cos.usage.prices.lastAttempt"
+    /// The update check's own period. The panel can ask every 15 minutes; the file is asked for at most this often.
+    static let minimumInterval: TimeInterval = 6 * 3600
+    static var cacheFile: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/COS Control/usage/prices-fetched.json")
+    }
+    static func due(lastAttempt: Date?, now: Date) -> Bool {
+        guard let lastAttempt else { return true }
+        return now.timeIntervalSince(lastAttempt) >= minimumInterval || now < lastAttempt
+    }
+    /// The last good copy, re-checked on every read: a file edited on disk is held to the same rules as the network.
+    static func cached(at file: URL = cacheFile) -> UsagePriceTable? {
+        guard let data = try? Data(contentsOf: file) else { return nil }
+        return try? UsagePriceTable.decode(data)
+    }
+    static func activeTable(file: URL = cacheFile) -> UsagePriceTable {
+        UsagePriceFill.active(bundled: SessionUsagePricing.bundled, fetched: cached(at: file))
+    }
+    /// Validates, then replaces the last good copy atomically. A refused body never touches it.
+    @discardableResult
+    static func accept(_ data: Data, to file: URL = cacheFile) throws -> UsagePriceTable {
+        let table = try UsagePriceTable.decode(data)
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try data.write(to: file, options: .atomic)
+        return table
+    }
+    static func refreshIfDue(now: Date = Date()) async {
+        let defaults = UserDefaults.standard
+        guard due(lastAttempt: defaults.object(forKey: lastAttemptKey) as? Date, now: now) else { return }
+        defaults.set(now, forKey: lastAttemptKey)
+        let config = URLSessionConfiguration.ephemeral
+        config.httpCookieAcceptPolicy = .never
+        config.httpShouldSetCookies = false
+        config.urlCache = nil
+        config.timeoutIntervalForRequest = 10
+        config.timeoutIntervalForResource = 20
+        let session = URLSession(configuration: config)
+        defer { session.finishTasksAndInvalidate() }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        guard let result = try? await session.bytes(for: request) else { return }
+        let (bytes, response) = result
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+              http.url?.host == url.host, http.expectedContentLength <= Int64(UsagePriceTable.maxBytes) else { return }
+        var data = Data()
+        do {
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count > UsagePriceTable.maxBytes { return }
+            }
+        } catch { return }
+        try? accept(data)
+    }
+}
+
+/// The price table this build carries, byte for byte the draft prices.json in the U1 lane folder (a check pins that).
+enum UsagePriceBundled {
+    static let json = #"""
+{
+ "schema": 1,
+ "version": "2026-11-09.1",
+ "published": "2026-11-09",
+ "models": [
+  {
+   "provider": "Anthropic",
+   "ids": [
+    "claude-fable-5-2",
+    "claude-mythos-5-2"
+   ],
+   "status": "priced",
+   "input": 8,
+   "output": 40,
+   "cacheRead": 0.2,
+   "cacheWrite": 10,
+   "cacheWriteLong": 16,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "read": "2026-11-09"
+  },
+  {
+   "provider": "Anthropic",
+   "ids": [
+    "claude-opus-5-5"
+   ],
+   "status": "priced",
+   "input": 4,
+   "output": 20,
+   "cacheRead": 0.2,
+   "cacheWrite": 5,
+   "cacheWriteLong": 8,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "read": "2026-11-09"
+  },
+  {
+   "provider": "Anthropic",
+   "ids": [
+    "claude-sonnet-5-5"
+   ],
+   "status": "priced",
+   "input": 2,
+   "output": 10,
+   "cacheRead": 0.1,
+   "cacheWrite": 2.5,
+   "cacheWriteLong": 4,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "read": "2026-11-09"
+  },
+  {
+   "provider": "Anthropic",
+   "ids": [
+    "claude-haiku-5-5"
+   ],
+   "status": "priced",
+   "input": 0.1,
+   "output": 0.5,
+   "cacheRead": 0.01,
+   "cacheWrite": 0.125,
+   "cacheWriteLong": 0.2,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "read": "2026-11-09",
+   "tiers": [
+    {
+     "promptOver": 100000,
+     "input": 0.5,
+     "output": 2.5,
+     "cacheRead": 0.05,
+     "cacheWrite": 0.625,
+     "cacheWriteLong": 1
+    }
+   ]
+  },
+  {
+   "provider": "Anthropic",
+   "ids": [
+    "claude-fable-5-1",
+    "claude-mythos-5-1"
+   ],
+   "status": "priced",
+   "input": 10,
+   "output": 50,
+   "cacheRead": 0.25,
+   "cacheWrite": 12.5,
+   "cacheWriteLong": 20,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "read": "2026-11-09"
+  },
+  {
+   "provider": "Anthropic",
+   "ids": [
+    "claude-fable-5",
+    "claude-mythos-5"
+   ],
+   "status": "priced",
+   "input": 10,
+   "output": 50,
+   "cacheRead": 1,
+   "cacheWrite": 12.5,
+   "cacheWriteLong": 20,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "read": "2026-11-09"
+  },
+  {
+   "provider": "Anthropic",
+   "ids": [
+    "claude-opus-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-opus-4-5"
+   ],
+   "status": "priced",
+   "input": 5,
+   "output": 25,
+   "cacheRead": 0.5,
+   "cacheWrite": 6.25,
+   "cacheWriteLong": 10,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "read": "2026-11-09"
+  },
+  {
+   "provider": "Anthropic",
+   "ids": [
+    "claude-opus-4-1",
+    "claude-opus-4"
+   ],
+   "status": "priced",
+   "input": 15,
+   "output": 75,
+   "cacheRead": 1.5,
+   "cacheWrite": 18.75,
+   "cacheWriteLong": 30,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "read": "2026-11-09"
+  },
+  {
+   "provider": "Anthropic",
+   "ids": [
+    "claude-sonnet-5"
+   ],
+   "status": "priced",
+   "input": 2,
+   "output": 10,
+   "cacheRead": 0.2,
+   "cacheWrite": 2.5,
+   "cacheWriteLong": 4,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "read": "2026-11-09"
+  },
+  {
+   "provider": "Anthropic",
+   "ids": [
+    "claude-sonnet-4-6",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4"
+   ],
+   "status": "priced",
+   "input": 3,
+   "output": 15,
+   "cacheRead": 0.3,
+   "cacheWrite": 3.75,
+   "cacheWriteLong": 6,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "read": "2026-11-09"
+  },
+  {
+   "provider": "Anthropic",
+   "ids": [
+    "claude-haiku-4-5"
+   ],
+   "status": "priced",
+   "input": 1,
+   "output": 5,
+   "cacheRead": 0.1,
+   "cacheWrite": 1.25,
+   "cacheWriteLong": 2,
+   "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+   "read": "2026-11-09"
+  },
+  {
+   "provider": "OpenAI",
+   "ids": [
+    "gpt-6-astra"
+   ],
+   "status": "priced",
+   "input": 10,
+   "output": 50,
+   "cacheRead": 1,
+   "maxPricedPrompt": 272000,
+   "pricesCacheWrites": false,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "read": "2026-11-09",
+   "cacheWrite": 12.5,
+   "cacheWriteLong": 25
+  },
+  {
+   "provider": "OpenAI",
+   "ids": [
+    "gpt-6.1-sol"
+   ],
+   "status": "priced",
+   "input": 2,
+   "output": 10,
+   "cacheRead": 0.1,
+   "maxPricedPrompt": 272000,
+   "pricesCacheWrites": false,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "read": "2026-11-09",
+   "cacheWrite": 2.5,
+   "cacheWriteLong": 5
+  },
+  {
+   "provider": "OpenAI",
+   "ids": [
+    "gpt-6.1-terra"
+   ],
+   "status": "priced",
+   "input": 1,
+   "output": 5,
+   "cacheRead": 0.05,
+   "maxPricedPrompt": 272000,
+   "pricesCacheWrites": false,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "read": "2026-11-09",
+   "cacheWrite": 1.25,
+   "cacheWriteLong": 2.5
+  },
+  {
+   "provider": "OpenAI",
+   "ids": [
+    "gpt-6-luna"
+   ],
+   "status": "priced",
+   "input": 0.1,
+   "output": 0.5,
+   "cacheRead": 0.01,
+   "maxPricedPrompt": 272000,
+   "pricesCacheWrites": false,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "read": "2026-11-09",
+   "cacheWrite": 0.125,
+   "cacheWriteLong": 0.25
+  },
+  {
+   "provider": "OpenAI",
+   "ids": [
+    "gpt-6-sol"
+   ],
+   "status": "priced",
+   "input": 2,
+   "output": 10,
+   "cacheRead": 0.2,
+   "maxPricedPrompt": 272000,
+   "pricesCacheWrites": false,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "read": "2026-11-09",
+   "cacheWrite": 2.5
+  },
+  {
+   "provider": "OpenAI",
+   "ids": [
+    "gpt-5.6-sol"
+   ],
+   "status": "priced",
+   "input": 4,
+   "output": 20,
+   "cacheRead": 0.4,
+   "maxPricedPrompt": 272000,
+   "pricesCacheWrites": false,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "read": "2026-11-09",
+   "cacheWrite": 5,
+   "through": "2026-11-30",
+   "note": "Promotional price. The page says it is available until November 30, 2026."
+  },
+  {
+   "provider": "OpenAI",
+   "ids": [
+    "gpt-5.6-terra"
+   ],
+   "status": "priced",
+   "input": 2,
+   "output": 12,
+   "cacheRead": 0.2,
+   "maxPricedPrompt": 272000,
+   "pricesCacheWrites": false,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "read": "2026-11-09",
+   "cacheWrite": 2.5
+  },
+  {
+   "provider": "OpenAI",
+   "ids": [
+    "gpt-5.6-luna"
+   ],
+   "status": "priced",
+   "input": 0.2,
+   "output": 1.2,
+   "cacheRead": 0.02,
+   "maxPricedPrompt": 272000,
+   "pricesCacheWrites": false,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "read": "2026-11-09",
+   "cacheWrite": 0.25
+  },
+  {
+   "provider": "OpenAI",
+   "ids": [
+    "gpt-5.5"
+   ],
+   "status": "priced",
+   "input": 5,
+   "output": 30,
+   "cacheRead": 0.5,
+   "maxPricedPrompt": 272000,
+   "pricesCacheWrites": false,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "read": "2026-11-09",
+   "note": "Listed for prompts under 272K tokens."
+  },
+  {
+   "provider": "OpenAI",
+   "ids": [
+    "gpt-5.4"
+   ],
+   "status": "priced",
+   "input": 2.5,
+   "output": 15,
+   "cacheRead": 0.25,
+   "maxPricedPrompt": 272000,
+   "pricesCacheWrites": false,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "read": "2026-11-09",
+   "note": "Listed for prompts under 272K tokens."
+  },
+  {
+   "provider": "OpenAI",
+   "ids": [
+    "gpt-5.4-mini"
+   ],
+   "status": "priced",
+   "input": 0.75,
+   "output": 4.5,
+   "cacheRead": 0.075,
+   "maxPricedPrompt": 272000,
+   "pricesCacheWrites": false,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "read": "2026-11-09"
+  },
+  {
+   "provider": "OpenAI",
+   "ids": [
+    "gpt-5.4-nano"
+   ],
+   "status": "priced",
+   "input": 0.2,
+   "output": 1.25,
+   "cacheRead": 0.02,
+   "maxPricedPrompt": 272000,
+   "pricesCacheWrites": false,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "read": "2026-11-09"
+  },
+  {
+   "provider": "OpenAI",
+   "ids": [
+    "gpt-5.3-codex"
+   ],
+   "status": "priced",
+   "input": 1.75,
+   "output": 14,
+   "cacheRead": 0.175,
+   "maxPricedPrompt": 272000,
+   "pricesCacheWrites": false,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "read": "2026-11-09"
+  },
+  {
+   "provider": "OpenAI",
+   "ids": [
+    "gpt-5.2"
+   ],
+   "status": "priced",
+   "input": 1.75,
+   "output": 14,
+   "cacheRead": 0.175,
+   "maxPricedPrompt": 272000,
+   "pricesCacheWrites": false,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "read": "2026-11-09"
+  },
+  {
+   "provider": "OpenAI",
+   "ids": [
+    "gpt-5.1",
+    "gpt-5"
+   ],
+   "status": "priced",
+   "input": 1.25,
+   "output": 10,
+   "cacheRead": 0.125,
+   "maxPricedPrompt": 272000,
+   "pricesCacheWrites": false,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "read": "2026-11-09"
+  },
+  {
+   "provider": "OpenAI",
+   "ids": [
+    "gpt-5-mini"
+   ],
+   "status": "priced",
+   "input": 0.25,
+   "output": 2,
+   "cacheRead": 0.025,
+   "maxPricedPrompt": 272000,
+   "pricesCacheWrites": false,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "read": "2026-11-09"
+  },
+  {
+   "provider": "OpenAI",
+   "ids": [
+    "gpt-5-nano"
+   ],
+   "status": "priced",
+   "input": 0.05,
+   "output": 0.4,
+   "cacheRead": 0.005,
+   "maxPricedPrompt": 272000,
+   "pricesCacheWrites": false,
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "read": "2026-11-09"
+  },
+  {
+   "provider": "OpenAI",
+   "ids": [
+    "codex-auto-review"
+   ],
+   "status": "noPublicPrice",
+   "source": "https://developers.openai.com/api/docs/pricing",
+   "read": "2026-11-09",
+   "note": "Codex's approval reviewer. OpenAI's API price list has no row for it, and the Auto-review docs name no price (https://learn.chatgpt.com/docs/sandboxing/auto-review.md, read 2026-11-09). Third-party trackers list a price, but they are not OpenAI."
+  }
+ ]
+}
+"""#
 }
 
 /// A ledger date key (yyyy-MM-dd) as a proleptic Gregorian civil date. A calendar date's weekday and month do
@@ -283,7 +1079,11 @@ enum SessionUsagePresentation {
         return String(format: "%+.1f%%", pct)
     }
     static func pricingStatus(_ row: SessionUsageBucket) -> String {
-        row.pricedEvents == 0 ? "unpriced" : row.pricedEvents < row.events ? "partial" : "priced"
+        if row.pricedEvents == 0 { return "unpriced" }
+        if row.pricedEvents < row.events { return "partial" }
+        if row.local == row.events { return "local" }
+        if row.estimated > 0 { return row.floor > 0 ? "estimated-floor" : "estimated" }
+        return row.floor > 0 ? "floor" : "priced"
     }
     private static func name(_ row: SessionUsageBucket) -> String { row.provider + "|" + row.model }
     /// One row per provider/model. The day is cleared: an aggregate spans days, and a stable id keeps table rows put.
@@ -292,7 +1092,9 @@ enum SessionUsagePresentation {
             guard let first = group.first else { return nil }
             return SessionUsageBucket(day: "", provider: first.provider, model: first.model,
                 counts: group.reduce(SessionUsageCounts()) { $0 + $1.counts }, events: group.reduce(0) { $0 + $1.events },
-                pricedEvents: group.reduce(0) { $0 + $1.pricedEvents }, estimatedUSD: group.reduce(0) { $0 + $1.estimatedUSD })
+                pricedEvents: group.reduce(0) { $0 + $1.pricedEvents }, estimatedUSD: group.reduce(0) { $0 + $1.estimatedUSD },
+                estimatedEvents: group.reduce(0) { $0 + $1.estimated }, floorEvents: group.reduce(0) { $0 + $1.floor },
+                localEvents: group.reduce(0) { $0 + $1.local })
         }.sorted {
             let a = tokenCount($0.counts, excludingCacheReads: excludingCacheReads)
             let b = tokenCount($1.counts, excludingCacheReads: excludingCacheReads)
@@ -338,7 +1140,7 @@ enum SessionUsagePresentation {
     static func costLabel(_ rows: [SessionUsageBucket]) -> String {
         let priced = rows.reduce(0) { $0 + $1.pricedEvents }, events = rows.reduce(0) { $0 + $1.events }
         guard priced > 0 else { return "No price" }
-        return rows.reduce(0) { $0 + $1.estimatedUSD }.formatted(.currency(code: "USD")) + (priced < events ? "+" : "")
+        return rows.reduce(0) { $0 + $1.estimatedUSD }.formatted(.currency(code: "USD")) + marks(rows)
     }
     static func selectPeriod(_ rows: [SessionUsageBucket], period: String, now: Date, timeZone: TimeZone, customStart: Date? = nil, customEnd: Date? = nil) -> [SessionUsageBucket] {
         if period == allHistory { return rows }
@@ -456,16 +1258,20 @@ enum SessionUsagePresentation {
         let events: Int
         let pricedEvents: Int
         let estimatedUSD: Double
+        var estimatedEvents = 0
+        var floorEvents = 0
         var costLabel: String {
             guard pricedEvents > 0 else { return "No price" }
-            return estimatedUSD.formatted(.currency(code: "USD")) + (pricedEvents < events ? "+" : "")
+            return estimatedUSD.formatted(.currency(code: "USD")) + marks
         }
+        var marks: String { SessionUsagePricing.marks(priced: pricedEvents, events: events, estimated: estimatedEvents, floor: floorEvents) }
     }
     static func summarize(_ rows: [SessionUsageBucket], by key: KeyPath<SessionUsageBucket, String>, excludingCacheReads: Bool = false) -> [Summary] {
         Dictionary(grouping: rows, by: { $0[keyPath: key] }).map { name, group in
             Summary(id: name, counts: group.reduce(SessionUsageCounts()) { $0 + $1.counts },
                 events: group.reduce(0) { $0 + $1.events }, pricedEvents: group.reduce(0) { $0 + $1.pricedEvents },
-                estimatedUSD: group.reduce(0) { $0 + $1.estimatedUSD })
+                estimatedUSD: group.reduce(0) { $0 + $1.estimatedUSD }, estimatedEvents: group.reduce(0) { $0 + $1.estimated },
+                floorEvents: group.reduce(0) { $0 + $1.floor })
         }.sorted {
             let a = tokenCount($0.counts, excludingCacheReads: excludingCacheReads)
             let b = tokenCount($1.counts, excludingCacheReads: excludingCacheReads)
@@ -533,7 +1339,30 @@ enum SessionUsagePresentation {
     static func costCell(_ rows: [SessionUsageBucket]) -> String {
         let priced = rows.reduce(0) { $0 + $1.pricedEvents }, events = rows.reduce(0) { $0 + $1.events }
         guard priced > 0 else { return "No price" }
-        return dollars(rows.reduce(0) { $0 + $1.estimatedUSD }) + (priced < events ? "+" : "")
+        return dollars(rows.reduce(0) { $0 + $1.estimatedUSD }) + marks(rows)
+    }
+    /// How API value is priced, with the date of the price list in use.
+    static func priceListNote(_ table: UsagePriceTable) -> String {
+        let date = SessionUsageDay(table.published).map { "\(monthNames[$0.month - 1]) \($0.day), \($0.year)" } ?? table.published
+        return "API value is the standard API rate from the COS price list of \(date), applied to all dates. A model with no list price yet is estimated from the nearest model in its family and marked est. A model that runs on this Mac has no API cost. It leaves out discounts, speed tiers, tools and taxes, and it is not your subscription bill. Cursor's value is the per-request cost Cursor reports."
+    }
+    /// The comparison line's qualifier: " (priced records only)", " (includes estimates)", or both in one bracket.
+    static func comparisonNote(partial: Bool, estimated: Bool) -> String {
+        switch (partial, estimated) {
+        case (true, true): return " (priced records only, includes estimates)"
+        case (true, false): return " (priced records only)"
+        case (false, true): return " (includes estimates)"
+        case (false, false): return ""
+        }
+    }
+    /// The marks for any set of rows: + when the truth is higher, est. when any of it is a family estimate.
+    static func marks(_ rows: [SessionUsageBucket]) -> String {
+        SessionUsagePricing.marks(priced: rows.reduce(0) { $0 + $1.pricedEvents }, events: rows.reduce(0) { $0 + $1.events },
+                                  estimated: rows.reduce(0) { $0 + $1.estimated }, floor: rows.reduce(0) { $0 + $1.floor })
+    }
+    /// One model's own cell: "Local, no API cost" and "No public price" are facts, not gaps.
+    static func modelCostCell(_ row: SessionUsageBucket, table: UsagePriceTable = UsagePriceViewTable.shared.current) -> String {
+        UsagePriceFill.modelCell(row, table: table, dollars: dollars)
     }
     /// "Oct 19" for a chart axis, "Oct" for a month key.
     static func axisLabel(for key: String) -> String {
@@ -700,7 +1529,8 @@ enum SessionUsagePresentation {
     static func dailyValueLabel(_ rows: [SessionUsageBucket]) -> String {
         let days = summarize(rows, by: \.day).filter { $0.pricedEvents > 0 }
         guard !days.isEmpty else { return "No price" }
-        return dollars(days.reduce(0.0) { $0 + $1.estimatedUSD } / Double(days.count)) + (days.contains { $0.pricedEvents < $0.events } ? "+" : "")
+        let plus = days.contains { $0.pricedEvents < $0.events || $0.floorEvents > 0 }, est = days.contains { $0.estimatedEvents > 0 }
+        return dollars(days.reduce(0.0) { $0 + $1.estimatedUSD } / Double(days.count)) + (plus ? "+" : "") + (est ? " est." : "")
     }
     /// The last day each model has a record, keyed like `lastUsedKey`. Built once for a table.
     static func lastUsed(_ rows: [SessionUsageBucket]) -> [String: String] {
@@ -730,6 +1560,7 @@ enum SessionUsagePresentation {
         let new = priced.reduce(Int64(0)) { $0 + tokenCount($1.counts, excludingCacheReads: true) }
         guard new > 0 else { return "No price" }
         return (priced.reduce(0.0) { $0 + $1.estimatedUSD } / Double(new) * 1e6).formatted(.currency(code: "USD").precision(.fractionLength(2)))
+            + (priced.contains { $0.estimated > 0 } ? " est." : "")
     }
 
     /// One calendar column, Monday to Sunday. A day outside the selection stays blank; a day inside it with no
@@ -823,6 +1654,8 @@ enum SessionUsagePresentation {
         let usd: Double
         let hasPrice: Bool
         let complete: Bool
+        /// Some of the month is a family estimate, so its figures say est.
+        var estimated = false
         /// Straight line from the first day with usage this month. Nil before its third day, counting that first day as
         /// one, on the last day, when nothing is left to project, and while paused, when the days are not a real pace.
         let projectedUSD: Double?
@@ -839,7 +1672,8 @@ enum SessionUsagePresentation {
         let start = month.compactMap { SessionUsageDay($0.day)?.day }.min() ?? today.day
         let elapsed = today.day - start + 1
         let projected = elapsed >= 3 && today.day < total && priced > 0 ? usd + usd / Double(elapsed) * Double(total - today.day) : nil
-        return MonthPace(month: monthNames[today.month - 1], usd: usd, hasPrice: priced > 0, complete: priced == events,
+        return MonthPace(month: monthNames[today.month - 1], usd: usd, hasPrice: priced > 0,
+            complete: priced == events && !month.contains { $0.floor > 0 }, estimated: month.contains { $0.estimated > 0 },
             projectedUSD: tracking ? projected : nil, lastDay: short(today.monthEnd))
     }
 
@@ -900,6 +1734,8 @@ enum SessionUsagePresentation {
         var categories = SessionUsagePricing.CategoryUSD()
         var pricedUSD = 0.0
         var unsplitRecords = 0
+        /// Some of the split is a family estimate.
+        var estimated = false
         var splitUSD: Double { categories.total }
         var isComplete: Bool { unsplitRecords == 0 }
     }
@@ -907,6 +1743,7 @@ enum SessionUsagePresentation {
         var split = CostSplit()
         for row in rows where row.pricedEvents > 0 {
             split.pricedUSD += row.estimatedUSD
+            if row.estimated > 0 { split.estimated = true }
             guard let c = SessionUsagePricing.categoryUSD(for: row) else { split.unsplitRecords += row.events; continue }
             split.categories.input += c.input; split.categories.output += c.output
             split.categories.cacheRead += c.cacheRead; split.categories.cacheWrite += c.cacheWrite
@@ -969,6 +1806,8 @@ enum SessionUsagePresentation {
         let partialPriorHistory: Bool
         /// Either window has records without a verified price, so the API value delta compares priced records only.
         let costDeltaPartial: Bool
+        /// Either window's API value includes a family estimate.
+        var costDeltaEstimated = false
         let tokenDeltaLabel: String
         let recordsDeltaLabel: String
         let costDeltaLabel: String
@@ -1027,7 +1866,8 @@ enum SessionUsagePresentation {
             currentRange: windows.current, priorRange: prior, includesToday: windows.current.contains(today),
             priorTokens: pTokens, priorRecords: pEvents, priorUSD: pUSD, priorPriced: pPriced > 0,
             hasPriorBaseline: hasBaseline, partialPriorHistory: partialPrior,
-            costDeltaPartial: curPriced < curEvents || pPriced < pEvents,
+            costDeltaPartial: curPriced < curEvents || pPriced < pEvents || selectedRows.contains { $0.floor > 0 } || priorRows.contains { $0.floor > 0 },
+            costDeltaEstimated: selectedRows.contains { $0.estimated > 0 } || priorRows.contains { $0.estimated > 0 },
             tokenDeltaLabel: tokDelta, recordsDeltaLabel: recDelta, costDeltaLabel: usdDelta)
     }
 
@@ -1302,18 +2142,8 @@ struct CosUsageReport: Codable, Equatable, Sendable {
 
 /// Verified rates the Usage card does not hold yet. Read at view time only: stored `usd` values never change.
 enum CosCostRates {
-    static let checkedOn = "2026-10-31"
-    /// OpenAI: standard tier, read from the raw page 2026-10-31 (https://developers.openai.com/api/docs/pricing). The page
-    /// marks gpt-5.6-sol as a promotional price, at least through 2026-11-21 (`through`: the last day the rate is verified).
-    /// Prices over 272K context stay unpriced, and so does a row with cache writes, as they do on the Usage card.
-    private static let openAI: [String: (input: Double, read: Double, output: Double, through: String?)] = [
-        "gpt-5.6-terra": (2, 0.2, 12, nil),
-        "gpt-5.6-sol": (4, 0.4, 20, "2026-11-21"),
-        "gpt-5.6-luna": (0.2, 0.02, 1.2, nil),
-        "gpt-5.5": (5, 0.5, 30, nil),
-        "gpt-6-sol": (2, 0.2, 10, nil),
-        "gpt-6.1-terra": (1, 0.05, 5, nil),
-    ]
+    /// The date of the price list the COS cost view uses: the table this build carries (U1, 2026-11-09).
+    static var checkedOn: String { SessionUsagePricing.bundled.published }
     /// TypeSafe Jev: $42 per billion input tokens (server/lib/jev.ts, glasses-server a921078, read 2026-10-31).
     static let jevPerInputToken = 42.0 / 1_000_000_000
 
@@ -1325,11 +2155,12 @@ enum CosCostRates {
     }
     /// Priced only by the additions, so Usage's own total does not hold this spend. A promotional rate prices only usage up to its
     /// last verified day: after it the page may say anything, so there is no price rather than an old one.
+    /// Since U1 these are the carried table's rows with a price that ends (a promotion): recording leaves them to view
+    /// time, which knows the day. The table's own rules (writes, long prompts) apply.
     static func extraUSD(provider: String, model: String, counts: SessionUsageCounts, on instant: Double? = nil) -> Double? {
-        guard provider == "OpenAI", counts.cacheWrite == 0, counts.input + counts.cacheRead <= 272_000,
-              let r = openAI[model] else { return nil }
-        if let through = r.through, (instant ?? Date().timeIntervalSince1970) > (CosCostRules.epoch(through + "T23:59:59Z") ?? 0) { return nil }
-        return (Double(counts.input)*r.input + Double(counts.cacheRead)*r.read + Double(counts.output)*r.output) / 1_000_000
+        guard let m = SessionUsagePricing.bundled.entry(provider: provider, model: model), m.status == .priced, let through = m.through else { return nil }
+        if (instant ?? Date().timeIntervalSince1970) > (CosCostRules.epoch(through + "T23:59:59Z") ?? 0) { return nil }
+        return SessionUsagePricing.usd(m, counts: counts)
     }
     /// What a ledger's model string names, or nil when it names nothing with a fixed price: a tier, a router, a local
     /// model. A bare alias maps to today's model, which is approximate for old rows. A measured row on a bare alias is priced at that model too, so its dollars are measured tokens at today's rate.

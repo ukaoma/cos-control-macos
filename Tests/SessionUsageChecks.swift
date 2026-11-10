@@ -1248,18 +1248,134 @@ extension Checks {
         check(abs(rates.usd(provider: "OpenAI", model: "gpt-5.5", counts: SessionUsageCounts(input: 100_000, output: 100_000, cacheRead: 100_000))! - 3.55) < 1e-9, "GPT-5.5 is $5, $0.50 and $30 per million")
         let sol = SessionUsageCounts(input: 100_000, output: 100_000, cacheRead: 100_000)
         check(abs(rates.usd(provider: "OpenAI", model: "gpt-5.6-sol", counts: sol, on: R.epoch("2026-10-31T12:00:00Z"))! - 2.44) < 1e-9, "5.6 Sol is $4, $0.40 and $20 per million")
-        // Sol's price is promotional, verified through 2026-11-21. Usage after that day has no price here, not the old one.
-        check(rates.usd(provider: "OpenAI", model: "gpt-5.6-sol", counts: sol, on: R.epoch("2026-11-21T23:59:00Z")) != nil, "the promotional rate holds through its last day")
-        check(rates.usd(provider: "OpenAI", model: "gpt-5.6-sol", counts: sol, on: R.epoch("2026-11-22T00:00:00Z")) == nil && rates.usd(provider: "OpenAI", model: "gpt-5.6-sol", counts: sol, on: R.epoch("2027-01-15T12:00:00Z")) == nil, "after its last day the promotional rate prices nothing")
+        // Sol's price is promotional, verified through 2026-11-30 (the page read 2026-11-09). Usage after that day has no price here, not the old one.
+        check(rates.usd(provider: "OpenAI", model: "gpt-5.6-sol", counts: sol, on: R.epoch("2026-11-30T23:59:00Z")) != nil, "the promotional rate holds through its last day")
+        check(rates.usd(provider: "OpenAI", model: "gpt-5.6-sol", counts: sol, on: R.epoch("2026-12-01T00:00:00Z")) == nil && rates.usd(provider: "OpenAI", model: "gpt-5.6-sol", counts: sol, on: R.epoch("2027-01-15T12:00:00Z")) == nil, "after its last day the promotional rate prices nothing")
         check(rates.usd(provider: "OpenAI", model: "gpt-5.6-terra", counts: sol, on: R.epoch("2027-01-15T12:00:00Z")) != nil && rates.usd(provider: "OpenAI", model: "gpt-5.5", counts: sol, on: R.epoch("2027-01-15T12:00:00Z")) != nil, "a rate with no end date never lapses")
         check(rates.estimateUSD(ledgerModel: "codex:gpt-5.6-sol", input: 1000, output: 100, on: R.epoch("2026-12-01T00:00:00Z")) == nil && rates.estimateUSD(ledgerModel: "codex:gpt-5.6-sol", input: 1000, output: 100, on: R.epoch("2026-11-01T00:00:00Z")) != nil, "an estimate follows the same end date")
         check(rates.usd(provider: "OpenAI", model: "gpt-5.6-terra", counts: SessionUsageCounts(input: 300_000)) == nil, "a verified rate stops at 272K of context")
         check(rates.usd(provider: "OpenAI", model: "gpt-5.6-terra", counts: SessionUsageCounts(input: 10, cacheWrite: 5)) == nil, "a verified rate does not price cache writes")
-        check(SessionUsagePricing.estimate(provider: "OpenAI", model: "gpt-5.6-terra", counts: SessionUsageCounts(input: 10)) == nil, "stored Usage rates do not change")
+        // U1: the table is shared, so recording prices Terra too, and a promotion is still left to view time.
+        check(SessionUsagePricing.estimate(provider: "OpenAI", model: "gpt-5.6-terra", counts: SessionUsageCounts(input: 10)) != nil
+              && SessionUsagePricing.estimate(provider: "OpenAI", model: "gpt-5.6-sol", counts: SessionUsageCounts(input: 10)) == nil, "recording uses the shared table and leaves a promotion to view time")
         check(rates.usd(provider: "OpenAI", model: "gpt-made-up", counts: SessionUsageCounts(input: 10)) == nil, "an unknown model has no price")
         check(abs(rates.estimateUSD(ledgerModel: "jev-1.13.0", input: 1_000_000_000, output: 500)! - 42) < 1e-9, "Jev is $42 a billion input tokens")
         check(abs(rates.estimateUSD(ledgerModel: "sonnet", input: 1_000_000, output: 1_000_000)! - 12) < 1e-9, "an estimate uses the plain input and output rates")
         check(rates.estimateUSD(ledgerModel: "cursor-grok", input: 1000, output: 1000) == nil, "an estimate on an unpriced model has no dollars")
+        // U1 (2026-11-09): prices as data, family estimates marked est., local models, and the price file.
+        do {
+            typealias T = UsagePriceTable
+            let table = SessionUsagePricing.bundled
+            check(table.version != "unreadable" && table.models.count >= 20, "U1: the carried price table reads")
+            check(table.models.allSatisfy { $0.source.hasPrefix("https://") && T.isDay($0.read) }, "U1: every price row names its page and the day it was read")
+            // Lookup by pattern.
+            check(table.entry(provider: "Anthropic", model: "claude-haiku-4-5-20251001")?.ids == ["claude-haiku-4-5"], "U1: a dated snapshot matches its model")
+            check(table.entry(provider: "Anthropic", model: "claude-fable-5-2")?.input == 8 && table.entry(provider: "Anthropic", model: "claude-fable-5-2")?.output == 40, "U1: Fable 5.2 has its list price")
+            check(table.entry(provider: "OpenAI", model: "claude-fable-5-2") == nil, "U1: a row matches its own provider only")
+            let globs = T(schema: 1, version: "g", published: "2026-11-09", models: [
+                T.Model(provider: "OpenAI", ids: ["gpt-7*"], status: .priced, input: 1, output: 1, cacheRead: 1, source: "https://example.com/p", read: "2026-11-09"),
+                T.Model(provider: "OpenAI", ids: ["gpt-7.1*"], status: .priced, input: 2, output: 2, cacheRead: 2, source: "https://example.com/p", read: "2026-11-09"),
+                T.Model(provider: "OpenAI", ids: ["gpt-7.1-max"], status: .priced, input: 3, output: 3, cacheRead: 3, source: "https://example.com/p", read: "2026-11-09")])
+            check(globs.entry(provider: "OpenAI", model: "gpt-7.1-max")?.input == 3 && globs.entry(provider: "OpenAI", model: "gpt-7.1-sol")?.input == 2
+                  && globs.entry(provider: "OpenAI", model: "gpt-7-sol")?.input == 1, "U1: an exact id beats a prefix, and the longest prefix wins")
+            let million = SessionUsageCounts(input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000, cacheWrite: 1_000_000)
+            check(abs(SessionUsagePricing.estimate(provider: "Anthropic", model: "claude-fable-5-2", counts: million)! - 58.2) < 1e-9, "U1: recording prices Fable 5.2 at $8, $40, $0.20 and $10")
+            // Family and nearest.
+            check(T.family(provider: "Anthropic", model: "claude-fable-5-3")! == ("claude-fable", 503) && T.family(provider: "OpenAI", model: "gpt-6.1-sol")! == ("gpt-sol", 601)
+                  && T.family(provider: "OpenAI", model: "gpt-5.5")! == ("gpt", 505) && T.family(provider: "OpenAI", model: "codex-auto-review") == nil
+                  && T.family(provider: "Anthropic", model: "claude-3-5-haiku") == nil, "U1: a family is the id without its version")
+            check(table.resolve(provider: "Anthropic", model: "claude-fable-5-3", day: "2026-11-09") == .estimated(from: table.entry(provider: "Anthropic", model: "claude-fable-5-2")!, id: "claude-fable-5-2"), "U1: an unknown model is estimated from its family's nearest model")
+            let tie = T(schema: 1, version: "t", published: "2026-11-09", models: [
+                T.Model(provider: "Anthropic", ids: ["claude-opus-5-1"], status: .priced, input: 1, output: 1, cacheRead: 1, source: "https://example.com/p", read: "2026-11-09"),
+                T.Model(provider: "Anthropic", ids: ["claude-opus-5-3"], status: .priced, input: 3, output: 3, cacheRead: 3, source: "https://example.com/p", read: "2026-11-09")])
+            if case .estimated(let from, _) = tie.resolve(provider: "Anthropic", model: "claude-opus-5-2", day: "") { check(from.input == 3, "U1: a tie goes to the newer model") } else { check(false, "U1: a tie goes to the newer model") }
+            check(table.resolve(provider: "Anthropic", model: "claude-zephyr-5-2", day: "") == .unknown, "U1: no estimate across families")
+            if case .estimated(_, let id) = table.resolve(provider: "OpenAI", model: "gpt-5.7-sol", day: "2026-11-09") { check(id == "gpt-6-sol", "U1: an estimate never leans on a promotion") } else { check(false, "U1: an estimate never leans on a promotion") }
+            // Facts, not gaps.
+            check(table.resolve(provider: "OpenAI", model: "qwen3.8:27b", day: "") == .local && table.resolve(provider: "Ollama", model: "anything", day: "") == .local, "U1: a model run on this Mac is local")
+            if case .noPublicPrice = table.resolve(provider: "OpenAI", model: "codex-auto-review", day: "") {} else { check(false, "U1: the Codex reviewer has no public price") }
+            check(table.resolve(provider: "OpenAI", model: "Unknown model", day: "") == .unknown, "U1: a missing model name has no price")
+            if case .expired = table.resolve(provider: "OpenAI", model: "gpt-5.6-sol", day: "2026-12-05") {} else { check(false, "U1: a promotion ends on its last day") }
+            if case .listed = table.resolve(provider: "OpenAI", model: "gpt-5.6-sol", day: "2026-11-30") {} else { check(false, "U1: a promotion ends on its last day") }
+            // The fill and its marks.
+            func row(_ model: String, _ provider: String = "Anthropic", day: String = "2026-11-09", counts: SessionUsageCounts = SessionUsageCounts(input: 1_000_000, output: 1_000_000), events: Int = 10, priced: Int = 0, usd: Double = 0) -> SessionUsageBucket {
+                SessionUsageBucket(day: day, provider: provider, model: model, counts: counts, events: events, pricedEvents: priced, estimatedUSD: usd)
+            }
+            let filled = UsagePriceFill.apply([
+                row("claude-fable-5-2", counts: SessionUsageCounts(input: 1_000_000, output: 1_000_000, cacheWrite: 1_000_000)),
+                row("claude-fable-5-3"),
+                row("qwen3.8:27b", "OpenAI"),
+                row("codex-auto-review", "OpenAI"),
+                row("claude-fable-5-2", priced: 4, usd: 1),
+                row("claude-opus-5-5", priced: 10, usd: 24),
+                row("gpt-5.6-sol", "OpenAI", day: "2026-12-05"),
+            ], table: table)
+            check(filled[0].pricedEvents == 10 && abs(filled[0].estimatedUSD - 58) < 1e-9 && filled[0].floor == 10 && filled[0].estimated == 0, "U1: a price that came later fills the day, writes at the short rate, as a floor")
+            check(filled[1].pricedEvents == 10 && abs(filled[1].estimatedUSD - 48) < 1e-9 && filled[1].estimated == 10 && filled[1].floor == 0, "U1: an estimate fills the day and is marked")
+            check(filled[2].pricedEvents == 10 && filled[2].estimatedUSD == 0 && filled[2].local == 10, "U1: a local model is priced at no API cost")
+            check(filled[3].pricedEvents == 0 && filled[6].pricedEvents == 0, "U1: no public price and an ended promotion stay unpriced")
+            check(filled[4].pricedEvents == 4 && filled[4].estimatedUSD == 1 && filled[5].estimatedUSD == 24 && filled[5].floor == 0, "U1: a day the recorder priced is never refilled")
+            let P = SessionUsagePresentation.self
+            check(P.modelCostCell(filled[0], table: table) == "$58+", "U1: a floor reads with a plus")
+            check(P.modelCostCell(filled[1], table: table) == "$48 est.", "U1: an estimate reads est.")
+            check(P.modelCostCell(filled[2], table: table) == "Local, no API cost" && P.modelCostCell(filled[3], table: table) == "No public price"
+                  && P.modelCostCell(row("Unknown model", "OpenAI"), table: table) == "No price", "U1: facts read as facts and a gap reads No price")
+            // est. reaches every total that holds an estimate.
+            let mixed = [filled[1], filled[5]]
+            check(P.costCell(mixed) == "$72 est." && P.costLabel(mixed).hasSuffix(" est.") && P.costCell([filled[5]]) == "$24", "U1: a total with an estimate says est.")
+            check(P.costCell([filled[1], filled[3]]) == "$48+ est.", "U1: est. keeps the plus for unpriced records")
+            check(P.summarize(mixed, by: \.day).first?.costLabel.hasSuffix(" est.") == true && P.dailyValueLabel(mixed).hasSuffix(" est."), "U1: day figures carry est.")
+            check(P.aggregate(mixed + [filled[1]]).first { $0.model == "claude-fable-5-3" }?.estimated == 20, "U1: est. survives aggregation")
+            UsagePriceViewTable.shared.current = table
+            check(P.costSplit(mixed).estimated && !P.costSplit([filled[5]]).estimated, "U1: the token-type split knows it holds an estimate")
+            check(P.comparisonNote(partial: true, estimated: true) == " (priced records only, includes estimates)" && P.comparisonNote(partial: false, estimated: true) == " (includes estimates)"
+                  && P.comparisonNote(partial: true, estimated: false) == " (priced records only)" && P.comparisonNote(partial: false, estimated: false).isEmpty, "U1: the comparison line names estimates")
+            let chicagoNow = R.epoch("2026-11-09T18:00:00Z").map { Date(timeIntervalSince1970: $0) } ?? Date()
+            let comparison = P.comparePeriod(allRows: mixed + [row("claude-opus-5-5", day: "2026-11-01", priced: 10, usd: 5)], selectedRows: mixed, period: "Last 7 days", now: chicagoNow, timeZone: TimeZone(identifier: "America/Chicago")!)
+            check(comparison.costDeltaEstimated, "U1: the comparison knows an estimate is in it")
+            check(P.monthPace(mixed, now: chicagoNow, timeZone: TimeZone(identifier: "America/Chicago")!)?.estimated == true, "U1: the month figure carries est.")
+            check(P.pricingStatus(filled[1]) == "estimated" && P.pricingStatus(filled[2]) == "local" && P.pricingStatus(filled[0]) == "floor", "U1: exports name estimates, floors and local models")
+            // Strict validation.
+            func json(_ edit: (inout [String: Any]) -> Void) -> Data {
+                var object = (try? JSONSerialization.jsonObject(with: Data(UsagePriceBundled.json.utf8))) as? [String: Any] ?? [:]
+                edit(&object)
+                return (try? JSONSerialization.data(withJSONObject: object)) ?? Data()
+            }
+            func row0(_ edit: @escaping (inout [String: Any]) -> Void) -> Data {
+                json { o in var rows = o["models"] as? [[String: Any]] ?? []; edit(&rows[0]); o["models"] = rows }
+            }
+            func refused(_ data: Data) -> Bool { (try? T.decode(data)) == nil }
+            check(!refused(json { _ in }), "U1: the carried table passes its own validation")
+            check(refused(json { $0["schema"] = 2 }), "U1: an unknown schema is refused")
+            check(refused(json { $0["version"] = "bad version!" }) && refused(json { $0["published"] = "2026-02-30" }), "U1: a bad version or date is refused")
+            check(refused(json { $0["models"] = [] as [Any] }), "U1: an empty table is refused")
+            check(refused(row0 { $0["input"] = -1 }) && refused(row0 { $0["output"] = 1001 }), "U1: a price out of bounds is refused")
+            check(refused(row0 { $0["source"] = "http://example.com" }) && refused(row0 { $0.removeValue(forKey: "source") }), "U1: a row without an https source is refused")
+            check(refused(json { o in var rows = o["models"] as? [[String: Any]] ?? []; rows.append(rows[0]); o["models"] = rows }), "U1: a duplicate id is refused")
+            check(refused(json { o in var rows = o["models"] as? [[String: Any]] ?? []; if let i = rows.firstIndex(where: { ($0["status"] as? String) == "noPublicPrice" }) { rows[i]["input"] = 1 }; o["models"] = rows }), "U1: a no-price row may not carry a price")
+            check(refused(row0 { $0["tiers"] = [["promptOver": 200, "input": 1, "output": 1, "cacheRead": 1], ["promptOver": 100, "input": 1, "output": 1, "cacheRead": 1]] }), "U1: tiers must rise")
+            check(refused(row0 { $0["ids"] = ["Claude Fable"] }), "U1: an id with spaces or capitals is refused")
+            // Valid JSON padded past the cap, so only the size rule can refuse it.
+            check(refused(Data((UsagePriceBundled.json + String(repeating: " ", count: T.maxBytes)).utf8)) && refused(Data("{".utf8)), "U1: an oversized or broken file is refused")
+            // The price file: newer wins, a tie and an older file lose, a bad file never replaces the last good copy.
+            var newer = table; newer.published = "2099-01-01"; newer.version = "newer"
+            var older = table; older.published = "2000-01-01"; older.version = "older"
+            check(UsagePriceFill.active(bundled: table, fetched: newer).version == "newer" && UsagePriceFill.active(bundled: table, fetched: older).version == table.version
+                  && UsagePriceFill.active(bundled: table, fetched: { var same = table; same.models = [table.models[0]]; return same }()).models.count == table.models.count
+                  && UsagePriceFill.active(bundled: table, fetched: nil).version == table.version,
+                  "U1: a newer carried table wins over an older price file")
+            let cache = home.appendingPathComponent("prices/prices-fetched.json")
+            let good = json { $0["version"] = "good"; $0["published"] = "2099-01-01" }
+            check((try? UsagePriceFeed.accept(good, to: cache)) != nil && UsagePriceFeed.cached(at: cache)?.version == "good", "U1: a good price file is kept")
+            check((try? UsagePriceFeed.accept(json { $0["schema"] = 9 }, to: cache)) == nil && UsagePriceFeed.cached(at: cache)?.version == "good", "U1: a refused file keeps the last good copy")
+            // A copy that decodes but breaks a rule, so only re-validation on read can refuse it.
+            try json { $0["schema"] = 9; $0["published"] = "2099-01-01"; $0["version"] = "tampered" }.write(to: cache)
+            check(UsagePriceFeed.cached(at: cache) == nil && UsagePriceFeed.activeTable(file: cache).version == table.version, "U1: a bad copy on disk falls back to the carried table")
+            let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+            check(UsagePriceFeed.due(lastAttempt: nil, now: t0) && !UsagePriceFeed.due(lastAttempt: t0, now: t0.addingTimeInterval(3600))
+                  && UsagePriceFeed.due(lastAttempt: t0, now: t0.addingTimeInterval(6 * 3600)) && UsagePriceFeed.due(lastAttempt: t0, now: t0.addingTimeInterval(-60)), "U1: the price file is asked for at most every 6 hours")
+            check(UsagePriceFeed.url.absoluteString == "https://www.gotcos.com/control/prices.json", "U1: the price file comes from the update check's host")
+        }
         // A real row beside the card: claude-sonnet-5-5 through the command line, all input written to a one-hour cache.
         let gistCard = rates.usd(provider: "Anthropic", model: "claude-sonnet-5-5", counts: SessionUsageCounts(output: 66_732, cacheWrite: 1_043_971), oneHour: 1_043_971)!
         check(abs(gistCard - 4.8401) / 4.8401 < 0.002, "the card matches what the command line reported on real gist rows")
@@ -1476,9 +1592,10 @@ extension Checks {
         finished = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
         rows = Dictionary(uniqueKeysWithValues: finished.rows.map { ($0.category, $0) })
         check(rows[.answers] == nil && abs(finished.work.widerUSD - 0.004) < 1e-12, "a dispatch's audit row is not also an answer")
-        a = make(work: ["codex:t1": workStart], events: [event("2026-10-30T12:20:00Z", session: "codex:t1", input: 100_000, model: "gpt-5.6-terra", provider: "OpenAI"), event("2026-10-30T12:21:00Z", session: "codex:t1", input: 1000, model: "gpt-made-up", provider: "OpenAI")])
+        a = make(work: ["codex:t1": workStart], events: [event("2026-10-30T12:20:00Z", session: "codex:t1", input: 100_000, model: "gpt-5.6-sol", provider: "OpenAI"), event("2026-10-30T12:21:00Z", session: "codex:t1", input: 1000, model: "gpt-made-up", provider: "OpenAI")])
         finished = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
-        check(abs(finished.work.widerUSD - 0.2) < 1e-9 && abs(finished.work.addsToTotalUSD - 0.2) < 1e-9, "a slice priced only by a new rate adds to the total, because Usage has no price for it")
+        // U1: Terra is in the shared table now, so recording prices it. Sol's promotion is still priced only at view time.
+        check(abs(finished.work.widerUSD - 0.4) < 1e-9 && abs(finished.work.addsToTotalUSD - 0.4) < 1e-9, "a slice priced only by a new rate adds to the total, because Usage has no price for it")
         check(finished.work.widerUnpricedEvents == 1, "a Work event with no rate is counted, so the wider figure can say it leaves it out")
         // The Work run itself, as against what the person did later in the session.
         let handoff = R.epoch("2026-10-30T12:00:00Z")!

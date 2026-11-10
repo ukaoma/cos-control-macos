@@ -1319,6 +1319,9 @@ final class ControllerModel: ObservableObject {
         // spin on the main actor without ever letting this continuation run.
         let check = Task { @MainActor [weak self] () -> Void in
             await self?.checkForAppUpdate()
+            // U1: the Usage price file rides the same schedule and host. It keeps its own 6-hour floor, so a check
+            // from the panel does not fetch it again, and it never runs in a test or render model.
+            if self?.backgroundWorkEnabled == true { await UsagePriceFeed.refreshIfDue() }
             self?.appUpdateCheckRunning = nil
             self?.appUpdateSchedule.finish()
         }
