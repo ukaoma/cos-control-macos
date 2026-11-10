@@ -803,6 +803,8 @@ final class ProviderGuide: ObservableObject {
         waiting[provider] = nil
         passes[provider] = nil
         installing.remove(provider)
+        // Q1 D1 M1's paste wait ends too (its check, "Stop waiting ends the paste wait too", was red at b2135ac).
+        pasting.remove(provider)
     }
 
     func skip(_ provider: AIProvider) {
