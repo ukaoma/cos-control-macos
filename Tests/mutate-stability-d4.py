@@ -15,6 +15,8 @@ GUARD = os.path.join(ROOT, "Tests/compile-guard.sh")
 FLAGS = ["-swift-version", "6", "-strict-concurrency=complete"]
 BUILDS = {
     "models": (["-target", "arm64-apple-macosx14.0"] + FLAGS + ["Sources/Models.swift", "Tests/StabilityD4Checks.swift", "-framework", "AppKit"]),
+    # Runs Tests/run-work-handoff.sh as it is: every Sources file without the shipping @main (a large compile).
+    "handoff": None,
     "helper": (FLAGS + ["-parse-as-library", "Sources/SessionUsageCore.swift", "HelperSources/SessionUsageCollector.swift", "Tests/StabilityD4HelperChecks.swift"]),
 }
 MUTANTS = [
@@ -32,6 +34,9 @@ MUTANTS = [
     ("answer-label-for-a-plan", "models", "Sources/Models.swift",
      '!["plan", "permission", "mcp_input"].contains(session.waitingKind) else { return nil }', 'true else { return nil }',
      "keeps today's Open"),
+    ("handoff-unchanged-poll-saves", "handoff", "Sources/WorkHandoffStore.swift",
+     "if !Self.sameReceipt(row, next) { try save(next) }", "try save(next)",
+     "an unchanged poll must not rewrite the handoff journal"),
     ("usage-index-never-built", "helper", "HelperSources/SessionUsageCollector.swift",
      "do { try ensureRollupIndex() } catch let failure as Failure where failure.busy { historyBusy = true }", "",
      "an importing pass builds usage_rollup"),
@@ -44,6 +49,10 @@ MUTANTS = [
 ]
 
 def build_and_run(kind, out):
+    if BUILDS[kind] is None:
+        r = subprocess.run(["zsh", os.path.join(ROOT, "Tests/run-work-handoff.sh")], cwd=ROOT, capture_output=True, text=True, timeout=3600)
+        log = r.stdout + r.stderr
+        return ("pass" if r.returncode == 0 else ("compile" if " error: " in log else "fail")), log
     cmd = ["zsh", GUARD, "swiftc"] + BUILDS[kind] + ["-o", out]
     c = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
     if c.returncode != 0:
@@ -54,7 +63,8 @@ def build_and_run(kind, out):
 def main():
     want = set(sys.argv[1:])
     tmp = tempfile.mkdtemp(prefix="cos-mutate-d4.")
-    for kind in BUILDS:
+    chosen = [m for m in MUTANTS if not want or m[0] in want]
+    for kind in [k for k in BUILDS if any(m[1] == k for m in chosen)]:
         state, log = build_and_run(kind, os.path.join(tmp, "base-" + kind))
         print(f"baseline {kind}: {state}")
         if state != "pass":
