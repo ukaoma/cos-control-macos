@@ -6013,9 +6013,11 @@ final class COSControlHelper {
                 throw HelperError.message("COS did not answer, so its questions could not be read.")
             }
             guard response.status == 200, let body = response.body else {
-                emit(ok: true, message: "No questions list", details: ["waiting": [Any](), "httpStatus": response.status]); return
+                emit(ok: true, message: "No questions list", details: ["waiting": [Any](), "present": false, "httpStatus": response.status]); return
             }
-            emit(ok: true, message: "Questions read", details: ["waiting": body["waiting"] as? [Any] ?? [Any](), "httpStatus": 200])
+            // `present`: whether the server sends the list at all (X1: only while a hold switch is on), so Control reads
+            // less often when it does not.
+            emit(ok: true, message: "Questions read", details: ["waiting": body["waiting"] as? [Any] ?? [Any](), "present": body["waiting"] is [Any], "httpStatus": 200])
         case "answer":
             guard let id = option("--id", in: args), id.range(of: #"\Apq_[0-9a-f]{24}\z"#, options: .regularExpression) != nil else {
                 throw HelperError.message("Choose a question to answer.")
@@ -6030,8 +6032,9 @@ final class COSControlHelper {
                                          timeout: 20, reviewCandidatePort: candidate?.port) else {
                 throw HelperError.message("The answer was not confirmed. Check the session before answering again.")
             }
-            let code = response.body?["error"] as? String
-            emit(ok: true, message: response.status == 200 ? "Answer sent" : "Answer not taken", details: ["httpStatus": response.status, "error": code ?? NSNull()])
+            let code = response.body?["error"] as? String, reason = response.body?["reason"] as? String
+            emit(ok: true, message: response.status == 200 ? "Answer sent" : "Answer not taken",
+                 details: ["httpStatus": response.status, "error": code ?? NSNull(), "reason": reason ?? NSNull()])
         default:
             throw HelperError.message("Choose list or answer")
         }

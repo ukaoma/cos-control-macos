@@ -14129,20 +14129,54 @@ enum TodayHome {
         case failed(String)
     }
     static let answerUnconfirmed = "The answer was not confirmed. Check the session before answering again."
-    static func answerOutcome(status: Int, error: String?) -> AnswerOutcome {
+    /// Where the prompt is, for the outcome lines: "in Claude", "in iTerm2", or "at its prompt" when no host was read.
+    static func promptPlace(_ session: ClaudeSession, host: Host?) -> String {
+        switch platform(session, host: host) {
+        case .claude: return "in Claude"
+        case .claudeCode: return host.map { "in " + $0.app } ?? "at its prompt"
+        default: return "at its prompt"
+        }
+    }
+    /// The server's answer route (X1 053d01c `settledReply`, Q1 D4 card review M2): `already_answered` is another COS
+    /// device; `handed_to_desk` with reason `retracted` means the Mac answered or the session moved on; other
+    /// hand-backs (drained, no_client, a hand-back) leave it at the prompt; 410 means the hook is gone.
+    static func answerOutcome(status: Int, error: String?, reason: String? = nil, place: String) -> AnswerOutcome {
         switch (status, error) {
         case (200, _): return .answered
-        case (409, "already_answered"?): return .settled("Already answered, here or at the Mac.")
-        case (409, "handed_to_desk"?): return .settled("Left for the Mac. Answer it in Claude.")
-        // X1 final contract (053d01c): held, but no device is showing it yet. Not settled, so the same answer may be
-        // sent again; the words match Control Web's.
+        case (409, "already_answered"?): return .settled("Already answered on another device.")
+        case (409, "handed_to_desk"?) where reason == "retracted": return .settled("Already answered at the Mac, or the session moved on.")
+        case (409, "handed_to_desk"?): return .settled("Left for the Mac. Answer it \(place).")
+        // Held, but no device is showing it yet: not settled, so it may be sent again; Control Web's words.
         case (409, "not_shown"?): return .failed("Not sent: this question is not on your devices yet. Answer it at the Mac, or try again in a minute.")
-        case (409, _), (410, _): return .settled("This question can no longer be answered here. Answer it in Claude.")
+        case (409, "expired"?): return .settled("This question timed out here. Answer it \(place).")
+        case (409, _): return .settled("This question can no longer be answered here. Answer it \(place).")
+        case (410, _): return .settled("This question is no longer waiting.")
         case (404, _): return .settled("This question is gone. The session may have moved on.")
         case (400, _): return .failed("COS did not take that answer. Check the choices and send it again.")
         default: return .failed(answerUnconfirmed)
         }
     }
+
+    /// Q1 M1: a card's picks belong to one question. A new key (or a changed shape) starts empty, so a Yes picked on
+    /// one question can never answer the next one.
+    static func picks(_ current: [QuestionPick], keptFor previousKey: String?, question: SessionQuestion) -> [QuestionPick] {
+        previousKey == question.key && current.count == question.questions.count
+            ? current : Array(repeating: QuestionPick(), count: question.questions.count)
+    }
+    /// The answer id to send: the last one only when the same answers are sent again (a retry after a lost reply,
+    /// which the server replays); new picks get a new id, so the server never replays an older answer over them.
+    struct AnswerAttempt: Equatable, Sendable { let id: String; let answers: Data }
+    static func answerSignature(_ body: [String: Any]) -> Data? {
+        guard let answers = body["answers"] else { return nil }
+        return try? JSONSerialization.data(withJSONObject: answers, options: [.sortedKeys])
+    }
+    static func reusableAnswerID(_ last: AnswerAttempt?, answers: Data) -> String? {
+        guard let last, last.answers == answers else { return nil }
+        return last.id
+    }
+    /// How long until the next list read: 10 s while the server sends `waiting[]`; 5 minutes when it does not (an
+    /// older server, or both hold switches off), so a waiting session costs no helper launch every 10 s for nothing.
+    static func questionsReadDelay(listPresent: Bool) -> TimeInterval { listPresent ? 10 : 300 }
     /// What the pending block shows under its line: the card (held, at the Mac with words, or just answered), the words
     /// the session row carries (the server's first 80 characters, on by default from Miles 11/09 22:10), or, with neither,
     /// a plain line that COS has no words to show (switch off, an older server, or a question asked before a restart).
@@ -14156,9 +14190,8 @@ enum TodayHome {
         if let text = questionText(session) { return .words(text) }
         return .none
     }
-    static let wordsUnavailableLine = "COS cannot read this question's words. They are on the session's own prompt."
+    static let wordsUnavailableLine = "COS has no words to show for this question. They are on the session's own prompt."
     static let heldLine = "Answer here or at your Mac. The first answer counts."
-    static let composerWaitsLine = "A message here waits until this question is answered."
     static let answeredLine = "Answered."
 
     /// "in Terminal", "in Claude", "in the Codex app", "in Cursor", "from Work, on the server".

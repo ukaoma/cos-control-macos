@@ -32,15 +32,25 @@ need(all(w not in fn for w in ["handBack", "\"decision\"", "/confirm", "presence
 
 load = body(model, "    func loadSessionQuestionsIfWaiting(force: Bool = false) async {", "\n    func answerSessionQuestion(")
 need("TodayHome.isWaiting($0)" in load and "guard waiting else" in load, "[polling] read only while a Claude session waits")
-need("Self.sessionQuestionsMinSeconds" in load and "static let sessionQuestionsMinSeconds: TimeInterval = 10" in model,
-     "[polling] at most every 10 seconds")
+need("Date().timeIntervalSince(last) < sessionQuestionsDelay" in load
+     and 'sessionQuestionsDelay = TodayHome.questionsReadDelay(listPresent: response.details["present"]?.bool == true)' in load,
+     "[polling] at most every 10 seconds, and every 5 minutes when the server sends no list")
+need('"present": body["waiting"] is [Any]' in fn and '"present": false' in fn, "[polling] the helper says whether the server sent the list")
 answer = body(model, "    func answerSessionQuestion(", "\n    }\n")
-need("sessionQuestionAnswerIDs[question.key] ?? " in answer and "if case .failed = outcome {} else { sessionQuestionAnswerIDs[question.key] = nil }" in answer,
-     "[answer] one answer id per question until settled, so a retry replays")
+need("TodayHome.reusableAnswerID(sessionQuestionAnswerIDs[question.key], answers: answers)" in answer
+     and "if case .failed = outcome {} else { sessionQuestionAnswerIDs[question.key] = nil }" in answer,
+     "[answer] the same answers retry under one id until settled; new picks get a new id")
+need('reason: response.details["reason"]?.string, place: place)' in answer and '"reason": reason ?? NSNull()' in fn,
+     "[answer] the outcome reads the server's reason and names the app holding the prompt")
+need(".id(shown.key)" in win and ".id(questionCard.key)" in win and "picks = TodayHome.picks(picks, keptFor: picksKey, question: question)" in win,
+     "[picks] a new question starts with nothing picked, at both places the card is drawn")
+need("composerWaitsLine" not in win and "composerWaitsLine" not in read("Sources/Models.swift"),
+     "[copy] no unverified line about what a message does while a question waits")
 need("session-questions" not in win, "[window] the window never names the route; it goes through the model")
 need(win.count("await model.loadSessionQuestionsIfWaiting()") == 2, "[polling] two readers: Today's tick and the open session view")
 
 if fails:
     for f in fails: print("FAIL:", f, file=sys.stderr)
     sys.exit(1)
-print("session question pins: %d passed" % 12)
+checks = sum(1 for l in open(__file__).read().splitlines() if l.startswith("need("))
+print("session question pins: %d passed" % checks)

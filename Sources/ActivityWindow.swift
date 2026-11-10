@@ -6391,7 +6391,11 @@ struct SessionChatHugWidth: Layout {
 struct SessionQuestionCard: View {
     @ObservedObject var model: ControllerModel
     let question: TodayHome.SessionQuestion
+    /// Where the prompt is ("in Claude", "in iTerm2", "at its prompt"), for the outcome lines.
+    let place: String
     @State private var picks: [TodayHome.QuestionPick] = []
+    /// The question the picks belong to (Q1 M1): another key starts empty.
+    @State private var picksKey: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -6418,7 +6422,7 @@ struct SessionQuestionCard: View {
                 if question.answerable {
                     let sending = model.sessionQuestionSending.contains(question.key)
                     Button(sending ? "Sending\u{2026}" : "Send answer") {
-                        Task { await model.answerSessionQuestion(question, picks: picks) }
+                        Task { await model.answerSessionQuestion(question, picks: picks, place: place) }
                     }
                     .buttonStyle(COSPrimaryButtonStyle())
                     .controlSize(.small)
@@ -6440,7 +6444,8 @@ struct SessionQuestionCard: View {
     }
 
     private func resetPicks() {
-        if picks.count != question.questions.count { picks = Array(repeating: TodayHome.QuestionPick(), count: question.questions.count) }
+        picks = TodayHome.picks(picks, keptFor: picksKey, question: question)
+        picksKey = question.key
     }
 
     @ViewBuilder
@@ -6568,7 +6573,8 @@ struct ClaudeSessionDetailPane: View {
                     }
                     switch TodayHome.pendingWords(live, card: card) {
                     case .card(let shown):
-                        SessionQuestionCard(model: model, question: shown)
+                        SessionQuestionCard(model: model, question: shown, place: TodayHome.promptPlace(live, host: host))
+                            .id(shown.key)
                     case .words(let quote):
                         Text("\u{201C}" + quote + "\u{201D}")
                             .font(COSType.body(12.5))
@@ -6728,12 +6734,6 @@ struct ClaudeSessionDetailPane: View {
                     .font(COSType.body(11.5)).foregroundStyle(.secondary)
                     .padding(.horizontal, 24).padding(.vertical, 12)
             } else if model.openClaudeRow?.isScheduledJob != true {
-                // 0.5.388 (D4 item 7, X1 DESIGN step 4 #8): a message sent now would queue behind the question.
-                if let row = model.openClaudeRow, TodayHome.answerAtPrompt(model.petSession(id: row.id) ?? row, host: host) != nil {
-                    Text(TodayHome.composerWaitsLine)
-                        .font(COSType.body(11.5)).foregroundStyle(.secondary)
-                        .padding(.horizontal, 24).padding(.top, 10)
-                }
                 SessionChatComposer(model: model)
             }
         }
@@ -9611,9 +9611,14 @@ extension ActivityWindow {
                 if let why = row.why {
                     Text(why).font(COSType.body(13)).foregroundStyle(TodayInk.sub).padding(.top, 3).fixedSize(horizontal: false, vertical: true)
                 }
-                let questionCard = row.session.flatMap { model.sessionQuestion(for: $0) }.flatMap { $0.answerable ? $0 : nil }
-                if let questionCard {
-                    SessionQuestionCard(model: model, question: questionCard).padding(.top, 8)
+                // 0.5.388 (D4 item 7): the card while it is answerable, and its "Answered." line after an answer, so a
+                // refresh never brings the old quote back over an answered question.
+                let questionCard = row.session.flatMap { model.sessionQuestion(for: $0) }
+                    .flatMap { $0.answerable || $0.state == .answered || model.sessionQuestionNotes[$0.key] != nil ? $0 : nil }
+                if let questionCard, let session = row.session {
+                    SessionQuestionCard(model: model, question: questionCard,
+                                        place: TodayHome.promptPlace(session, host: self.today.hosts[session.id]))
+                        .id(questionCard.key).padding(.top, 8)
                 } else if let quote = row.quote {
                     Text("\u{201C}" + quote + "\u{201D}")
                         .font(COSType.display(15.5, italic: true)).lineSpacing(4).foregroundStyle(TodayInk.ink)
@@ -9646,7 +9651,9 @@ extension ActivityWindow {
         HStack(spacing: 8) {
             switch row.kind {
             case .session:
-                Button(row.openLabel ?? "Open session") { todayOpenNeed(row) }.buttonStyle(TodayButtonStyle(primary: true))
+                // 0.5.388 (D4 item 7): with an answerable card, Send answer is the primary and this one is quiet.
+                Button(row.openLabel ?? "Open session") { todayOpenNeed(row) }
+                    .buttonStyle(TodayButtonStyle(primary: row.session.flatMap { model.sessionQuestion(for: $0) }?.answerable != true))
                 // 0.5.387 (D4): the primary opens the app that holds the prompt; Control's own view stays one click away.
                 if row.answersAtPrompt, let session = row.session {
                     Button("Open session") { todayOpen(.inSessions(session.id)) }.buttonStyle(TodayButtonStyle())

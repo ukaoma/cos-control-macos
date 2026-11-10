@@ -77,27 +77,66 @@ struct SessionQuestionCardChecks {
         precondition(rows?.count == 2 && (rows?[0]["labels"] as? [String]) == ["Option 0", "Option 1"] && (rows?[1]["other"] as? String) == "and more",
             "multi select: labels in option order, Other beside them, one entry per question")
         precondition(TodayHome.answerBody(multi, picks: [P(labels: ["Option 0"])], clientAnswerId: "control-2") == nil, "every question must be answered")
+        precondition(TodayHome.answerBody(multi, picks: [P(labels: ["Option 0", "Made up"]), P(labels: ["Option 0"])], clientAnswerId: "control-2") == nil,
+            "a known label beside an unknown one is never sent")
         let atMac = TodayHome.SessionQuestion(entry("at_mac", held: nil, answerable: false))!
         precondition(TodayHome.answerBody(atMac, picks: [P(labels: ["Option 0"])], clientAnswerId: "control-3") == nil,
             "a question at the Mac is never posted from here")
     }
 
     static func checkOutcome() {
-        precondition(TodayHome.answerOutcome(status: 200, error: nil) == .answered, "200: answered")
-        precondition(TodayHome.answerOutcome(status: 409, error: "already_answered") == .settled("Already answered, here or at the Mac."), "409 already answered")
-        precondition(TodayHome.answerOutcome(status: 409, error: "handed_to_desk") == .settled("Left for the Mac. Answer it in Claude."), "409 handed to the desk")
-        precondition(TodayHome.answerOutcome(status: 409, error: "not_shown")
+        func o(_ status: Int, _ error: String?, _ reason: String? = nil, _ place: String = "in iTerm2") -> TodayHome.AnswerOutcome {
+            TodayHome.answerOutcome(status: status, error: error, reason: reason, place: place)
+        }
+        precondition(o(200, nil) == .answered, "200: answered")
+        precondition(o(409, "already_answered") == .settled("Already answered on another device."), "409 already answered: another COS device, not the Mac")
+        precondition(o(409, "handed_to_desk", "retracted") == .settled("Already answered at the Mac, or the session moved on."),
+            "409 handed to the desk, retracted: the Mac answered or the session moved on")
+        precondition(o(409, "handed_to_desk", "drained") == .settled("Left for the Mac. Answer it in iTerm2."), "409 handed to the desk: names the app holding the prompt")
+        precondition(o(409, "handed_to_desk", "no_client", "at its prompt") == .settled("Left for the Mac. Answer it at its prompt."), "no host read: no app named")
+        precondition(o(409, "not_shown")
             == .failed("Not sent: this question is not on your devices yet. Answer it at the Mac, or try again in a minute."),
             "409 not_shown: not on the devices yet, so it can be sent again")
-        precondition(TodayHome.answerOutcome(status: 409, error: "expired") == .settled("This question can no longer be answered here. Answer it in Claude."), "409 expired")
-        precondition(TodayHome.answerOutcome(status: 410, error: "hook_gone") == .settled("This question can no longer be answered here. Answer it in Claude."), "410")
-        precondition(TodayHome.answerOutcome(status: 404, error: "not_found") == .settled("This question is gone. The session may have moved on."), "404")
-        precondition(TodayHome.answerOutcome(status: 400, error: "invalid_answer") == .failed("COS did not take that answer. Check the choices and send it again."), "400")
-        precondition(TodayHome.answerOutcome(status: 0, error: nil) == .failed(TodayHome.answerUnconfirmed), "no answer from the server: unconfirmed")
-        precondition(TodayHome.heldLine == "Answer here or at your Mac. The first answer counts."
-            && TodayHome.composerWaitsLine == "A message here waits until this question is answered." && TodayHome.answeredLine == "Answered.", "copy")
-        let lines = [TodayHome.heldLine, TodayHome.composerWaitsLine, TodayHome.answeredLine, TodayHome.answerUnconfirmed]
+        precondition(o(409, "expired", nil, "in Claude") == .settled("This question timed out here. Answer it in Claude."), "409 expired")
+        precondition(o(409, "something_new") == .settled("This question can no longer be answered here. Answer it in iTerm2."), "an unknown 409")
+        precondition(o(410, "hook_gone") == .settled("This question is no longer waiting."), "410: no longer waiting, never sent to a dialog that may be gone")
+        precondition(o(404, "not_found") == .settled("This question is gone. The session may have moved on."), "404")
+        precondition(o(400, "invalid_answer") == .failed("COS did not take that answer. Check the choices and send it again."), "400")
+        precondition(o(0, nil) == .failed(TodayHome.answerUnconfirmed), "no answer from the server: unconfirmed")
+        let desktop = TodayHome.Host(app: "Claude", terminal: false), terminal = TodayHome.Host(app: "iTerm2", terminal: true)
+        let s = session("9644b527-da59-4c1e-9d0a-111122223333")
+        precondition(TodayHome.promptPlace(s, host: desktop) == "in Claude" && TodayHome.promptPlace(s, host: terminal) == "in iTerm2"
+            && TodayHome.promptPlace(s, host: nil) == "at its prompt", "the place names the app holding the prompt, or none")
+        precondition(TodayHome.heldLine == "Answer here or at your Mac. The first answer counts." && TodayHome.answeredLine == "Answered.", "copy")
+        let lines = [TodayHome.heldLine, TodayHome.answeredLine, TodayHome.answerUnconfirmed, TodayHome.wordsUnavailableLine]
         precondition(lines.allSatisfy { !$0.contains("\u{2014}") && !$0.contains("\u{2192}") }, "no em dash or arrow in the card's copy")
+    }
+
+    /// Q1 M1: picks never carry from one question to the next.
+    static func checkPicksReset() {
+        typealias P = TodayHome.QuestionPick
+        let first = TodayHome.SessionQuestion(entry("held", key: "q-run"))!
+        let next = TodayHome.SessionQuestion(entry("held", key: "q-delete"))!
+        let picked = [P(labels: ["Option 0"], other: "and note")]
+        precondition(TodayHome.picks(picked, keptFor: "q-run", question: first) == picked, "the same question keeps its picks across a refresh")
+        precondition(TodayHome.picks(picked, keptFor: "q-run", question: next) == [P()], "a new question starts with nothing picked")
+        precondition(TodayHome.picks([], keptFor: nil, question: first) == [P()], "a first look starts empty, one pick per question")
+        let wider = TodayHome.SessionQuestion(entry("held", key: "q-run", questions: 2))!
+        precondition(TodayHome.picks(picked, keptFor: "q-run", question: wider) == [P(), P()], "a changed shape starts empty")
+    }
+
+    /// Q1 should-fix: new picks get a new answer id; the same answers keep theirs, so a retry replays.
+    static func checkAnswerID() {
+        let q = TodayHome.SessionQuestion(entry("held", multi: true))!
+        typealias P = TodayHome.QuestionPick
+        let a = TodayHome.answerSignature(TodayHome.answerBody(q, picks: [P(labels: ["Option 0"])], clientAnswerId: "control-x")!)!
+        let b = TodayHome.answerSignature(TodayHome.answerBody(q, picks: [P(labels: ["Option 0", "Option 1"])], clientAnswerId: "control-y")!)!
+        let last = TodayHome.AnswerAttempt(id: "control-first", answers: a)
+        precondition(TodayHome.reusableAnswerID(last, answers: a) == "control-first", "the same answers retry under the same id")
+        precondition(TodayHome.reusableAnswerID(last, answers: b) == nil, "different answers get a new id, never a replay of the old one")
+        precondition(TodayHome.reusableAnswerID(nil, answers: a) == nil, "a first send gets a new id")
+        precondition(TodayHome.questionsReadDelay(listPresent: true) == 10 && TodayHome.questionsReadDelay(listPresent: false) == 300,
+            "10 s while the server sends the list, 5 minutes when it does not")
     }
 
     static func checkPendingWords() {
@@ -110,7 +149,7 @@ struct SessionQuestionCardChecks {
         precondition(TodayHome.pendingWords(worded, card: nil) == .words("Ship the footer now?"), "no card: the row's words (the server's first 80 characters)")
         precondition(TodayHome.pendingWords(worded, card: atMacEmpty) == .words("Ship the footer now?"), "a card with no words falls back to the row's words")
         precondition(TodayHome.pendingWords(bare, card: nil) == .none, "no card and no words: the plain line, never invented words")
-        precondition(TodayHome.wordsUnavailableLine == "COS cannot read this question's words. They are on the session's own prompt.", "copy")
+        precondition(TodayHome.wordsUnavailableLine == "COS has no words to show for this question. They are on the session's own prompt.", "copy")
     }
 
     static func main() {
@@ -119,6 +158,8 @@ struct SessionQuestionCardChecks {
         checkAnswerBody()
         checkOutcome()
         checkPendingWords()
-        print("SessionQuestionCardChecks: parse, match, answer body, outcome and pending words PASS")
+        checkPicksReset()
+        checkAnswerID()
+        print("SessionQuestionCardChecks: parse, match, answer body, outcome, pending words, picks reset and answer id PASS")
     }
 }
