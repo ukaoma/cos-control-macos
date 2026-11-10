@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Security
 
 // Glasses pairing (contract 2026-10-09, server 6.67.0). Pure: no process is spawned, no file is read and nothing is
 // fetched here. `cos-control-helper tailscale-status | tailscale-whois | pairing-code | pairing-status |
@@ -447,5 +448,101 @@ enum WebKeyAssetsCore {
         let resource = executable.deletingLastPathComponent().appendingPathComponent(resourceName)
         guard resource.path == resource.resolvingSymlinksInPath().path else { return nil }
         return (app, resource)
+    }
+}
+
+// MARK: - The signer audit's TLS trust (0.5.390; QA 2026-11-09 open question 2)
+
+/// How Control's signer-file audit (HelperSources/main.swift, webKeyAssetAudit) trusts the HTTPS origin it fetches from.
+///
+/// The ts.net signer host must be trusted the way the phone trusts it: by the public roots macOS ships, for that host
+/// name. curl alone cannot say that here. Apple's /usr/bin/curl adds any --cacert to the keychain's trust instead of
+/// replacing it (the B2 builder's probe, 2026-11-09), and the keychain also trusts the admin-domain mkcert root for SSL,
+/// whose private key is a user-readable file. So for the ts.net host curl writes out the chain it received, and
+/// `trusted` judges that chain against the system trust domain ALONE, with the SSL policy for the host name. localhost
+/// and IP targets keep Control's managed certificate. Pure: no process, file or network.
+enum SignerTLSCore {
+    /// The signer host shape the audit has always required: two or more labels, then ts.net, lower case.
+    static let tsNetPattern = #"\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\.ts\.net\z"#
+    static func isTSNetHost(_ host: String) -> Bool {
+        host.utf8.count <= 253 && host.range(of: tsNetPattern, options: .regularExpression) != nil
+    }
+
+    enum Trust: Equatable, Sendable {
+        /// The ts.net signer host: the system trust domain alone, over the chain curl received (`trusted`).
+        case systemRoots
+        /// localhost and IP literals: Control's managed (mkcert) certificate, as before.
+        case managedCert
+    }
+
+    static func trust(host: String) -> Trust? {
+        if isTSNetHost(host) { return .systemRoots }
+        if host == "localhost" || TailscaleCore.isIPv4(host) || isIPv6Literal(host) { return .managedCert }
+        return nil
+    }
+
+    static func isIPv6Literal(_ host: String) -> Bool {
+        let bare = host.hasPrefix("[") && host.hasSuffix("]") ? String(host.dropFirst().dropLast()) : host
+        var address = in6_addr()
+        return bare.contains(":") && inet_pton(AF_INET6, bare, &address) == 1
+    }
+
+    /// curl's trust and write-out arguments for one fetch. Never --insecure: curl keeps its own chain and hostname checks
+    /// either way. For the ts.net host there is no --cacert (it would only add to the keychain's trust), and curl writes
+    /// the chain it received after the status code, so the audit judges THAT connection's chain.
+    static func curlTrustArguments(_ trust: Trust, managedCert: String) -> [String] {
+        switch trust {
+        case .systemRoots: return ["--write-out", "%{http_code}\n%{certs}"]
+        case .managedCert: return ["--cacert", managedCert, "--write-out", "%{http_code}"]
+        }
+    }
+
+    /// curl's --write-out answer: the status code (its first line) and, for the ts.net host, the chain, leaf first.
+    static func curlAnswer(_ output: String) -> (code: String, chain: [Data]) {
+        let code = output.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
+        return (code, certificates(output))
+    }
+
+    /// The DER of every well-formed CERTIFICATE PEM block, in order. curl's certinfo text around them is ignored.
+    static func certificates(_ text: String) -> [Data] {
+        guard text.utf8.count <= 256 * 1024,
+              let expression = try? NSRegularExpression(pattern: #"-----BEGIN CERTIFICATE-----\r?\n([A-Za-z0-9+/=\r\n]+?)-----END CERTIFICATE-----"#) else { return [] }
+        let source = text as NSString
+        return expression.matches(in: text, range: NSRange(location: 0, length: source.length)).compactMap { match in
+            let body = source.substring(with: match.range(at: 1)).filter { $0 != "\r" && $0 != "\n" }
+            guard let der = Data(base64Encoded: body), !der.isEmpty else { return nil }
+            return der
+        }
+    }
+
+    /// The trust anchors macOS ships: the system trust domain only. Never the admin or user domains, where the mkcert root
+    /// (SSL) and any other locally added root live.
+    static func systemRoots() -> [SecCertificate] {
+        var list: CFArray?
+        guard SecTrustSettingsCopyCertificates(.system, &list) == errSecSuccess, let roots = list as? [SecCertificate] else { return [] }
+        return roots
+    }
+
+    /// Whether `chain` (leaf first) verifies for `host` at `date` against `anchors` ALONE: the SSL policy with the host
+    /// name, anchors only, no network fetch. The audit passes systemRoots() and its ts.net host; the checks also pass a
+    /// throwaway root, and real Let's Encrypt chains at a pinned date.
+    static func trusted(chain: [Data], host: String, at date: Date, anchors: [SecCertificate]) -> Bool {
+        // chain.count <= 8 is load-bearing: SecTrust accepts a padded chain (mutant TLS-14). The three empty checks are
+        // defence in depth only: on Darwin 27.2 SecTrust refuses an empty chain, an empty anchor list (with anchors-only)
+        // and an empty host name by itself (mutants TLS-15 to TLS-17 survive), and this code does not rely on that.
+        guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return false }
+        var certificates: [SecCertificate] = []
+        for der in chain {
+            guard let certificate = SecCertificateCreateWithData(nil, der as CFData) else { return false }
+            certificates.append(certificate)
+        }
+        var made: SecTrust?
+        guard SecTrustCreateWithCertificates(certificates as CFArray, SecPolicyCreateSSL(true, host as CFString), &made) == errSecSuccess,
+              let trust = made,
+              SecTrustSetAnchorCertificates(trust, anchors as CFArray) == errSecSuccess,
+              SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess,
+              SecTrustSetNetworkFetchAllowed(trust, false) == errSecSuccess,
+              SecTrustSetVerifyDate(trust, date as CFDate) == errSecSuccess else { return false }
+        return SecTrustEvaluateWithError(trust, nil)
     }
 }

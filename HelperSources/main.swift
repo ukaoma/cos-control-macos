@@ -9182,10 +9182,13 @@ final class COSControlHelper {
               let origin = body["origin"] as? String,
               let components = URLComponents(string: origin), components.scheme == "https", components.port == 3144,
               components.user == nil, components.password == nil, components.query == nil, components.fragment == nil, components.path.isEmpty,
-              let host = components.host,
-              host.range(of: #"\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\.ts\.net\z"#, options: .regularExpression) != nil,
+              let host = components.host, SignerTLSCore.trust(host: host) == .systemRoots,
               origin == "https://" + host + ":3144", let signerFiles else { return refused("reported_integrity") }
-        guard (try? validatePrivateRegularFile(managedCert)) != nil else { return refused("signer_tls") }
+        // 0.5.390 (11/09 open question 2): the ts.net signer host is judged the way the phone judges it, against the roots
+        // macOS ships ALONE, over the chain each fetch received (SignerTLSCore). It used to pass only because Apple's curl
+        // adds --cacert to the keychain's trust, and that trust also covers the admin-domain mkcert root. The managed
+        // (mkcert) certificate stays the trust for localhost and IP targets (SignerTLSCore.trust); this audit has none.
+        let anchors = SignerTLSCore.systemRoots()
         let scratch = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).appendingPathComponent("cos-signer-audit-" + UUID().uuidString, isDirectory: true)
         do { try fm.createDirectory(at: scratch, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]) } catch { return refused("audit_storage") }
         defer { try? fm.removeItem(at: scratch) }
@@ -9193,13 +9196,16 @@ final class COSControlHelper {
             let output = scratch.appendingPathComponent("asset")
             // No token/cookie, no proxy/config inheritance, no redirect following, normal certificate+hostname validation.
             // --resolve binds the expected HTTPS host to the very loopback PID whose listeners were audited.
-            guard let result = try? execute("/usr/bin/curl", ["-q", "--silent", "--show-error", "--fail", "--noproxy", "*",
-                  "--proto", "=https", "--max-redirs", "0", "--max-time", "5", "--max-filesize", String(WebKeyAssetsCore.maximumFileBytes),
-                  "--cacert", managedCert.path, "--resolve", host + ":3144:127.0.0.1", "--output", output.path,
-                  "--write-out", "%{http_code}", origin + (path == "/index.html" ? "/" : path)],
-                  environment: ["PATH": "/usr/bin:/bin", "CURL_HOME": "/var/empty"], timeout: 7),
-                  result.code == 0, result.output == "200",
-                  let served = safeBytes(output, limit: WebKeyAssetsCore.maximumFileBytes), WebKeyAssetsCore.verified(served, sha: sha) else { return refused("served_signer_assets") }
+            var arguments: [String] = ["-q", "--silent", "--show-error", "--fail", "--noproxy", "*",
+                  "--proto", "=https", "--max-redirs", "0", "--max-time", "5", "--max-filesize", String(WebKeyAssetsCore.maximumFileBytes)]
+            arguments += SignerTLSCore.curlTrustArguments(.systemRoots, managedCert: managedCert.path)
+            arguments += ["--resolve", host + ":3144:127.0.0.1", "--output", output.path, origin + (path == "/index.html" ? "/" : path)]
+            guard let result = try? execute("/usr/bin/curl", arguments, environment: ["PATH": "/usr/bin:/bin", "CURL_HOME": "/var/empty"], timeout: 7),
+                  result.code == 0 else { return refused("served_signer_assets") }
+            let answer = SignerTLSCore.curlAnswer(result.output)
+            guard answer.code == "200" else { return refused("served_signer_assets") }
+            guard SignerTLSCore.trusted(chain: answer.chain, host: host, at: Date(), anchors: anchors) else { return refused("signer_tls") }
+            guard let served = safeBytes(output, limit: WebKeyAssetsCore.maximumFileBytes), WebKeyAssetsCore.verified(served, sha: sha) else { return refused("served_signer_assets") }
             try? fm.removeItem(at: output)
         }
         guard (try? Data(contentsOf: manifestURL)) == before else { return refused("generation_changed") }

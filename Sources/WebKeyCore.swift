@@ -368,6 +368,55 @@ enum WebKeyServerMode: String, Equatable, Sendable {
     }
 }
 
+// MARK: - The signer origin's certificate (0.5.390, server 7.0.20 `signerTls`)
+
+/// The server's `signerTls` in authority mode (server/lib/web-key-signer-tls.ts): whether 3144 presents a publicly trusted,
+/// unexpired certificate for this Mac's tailnet name. Control reads it ONLY for one plain line in Phone approvals; trust in
+/// the served chain is the signer audit's own check (HelperSources/PairingCore.swift, SignerTLSCore). A server that does
+/// not report it gets no line.
+enum WebKeySignerTLS {
+    static let certsOff = "Turn on HTTPS Certificates in your Tailscale admin console."
+
+    /// nil when the server reports a trusted certificate for the origin's own host that has not expired, or reports
+    /// nothing; otherwise one sentence for its reason. The server's lastError is not read: it can outlive a working pair.
+    static func problem(body: [String: Any], now: Date) -> String? {
+        guard let tls = body["signerTls"] as? [String: Any] else { return nil }
+        let host = (body["origin"] as? String).flatMap(WebKeyProtocol.signerHost)
+        if tls["trusted"] as? Bool == true, let host, tls["host"] as? String == host,
+           let end = (tls["notAfter"] as? String).flatMap(date), end > now { return nil }
+        return line(tls["reason"] as? String)
+    }
+
+    /// THE one list of the server's not-trusted reason codes (SignerTlsReason minus "ok"; provenance, server file and line:
+    /// PK-C_report.md) and one plain sentence each. These codes are written nowhere else in Control (Tests/web-key-pins.py),
+    /// and the checks read them from here. A code the server adds later gets `fallback`, never a code on screen.
+    static let sentences: [String: String] = [
+        "pending": "COS is getting this Mac's Tailscale certificate for your phone.",
+        "tailnet_name_unknown": "COS does not know this Mac's Tailscale name yet. Check that Tailscale is connected.",
+        "tailnet_https_certs_off": certsOff,
+        "cert_domain_mismatch": "Tailscale lists no certificate name for this Mac. Check HTTPS Certificates in your Tailscale admin console.",
+        "tailscale_not_running": "Tailscale is not running on this Mac, so your phone cannot reach approvals.",
+        "tailscale_cli_missing": "Tailscale is not installed on this Mac, so your phone cannot reach approvals.",
+        "tailscale_cli_timeout": "Tailscale did not answer the COS server. COS tries again later.",
+        "tailscale_cli_gui_unavailable": "The COS server could not reach Tailscale on this Mac. Open the Tailscale app once; COS tries again later.",
+        "tailscale_status_failed": "Tailscale did not answer the COS server. COS tries again later.",
+        "tailscale_cert_failed": "Tailscale could not get this Mac's certificate. COS tries again later.",
+        "cert_invalid": "Tailscale's certificate did not check out, so COS is not using it.",
+        "cert_expired": "This Mac's Tailscale certificate expired. COS is getting a new one.",
+        "cert_store_failed": "COS could not save this Mac's Tailscale certificate.",
+    ]
+    static let fallback = "Your phone's secure connection to this Mac is not ready yet."
+
+    static func line(_ reason: String?) -> String { reason.flatMap { sentences[$0] } ?? fallback }
+
+    /// The server's ISO 8601 time (JavaScript's toISOString has milliseconds).
+    static func date(_ text: String) -> Date? {
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return withFraction.date(from: text) ?? ISO8601DateFormatter().date(from: text)
+    }
+}
+
 // MARK: - The listener audit (review W9)
 
 /// Whether the server Control talks to also owns the signer ports, on every address: one PID, under the COS LaunchAgent,
@@ -872,6 +921,8 @@ final class WebKeyState: ObservableObject {
     @Published private(set) var controlState: WebKeyControlState?
     @Published private(set) var protectionReady = false
     @Published private(set) var recoveryRequired = false
+    /// 0.5.390: why the phone's HTTPS origin is not trusted yet (WebKeySignerTLS), authority only; nil when it is.
+    @Published private(set) var signerTLSLine: String?
     private(set) var anchor: (any WebKeyAnchorSigner)?
     private var origin: String?
     private var readID: UUID?
@@ -924,6 +975,8 @@ final class WebKeyState: ObservableObject {
         if origin != suppliedOrigin || mode != served { card = nil; typedCode = ""; audit = nil }
         origin = suppliedOrigin
         mode = served
+        // 0.5.390: one plain line when the server says 3144's certificate is not trusted. Authority only.
+        signerTLSLine = served == .authority ? WebKeySignerTLS.problem(body: status.body, now: now()) : nil
         anchorMature = status.body["anchorMature"] as? Bool == true
         loadLocalAnchor()
         let serverAud = status.body["aud"] as? String
@@ -955,6 +1008,7 @@ final class WebKeyState: ObservableObject {
         visible = false; card = nil; cardRefusal = nil; pendingWithoutAudit = false; keys = []; typedCode = ""
         anchorRegisteredHere = false; foreignAnchor = false; protectionReady = false
         controlState = nil; audit = nil; origin = nil; anchorMature = false; recoveryRequired = false
+        signerTLSLine = nil
     }
 
     /// Bootstrap, right after THIS run registered the anchor (the same condition as authority's rebind): start Control's

@@ -214,9 +214,67 @@ need("WebKeyAssetsCore.bundleResource" in audit_fn and '"--verify", "--deep", "-
      and "WebKeyAssetsCore.pins(pinData, version: installed.version)" in audit_fn
      and "WebKeyAssetsCore.manifest" in audit_fn and "WebKeyAssetsCore.verified(served, sha: sha)" in audit_fn,
      "immutable asset wiring", "a sealed own-bundle pin governs installed and served bytes")
-need('"--cacert", managedCert.path' in audit_fn and '"--resolve", host + ":3144:127.0.0.1"' in audit_fn
-     and '"--noproxy", "*"' in audit_fn and '"--max-redirs", "0"' in audit_fn and '"--insecure"' not in audit_fn,
+need('"--resolve", host + ":3144:127.0.0.1"' in audit_fn
+     and '"--noproxy", "*"' in audit_fn and '"--max-redirs", "0"' in audit_fn and '"--insecure"' not in audit_fn and '"-k"' not in audit_fn,
      "signer TLS wiring", "normal TLS to the owned loopback signer, without proxy or redirects")
+
+# 0.5.390 (QA 2026-11-09 open question 2): the ts.net signer host is trusted the way the phone trusts it, by the system roots
+# ALONE over the chain each fetch received; never Apple curl's --cacert-plus-keychain. Counted, so a deleted line fails.
+need(audit_fn.count("SignerTLSCore.trust(host: host) == .systemRoots") == 1 and ".ts\\.net\\z" not in audit_fn
+     and audit_fn.find("SignerTLSCore.trust(host: host) == .systemRoots") < audit_fn.find('return refused("reported_integrity")'),
+     "audit gate is the split", "the origin guard asks SignerTLSCore.trust, with no second copy of the host pattern")
+need(audit_fn.count("SignerTLSCore.curlTrustArguments(.systemRoots, managedCert: managedCert.path)") == 1 and '"--cacert"' not in audit_fn
+     and '"--write-out"' not in audit_fn,
+     "audit curl trust args wiring", "the fetch takes its trust and write-out from SignerTLSCore, and the audit passes no CA file")
+anchors_at = audit_fn.find("let anchors = SignerTLSCore.systemRoots()")
+answer_at = audit_fn.find("let answer = SignerTLSCore.curlAnswer(result.output)")
+judged = 'guard SignerTLSCore.trusted(chain: answer.chain, host: host, at: Date(), anchors: anchors) else { return refused("signer_tls") }'
+judged_at = audit_fn.find(judged)
+bytes_at = audit_fn.find("WebKeyAssetsCore.verified(served, sha: sha)")
+need(audit_fn.count(judged) == 1 and 0 <= anchors_at < audit_fn.find("for (path, sha) in signerFiles") < answer_at < judged_at < bytes_at,
+     "audit judges each chain", "system roots before the loop; every fetch's own chain is judged before its bytes count")
+trusted_fn = body_of(pairing, pairing.index("static func trusted(chain: [Data], host: String, at date: Date, anchors: [SecCertificate]) -> Bool"))
+need(trusted_fn.count("SecPolicyCreateSSL(true, host as CFString)") == 1 and trusted_fn.count("SecTrustSetAnchorCertificates(trust, anchors as CFArray)") == 1
+     and trusted_fn.count("SecTrustSetAnchorCertificatesOnly(trust, true)") == 1 and trusted_fn.count("SecTrustSetNetworkFetchAllowed(trust, false)") == 1
+     and trusted_fn.count("SecTrustSetVerifyDate(trust, date as CFDate)") == 1 and trusted_fn.count("SecTrustEvaluateWithError(trust, nil)") == 1,
+     "audit evaluator wiring", "SSL policy with the host name, the given anchors ONLY, no network fetch, the given date")
+roots_fn = body_of(pairing, pairing.index("static func systemRoots() -> [SecCertificate]"))
+need(roots_fn.count("SecTrustSettingsCopyCertificates(.system, &list)") == 1 and ".admin" not in pairing and ".user" not in roots_fn,
+     "audit system roots wiring", "the system trust domain only, never admin or user")
+args_fn = body_of(pairing, pairing.index("static func curlTrustArguments(_ trust: Trust, managedCert: String) -> [String]"))
+system_case = args_fn[args_fn.find("case .systemRoots:"):args_fn.find("case .managedCert:")]
+need(args_fn.find("case .systemRoots:") >= 0 and "--cacert" not in system_case and "%{certs}" in system_case and "--insecure" not in args_fn,
+     "audit curl trust args", "the ts.net case has no CA file and writes out the chain")
+# 0.5.390: one plain line from the server's signerTls, authority only, inside the existing anchor section.
+anchor_view = body_of(views, views.index("private struct WebKeyAnchorSection: View"))
+need(views.count("state.signerTLSLine") == 1 and anchor_view.count("if state.authority, let line = state.signerTLSLine {") == 1,
+     "signer cert line wiring", "drawn once, in the anchor section, only with authority on")
+line_set = "signerTLSLine = served == .authority ? WebKeySignerTLS.problem(body: status.body, now: now()) : nil"
+need(refresh_fn.count(line_set) == 1 and 0 <= refresh_fn.find(line_set) < refresh_fn.find("if served == .bootstrap {"),
+     "signer cert line wiring", "set on every read before the bootstrap return, nil unless authority")
+clear_fn = body_of(core, core.index("    private func clear()"))
+need(clear_fn.count("signerTLSLine = nil") == 1, "signer cert line wiring", "cleared with the rest when the server stops serving")
+# 0.5.390: the server's not-trusted reason codes live in ONE Swift list, WebKeySignerTLS.sentences (copied from the server's
+# SignerTlsReason; file and line in PK-C_report.md). No second table, the checks read the list, unknown codes fall back.
+sent_at = core.find("static let sentences: [String: String] = [")
+sent_open = core.find("= [", sent_at) + 3 if sent_at >= 0 else -1
+sent_end = core.find("\n    ]\n", sent_open) if sent_open > 2 else -1
+sent_src = core[sent_open:sent_end] if sent_end > sent_open else ""
+codes = re.findall(r'^\s*"([a-z_]+)":', sent_src, flags=re.M)
+# Outside the list a code may appear only in uses that are not a reason: "pending" is also a helper op and a body key.
+outside = (core[:sent_open] + core[sent_end:] + views) if sent_src else ""
+not_reasons = {"pending": ['ask("pending")', 'answer.body["pending"]']}
+stray = [c for c in codes if outside.count(f'"{c}"') != sum(outside.count(u) for u in not_reasons.get(c, []))]
+need(len(codes) >= 13 and len(set(codes)) == len(codes) and all((core + views).count(f'"{c}":') == 1 for c in codes) and not stray,
+     "signer reasons one list", f"each of the {len(codes)} codes is written once, as a key of WebKeySignerTLS.sentences, and nowhere else (stray: {stray})")
+line_fn = body_of(core, core.index("static func line(_ reason: String?) -> String"))
+need("sentences[$0]" in line_fn and line_fn.count("?? fallback") == 1 and "switch" not in line_fn and "case " not in line_fn,
+     "signer reasons one list", "line() looks the code up in the list and otherwise falls back")
+checks_src = code("Tests/WebKeyChecks.swift")
+need(checks_src.count("let reasons = Array(WebKeySignerTLS.sentences.keys)") == 1 and 'line("made_up_reason_7020") == WebKeySignerTLS.fallback' in checks_src,
+     "signer reasons one list", "the checks read the codes from the list, never a copy, and try a made-up code")
+need("tail38457f" not in checks_src and "ukaoma" not in checks_src.lower(),
+     "no private names in tests", "this repo is public: no real tailnet or Mac name in the checks")
 need('.onDisappear { state.cancelActions() }' in block and 'state.startApproval()' in card_view,
      "approval lifetime wiring", "disappearing Settings cancels the tracked action")
 need('visible && anchorRegisteredHere && protectionReady && controlState != nil' in core,

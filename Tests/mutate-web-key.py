@@ -13,6 +13,7 @@ root = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else pathlib.Path(__file__)
 env = dict(os.environ)
 LANE = "zsh Tests/run-web-key.sh"
 C, V, P = "Sources/WebKeyCore.swift", "Sources/WebKeyViews.swift", "HelperSources/PairingCore.swift"
+H, T = "HelperSources/main.swift", "Tests/WebKeyChecks.swift"
 
 
 def sh(cmd):
@@ -131,6 +132,71 @@ mutants = [
     ("RR-1 Register runs over a registered anchor", C, "        guard recovery || replace || (!anchorRegisteredHere && !foreignAnchor) else {", "        guard true else {", "[never registers twice]"),
     ("RR-2 no fresh status before registering", C, '                  fresh.body["anchorRegistered"] as? Bool == false else {', "                  true else {", "[never registers twice]"),
     ("RR-3 replace without confirmation (pins)", V, "Button(WebKeyCopy.replace) { confirmReplace = true }", "Button(WebKeyCopy.replace) { state.startReplace() }", "[confirmed replace]"),
+    # 0.5.390 (QA 2026-11-09 open question 2): the signer audit's TLS trust (SignerTLSCore, webKeyAssetAudit). One per guard.
+    ("TLS-1 the ts.net host gets the managed cert", P, "        if isTSNetHost(host) { return .systemRoots }", "        if isTSNetHost(host) { return .managedCert }", "[audit trust split]"),
+    ("TLS-2 localhost is judged by the system roots", P, 'if host == "localhost" || TailscaleCore.isIPv4(host) || isIPv6Literal(host) { return .managedCert }',
+     'if host == "localhost" || TailscaleCore.isIPv4(host) || isIPv6Literal(host) { return .systemRoots }', "[audit trust split]"),
+    ("TLS-3 a one-label ts.net name passes", P, r'static let tsNetPattern = #"\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\.ts\.net\z"#',
+     r'static let tsNetPattern = #"\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.ts\.net\z"#', "[audit trust split]"),
+    ("TLS-4 an IPv6 literal is not recognised", P, 'return bare.contains(":") && inet_pton(AF_INET6, bare, &address) == 1', "return false", "[audit trust split]"),
+    ("TLS-5 the ts.net fetch passes the managed CA", P, 'case .systemRoots: return ["--write-out", "%{http_code}\\n%{certs}"]',
+     'case .systemRoots: return ["--cacert", managedCert, "--write-out", "%{http_code}\\n%{certs}"]', "[audit curl trust args]"),
+    ("TLS-6 the received chain is not written out", P, 'case .systemRoots: return ["--write-out", "%{http_code}\\n%{certs}"]',
+     'case .systemRoots: return ["--write-out", "%{http_code}"]', "[audit curl trust args]"),
+    ("TLS-7 the status is read from the last line", P, 'omittingEmptySubsequences: false).first.map(String.init) ?? ""', 'omittingEmptySubsequences: false).last.map(String.init) ?? ""', "[audit curl answer]"),
+    ("TLS-8 a block that is not base64 is half read", P, "guard let der = Data(base64Encoded: body), !der.isEmpty else { return nil }",
+     "guard let der = Optional(Data(base64Encoded: body) ?? Data(body.utf8)), !der.isEmpty else { return nil }", "[audit curl answer]"),
+    ("TLS-9 the admin domain's roots", P, "SecTrustSettingsCopyCertificates(.system, &list)", "SecTrustSettingsCopyCertificates(.admin, &list)", "[audit system roots]"),
+    ("TLS-10 no host name in the SSL policy", P, "SecPolicyCreateSSL(true, host as CFString)", "SecPolicyCreateSSL(true, nil)", "[audit hostname]"),
+    ("TLS-11 the keychain's trust counts too", P, "SecTrustSetAnchorCertificatesOnly(trust, true)", "SecTrustSetAnchorCertificatesOnly(trust, false)", "[audit anchors only]"),
+    ("TLS-12 the date is ignored", P, "SecTrustSetVerifyDate(trust, date as CFDate) == errSecSuccess else { return false }", "true else { return false }", "[audit expiry]"),
+    ("TLS-13 the anchors are never set", P, "              SecTrustSetAnchorCertificates(trust, anchors as CFArray) == errSecSuccess,\n", "", "[audit evaluator]"),
+    ("TLS-14 more than 8 certificates", P, "guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return false }",
+     "guard !chain.isEmpty, !anchors.isEmpty, !host.isEmpty else { return false }", "[audit chain bounds]"),
+    ("TLS-15 an empty host name", P, "guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return false }",
+     "guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty else { return false }", "[audit chain bounds]"),
+    ("TLS-16 no anchors at all", P, "guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return false }",
+     "guard !chain.isEmpty, chain.count <= 8, !host.isEmpty else { return false }", "[audit chain bounds]"),
+    ("TLS-17 an empty chain", P, "guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return false }",
+     "guard chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return false }", "[audit chain bounds]"),
+    ("TLS-18 network fetch allowed (pins)", P, "SecTrustSetNetworkFetchAllowed(trust, false)", "SecTrustSetNetworkFetchAllowed(trust, true)", "[audit evaluator wiring]"),
+    ("TLS-19 the audit skips the chain check (pins)", H,
+     '            guard SignerTLSCore.trusted(chain: answer.chain, host: host, at: Date(), anchors: anchors) else { return refused("signer_tls") }\n', "",
+     "[audit judges each chain]"),
+    ("TLS-20 the bytes count before the chain is judged (pins)", H,
+     '            guard SignerTLSCore.trusted(chain: answer.chain, host: host, at: Date(), anchors: anchors) else { return refused("signer_tls") }\n'
+     '            guard let served = safeBytes(output, limit: WebKeyAssetsCore.maximumFileBytes), WebKeyAssetsCore.verified(served, sha: sha) else { return refused("served_signer_assets") }\n',
+     '            guard let served = safeBytes(output, limit: WebKeyAssetsCore.maximumFileBytes), WebKeyAssetsCore.verified(served, sha: sha) else { return refused("served_signer_assets") }\n'
+     '            guard SignerTLSCore.trusted(chain: answer.chain, host: host, at: Date(), anchors: anchors) else { return refused("signer_tls") }\n',
+     "[audit judges each chain]"),
+    ("TLS-21 the audit judges with no roots (pins)", H, "        let anchors = SignerTLSCore.systemRoots()\n", "        let anchors: [SecCertificate] = []\n", "[audit judges each chain]"),
+    ("TLS-22 the audit gate copies the host pattern (pins)", H, "let host = components.host, SignerTLSCore.trust(host: host) == .systemRoots,",
+     'let host = components.host, host.hasSuffix(".ts.net"),', "[audit gate is the split]"),
+    ("TLS-23 the audit passes the managed CA again (pins)", H, "arguments += SignerTLSCore.curlTrustArguments(.systemRoots, managedCert: managedCert.path)",
+     'arguments += ["--cacert", managedCert.path, "--write-out", "%{http_code}"]', "[audit curl trust args wiring]"),
+    # 0.5.390: the Phone approvals line from the server's signerTls.
+    ("TLS-24 the line shows in bootstrap", C, "signerTLSLine = served == .authority ? WebKeySignerTLS.problem(body: status.body, now: now()) : nil",
+     "signerTLSLine = WebKeySignerTLS.problem(body: status.body, now: now())", "[signer cert line]"),
+    ("TLS-25 trusted for any host", C, 'if tls["trusted"] as? Bool == true, let host, tls["host"] as? String == host,', 'if tls["trusted"] as? Bool == true, host != nil || true,',
+     "[signer cert line]"),
+    ("TLS-26 notAfter ignored", C, 'let end = (tls["notAfter"] as? String).flatMap(date), end > now { return nil }', "true { return nil }", "[signer cert line]"),
+    ("TLS-27 the toggle-off sentence is lost", C, '"tailnet_https_certs_off": certsOff,', '"tailnet_https_certs_off": fallback,', "[signer cert line]"),
+    ("TLS-28 lastError read instead of reason", C, 'return line(tls["reason"] as? String)', 'return line(tls["lastError"] as? String)', "[signer cert line]"),
+    ("TLS-29 milliseconds not parsed", C, "withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]", "withFraction.formatOptions = [.withInternetDateTime]",
+     "[signer cert line]"),
+    ("TLS-30 the view draws it without authority (pins)", V, "if state.authority, let line = state.signerTLSLine {", "if let line = state.signerTLSLine {", "[signer cert line wiring]"),
+    ("TLS-31 not cleared (pins)", C, "        signerTLSLine = nil\n", "", "[signer cert line wiring]"),
+    # The lead's 12:5x conditions: one reason list, and an unknown code falls back.
+    ("TLS-32 a listed code is dropped", C,
+     '        "tailscale_cli_gui_unavailable": "The COS server could not reach Tailscale on this Mac. Open the Tailscale app once; COS tries again later.",\n', "",
+     "[signer cert line]"),
+    ("TLS-33 the fallback shows the code", C, "reason.flatMap { sentences[$0] } ?? fallback", "reason.flatMap { sentences[$0] ?? $0 } ?? fallback", "[signer cert line]"),
+    # Behaviour-preserving on purpose (the same sentence), so the checks stay green and only the pin can catch the copy.
+    ("TLS-34 a second copy of a code (pins)", C, "static func line(_ reason: String?) -> String { reason.flatMap { sentences[$0] } ?? fallback }",
+     'static func line(_ reason: String?) -> String { if reason == "cert_expired" { return sentences["cert_expired"] ?? fallback }; return reason.flatMap { sentences[$0] } ?? fallback }',
+     "[signer reasons one list]"),
+    ("TLS-35 the checks hand-copy the codes (pins)", T, "let reasons = Array(WebKeySignerTLS.sentences.keys)", 'let reasons = ["pending", "cert_invalid"]',
+     "[signer reasons one list]"),
 ]
 
 only = [part for part in os.environ.get("MUTATE_ONLY", "").split("|") if part]
@@ -141,7 +207,7 @@ if code != 0 or "web key pins: all passed" not in out:
     print(f"BASELINE RED:\n{out[-3000:]}")
     sys.exit(1)
 print("baseline: green (" + [l for l in out.splitlines() if "web key checks:" in l][-1] + ", pins all passed)", flush=True)
-files = (C, V, P)
+files = (C, V, P, H, T)
 before = {f: (root / f).read_text() for f in files}
 results = []
 for name, path, old, new, expect in mutants:

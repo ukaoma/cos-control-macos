@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Security
 
 // Phone approvals (Sources/WebKeyCore.swift and HelperSources/PairingCore.swift's WebKeyHelperCore), compiled on their own
 // (Tests/run-web-key.sh). Vectors come from the SERVER's code (Tests/fixtures/web-key/golden.json, made by
@@ -25,6 +26,17 @@ func viaJSONValue(_ value: Any) -> Any {
     if let a = value as? [Any] { return a.map(viaJSONValue) }
     if let o = value as? [String: Any] { return o.mapValues(viaJSONValue) }
     return value
+}
+
+/// A control for the signer TLS checks only: what this Mac's keychain trust (system, admin and user domains, no custom
+/// anchors) says about a chain, which is how Apple's curl decides. Reads trust settings, never a keychain item or a key.
+func keychainTrusts(_ chain: [Data], host: String) -> Bool {
+    let certificates = chain.compactMap { SecCertificateCreateWithData(nil, $0 as CFData) }
+    var made: SecTrust?
+    guard !certificates.isEmpty, certificates.count == chain.count,
+          SecTrustCreateWithCertificates(certificates as CFArray, SecPolicyCreateSSL(true, host as CFString), &made) == errSecSuccess,
+          let trust = made, SecTrustSetNetworkFetchAllowed(trust, false) == errSecSuccess else { return false }
+    return SecTrustEvaluateWithError(trust, nil)
 }
 
 final class MemoryStore: WebKeySecureStore, @unchecked Sendable {
@@ -137,6 +149,8 @@ struct WebKeyChecks {
         reconcile()
         helperCore()
         assets()
+        signerTLSTrust(fixtures: URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent("tls", isDirectory: true))
+        signerTLSLine()
         await cancellation()
         await flow(pending: pending, anchorG: anchorG, anchorDER: anchorDER, anchorRaw: anchorRaw, selfDns: selfDns)
         await recoveryFlow(anchorRaw: anchorRaw, selfDns: selfDns)
@@ -506,6 +520,164 @@ struct WebKeyChecks {
         try? FileManager.default.removeItem(at: dir)
     }
 
+    /// 0.5.390: the server's `signerTls` (server 7.0.20, web-key-signer-tls.ts SignerTlsStatus) drives one plain line.
+    static func signerTLSLine() {
+        let origin = "https://example-mac.tail00000a.ts.net:3144", now = Date(timeIntervalSince1970: 1_794_300_000)
+        func body(_ tls: [String: Any]?) -> [String: Any] {
+            var b: [String: Any] = ["enabled": true, "origin": origin]
+            if let tls { b["signerTls"] = tls }
+            return b
+        }
+        func tls(trusted: Bool, reason: String, host: Any = "example-mac.tail00000a.ts.net", notAfter: Any = "2027-02-08T17:38:32.000Z",
+                 lastError: Any = NSNull()) -> [String: Any] {
+            ["trusted": trusted, "reason": reason, "host": host, "notAfter": notAfter, "lastError": lastError, "checkedAt": NSNull(), "nextCheckAt": NSNull()]
+        }
+        check(WebKeySignerTLS.problem(body: body(nil), now: now) == nil, "signer cert line", "a server without signerTls gets no line")
+        check(WebKeySignerTLS.problem(body: body(tls(trusted: true, reason: "ok")), now: now) == nil, "signer cert line", "trusted for the origin's host: no line")
+        check(WebKeySignerTLS.problem(body: body(tls(trusted: true, reason: "ok", lastError: "tailscale_cert_failed")), now: now) == nil,
+              "signer cert line", "a renewal error behind a serving pair is not shown (lastError is not read)")
+        check(WebKeySignerTLS.problem(body: body(tls(trusted: false, reason: "tailnet_https_certs_off", host: NSNull(), notAfter: NSNull())), now: now)
+              == "Turn on HTTPS Certificates in your Tailscale admin console.", "signer cert line", "the tailnet toggle off says exactly what to do")
+        check(WebKeySignerTLS.problem(body: body(tls(trusted: false, reason: "tailscale_cli_gui_unavailable", host: NSNull(), notAfter: NSNull())), now: now)
+              == WebKeySignerTLS.line("tailscale_cli_gui_unavailable") && WebKeySignerTLS.line("tailscale_cli_gui_unavailable").contains("Tailscale app"),
+              "signer cert line", "the CLI that cannot run gets its own sentence")
+        check(WebKeySignerTLS.problem(body: body(tls(trusted: true, reason: "ok", host: "other-mac.tail00000a.ts.net")), now: now) != nil,
+              "signer cert line", "trusted for another host is not trusted for this origin")
+        check(WebKeySignerTLS.problem(body: body(tls(trusted: true, reason: "ok", notAfter: "2026-11-01T00:00:00.000Z")), now: now) != nil,
+              "signer cert line", "trusted but past notAfter is not trusted")
+        check(WebKeySignerTLS.problem(body: body(tls(trusted: true, reason: "ok", notAfter: NSNull())), now: now) != nil,
+              "signer cert line", "trusted with no notAfter is not trusted")
+        check(WebKeySignerTLS.date("2027-02-08T17:38:32.000Z") != nil && WebKeySignerTLS.date("2027-02-08T17:38:32Z") != nil && WebKeySignerTLS.date("soon") == nil,
+              "signer cert line", "the server's ISO times parse, with or without milliseconds")
+        // The codes come from the ONE list in Sources/WebKeyCore.swift, never a copy here (Tests/web-key-pins.py).
+        let reasons = Array(WebKeySignerTLS.sentences.keys)
+        check(!reasons.isEmpty && reasons.allSatisfy { WebKeySignerTLS.line($0) == WebKeySignerTLS.sentences[$0] && WebKeySignerTLS.line($0) != WebKeySignerTLS.fallback },
+              "signer cert line", "every listed reason gets its own sentence, not the fallback")
+        check(WebKeySignerTLS.line("made_up_reason_7020") == WebKeySignerTLS.fallback && WebKeySignerTLS.line(nil) == WebKeySignerTLS.fallback
+              && WebKeySignerTLS.problem(body: body(tls(trusted: false, reason: "made_up_reason_7020", host: NSNull(), notAfter: NSNull())), now: now)
+              == WebKeySignerTLS.fallback, "signer cert line", "a code the server adds later, or none, gets the plain fallback, never the code")
+        check((Array(WebKeySignerTLS.sentences.values) + [WebKeySignerTLS.fallback]).allSatisfy { !$0.isEmpty && !$0.contains("—") && !$0.contains("_") },
+              "signer cert line", "plain sentences: no codes, no em dashes")
+    }
+
+    /// 0.5.390 (QA 2026-11-09 open question 2): the signer audit's TLS trust (HelperSources/PairingCore.swift, SignerTLSCore).
+    /// Real Let's Encrypt chains (public certificates from LE's own test sites, Tests/fixtures/web-key/tls) at a pinned date
+    /// inside both leaves' validity, and a throwaway root, a second root and a ts.net leaf that Tests/run-web-key.sh mints
+    /// for this run (COS_WEB_KEY_TLS_DIR; no key is committed). No network: the evaluator never fetches.
+    static func signerTLSTrust(fixtures: URL) {
+        func chain(_ url: URL) -> [Data] { SignerTLSCore.certificates((try? String(contentsOf: url, encoding: .utf8)) ?? "") }
+        func cert(_ der: Data) -> SecCertificate? { SecCertificateCreateWithData(nil, der as CFData) }
+        func pem(_ der: Data) -> String {
+            "-----BEGIN CERTIFICATE-----\n" + der.base64EncodedString(options: [.lineLength64Characters, .endLineWithLineFeed]) + "\n-----END CERTIFICATE-----"
+        }
+        let tsHost = "example-mac.tail00000a.ts.net"
+
+        // The split: the ts.net signer host is judged by the system roots; localhost and IP literals keep the managed cert.
+        check(SignerTLSCore.trust(host: tsHost) == .systemRoots, "audit trust split", "the ts.net signer host is judged by the system roots")
+        for host in ["localhost", "127.0.0.1", "100.112.156.116", "::1", "[::1]"] {
+            check(SignerTLSCore.trust(host: host) == .managedCert, "audit trust split", "\(host) keeps the managed certificate")
+        }
+        for host in ["", "tail00000a.ts.net", "Example-Mac.tail00000a.ts.net", "mac.tail00000a.ts.net.", "mac.ts.net.example.com",
+                     "api.gotcos.com", "example.com", "999.1.1.1", "mac_studio.tail00000a.ts.net"] {
+            check(SignerTLSCore.trust(host: host) == nil, "audit trust split", "\(host.isEmpty ? "(empty)" : host) gets no trust at all")
+        }
+
+        // curl's arguments: no CA file for the ts.net host (Apple's curl would only ADD it to the keychain's trust), and the
+        // chain it received is written out; never --insecure for either.
+        let system = SignerTLSCore.curlTrustArguments(.systemRoots, managedCert: "/m/cert.pem")
+        let managed = SignerTLSCore.curlTrustArguments(.managedCert, managedCert: "/m/cert.pem")
+        check(!system.contains("--cacert") && !system.contains("/m/cert.pem") && !system.contains("--capath"),
+              "audit curl trust args", "the ts.net fetch passes no CA file")
+        check(system == ["--write-out", "%{http_code}\n%{certs}"], "audit curl trust args", "the ts.net fetch writes out the chain it received")
+        check(managed == ["--cacert", "/m/cert.pem", "--write-out", "%{http_code}"], "audit curl trust args",
+              "localhost and IP fetches keep --cacert with the managed certificate")
+        for arguments in [system, managed] {
+            check(!arguments.contains("--insecure") && !arguments.contains("-k"), "audit curl trust args", "never --insecure: curl keeps its own checks")
+        }
+
+        // curl's answer: the status is the first line; the chain is every certificate block after it, leaf first.
+        let x1 = chain(fixtures.appendingPathComponent("valid-isrgrootx1.letsencrypt.org.pem"))
+        let x2 = chain(fixtures.appendingPathComponent("valid-isrgrootx2.letsencrypt.org.pem"))
+        check(x1.count == 3 && x2.count == 3, "audit fixtures", "both committed Let's Encrypt chains parse: leaf, intermediate, cross-signed root")
+        guard x2.count == 3, x1.count == 3 else { return }
+        let written = "200\nSubject:CN = valid-isrgrootx2.letsencrypt.org\nIssuer:CN = YE1\nCert:" + pem(x2[0]) + "\nSubject:CN = YE1\nCert:" + pem(x2[1]) + "\n"
+        let answer = SignerTLSCore.curlAnswer(written)
+        check(answer.code == "200" && answer.chain == [x2[0], x2[1]], "audit curl answer", "status first, then the received chain, leaf first")
+        check(SignerTLSCore.curlAnswer("200").code == "200" && SignerTLSCore.curlAnswer("200").chain.isEmpty, "audit curl answer", "a bare status has no chain")
+        check(SignerTLSCore.curlAnswer("404\n" + pem(x2[0])).code == "404", "audit curl answer", "the code is the first line, never a later one")
+        let garbled = "200\nCert:-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----\nCert:" + pem(x2[0])
+        check(SignerTLSCore.curlAnswer(garbled).chain == [x2[0]], "audit curl answer", "a block that is not base64 is dropped, never half read")
+
+        // The system trust domain: both ISRG roots, and never a locally added root (this Mac's admin domain trusts mkcert's).
+        let roots = SignerTLSCore.systemRoots()
+        let names = roots.compactMap { SecCertificateCopySubjectSummary($0) as String? }
+        check(roots.count >= 50 && names.contains("ISRG Root X1") && names.contains("ISRG Root X2"), "audit system roots",
+              "the roots macOS ships, with Let's Encrypt's X1 and X2 (\(roots.count) roots)")
+        check(!names.contains(where: { $0.lowercased().contains("mkcert") }), "audit system roots", "no locally added root, mkcert's included")
+
+        // The threat itself, on this Mac: an mkcert-issued chain this Mac's keychain TRUSTS is refused by the system roots
+        // alone. Public certificates only: the managed leaf (~/.cos-glasses/certs/cert.pem, issued for localhost among its
+        // names) and the mkcert root as the admin trust domain lists it. Never the private key beside either. The host is a
+        // name the leaf really carries, so the anchor is the only reason left to refuse it; a ts.net-named mkcert leaf has
+        // the same anchor. Skipped, and said so, on a Mac without mkcert.
+        var adminList: CFArray?
+        let admin = SecTrustSettingsCopyCertificates(.admin, &adminList) == errSecSuccess ? (adminList as? [SecCertificate] ?? []) : []
+        let mkcertRoot = admin.first { (SecCertificateCopySubjectSummary($0) as String?)?.hasPrefix("mkcert ") == true }
+        let managedLeaf = chain(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cos-glasses/certs/cert.pem")).first
+        if let mkcertRoot, let managedLeaf {
+            let mk = [managedLeaf, SecCertificateCopyData(mkcertRoot) as Data]
+            check(keychainTrusts(mk, host: "localhost"), "audit refuses mkcert", "control: this Mac's keychain trusts the managed mkcert chain for localhost")
+            check(!SignerTLSCore.trusted(chain: mk, host: "localhost", at: Date(), anchors: roots), "audit refuses mkcert",
+                  "the keychain-trusted mkcert chain is refused by the system roots alone")
+            check(SignerTLSCore.trusted(chain: mk, host: "localhost", at: Date(), anchors: [mkcertRoot]), "audit refuses mkcert",
+                  "control: the same chain verifies when its own root is the anchor, so the anchor is the only reason")
+            check(!SignerTLSCore.trusted(chain: mk, host: tsHost, at: Date(), anchors: roots), "audit refuses mkcert",
+                  "the mkcert chain judged for the ts.net signer name is refused")
+            print("RAN [audit refuses mkcert]: this Mac's managed mkcert chain, read at run time and never stored")
+        } else {
+            // Never silent: Tests/run-web-key.sh counts SKIP lines and reports them.
+            print("SKIP [audit refuses mkcert]: no admin-trusted mkcert root or no managed certificate on this Mac")
+        }
+
+        // Real chains at a date inside both leaves' validity: the system roots ALONE accept them, for their own names only.
+        let pinned = ISO8601DateFormatter().date(from: "2026-12-01T00:00:00Z")!
+        check(SignerTLSCore.trusted(chain: x1, host: "valid-isrgrootx1.letsencrypt.org", at: pinned, anchors: roots), "audit public chain",
+              "an ISRG Root X1 chain verifies against the system roots alone")
+        check(SignerTLSCore.trusted(chain: x2, host: "valid-isrgrootx2.letsencrypt.org", at: pinned, anchors: roots), "audit public chain",
+              "an ISRG Root X2 chain (ECDSA P-256, like Tailscale's) verifies against the system roots alone")
+        check(!SignerTLSCore.trusted(chain: x2, host: tsHost, at: pinned, anchors: roots), "audit hostname", "a valid public chain for another name is refused")
+        check(!SignerTLSCore.trusted(chain: x2, host: "valid-isrgrootx2.letsencrypt.org", at: ISO8601DateFormatter().date(from: "2027-03-01T00:00:00Z")!, anchors: roots),
+              "audit expiry", "a public leaf is refused after its notAfter")
+
+        // A throwaway root and leaf: the evaluator passes a good chain, and refuses every other anchor, name and date.
+        let tls = ProcessInfo.processInfo.environment["COS_WEB_KEY_TLS_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let root = tls.flatMap { chain($0.appendingPathComponent("root.pem")).first }.flatMap(cert)
+        let other = tls.flatMap { chain($0.appendingPathComponent("other.pem")).first }.flatMap(cert)
+        let minted = tls.map { chain($0.appendingPathComponent("leaf-chain.pem")) } ?? []
+        check(root != nil && other != nil && minted.count == 2, "audit fixtures", "Tests/run-web-key.sh minted a throwaway root, a second root and a ts.net leaf")
+        guard let root, let other, minted.count == 2 else { return }
+        let leafHost = tsHost, now = Date()
+        // The machine-independent twin of the mkcert check, always run: a root the caller holds (what the old --cacert
+        // added) vouches for a leaf with the EXACT ts.net signer name; under the system roots alone the chain is refused.
+        check(SignerTLSCore.trusted(chain: minted, host: tsHost, at: now, anchors: [root]), "audit refuses an extra root",
+              "control: with the caller's root as the anchor the ts.net chain verifies, so the anchor is the only reason")
+        check(!SignerTLSCore.trusted(chain: minted, host: tsHost, at: now, anchors: roots), "audit refuses an extra root",
+              "the same ts.net chain is refused under the system roots alone")
+        check(!SignerTLSCore.trusted(chain: x2, host: "valid-isrgrootx2.letsencrypt.org", at: pinned, anchors: [root]), "audit anchors only",
+              "a publicly trusted chain is refused when its root is not among the anchors (the keychain's trust never counts)")
+        check(SignerTLSCore.trusted(chain: minted, host: leafHost, at: now, anchors: [root]), "audit evaluator", "a good chain for its host, under its own root, verifies")
+        check(!SignerTLSCore.trusted(chain: minted, host: "other-mac.tail00000a.ts.net", at: now, anchors: [root]), "audit hostname",
+              "the same chain for another ts.net name is refused")
+        check(!SignerTLSCore.trusted(chain: minted, host: leafHost, at: now, anchors: roots), "audit anchors only", "a root this Mac made is never a system root")
+        check(!SignerTLSCore.trusted(chain: minted, host: leafHost, at: now, anchors: [other]), "audit anchors only", "another root does not vouch for this chain")
+        check(!SignerTLSCore.trusted(chain: minted, host: leafHost, at: now.addingTimeInterval(40 * 86_400), anchors: [root]), "audit expiry",
+              "the leaf is refused after its notAfter")
+        check(!SignerTLSCore.trusted(chain: [], host: leafHost, at: now, anchors: [root]) && !SignerTLSCore.trusted(chain: minted, host: leafHost, at: now, anchors: [])
+              && !SignerTLSCore.trusted(chain: minted, host: "", at: now, anchors: [root])
+              && !SignerTLSCore.trusted(chain: Array(repeating: minted[0], count: 9), host: leafHost, at: now, anchors: [root]),
+              "audit chain bounds", "no chain, no anchor, no host, or more than 8 certificates: refused")
+    }
+
     static func cancellation() async {
         let before = WebKeyBiometryAttempt(), first = Reasons()
         before.cancel()
@@ -740,6 +912,18 @@ struct WebKeyChecks {
         await later.refresh()
         check(later.authority && !later.bootstrapOnly && later.protectionReady && !later.recoveryRequired && later.controlState?.anchorSpkiSha256 == sha
               && fake.count("keys") == 1, "bootstrap then authority needs no reset", "authority adopts the server's list for the bootstrap anchor")
+        check(later.signerTLSLine == nil, "signer cert line", "a server that reports no signerTls shows no line")
+        // 0.5.390: the server's signerTls drives one plain line, in authority mode only.
+        let certsOff: [String: Any] = ["trusted": false, "reason": "tailnet_https_certs_off", "host": NSNull(), "notAfter": NSNull(),
+                                       "lastError": "tailnet_https_certs_off", "checkedAt": NSNull(), "nextCheckAt": NSNull()]
+        fake.answers["status"] = (200, ["ok": true, "enabled": true, "anchorRegistered": true, "anchorMature": true, "aud": aud, "origin": origin, "epoch": 4,
+                                        "signerTls": certsOff])
+        await later.refresh()
+        check(later.authority && later.signerTLSLine == WebKeySignerTLS.certsOff, "signer cert line", "authority with the tailnet toggle off says so")
+        fake.answers["status"] = (200, ["ok": true, "enabled": false, "mode": "bootstrap", "anchorRegistered": true, "anchorMature": true, "aud": aud, "origin": origin,
+                                        "epoch": 4, "signerTls": certsOff])
+        await later.refresh()
+        check(later.bootstrapOnly && later.signerTLSLine == nil, "signer cert line", "bootstrap never shows it")
         // A server that says enabled true with mode bootstrap is a contradiction: hidden, as with both off.
         fake.answers["status"] = (200, ["ok": true, "enabled": true, "mode": "bootstrap", "anchorRegistered": true, "aud": aud, "origin": origin, "epoch": 4])
         await later.refresh()
