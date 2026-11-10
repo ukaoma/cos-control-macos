@@ -188,10 +188,10 @@ struct ProviderRowView: View {
         ProviderCommandLine(command: command) { guide.copy(command) }
         HStack(spacing: 12) {
             if installing {
-                Button("Run it again") { Task { await guide.install(provider) } }.buttonStyle(COSQuietButtonStyle())
+                Button("Run it again") { Task { await guide.install(provider) } }.buttonStyle(COSQuietButtonStyle()).disabled(guide.installStarting.contains(provider))
                 Button("Stop waiting") { guide.stopWaiting(provider) }.buttonStyle(COSTextButtonStyle())
             } else {
-                Button("Install \(provider.cliName)") { Task { await guide.install(provider) } }.buttonStyle(COSPrimaryButtonStyle())
+                Button("Install \(provider.cliName)") { Task { await guide.install(provider) } }.buttonStyle(COSPrimaryButtonStyle()).disabled(guide.installStarting.contains(provider))
                 passButton
             }
             Spacer(minLength: 0)
@@ -215,7 +215,10 @@ struct ProviderRowView: View {
             } else if guide.expired.contains(provider) {
                 Button("Check again") { Task { await guide.checkAgain(provider) } }.buttonStyle(COSPrimaryButtonStyle())
                 Button("Sign in") { Task { await guide.signIn(provider) } }.buttonStyle(COSQuietButtonStyle())
-                Button("Skip for now") { guide.skip(provider) }.buttonStyle(COSTextButtonStyle())
+                // 0.5.388 (C1): Skip only while another AI reads signed in (ProviderGate.skipAllowed, in row.canSkip).
+                if row.canSkip {
+                    Button("Skip for now") { guide.skip(provider) }.buttonStyle(COSTextButtonStyle())
+                }
             } else {
                 Button("Sign in") { Task { await guide.signIn(provider) } }.buttonStyle(COSPrimaryButtonStyle())
                 if row.canSkip {
@@ -285,6 +288,10 @@ struct ConnectYourAIStep: View {
     let recheckGate: () -> Void
     let getStarted: () -> Void
 
+    private var line: ProviderGate.Line {
+        ProviderGate.line(setupProviderInstalled: setupProviderInstalled, report: guide.report, skipped: guide.skipped)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Connect your AI").font(COSType.body(18, weight: .semibold))
@@ -303,20 +310,26 @@ struct ConnectYourAIStep: View {
                 Text(error).font(COSType.body(12)).foregroundStyle(COSPalette.danger)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if !setupProviderInstalled {
+            // 0.5.388 (C1): setup proves one signed-in AI at its last step, so the line says so before (ProviderGate.line).
+            switch line {
+            case .install:
                 Text("Install Claude Code, Codex or Cursor Agent to continue. This list updates by itself.")
                     .font(COSType.body(12)).foregroundStyle(.secondary)
-            } else if !guide.signInStepDone {
+            case .needsSignedIn:
+                Text(ProviderGate.needsSignedInWords)
+                    .font(COSType.body(12)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .signInOrSkip:
                 Text("Sign in to each AI you installed, or choose Skip for now.")
                     .font(COSType.body(12)).foregroundStyle(.secondary)
-            } else {
+            case .getStarted:
                 Text("Get started downloads the COS components and starts them. You do not set up a server yourself.")
                     .font(COSType.body(12)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 14) {
                 // The hard gate is unchanged from 0.5.267: installed. Sign-in never disables Get started.
-                if guide.signInStepDone {
+                if ProviderGate.getStartedPrimary(line) {
                     Button(failed ? "Try again" : "Get started") { getStarted() }
                         .buttonStyle(COSPrimaryButtonStyle())
                         .disabled(!ProviderGate.getStartedEnabled(setupProviderInstalled: setupProviderInstalled, busy: busy))
@@ -851,7 +864,8 @@ extension ControllerModel {
         facts.threadAttachSupported = status.threadAttachSupported
         facts.threadAttachEnabled = status.threadAttachEnabled
         facts.jevConfigured = jevStatus?.configured
-        facts.permissionsNeedCount = permissionGuide.needCount
+        // 0.5.388 (E1): the three rows added in 0.5.387 count toward Finish setup only on a new install (Permissions shows them to all).
+        facts.permissionsNeedCount = PermissionGuideRules.setupNeedCount(permissionGuide.rows, newInstall: InstallCohort.isNewInstall)
         facts.ollamaPinnedModel = status.ollamaConfiguredModel
         facts.glasses = glassesPairing.facts(serverRunning: status.running, pairingSupported: status.pairingSupported)
         facts.serverVersion = status.version
