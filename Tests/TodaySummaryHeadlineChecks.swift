@@ -130,10 +130,14 @@ import SwiftUI
     static let s6 = "Your server and desktop release lanes are moving fast tonight: the candidate suite passed after one fix to a file guard, the first run screens are rendering, the usage view has its prices, and two lanes still wait in the shared build queue for their compile turns. The glasses build is in review with the store. Next is the integrated desktop build once the last compile slot frees up, then the private install."
     static let counts = "Three agents are working, with 9 more sessions open."
 
+    /// The main run loop for a moment, so SwiftUI delivers geometry changes (a synchronous helper: Swift 6 does not allow
+    /// RunLoop.run in an async function).
+    static func spin() { RunLoop.main.run(until: Date().addingTimeInterval(0.03)) }
+
     static func layout(_ host: NSHostingView<Home>) async {
         for _ in 0..<6 {
             host.layoutSubtreeIfNeeded()
-            RunLoop.main.run(until: Date().addingTimeInterval(0.03))
+            spin()
             await Task.yield()
         }
     }
@@ -169,7 +173,7 @@ import SwiftUI
             var got: CGFloat = -1
             let host = NSHostingView(rootView: Block(summary: summary, size: size, spacing: spacing, column: column, report: { got = $0 }))
             host.frame = NSRect(x: 0, y: 0, width: column + 40, height: 600)
-            for _ in 0..<6 { host.layoutSubtreeIfNeeded(); RunLoop.main.run(until: Date().addingTimeInterval(0.03)); await Task.yield() }
+            for _ in 0..<6 { host.layoutSubtreeIfNeeded(); spin(); await Task.yield() }
             y[summary] = got
             if let out, let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
                 host.cacheDisplay(in: host.bounds, to: rep)
