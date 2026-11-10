@@ -118,7 +118,7 @@ struct ControlSetupView: View {
         case .welcome:
             heading("Meet COS, your chief of staff.", detail: "Bring your AI conversations, work and meeting context together. Start with the devices you use.", symbol: "sparkles")
             SetupDeviceChoice(guide: guide)
-            Text("Next, connect your AI and choose what COS can access. COS prepares its own components; you do not need Homebrew or a separate server setup.")
+            Text("Next, connect your AI and choose what COS can access. COS downloads and runs its own components, so you do not set up a server yourself. If you need Claude Code, COS can install it for you.")
                 .foregroundStyle(.secondary)
             Button("Get started") { guide.beginJourney() }
                 .buttonStyle(COSPrimaryButtonStyle()).disabled(model.busy)

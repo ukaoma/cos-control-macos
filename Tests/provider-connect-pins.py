@@ -193,6 +193,26 @@ for script in list((root / "Tests").glob("*.sh")) + list((root / "scripts").glob
             pin("ProviderStatusCore.swift" in line, "source lists", f"{script.name} compiles the helper without ProviderStatusCore.swift")
             pin("PairingCore.swift" in line, "source lists", f"{script.name} compiles the helper without PairingCore.swift")
 
+# 0.5.387 lane D1: Install Claude Code in Terminal runs only from the person's click, and the first-run copy is true.
+install_calls = []
+for source in sorted((root / "Sources").glob("*.swift")):
+    for number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1):
+        if re.search(r"\.install\(provider\)|guide\.install\(|providerGuide\.install\(", line):
+            install_calls.append((source.name, number, line.strip()))
+pin(len(install_calls) == 2, "install on click", f"ProviderGuide.install is called from exactly the two buttons: {install_calls}")
+pin(all(name == "ProviderConnectViews.swift" and line.startswith("Button(") and "{ Task { await guide.install(provider) } }" in line
+        for name, _, line in install_calls), "install on click", f"every call is a Button action: {install_calls}")
+install_body = body(connect, "    func install(_ provider: AIProvider) async {", "    /// Stop waiting on a sign-in")
+pin("ProviderLogin.terminalScript(command)" in install_body and "ProviderInstall.command(provider)" in install_body,
+    "install terminal", "Install types the official installer into Terminal through the Sign in path")
+pin('static func oneClick(_ provider: AIProvider) -> Bool { provider == .claude }' in connect, "install terminal", "Claude Code only")
+claude_steps = body(connect_views, "    @ViewBuilder private func claudeInstallSteps(", "    @ViewBuilder private func signInSteps(")
+pin("ProviderCommandLine(command: command) { guide.copy(command) }" in claude_steps, "install manual path", "the exact command shows with Copy")
+for false_claim in ("No Terminal or separate server setup", "you do not need Homebrew"):
+    for name in ("ProviderConnectViews.swift", "ControlSetup.swift", "ProviderConnectModel.swift"):
+        pin(false_claim not in read("Sources/" + name), "first-run copy", f"{name} still says {false_claim!r}")
+pin("Sign in opens Terminal and runs this command for you:" in connect_views, "first-run copy", "the sign-in line says Sign in opens Terminal")
+
 if failed:
     print("\n".join(failed), file=sys.stderr)
     sys.exit(1)
