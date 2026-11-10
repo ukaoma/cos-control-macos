@@ -13727,15 +13727,20 @@ enum TodayHome {
     // MARK: Settings (UserDefaults keys; Settings > Activity)
 
     /// The integrated candidate's opt-in switch. Off: the stable 0.5.259 home and the top lens rail, unchanged.
-    /// 0.5.387 (lane D1, Miles 2026-11-09): a NEW install gets it written ON once at launch
-    /// (InstallCohort.applyNewInstallDefaults). An existing Mac is never written, so one that never chose keeps off.
+    /// 0.5.387 (lane D1, Miles 2026-11-09): "Today home ON for new installs only. Existing users unchanged." Read lazily:
+    /// the person's own value when the key was ever written, else ON only on a Mac kept as a new install
+    /// (cos.install.cohort, Sources/InstallCohort.swift). Nothing writes a default. Views read it through CohortDefault.
     static let enabledKey = "activityTodayHomeEnabled"
+    /// Mirrors InstallCohort.key; Tests/install-cohort-pins.py keeps them equal.
+    static let installCohortKey = "cos.install.cohort"
     /// Quiet hours (Miles's default, 2026-10-21): after 6 PM and on weekends, fold Needs you below agent-blocking items.
     static let quietHoursKey = "activityTodayQuietHours"
     /// "Start Work runs from Today": Prep me and Return in the Ask box. Off hides Prep me and files Return to the inbox.
     static let workRunsKey = "activityTodayStartsWorkRuns"
 
-    static func enabled(_ defaults: UserDefaults) -> Bool { defaults.object(forKey: enabledKey) as? Bool ?? false }
+    static func enabled(_ defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: enabledKey) as? Bool ?? (defaults.string(forKey: installCohortKey) == "new")
+    }
     static func quietHoursOn(_ defaults: UserDefaults) -> Bool { defaults.object(forKey: quietHoursKey) as? Bool ?? true }
     static func workRunsOn(_ defaults: UserDefaults) -> Bool { defaults.object(forKey: workRunsKey) as? Bool ?? true }
 

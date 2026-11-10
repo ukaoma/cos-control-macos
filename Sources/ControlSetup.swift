@@ -110,6 +110,8 @@ struct ControlSetupView: View {
         .font(COSType.body(15))
         .background(COSPalette.panel)
         .background(KeyLanesInstallLatch(model: model))
+        // 0.5.387 (lane D1): the install cohort copies KeyLanes' new or existing the moment the latch above decides it.
+        .onReceive(KeyLanesStore.shared.$install) { InstallCohort.adoptKeyLanes($0?.rawValue) }
         .cosControlTheme()
     }
 

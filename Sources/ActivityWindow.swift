@@ -589,7 +589,8 @@ struct ActivityWindow: View {
     @State private var todayPrep = TodayPrep.Panels()
     /// Activity Today home (plan v2): the opt-in switch (the integrated candidate; off keeps the 0.5.259 home and the
     /// top lens rail), its store, the Ask box, and Needs you's expansions and Next ⌘] cursor.
-    @AppStorage(TodayHome.enabledKey) private var todayEnabled = false
+    /// 0.5.387 (lane D1): the person's value, else ON for a new install only (TodayHome.enabledKey's note).
+    @CohortDefault(TodayHome.enabledKey, newInstall: true) private var todayEnabled
     /// Settings hub (Miles, 2026-10-27): Settings draws as the hub unless General, Advanced, Use classic Settings is on.
     @AppStorage(SettingsHub.classicKey) private var classicSettings = false
     @StateObject private var today = TodayHomeStore()
