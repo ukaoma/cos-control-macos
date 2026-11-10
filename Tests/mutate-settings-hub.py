@@ -53,8 +53,17 @@ MUTANTS = [
      '        .init(id: "glasses.phone", category: .glasses, title: "Phone and web", blurb: "COS in your phone\'s browser, and approvals from your phone."),\n        .init(id: "glasses.devices", category: .glasses, title: "Devices", blurb: "Tailscale, pairing and the glasses app."),\n',
      '        .init(id: "glasses.devices", category: .glasses, title: "Devices", blurb: "Tailscale, pairing and the glasses app."),\n        .init(id: "glasses.phone", category: .glasses, title: "Phone and web", blurb: "COS in your phone\'s browser, and approvals from your phone."),\n',
      "Camera's QR"),
-    ("d2: Phone approvals leaves Basic", C, '        "SG-02", "SG-11", "SG-13", "UT-29", "PK-01",\n', '        "SG-02", "SG-11", "SG-13", "UT-29",\n',
+    ("d2: Phone approvals leaves Basic", C, '        "SG-02", "SG-11", "SG-13", "UT-29", "PK-01", "WB-01",\n', '        "SG-02", "SG-11", "SG-13", "UT-29", "WB-01",\n',
      "Phone approvals sits beside it, never Advanced, in Basic too"),
+    ("d2: sign out runs on the first press", H, "                    Button(SettingsHubWebRevoke.button) { result = nil; confirming = true }\n",
+     "                    Button(SettingsHubWebRevoke.button) { result = nil; run() }\n", "two steps"),
+    ("d2: sign out says Done on a refusal", C, '''        default:
+            let status = httpStatus.map { " (\\($0))" } ?? ""
+            return ("The server did not sign browsers out\\(status). Nothing changed. Try again.", false)''',
+     '''        default:
+            return ("Done. Every browser is signed out. Sign in again with Open COS on your phone.", true)''', "honest failure line, never Done"),
+    ("d2: sign out skips the server check", "HelperSources/main.swift", "        guard runtimeState(snapshot: ownershipSnapshot(), maintenance: maintenanceStatus(), health: request(\"/api/health\", timeout: 12)?.body) == .managedHealthy else {\n            emit(ok: true, message: \"The COS server is not verified yet\", details: [\"transport\": \"not_ready\"])\n            return\n        }\n        guard let token = try? readToken() else {\n            emit(ok: true, message: \"No pairing token\", details: [\"transport\": \"no_token\"])\n            return\n        }\n        guard let response = request(\"/api/web-session/revoke-all\"",
+     "        guard let token = try? readToken() else {\n            emit(ok: true, message: \"No pairing token\", details: [\"transport\": \"no_token\"])\n            return\n        }\n        guard let response = request(\"/api/web-session/revoke-all\"", "managed-server check runs first"),
     ("d2: two Quiet hours again", C, '.init("WK-07", "Fold evenings and weekends",', '.init("WK-07", "Quiet hours",', "one Quiet hours"),
     # View wiring (pins)
     ("d2: the page ignores its view", V, "                                hubCategoryContent(hubCategory)\n                                    .environment(\\.settingsHubView, hubView)\n",

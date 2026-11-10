@@ -332,6 +332,21 @@ pin("if voiceGuide.devicePath == .glasses {\n                Button { confirmRes
 pin("setup wizard" not in views and 'Button("Open Dictionary") { model.openDictionaryInActivity() }' in views, "no setup wizard: the Dictionary, with its button")
 pin("Turn on Live transcript in Settings" not in views and 'Button("Turn on Live transcript") { showLiveTranscript = true; model.liveTranscriptSettingChanged() }' in views,
     "the recording card turns Live transcript on itself")
+# 0.5.387 (Miles 2026-11-09): Sign out every browser. Mounted once, in Phone and web after the phone rows, through the helper's
+# one verb; it acts only from the confirm button, and the helper calls only the server's existing revoke-all route.
+helper = code(read("HelperSources/main.swift"))
+pin(views.count("SettingsHubWebRevokeRow(model: model, phone: model.phoneSignIn)") == 1
+    and views.index('.settingsHubAnchor("PK-01")') < views.index("SettingsHubWebRevokeRow(model: model, phone: model.phoneSignIn)") < views.index('hubCard("glasses.devices"'),
+    "Sign out every browser mounts once, under the phone rows in Phone and web")
+row = body(shell, "struct SettingsHubWebRevokeRow: View {", "\n/// 0.5.387 (audit F1)") if "\n/// 0.5.387 (audit F1)" in shell else body(shell, "struct SettingsHubWebRevokeRow: View {", "struct SettingsHubServerNoticeLine")
+pin("if !phone.serverTooOld {" in row and row.count("run()") == 2 and 'Button(SettingsHubWebRevoke.confirmButton) { run() }' in row
+    and 'Button(SettingsHubWebRevoke.button) { result = nil; confirming = true }' in row and row.count('"web-revoke-all"') == 1,
+    "two steps: the first press only asks, the confirm runs web-revoke-all; hidden like the phone sign-in on an older server")
+pin('case "web-revoke-all": try emitWebRevokeAll()' in helper and helper.count('"/api/web-session/revoke-all"') == 1
+    and helper.count("/api/web-session/revoke-all") == 1, "the helper's one verb calls only the existing revoke-all route")
+fn = body(helper, "    private func emitWebRevokeAll() throws {", "\n    }\n")
+pin(all(k in fn for k in ("runtimeState(snapshot:", "readToken()", '"/api/web-session/revoke-all"'))
+    and fn.index("runtimeState(snapshot:") < fn.index("readToken()") < fn.index('"/api/web-session/revoke-all"'), "Copy token's managed-server check runs first, then the token")
 # 0.5.387: the server notice sits in the top strip of every page, with its action.
 top = body(views, "    func hubTopStrip(_ reader: ScrollViewProxy) -> some View {", "    func hubLabel(_ id: String) -> String {")
 pin("SettingsHubServerNotice.line(checked: model.status.runtimeState != \"unknown\", running: model.status.running)" in top

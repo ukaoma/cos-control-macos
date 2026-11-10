@@ -299,6 +299,24 @@ import Foundation
             check(SettingsHubView.resolved(stored: "all", newInstall: cohort) == .all && SettingsHubView.resolved(stored: "basic", newInstall: cohort) == .basic,
                   "an explicit choice wins for every cohort")
         }
+        // Sign out every browser (Miles 2026-11-09): under Open COS on your phone, Basic and All, never Advanced.
+        let revoke = SettingsHubCatalog.item("WB-01")
+        check(revoke?.label == "Sign out every browser" && revoke?.group == "glasses.phone" && revoke?.advanced == false && revoke?.mount == .group
+              && SettingsHubCatalog.isBasic("WB-01"), "Sign out every browser is a Phone and web row, in Basic, not Advanced")
+        for query in ["sign out", "browser", "revoke", "sign out every browser"] {
+            check(ids(query).contains("WB-01"), "search finds Sign out every browser by \(query)")
+        }
+        let done = SettingsHubWebRevoke.result(transport: "answered", httpStatus: 200)
+        check(done.ok && done.line.hasPrefix("Done."), "the server's yes says Done")
+        for (transport, status) in [("unsupported", 404), ("not_ready", nil), ("unavailable", nil), ("no_token", nil), ("failed", 500), (nil, nil)] as [(String?, Int?)] {
+            let r = SettingsHubWebRevoke.result(transport: transport, httpStatus: status)
+            check(!r.ok && !r.line.contains("Done") && !r.line.isEmpty, "\(transport ?? "nil") is an honest failure line, never Done")
+        }
+        check(SettingsHubWebRevoke.result(transport: "unsupported", httpStatus: 404).line.contains("Update the server")
+              && SettingsHubWebRevoke.result(transport: "failed", httpStatus: 500).line.contains("(500)"), "too old says update; a refusal names its status")
+        for line in [SettingsHubWebRevoke.button, SettingsHubWebRevoke.confirmLine, SettingsHubWebRevoke.confirmButton, done.line] {
+            check(!line.contains("—") && !line.contains("→"), "\(line) is plain")
+        }
         check(SettingsHubCatalog.isBasic("UT-29") && SettingsHubCatalog.isBasic("PK-01") && SettingsHubCatalog.hasBasicRows("glasses.phone"),
               "Open COS on your phone and Phone approvals are in Basic, so the Phone and web card draws there")
         // drawn: every row in All, the basic ones in Basic, and a line the catalog does not know never hidden.

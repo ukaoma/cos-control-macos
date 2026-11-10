@@ -61,7 +61,8 @@ with tempfile.TemporaryDirectory(prefix='cos-web-signin-', dir='/tmp') as tmp:
             check(False, f'{verb}: prints one JSON answer, got {out[:300]!r}')
 
     try:
-        for verb in ('web-handoff', 'web-device-code'):
+        # 0.5.387 (lane D2): web-revoke-all (Sign out every browser) runs the same check first.
+        for verb in ('web-handoff', 'web-device-code', 'web-revoke-all'):
             before = len(requests)
             got = run(verb)
             check(not any(path.startswith('/api/web-session/') for _, path, _ in requests[before:]),

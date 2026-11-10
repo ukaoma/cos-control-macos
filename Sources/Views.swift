@@ -4300,6 +4300,8 @@ private extension ControlPanel {
             // under Advanced. Zero height unless the server says the flag is on.
             WebKeySettingsBlock(state: model.webKey)
                 .settingsHubAnchor("PK-01")
+            // WB-01 (Miles 2026-11-09): Sign out every browser, the server's revoke-all route through the helper.
+            SettingsHubWebRevokeRow(model: model, phone: model.phoneSignIn)
         }
         hubCard("glasses.devices", advanced: hubAdvancedCount("glasses.devices")) {
             SettingsHubBlock { SetupDeviceChoice(guide: model.setupGuide) }

@@ -197,6 +197,10 @@ enum SettingsHubCatalog {
               advanced: false, mount: .group, keywords: ["phone", "browser", "sign in", "web", "qr", "control web", "safari", "sign-in code", "login"]),
         // Server 6.99.31 (COS_WEB_KEY_AUTHORITY, default off): Phone approvals, the Touch ID key that enrolls a phone for web
         // approvals. Drawn only while the server says the flag is on (Sources/WebKeyViews.swift). A hub row, not an inventory row.
+        // 0.5.387 (Miles 2026-11-09, lane D2): Sign out every browser, the server's POST /api/web-session/revoke-all through the
+        // helper's web-revoke-all. Under Open COS on your phone, in Basic and All, hidden with the phone sign-in on a server without it.
+        .init("WB-01", "Sign out every browser", "Ends every Control Web sign-in on phones and browsers. You can sign in again from here.", old: "", group: "glasses.phone",
+              advanced: false, mount: .group, keywords: ["sign out", "browser", "phone", "revoke", "log out", "control web", "sessions", "everywhere"]),
         .init("PK-01", "Phone approvals", "Approve agent actions from your iPhone with its passkey and Face ID. Touch ID on this Mac enrolls the phone.", old: "", group: "glasses.phone",
               advanced: false, mount: .group, keywords: ["phone key", "approvals", "approve", "touch id", "enroll", "revoke", "web key", "passkey"]),
         // 0.5.371 (server Drop it P1): the one Drop it switch, off by default, shown only for a server that has Drop it. A hub row, not
@@ -631,13 +635,14 @@ enum SettingsHubCatalog {
     /// - REACH-01 Pings and REACH-05 Quiet hours: the brief keeps these two of COS reaching out's 17 rows visible.
     /// - PM-05 to PM-07: the permission list is one block (PermissionGuideList), so Basic draws every row in it.
     /// - DR-01 Check results: the answer to Run checks, which is in Basic.
+    /// - WB-01 Sign out every browser: Miles, 2026-11-09 ("Renew while in use, 30-day cap"), beside Open COS on your phone.
     static let basicIDs: Set<String> = [
         // General
         "G-01", "G-02", "G-03", "WK-06", "CAL-01", "SG-01",
         // AI and accounts
         "SG-03", "KL-01", "OUT-07",
         // Glasses, phone and web
-        "SG-02", "SG-11", "SG-13", "UT-29", "PK-01",
+        "SG-02", "SG-11", "SG-13", "UT-29", "PK-01", "WB-01",
         // Meetings
         "MT-01", "MT-03", "MT-04", "MA-01", "UT-16", "OUT-01",
         // Dictation
@@ -655,7 +660,7 @@ enum SettingsHubCatalog {
     ]
     /// The basic rows per page stay inside these bounds (Tests/SettingsHubChecks.swift). A change outside them is a decision.
     static let basicRange: [SettingsHubCategory: ClosedRange<Int>] = [
-        .general: 5...7, .ai: 2...4, .glasses: 3...5, .meetings: 5...7, .dictation: 6...9, .voice: 1...3,
+        .general: 5...7, .ai: 2...4, .glasses: 3...6, .meetings: 5...7, .dictation: 6...9, .voice: 1...3,
         .work: 8...11, .privacy: 4...8, .pet: 2...4, .system: 4...7,
     ]
     static func isBasic(_ id: String) -> Bool { basicIDs.contains(id) }
@@ -858,6 +863,26 @@ enum SettingsHubServerNotice {
         case .start: "Start server"
         case .install: "Install server"
         case .repair: "Repair server"
+        }
+    }
+}
+
+/// 0.5.387 (Miles 2026-11-09): Sign out every browser. The helper's `web-revoke-all` answer in words. Done only when the server
+/// said so; every other answer says what happened and what to do, never "Done".
+enum SettingsHubWebRevoke {
+    static let button = "Sign out…"
+    static let confirmLine = "Every phone and browser signed in to Control Web must sign in again. The glasses and the phone app stay connected."
+    static let confirmButton = "Sign out every browser"
+    static func result(transport: String?, httpStatus: Int?) -> (line: String, ok: Bool) {
+        switch transport {
+        case "answered": return ("Done. Every browser is signed out. Sign in again with Open COS on your phone.", true)
+        case "unsupported": return ("This COS server cannot sign browsers out yet. Update the server in System and updates.", false)
+        case "not_ready": return ("The COS server is not running or not verified yet. Start it, then try again.", false)
+        case "unavailable": return ("The COS server did not answer. Nothing was signed out. Try again in a moment.", false)
+        case "no_token": return ("COS Control could not read the server's pairing token. Nothing was signed out. Run checks in System and updates.", false)
+        default:
+            let status = httpStatus.map { " (\($0))" } ?? ""
+            return ("The server did not sign browsers out\(status). Nothing changed. Try again.", false)
         }
     }
 }

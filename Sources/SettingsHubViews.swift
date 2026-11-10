@@ -711,6 +711,46 @@ struct SettingsHubViewSwitch: View {
     }
 }
 
+/// 0.5.387 (Miles 2026-11-09): Sign out every browser, under Open COS on your phone. Press, then confirm; the server's answer in
+/// words (SettingsHubWebRevoke). Hidden, like the phone sign-in block, on a server without Control Web sign-in.
+struct SettingsHubWebRevokeRow: View {
+    @ObservedObject var model: ControllerModel
+    @ObservedObject var phone: PhoneSignInState
+    @State private var confirming = false
+    @State private var busy = false
+    @State private var result: (line: String, ok: Bool)?
+    var body: some View {
+        if !phone.serverTooOld {
+            SettingsHubRow("WB-01") {
+                if confirming {
+                    HStack(spacing: 8) {
+                        Button(SettingsHubWebRevoke.confirmButton) { run() }
+                            .buttonStyle(TodayButtonStyle(primary: true, small: true)).disabled(busy)
+                            .accessibilityIdentifier("settings-web-revoke-confirm")
+                        Button("Cancel") { confirming = false }.buttonStyle(TodayButtonStyle(small: true)).disabled(busy)
+                    }
+                } else {
+                    Button(SettingsHubWebRevoke.button) { result = nil; confirming = true }
+                        .buttonStyle(TodayButtonStyle(small: true)).disabled(busy)
+                        .accessibilityIdentifier("settings-web-revoke")
+                }
+            }
+            if confirming { SettingsHubNote(text: SettingsHubWebRevoke.confirmLine, tone: .warning) }
+            if let result { SettingsHubNote(text: result.line, tone: result.ok ? .plain : .warning) }
+        }
+    }
+    private func run() {
+        busy = true
+        Task { @MainActor in
+            let answer = try? await model.runHelper(["web-revoke-all"], timeout: 30)
+            result = SettingsHubWebRevoke.result(transport: answer?.details["transport"]?.string ?? (answer == nil ? "unavailable" : nil),
+                                                 httpStatus: answer?.details["httpStatus"]?.int)
+            busy = false
+            confirming = false
+        }
+    }
+}
+
 /// 0.5.387 (audit F1): the server is not answering. One line at the top of every page, with the action that brings it back.
 struct SettingsHubServerNoticeLine: View {
     let text: String
