@@ -38,6 +38,13 @@ pin(prior and f"static let priorSetupKeys = {prior.group(1)}" in cohort, "keys",
 install = re.search(r'static let installKey = "([^"]+)"', lanes)
 pin(install and f'static let keyLanesInstallKey = "{install.group(1)}"' in cohort, "keys", "keyLanesInstallKey equals KeyLanes.installKey")
 pin('static let key = "cos.install.cohort"' in cohort, "keys", "the cohort key is cos.install.cohort")
+today = re.search(r'static let enabledKey = "([^"]+)"', models[models.index("enum TodayHome {"):])
+pin(today and f'static let todayHomeKey = "{today.group(1)}"' in cohort, "keys", "todayHomeKey equals TodayHome.enabledKey")
+# Today home for new installs: written by the launch decision, never by a reader's own default.
+launch = cohort[cohort.index("static func decideAtLaunch"):cohort.index("// MARK: First-run defaults")]
+pin("applyNewInstallDefaults(defaults, cohort: cohort)" in launch, "today", "decideAtLaunch applies the new-install defaults")
+pin("static func enabled(_ defaults: UserDefaults) -> Bool { defaults.object(forKey: enabledKey) as? Bool ?? false }" in models,
+    "today", "TodayHome.enabled keeps its off default (existing Macs that never chose stay on the classic home)")
 
 # The file compiles alone: Foundation only, nothing from the app.
 pin(re.findall(r"^import (\w+)", cohort, re.M) == ["Foundation"], "standalone", "InstallCohort.swift imports Foundation only")

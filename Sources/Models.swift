@@ -13727,6 +13727,8 @@ enum TodayHome {
     // MARK: Settings (UserDefaults keys; Settings > Activity)
 
     /// The integrated candidate's opt-in switch. Off: the stable 0.5.259 home and the top lens rail, unchanged.
+    /// 0.5.387 (lane D1, Miles 2026-11-09): a NEW install gets it written ON once at launch
+    /// (InstallCohort.applyNewInstallDefaults). An existing Mac is never written, so one that never chose keeps off.
     static let enabledKey = "activityTodayHomeEnabled"
     /// Quiet hours (Miles's default, 2026-10-21): after 6 PM and on weekends, fold Needs you below agent-blocking items.
     static let quietHoursKey = "activityTodayQuietHours"

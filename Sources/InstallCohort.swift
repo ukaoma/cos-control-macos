@@ -66,7 +66,28 @@ enum InstallCohort {
 
     /// Called once at launch (ControlSetup.swift, SetupWindowPresenter's init, before any window or status read).
     @discardableResult
-    static func decideAtLaunch(defaults: UserDefaults = .standard) -> Cohort { current(defaults: defaults) }
+    static func decideAtLaunch(defaults: UserDefaults = .standard) -> Cohort {
+        let cohort = current(defaults: defaults)
+        applyNewInstallDefaults(defaults, cohort: cohort)
+        return cohort
+    }
+
+    // MARK: First-run defaults for NEW installs only
+
+    /// Mirrors TodayHome.enabledKey (Models.swift); Tests/install-cohort-pins.py keeps them equal.
+    static let todayHomeKey = "activityTodayHomeEnabled"
+
+    /// Miles, 2026-11-09: "Today home ON for new installs only. Existing users unchanged." The Ask box and Command-K live
+    /// only in the Today frame, so a new user should land there. Writes true only on a NEW Mac and only when the switch
+    /// was never set, so a choice the person made (off) is never overwritten, and an existing Mac is never touched,
+    /// including one that never opened the switch (it stays on the classic home). Every reader (@AppStorage and
+    /// TodayHome.enabled) sees the written value, so no reader's own default changes. Returns the keys it wrote.
+    @discardableResult
+    static func applyNewInstallDefaults(_ defaults: UserDefaults, cohort: Cohort) -> [String] {
+        guard cohort == .new, defaults.object(forKey: todayHomeKey) == nil else { return [] }
+        defaults.set(true, forKey: todayHomeKey)
+        return [todayHomeKey]
+    }
 
     // MARK: Live probes (read only; nothing here prompts or writes)
 

@@ -91,6 +91,26 @@ import Foundation
             check(InstallCohort.liveEvidence(defaults: e, home: home).priorSetupKey, "\(key) counts as prior setup")
         }
 
+        // ── Today home for NEW installs only (Miles 2026-11-09).
+        let fresh = freshDefaults()
+        check(InstallCohort.applyNewInstallDefaults(fresh, cohort: .new) == [InstallCohort.todayHomeKey], "a new Mac gets Today home written")
+        check(fresh.object(forKey: InstallCohort.todayHomeKey) as? Bool == true, "a new Mac's Today home is on")
+        check(InstallCohort.applyNewInstallDefaults(fresh, cohort: .new).isEmpty, "the second launch writes nothing")
+        let turnedOff = freshDefaults(); turnedOff.set(false, forKey: InstallCohort.todayHomeKey)
+        check(InstallCohort.applyNewInstallDefaults(turnedOff, cohort: .new).isEmpty, "a new Mac that turned Today off is not overwritten")
+        check(turnedOff.object(forKey: InstallCohort.todayHomeKey) as? Bool == false, "Today stays off after the person chose off")
+        let untouched = freshDefaults()
+        check(InstallCohort.applyNewInstallDefaults(untouched, cohort: .existing).isEmpty, "an existing Mac gets nothing written")
+        check(untouched.object(forKey: InstallCohort.todayHomeKey) == nil, "an existing Mac that never touched Today keeps no value (classic home)")
+        let existingOn = freshDefaults(); existingOn.set(true, forKey: InstallCohort.todayHomeKey)
+        check(InstallCohort.applyNewInstallDefaults(existingOn, cohort: .existing).isEmpty
+              && existingOn.object(forKey: InstallCohort.todayHomeKey) as? Bool == true, "an existing Mac that chose Today keeps it")
+        // decideAtLaunch in a test host: existing, so it writes nothing at all.
+        let host = freshDefaults()
+        check(InstallCohort.decideAtLaunch(defaults: host) == .existing, "decideAtLaunch in a test host answers existing")
+        check(host.object(forKey: InstallCohort.todayHomeKey) == nil && host.object(forKey: InstallCohort.key) == nil,
+              "decideAtLaunch in a test host writes nothing")
+
         print("install cohort checks: \(passed) passed")
     }
 }

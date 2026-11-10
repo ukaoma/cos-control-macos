@@ -15,7 +15,7 @@ if [[ "$LANE" == "all" || "$LANE" == "pins" ]]; then
   OUT="$(/usr/bin/python3 "$ROOT/Tests/install-cohort-pins.py" "$ROOT")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*pins: }%% passed*}"
-  (( COUNT >= 17 )) || { print -u2 "install cohort pins ran only $COUNT (expected at least 17)"; exit 1; }
+  (( COUNT >= 20 )) || { print -u2 "install cohort pins ran only $COUNT (expected at least 20)"; exit 1; }
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "checks" ]]; then
@@ -25,5 +25,5 @@ if [[ "$LANE" == "all" || "$LANE" == "checks" ]]; then
   OUT="$(env CFFIXED_USER_HOME="$DIR/home" HOME="$DIR/home" "$DIR/install-cohort-checks")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*checks: }%% passed*}"
-  (( COUNT >= 62 )) || { print -u2 "install cohort checks ran only $COUNT (expected at least 62)"; exit 1; }
+  (( COUNT >= 72 )) || { print -u2 "install cohort checks ran only $COUNT (expected at least 72)"; exit 1; }
 fi
