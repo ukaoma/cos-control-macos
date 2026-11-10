@@ -163,7 +163,9 @@ def main():
                 print(f"SURVIVED {name}", flush=True)
             else:
                 killed += 1
-                last = [l for l in tail.splitlines() if "FAIL" in l or "failed" in l][-1:] or tail.splitlines()[-1:]
+                # The named failing check first (Q1, final review), else the lane's failure line.
+                named = [l for l in tail.splitlines() if "check failed [" in l or "check FAILED" in l or "pin failed [" in l or l.startswith("FAIL [")]
+                last = named[:1] or [l for l in tail.splitlines() if "FAIL" in l or "failed" in l][-1:] or tail.splitlines()[-1:]
                 print(f"killed   {name}: {last[0][:180] if last else ''}", flush=True)
         total = killed + len(survived)
         print(f"d1 mutants: {killed}/{total} killed")
