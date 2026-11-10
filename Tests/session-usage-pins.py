@@ -152,7 +152,7 @@ PINS = [
                and between(t[VIEW], "func refresh(importSessions: Bool", "COS cost could not refresh").count("catch is CancellationError {") == 1,
      VIEW, "        } catch is CancellationError {\n            return\n        } catch { self.error = \"Usage could not refresh", "        } catch { self.error = \"Usage could not refresh"),
     ("the share is said as a ceiling when some of the person's own usage has no price",
-     lambda t: once(t[VIEW], "P.compareLine(share: share, price: price, lean: P.shareLean(report, ranPartial: ranPartial(report)))") and once(t[VIEW], "usage: usageState, ranPartial: ranPartial(report))")
+     lambda t: once(t[VIEW], "P.compareLine(share: share, price: price, lean: P.shareLean(report, ranPartial: ranPartial(report)))") and once(t[VIEW], "usage: usageState, ranPartial: ranPartial(report),\n                                    ranEstimated: P.ranEstimated(")
                and once(t[VIEW], "P.sessionNotes(report, ranPartial: ranPartial(report))"),
      VIEW, "lean: P.shareLean(report, ranPartial: ranPartial(report))", "lean: .plain"),
     ("the footer's share note reads the same rule as the figure",
