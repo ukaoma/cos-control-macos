@@ -592,6 +592,7 @@ final class COSControlHelper {
         case "work-link-meeting": try emitWorkUpdate(action: "meeting")
         case "work-create-meeting-task": try emitMeetingTaskCreate()
         case "work-loop": try emitWorkLoop(args: args)
+        case "session-questions": try emitSessionQuestions(args: args)
         case "work-intake": try emitWorkIntake()
         case "work-intake-resolve": try emitWorkIntakeResolve()
         case "work-session-recommend": try emitWorkSessionRecommend()
@@ -5999,6 +6000,45 @@ final class COSControlHelper {
             throw HelperError.message((error?["message"] as? String) ?? (error?["code"] as? String) ?? "Work action unavailable")
         }
         emit(ok: true, message: "Work updated", details: result)
+    }
+
+    /// 0.5.388 (D4 item 7, X1 contract v1): COS Control's question card. `list` reads GET /api/session-questions WITHOUT a
+    /// `client` query, so Control is never counted as an answering client and never changes when the server holds a
+    /// question. Only `waiting[]` is passed on. `answer` posts one question answer to a held item's id; the body is
+    /// checked for its shape here and fully by the server. Approvals and hand-backs are not sent from Control.
+    private func emitSessionQuestions(args: [String]) throws {
+        let candidate = try reviewCandidateTransport(), token = try candidate?.token ?? readToken()
+        switch option("--op", in: args) {
+        case "list":
+            guard let response = request("/api/session-questions", method: "GET", token: token, timeout: 10, reviewCandidatePort: candidate?.port) else {
+                throw HelperError.message("COS did not answer, so its questions could not be read.")
+            }
+            guard response.status == 200, let body = response.body else {
+                emit(ok: true, message: "No questions list", details: ["waiting": [Any](), "present": false, "httpStatus": response.status]); return
+            }
+            // `present`: whether the server sends the list at all (X1: only while a hold switch is on), so Control reads
+            // less often when it does not.
+            emit(ok: true, message: "Questions read", details: ["waiting": body["waiting"] as? [Any] ?? [Any](), "present": body["waiting"] is [Any], "httpStatus": 200])
+        case "answer":
+            guard let id = option("--id", in: args), id.range(of: #"\Apq_[0-9a-f]{24}\z"#, options: .regularExpression) != nil else {
+                throw HelperError.message("Choose a question to answer.")
+            }
+            let data = try readBoundedStdin(64_000)
+            guard let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any], Set(body.keys) == ["clientAnswerId", "answers"],
+                  body["clientAnswerId"] is String, let answers = body["answers"] as? [[String: Any]], !answers.isEmpty,
+                  answers.allSatisfy({ Set($0.keys).isSubset(of: ["labels", "other"]) }) else {
+                throw HelperError.message("Invalid answer")
+            }
+            guard let response = request("/api/session-questions/\(id)/answer", method: "POST", token: token, body: String(decoding: data, as: UTF8.self),
+                                         timeout: 20, reviewCandidatePort: candidate?.port) else {
+                throw HelperError.message("The answer was not confirmed. Check the session before answering again.")
+            }
+            let code = response.body?["error"] as? String, reason = response.body?["reason"] as? String
+            emit(ok: true, message: response.status == 200 ? "Answer sent" : "Answer not taken",
+                 details: ["httpStatus": response.status, "error": code ?? NSNull(), "reason": reason ?? NSNull()])
+        default:
+            throw HelperError.message("Choose list or answer")
+        }
     }
 
     private func emitWorkIntakeResolve() throws {

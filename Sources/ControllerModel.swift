@@ -6222,6 +6222,67 @@ final class ControllerModel: ObservableObject {
             ?? petCompletions.first { $0.id == id }.flatMap(ClaudeSession.fromCompletion)
     }
 
+    // MARK: Session question card (0.5.388, D4 item 7)
+
+    /// The questions live Claude sessions wait on (`waiting[]`, X1 contract v1). Empty on a server without it.
+    @Published var sessionQuestions: [TodayHome.SessionQuestion] = []
+    /// The last answer's outcome, by question key. Kept while the card shows; cleared with the question.
+    @Published var sessionQuestionNotes: [String: TodayHome.AnswerOutcome] = [:]
+    @Published var sessionQuestionSending: Set<String> = []
+    /// One answer id per question and set of answers until the server settles it: a retry of the same answers replays,
+    /// never doubles; different answers get a new id (TodayHome.reusableAnswerID).
+    private var sessionQuestionAnswerIDs: [String: TodayHome.AnswerAttempt] = [:]
+    private var sessionQuestionsReadAt: Date?
+    /// The wait before the next read: 10 s while the server sends the list, 5 minutes when it does not.
+    private var sessionQuestionsDelay: TimeInterval = TodayHome.questionsReadDelay(listPresent: true)
+    static let sessionQuestionsMinSeconds: TimeInterval = 10
+
+    func sessionQuestion(for session: ClaudeSession) -> TodayHome.SessionQuestion? {
+        TodayHome.question(for: session, in: sessionQuestions)
+    }
+
+    /// Reads the list only while a Claude session is waiting, at most every 10 seconds. The helper lists WITHOUT a
+    /// `client` (Tests/session-question-pins.py): Control never counts as an answering client, so it never changes
+    /// when the server holds a question; it answers only what the glasses or phone already hold.
+    func loadSessionQuestionsIfWaiting(force: Bool = false) async {
+        let waiting = (claudeSessions + petSessionsRaw).contains { $0.provider == "claude" && TodayHome.isWaiting($0) }
+        guard waiting else {
+            if !sessionQuestions.isEmpty { sessionQuestions = [] }
+            sessionQuestionNotes = [:]; sessionQuestionAnswerIDs = [:]
+            return
+        }
+        if !force, let last = sessionQuestionsReadAt, Date().timeIntervalSince(last) < sessionQuestionsDelay { return }
+        sessionQuestionsReadAt = Date()
+        guard let response = try? await helper.run(["session-questions", "--op", "list"], timeout: 15), response.ok else { return }
+        sessionQuestionsDelay = TodayHome.questionsReadDelay(listPresent: response.details["present"]?.bool == true)
+        let next = (response.details["waiting"]?.array ?? []).compactMap(TodayHome.SessionQuestion.init)
+        let keys = Set(next.map(\.key))
+        sessionQuestionNotes = sessionQuestionNotes.filter { keys.contains($0.key) }
+        sessionQuestionAnswerIDs = sessionQuestionAnswerIDs.filter { keys.contains($0.key) }
+        if next != sessionQuestions { sessionQuestions = next }
+    }
+
+    /// `place`: where the prompt is ("in Claude", "in iTerm2", "at its prompt"), for the outcome lines.
+    func answerSessionQuestion(_ question: TodayHome.SessionQuestion, picks: [TodayHome.QuestionPick], place: String) async {
+        guard let held = question.heldId, !sessionQuestionSending.contains(question.key),
+              let probe = TodayHome.answerBody(question, picks: picks, clientAnswerId: "control-probe"),
+              let answers = TodayHome.answerSignature(probe) else { return }
+        let answerID = TodayHome.reusableAnswerID(sessionQuestionAnswerIDs[question.key], answers: answers) ?? "control-" + UUID().uuidString.lowercased()
+        guard let body = TodayHome.answerBody(question, picks: picks, clientAnswerId: answerID),
+              let data = try? JSONSerialization.data(withJSONObject: body) else { return }
+        sessionQuestionAnswerIDs[question.key] = TodayHome.AnswerAttempt(id: answerID, answers: answers)
+        sessionQuestionSending.insert(question.key)
+        defer { sessionQuestionSending.remove(question.key) }
+        var outcome = TodayHome.AnswerOutcome.failed(TodayHome.answerUnconfirmed)
+        if let response = try? await helper.run(["session-questions", "--op", "answer", "--id", held], timeout: 30, stdinData: data), response.ok {
+            outcome = TodayHome.answerOutcome(status: response.details["httpStatus"]?.int ?? 0, error: response.details["error"]?.string,
+                                              reason: response.details["reason"]?.string, place: place)
+        }
+        sessionQuestionNotes[question.key] = outcome
+        if case .failed = outcome {} else { sessionQuestionAnswerIDs[question.key] = nil }
+        await loadSessionQuestionsIfWaiting(force: true)
+    }
+
     private func revealPetSession(_ session: ClaudeSession) async {
         petNotice = nil
         petRevealSucceeded = false

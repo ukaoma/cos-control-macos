@@ -6386,6 +6386,115 @@ struct SessionChatHugWidth: Layout {
     }
 }
 
+/// 0.5.388 (D4 item 7, X1 contract v1): a question a live Claude session waits on. Held and answerable: its options, an
+/// Other box and Send answer (the caller keeps "Answer in ..." beside it). At the Mac: the words, read only. Answered: one
+/// line. Nothing here approves a tool or hands a question back; those stay on the glasses, the phone and the Mac.
+struct SessionQuestionCard: View {
+    @ObservedObject var model: ControllerModel
+    let question: TodayHome.SessionQuestion
+    /// Where the prompt is ("in Claude", "in iTerm2", "at its prompt"), for the outcome lines.
+    let place: String
+    @State private var picks: [TodayHome.QuestionPick] = []
+    /// The question the picks belong to (Q1 M1): another key starts empty.
+    @State private var picksKey: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if question.state == .answered || model.sessionQuestionNotes[question.key] == .answered {
+                Text(TodayHome.answeredLine).font(COSType.body(12.5, weight: .medium))
+            } else {
+                if question.answerable {
+                    Text(TodayHome.heldLine).font(COSType.body(12)).foregroundStyle(.secondary)
+                }
+                ForEach(Array(question.questions.enumerated()), id: \.offset) { index, item in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(item.question)
+                            .font(COSType.body(13, weight: .medium))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                        ForEach(item.options, id: \.label) { option in optionRow(index, item, option) }
+                        if question.answerable {
+                            TextField("Other", text: otherBinding(index, single: !item.multiSelect))
+                                .textFieldStyle(.plain)
+                                .cosField()
+                        }
+                    }
+                }
+                if question.answerable {
+                    let sending = model.sessionQuestionSending.contains(question.key)
+                    Button(sending ? "Sending\u{2026}" : "Send answer") {
+                        Task { await model.answerSessionQuestion(question, picks: picks, place: place) }
+                    }
+                    .buttonStyle(COSPrimaryButtonStyle())
+                    .controlSize(.small)
+                    .disabled(sending || TodayHome.answerBody(question, picks: picks, clientAnswerId: "control-check") == nil)
+                    .accessibilityIdentifier("session-question-send")
+                }
+                switch model.sessionQuestionNotes[question.key] {
+                case .settled(let line)?:
+                    Text(line).font(COSType.body(12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                case .failed(let line)?:
+                    Text(line).font(COSType.body(12)).foregroundStyle(COSPalette.danger).fixedSize(horizontal: false, vertical: true)
+                default:
+                    EmptyView()
+                }
+            }
+        }
+        .onAppear { resetPicks() }
+        .onChange(of: question.key) { _, _ in resetPicks() }
+    }
+
+    private func resetPicks() {
+        picks = TodayHome.picks(picks, keptFor: picksKey, question: question)
+        picksKey = question.key
+    }
+
+    @ViewBuilder
+    private func optionRow(_ index: Int, _ item: TodayHome.SessionQuestion.Item, _ option: TodayHome.SessionQuestion.Option) -> some View {
+        let chosen = picks.indices.contains(index) && picks[index].labels.contains(option.label)
+        let line = HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if question.answerable {
+                Image(systemName: item.multiSelect ? (chosen ? "checkmark.square.fill" : "square") : (chosen ? "largecircle.fill.circle" : "circle"))
+                    .font(.system(size: 12))
+                    .foregroundStyle(chosen ? COSPalette.accent : Color.secondary)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(option.label).font(COSType.body(12.5)).fixedSize(horizontal: false, vertical: true)
+                if !option.detail.isEmpty {
+                    Text(option.detail).font(COSType.body(11.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        if question.answerable {
+            Button { choose(index, item, option.label) } label: { line.contentShape(Rectangle()) }
+                .buttonStyle(.plain)
+                .disabled(model.sessionQuestionSending.contains(question.key))
+                .accessibilityAddTraits(chosen ? .isSelected : [])
+        } else {
+            line
+        }
+    }
+
+    private func choose(_ index: Int, _ item: TodayHome.SessionQuestion.Item, _ label: String) {
+        guard picks.indices.contains(index) else { return }
+        if item.multiSelect {
+            if picks[index].labels.contains(label) { picks[index].labels.remove(label) } else { picks[index].labels.insert(label) }
+        } else {
+            picks[index].labels = [label]; picks[index].other = ""
+        }
+    }
+
+    private func otherBinding(_ index: Int, single: Bool) -> Binding<String> {
+        Binding(
+            get: { picks.indices.contains(index) ? picks[index].other : "" },
+            set: { text in
+                guard picks.indices.contains(index) else { return }
+                picks[index].other = text
+                if single && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { picks[index].labels = [] }
+            })
+    }
+}
+
 struct ClaudeSessionDetailPane: View {
     @ObservedObject var model: ControllerModel
     /// 0.5.241: the Work handoff that started or sent to this session, if any.
@@ -6456,21 +6565,41 @@ struct ClaudeSessionDetailPane: View {
             if let row = model.openClaudeRow, case let live = model.petSession(id: row.id) ?? row,
                let answer = TodayHome.answerAtPrompt(live, host: host) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(TodayHome.promptPendingLine)
-                        .font(COSType.body(12.5, weight: .medium))
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let quote = TodayHome.questionText(live) {
+                    // 0.5.388 (D4 item 7): a question the server holds is answered here; its words otherwise.
+                    let card = model.sessionQuestion(for: live)
+                    if card?.answerable != true {
+                        Text(TodayHome.promptPendingLine)
+                            .font(COSType.body(12.5, weight: .medium))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    switch TodayHome.pendingWords(live, card: card) {
+                    case .card(let shown):
+                        SessionQuestionCard(model: model, question: shown, place: TodayHome.promptPlace(live, host: host))
+                            .id(shown.key)
+                    case .words(let quote):
                         Text("\u{201C}" + quote + "\u{201D}")
                             .font(COSType.body(12.5))
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
+                    case .none:
+                        Text(TodayHome.wordsUnavailableLine)
+                            .font(COSType.body(12)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    Button(answer) { model.openSessionInPlatform(live) }
-                        .buttonStyle(COSPrimaryButtonStyle())
-                        .controlSize(.small)
-                        .disabled(model.platformOpening)
-                        .accessibilityIdentifier("session-answer-at-prompt")
+                    if card?.answerable == true {
+                        Button(answer) { model.openSessionInPlatform(live) }
+                            .buttonStyle(COSQuietButtonStyle())
+                            .controlSize(.small)
+                            .disabled(model.platformOpening)
+                            .accessibilityIdentifier("session-answer-at-prompt")
+                    } else {
+                        Button(answer) { model.openSessionInPlatform(live) }
+                            .buttonStyle(COSPrimaryButtonStyle())
+                            .controlSize(.small)
+                            .disabled(model.platformOpening)
+                            .accessibilityIdentifier("session-answer-at-prompt")
+                    }
                 }
                 .padding(.horizontal, 24)
                 .padding(.vertical, 12)
@@ -6610,6 +6739,14 @@ struct ClaudeSessionDetailPane: View {
             }
         }
         // 0.5.380: Quick Look on the private copy; closing it deletes the copy (SessionPreviewStore.quickLookURL).
+        // 0.5.388 (D4 item 7): while a session here waits on a question, its card stays current (the model reads at most
+        // every 10 seconds and only while a Claude session is waiting).
+        .task(id: model.openClaudeRow?.id) {
+            while !Task.isCancelled {
+                await model.loadSessionQuestionsIfWaiting()
+                try? await Task.sleep(for: .seconds(ControllerModel.sessionQuestionsMinSeconds))
+            }
+        }
         .background(SessionPreviewQuickLook(store: model.sessionPreviews))
         .cosConfirm(
             "Send into an open session?",
@@ -8155,7 +8292,8 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
 /// What the Today home reads beyond the model: the in-flight query jobs (only on a server that advertises them), routine
 /// runs, the one next event, which app hosts each live Claude session, and the state of its one-at-a-time actions. Each tick
 /// is one `activity-today` helper run (its reads serial), plus a host lookup and, every 5 minutes, Work's Intake; only while
-/// the window is on screen (TodayTickLoop); never `/api/session-questions`.
+/// the window is on screen (TodayTickLoop). 0.5.388: the question list is read by the model (loadSessionQuestionsIfWaiting),
+/// only while a Claude session waits, and never as an answering client.
 @MainActor final class TodayHomeStore: ObservableObject {
     enum VoiceState: Equatable { case working, listen, named(String, String?), failed(String) }
 
@@ -8950,6 +9088,8 @@ extension ActivityWindow {
             today.catalogRetry.finished(model.claudeSessionsReadState)
         } else if !model.petEnabled { await model.loadClaudeSessions() }
         await today.tick(model: model)
+        // 0.5.388 (D4 item 7): Needs you's question cards. A no-op unless a Claude session waits.
+        await model.loadSessionQuestionsIfWaiting()
         // 0.5.380: a sessions or Today read that failed and now answers arms one reconnect ask (Control Web's BRIEF.reconnect).
         today.reconnects.observe(failed: model.claudeSessionsError != nil || today.reachable == false || today.tickFailed)
         // 0.5.379: the summary is asked about only while the Today home is on screen (Control Web asks only on its Today pane).
@@ -9472,7 +9612,15 @@ extension ActivityWindow {
                 if let why = row.why {
                     Text(why).font(COSType.body(13)).foregroundStyle(TodayInk.sub).padding(.top, 3).fixedSize(horizontal: false, vertical: true)
                 }
-                if let quote = row.quote {
+                // 0.5.388 (D4 item 7): the card while it is answerable, and its "Answered." line after an answer, so a
+                // refresh never brings the old quote back over an answered question.
+                let questionCard = row.session.flatMap { model.sessionQuestion(for: $0) }
+                    .flatMap { $0.answerable || $0.state == .answered || model.sessionQuestionNotes[$0.key] != nil ? $0 : nil }
+                if let questionCard, let session = row.session {
+                    SessionQuestionCard(model: model, question: questionCard,
+                                        place: TodayHome.promptPlace(session, host: self.today.hosts[session.id]))
+                        .id(questionCard.key).padding(.top, 8)
+                } else if let quote = row.quote {
                     Text("\u{201C}" + quote + "\u{201D}")
                         .font(COSType.display(15.5, italic: true)).lineSpacing(4).foregroundStyle(TodayInk.ink)
                         .padding(.leading, 12)
@@ -9504,7 +9652,9 @@ extension ActivityWindow {
         HStack(spacing: 8) {
             switch row.kind {
             case .session:
-                Button(row.openLabel ?? "Open session") { todayOpenNeed(row) }.buttonStyle(TodayButtonStyle(primary: true))
+                // 0.5.388 (D4 item 7): with an answerable card, Send answer is the primary and this one is quiet.
+                Button(row.openLabel ?? "Open session") { todayOpenNeed(row) }
+                    .buttonStyle(TodayButtonStyle(primary: row.session.flatMap { model.sessionQuestion(for: $0) }?.answerable != true))
                 // 0.5.387 (D4): the primary opens the app that holds the prompt; Control's own view stays one click away.
                 if row.answersAtPrompt, let session = row.session {
                     Button("Open session") { todayOpen(.inSessions(session.id)) }.buttonStyle(TodayButtonStyle())
