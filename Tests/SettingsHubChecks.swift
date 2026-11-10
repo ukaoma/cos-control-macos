@@ -270,7 +270,8 @@ import Foundation
             check(range?.contains(n) == true, "\(category.title) has \(n) basic rows, inside \(range.map { "\($0)" } ?? "no range")")
             check(SettingsHubCatalog.groups(in: category).contains { SettingsHubCatalog.hasBasicRows($0.id) }, "\(category.title) draws a card in Basic")
         }
-        check((45...60).contains(total), "about 45 basic rows across the ten pages, \(total)")
+        // About 45 drawn rows in Miles's preview; 63 catalog rows once the recovery rows and the buttons inside C-01 count (lead 2026-11-09).
+        check((45...66).contains(total), "the basic rows across the ten pages stay between 45 and 66, \(total)")
         // A group with no basic row is left out of Basic; one with a basic row is drawn.
         check(!SettingsHubCatalog.hasBasicRows("dictation.sounds") && !SettingsHubCatalog.hasBasicRows("ai.decision")
               && !SettingsHubCatalog.hasBasicRows("meetings.cues") && SettingsHubCatalog.hasBasicRows("work.reach"),
