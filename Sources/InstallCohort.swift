@@ -113,7 +113,7 @@ enum InstallCohort {
 /// written until the person changes it. Re-reads when either key changes, so a cohort kept mid-launch shows at once.
 ///
 ///     @CohortDefault(TodayHome.enabledKey, newInstall: true) private var todayEnabled
-@propertyWrapper
+@MainActor @propertyWrapper
 struct CohortDefault: DynamicProperty {
     @AppStorage private var stored: Bool?
     @AppStorage(InstallCohort.key) private var cohort: String?
