@@ -13626,14 +13626,23 @@ enum PetPause {
 
 // MARK: - Work loop support (0.5.337, loop audit W1)
 
-/// The shipped server has only the four Intake routes; the work-loop routes (seen, undo, expired, waiting, dropped, batch)
-/// arrive with a newer server. The helper answers every 404 as `unsupported`; these are the rules Control reads it with.
+/// No COS server has the work-loop routes the helper allows (dismiss, undo, seen, decisions, expired, restore, settings,
+/// set-settings, dropped, waiting, batch): 7.0.13 serves only the Intake list, items, resolve and meeting-ask, and sends
+/// no `workBatch` capability (checked 2026-11-09, lane D4). The helper answers every 404 as `unsupported`; these are the
+/// rules Control reads it with. 0.5.387: the words never promise a newer server, since none has them yet.
 enum WorkLoopSupport {
     static func unsupported(_ details: [String: JSONValue]) -> Bool { details["unsupported"]?.bool == true }
     /// Undo is offered only on a server that has the routes, and never after this server said undo is missing.
     static func undoOffered(available: Bool?, unsupported: Set<String>) -> Bool { available == true && !unsupported.contains("undo") }
     /// Said where Undo would be, on a server without it.
-    static let undoMissing = "Undo needs a newer COS server. To change a card, open it in Work."
+    static let undoMissing = "Undo is not available. To change a card, open it in Work."
+    /// Said in place of Sort's Keep, Drop and Delegate on a card when the server takes no card batch: three controls
+    /// that could never do anything there.
+    static let cardActionsMissing = "Keep and Drop are not available here. To change a card, open it in Work."
+    /// The card row's actions, or the line that stands in for them.
+    static func cardActionsLine(batchAvailable: Bool) -> String? { batchAvailable ? nil : cardActionsMissing }
+    /// Waiting on and Dropped cards read lists no server serves yet.
+    static func listMissing(dropped: Bool) -> String { dropped ? "Dropped cards are not available." : "Waiting on is not available." }
 }
 
 // MARK: - One Intake resolve's answer (0.5.337)

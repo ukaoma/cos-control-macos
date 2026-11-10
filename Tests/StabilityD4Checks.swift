@@ -100,10 +100,24 @@ struct StabilityD4Checks {
         precondition(plan?.openLabel == "Open session" && plan?.answersAtPrompt == false, "a plan row is unchanged")
     }
 
+    /// 0.5.387 (D4) item 6: no server has the work-loop routes, so nothing in Work promises a newer one.
+    static func checkWorkLoopCopy() {
+        precondition(WorkLoopSupport.undoMissing == "Undo is not available. To change a card, open it in Work.", "the Undo line's copy")
+        precondition(WorkLoopSupport.cardActionsLine(batchAvailable: false) == "Keep and Drop are not available here. To change a card, open it in Work.",
+            "no card batch on the server: one line stands in for Keep, Drop and Delegate")
+        precondition(WorkLoopSupport.cardActionsLine(batchAvailable: true) == nil, "a server with the card batch keeps the controls")
+        precondition(WorkLoopSupport.listMissing(dropped: false) == "Waiting on is not available."
+            && WorkLoopSupport.listMissing(dropped: true) == "Dropped cards are not available.", "the list lines' copy")
+        let lines = [WorkLoopSupport.undoMissing, WorkLoopSupport.cardActionsMissing, WorkLoopSupport.listMissing(dropped: false), WorkLoopSupport.listMissing(dropped: true)]
+        precondition(lines.allSatisfy { !$0.localizedCaseInsensitiveContains("newer") && !$0.contains("\u{2014}") && !$0.contains("\u{2192}") },
+            "no Work loop line promises a newer server, and none has an em dash or an arrow")
+    }
+
     static func main() {
         checkPetDuplicates()
         checkCalendarDuplicates()
         checkAnswerAtPrompt()
-        print("StabilityD4Checks: pet duplicate ids, calendar duplicate dates and Answer at the prompt PASS")
+        checkWorkLoopCopy()
+        print("StabilityD4Checks: pet duplicate ids, calendar duplicate dates, Answer at the prompt and Work loop copy PASS")
     }
 }
