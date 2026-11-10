@@ -62,8 +62,11 @@ try:
     capability['status'] = 200
     closed = socket.socket(); closed.bind(('127.0.0.1', 0)); port = closed.getsockname()[1]; closed.close()
     result = run(environment=dict(env, COS_CONTROL_TEST_API_PORT=str(port)))
-    check(not result['ok'] and result['message'] == 'Server stopped' and result['details'].get('action') == 'retry' and result['details'].get('retryable') is True,
-          'a stopped server (no answer) says Server stopped and keeps the dictation\'s Retry')
+    # 0.5.387 (lane D1 item 7): no answer (a timeout or a refused connection, which the helper cannot tell apart) reads
+    # "The COS server did not answer in time. Try again." and carries reason server_no_answer, no longer "Server stopped".
+    check(not result['ok'] and result['message'] == 'The COS server did not answer in time. Try again.' and result['details'].get('action') == 'retry'
+          and result['details'].get('retryable') is True and result['details'].get('reason') == 'server_no_answer',
+          'a stopped server (no answer) says the server did not answer in time, with reason server_no_answer, and keeps the dictation\'s Retry')
     check(health == [], 'no /api/health on any refusal either')
     source = (pathlib.Path(__file__).resolve().parents[1] / 'HelperSources/main.swift').read_text()
     body = source[source.index('private func dictate(_ audio: Data) throws -> DictationBridge.Answer {'):]
