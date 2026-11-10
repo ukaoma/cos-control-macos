@@ -1871,6 +1871,10 @@ struct ClaudeSession: Identifiable, Sendable {
     /// Activity Today (B1): the pending AskUserQuestion's own words, from the helper's transcript tail read (`waitingQuestion`).
     var waitingQuestion = ""
     var waitingQuestionCount = 0
+    /// 0.5.389 (D4, X1 turn-end asks): the server's additive `waiting_source` ("turn_end" for a turn that ended with the
+    /// app's next-step box) and `waiting_choices` (that box's reply labels). Empty on a server without the feature.
+    var waitingSource = ""
+    var waitingChoices: [String] = []
     /// The server's optional `subagent_activity`; used as Today summary fallback if its bounded richer read misses.
     var subagentActivity: SessionSubagentActivity?
 
@@ -2210,6 +2214,8 @@ struct ClaudeSession: Identifiable, Sendable {
         namedTitle = o["namedTitle"]?.bool ?? false
         waitingQuestion = o["waitingQuestion"]?.string ?? ""
         waitingQuestionCount = o["waitingQuestionCount"]?.int ?? 0
+        waitingSource = o["waitingSource"]?.string ?? ""
+        waitingChoices = (o["waitingChoices"]?.array ?? []).compactMap { $0.string ?? $0.object?["label"]?.string }
         subagentActivity = SessionSubagentActivity(o["subagentActivity"] ?? o["subagent_activity"])
     }
 
@@ -13888,6 +13894,7 @@ enum TodayHome {
             var next = row
             if let listed = list.first(where: { ClaudeSession.sameSession($0.id, row.id) }) {
                 if next.waitingQuestion.isEmpty { next.waitingQuestion = listed.waitingQuestion }
+                if next.waitingSource.isEmpty { next.waitingSource = listed.waitingSource; next.waitingChoices = listed.waitingChoices }
                 if next.subagentActivity == nil { next.subagentActivity = listed.subagentActivity }
             }
             out.append(next)
@@ -14042,6 +14049,43 @@ enum TodayHome {
         }
     }
     static let promptPendingLine = "This session is waiting on a question at its own prompt. Answer it there."
+
+    // MARK: Turn-end ask (0.5.389, D4; X1 DESIGN_turn_end_ask, server COS_TURN_END_ASKS)
+
+    /// A Claude session whose turn ended with the app's next-step box: the server marks its row waiting with
+    /// `waiting_source` "turn_end", the ask as `waiting_detail` (empty when the words switch is off) and the reply
+    /// labels as `waiting_choices`. Unlike a question at a prompt, a reply sent through COS IS an answer here; it arrives
+    /// as a message from COS, so the session may ask to confirm.
+    struct TurnEndAsk: Equatable, Sendable {
+        let ask: String?
+        let choices: [String]
+    }
+    static let turnEndSource = "turn_end"
+    static let turnEndMaxChoices = 2, turnEndChoiceMax = 40
+    static func turnEndAsk(_ session: ClaudeSession) -> TurnEndAsk? {
+        guard session.provider == "claude", isWaiting(session), session.waitingSource == turnEndSource else { return nil }
+        var choices: [String] = []
+        for raw in session.waitingChoices {
+            guard let label = guarded(raw), !choices.contains(label) else { continue }
+            choices.append(String(label.prefix(turnEndChoiceMax)))
+            if choices.count == turnEndMaxChoices { break }
+        }
+        return TurnEndAsk(ask: guarded(session.waitingDetail).map { ActivityHome.clip($0, 240) }, choices: choices)
+    }
+    /// The words a reply sends: X1 CONTRACT v1 with Q1's text fix (COORD 07:23, W1 5c0588b): "not typed at this Mac" is
+    /// false when the reply comes from COS Control on the Mac itself, so it says "not typed in this session". Attributed, never as if typed at
+    /// the desk (X1 canary C16: a bare label is not taken as the person's decision). The same prefix leads a free reply.
+    static let turnEndSurface = "COS Control on the Mac"
+    static let turnEndPrefix = "Answer sent from " + turnEndSurface + " through COS, not typed in this session: "
+    static func turnEndReply(choice: String) -> String { turnEndPrefix + choice }
+    static func turnEndReply(other text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : turnEndPrefix + text
+    }
+    static let turnEndAskedLine = "This session finished its turn with a question for you."
+    static let turnEndHonestLine = "Your reply reaches the session as a message from COS, and the session may ask you to confirm."
+    static let turnEndOtherLabel = "Other reply"
+    static let turnEndTodayLine = "A reply opens the session here, ready to send. " + turnEndHonestLine
 
     // MARK: Session question card (0.5.388, D4 item 7, X1 contract v1)
 
