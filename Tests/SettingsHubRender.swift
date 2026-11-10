@@ -36,6 +36,12 @@ import SwiftUI
             // The server is not answering: the notice on every page, and search says why a row is missing.
             try render(width: 1280, height: 1100, name: "d2-server-down-work") { serverDown($0); return ControlPanel.hubFixture(model: $0, category: .work) }
             try render(width: 1280, height: 900, name: "d2-server-down-search") { serverDown($0); return ControlPanel.hubFixture(model: $0, category: .work, query: "morning brief") }
+            // 0.5.388 final review C2, E2: a Mac never set up (no button, Get started is the one primary) and a legacy stopped server
+            // (Open System and updates, never Repair).
+            try render(width: 1280, height: 900, name: "d2-first-run-general") { firstRun($0); return ControlPanel.hubFixture(model: $0, category: .general) }
+            try render(width: 1280, height: 900, name: "d2-legacy-stopped-general") {
+                serverDown($0); $0.status.runtimeState = "legacyStopped"; return ControlPanel.hubFixture(model: $0, category: .general)
+            }
             // The menu-bar panel's top: the All settings row, no Reset message count on the Mac-only path.
             try render(width: 390, height: 640, name: "d2-panel-top") { ControlPanel(model: $0, openActivity: { _ in }) }
             print("wrote D2 PNGs to \(out.path)")
@@ -106,6 +112,15 @@ import SwiftUI
         s.backgroundJobsSupported = false; s.morningBriefSupported = false; s.videoUploadV2Supported = false; s.tasksGate = nil
         s.idleMetalHqSupported = false; s.adaptiveAudioCleanupSupported = false; s.progressiveHqEnabled = nil
         s.threadAttachSupported = false; s.meetingPreviewSupported = false; s.contextBrowserSupported = false
+        model.status = s
+    }
+
+    /// 0.5.388: a Mac never set up (ServerStatus.needsFirstRun): nothing installed, loaded, running or owned.
+    static func firstRun(_ model: ControllerModel) {
+        serverDown(model)
+        var s = model.status
+        s.installed = false; s.runtimeState = "notInstalled"; s.serviceLoaded = false; s.launchAgentKind = "absent"; s.transactionPending = false
+        s.ownerConflict = false
         model.status = s
     }
 
