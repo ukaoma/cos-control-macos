@@ -70,6 +70,29 @@ import SQLite3
         check(hasIndex(db), "the next importing pass builds the index again")
         check(totals(resumed) == totals(imported), "same totals after the index returns")
         check(!plan(db).contains("TEMP B-TREE"), "and the plan stays sort-free")
-        print("StabilityD4HelperChecks: usage summary reads the covering index, no temp sort PASS")
+        try checkRollupFailure(log: log)
+        print("StabilityD4HelperChecks: usage summary reads the covering index, no temp sort, a failed build never fails the report PASS")
+    }
+
+    /// Q1 M1: a build that fails for any reason but a busy history keeps the report and does not retry within a day.
+    /// A table already named usage_rollup makes CREATE INDEX fail with a non-busy error.
+    static func checkRollupFailure(log: URL) throws {
+        let home = log.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let db = home.appendingPathComponent("history-failure.sqlite")
+        let ledger = try SessionUsageCollector(home: home, database: db, timeZone: TimeZone(identifier: "America/Chicago")!)
+        _ = sql(db, "CREATE TABLE \(SessionUsageCollector.rollupIndex)(x)")
+        func stamp() -> String? { sql(db, "SELECT value FROM meta WHERE key='\(SessionUsageCollector.rollupFailedKey)'").first }
+        var first: SessionUsageReport?
+        do { first = try ledger.refresh() } catch { check(false, "a non-busy index failure never fails the report: \(error)") }
+        check(first?.buckets.count == 9, "the report still has its totals when the index cannot be built")
+        check(!hasIndex(db), "fixture: the name is taken, so no index was built")
+        let failedAt = stamp()
+        check(failedAt != nil, "the failure is remembered")
+        do { _ = try ledger.refresh() } catch { check(false, "a non-busy index failure never fails the report: \(error)") }
+        check(stamp() == failedAt, "no retry within a day of a failed build")
+        _ = sql(db, "DROP TABLE \(SessionUsageCollector.rollupIndex)")
+        _ = sql(db, "UPDATE meta SET value='\(Date().timeIntervalSince1970 - SessionUsageCollector.rollupRetrySeconds - 60)' WHERE key='\(SessionUsageCollector.rollupFailedKey)'")
+        do { _ = try ledger.refresh() } catch { check(false, "a non-busy index failure never fails the report: \(error)") }
+        check(hasIndex(db), "a day later the build is tried again and succeeds")
     }
 }

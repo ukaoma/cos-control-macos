@@ -103,7 +103,7 @@ struct StabilityD4Checks {
     /// 0.5.387 (D4) item 6: no server has the work-loop routes, so nothing in Work promises a newer one.
     static func checkWorkLoopCopy() {
         precondition(WorkLoopSupport.undoMissing == "Undo is not available. To change a card, open it in Work.", "the Undo line's copy")
-        precondition(WorkLoopSupport.cardActionsLine(batchAvailable: false) == "Keep and Drop are not available here. To change a card, open it in Work.",
+        precondition(WorkLoopSupport.cardActionsLine(batchAvailable: false) == "Keep, Drop and Delegate are not available here. To change a card, open it in Work.",
             "no card batch on the server: one line stands in for Keep, Drop and Delegate")
         precondition(WorkLoopSupport.cardActionsLine(batchAvailable: true) == nil, "a server with the card batch keeps the controls")
         precondition(WorkLoopSupport.listMissing(dropped: false) == "Waiting on is not available."

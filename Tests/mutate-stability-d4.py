@@ -21,6 +21,10 @@ BUILDS = {
 }
 MUTANTS = [
     # (name, build, file, target, replacement, message the killing check prints)
+    ("pet-crash-fix-reverted", "models", "Sources/Models.swift",
+     "let currentByID = Dictionary(current.map { ($0.id, $0) }, uniquingKeysWith: { kept, other in\n            activity(other) > activity(kept) ? other : kept\n        })",
+     "let currentByID = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })",
+     "Duplicate values for key"),
     ("pet-first-copy-wins", "models", "Sources/Models.swift",
      "activity(other) > activity(kept) ? other : kept", "kept",
      "an idle copy listed first does not hide a copy that still runs"),
@@ -41,8 +45,14 @@ MUTANTS = [
      "if !Self.sameReceipt(row, next) { try save(next) }", "try save(next)",
      "an unchanged poll must not rewrite the handoff journal"),
     ("usage-index-never-built", "helper", "HelperSources/SessionUsageCollector.swift",
-     "do { try ensureRollupIndex() } catch let failure as Failure where failure.busy { historyBusy = true }", "",
+     "do { try ensureRollupIndex() } catch let failure as Failure where failure.busy { historyBusy = true } catch { rollupIndexFailed(error) }", "",
      "an importing pass builds usage_rollup"),
+    ("usage-index-failure-fails-report", "helper", "HelperSources/SessionUsageCollector.swift",
+     " catch { rollupIndexFailed(error) }", "",
+     "a non-busy index failure never fails the report"),
+    ("usage-index-retries-every-pass", "helper", "HelperSources/SessionUsageCollector.swift",
+     "now.timeIntervalSince1970 - last < Self.rollupRetrySeconds { return }", "false { return }",
+     "no retry within a day of a failed build"),
     ("usage-index-not-covering", "helper", "HelperSources/SessionUsageCollector.swift",
      "ON events(day,provider,model,input,output,cache_read,cache_write,usd)", "ON events(day,provider,model)",
      "the summary reads the covering index"),

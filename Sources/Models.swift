@@ -13638,7 +13638,7 @@ enum WorkLoopSupport {
     static let undoMissing = "Undo is not available. To change a card, open it in Work."
     /// Said in place of Sort's Keep, Drop and Delegate on a card when the server takes no card batch: three controls
     /// that could never do anything there.
-    static let cardActionsMissing = "Keep and Drop are not available here. To change a card, open it in Work."
+    static let cardActionsMissing = "Keep, Drop and Delegate are not available here. To change a card, open it in Work."
     /// The card row's actions, or the line that stands in for them.
     static func cardActionsLine(batchAvailable: Bool) -> String? { batchAvailable ? nil : cardActionsMissing }
     /// Waiting on and Dropped cards read lists no server serves yet.

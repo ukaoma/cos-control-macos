@@ -1,6 +1,7 @@
 import Foundation
 import SQLite3
 import CryptoKit
+import os
 
 /// Incremental, transactionally checkpointed import of the current Mac user's session logs.
 /// The database retains measurements even if a source session is archived/deleted later.
@@ -699,9 +700,21 @@ final class SessionUsageCollector {
     /// The first importing pass builds it once (88.6 MB written, 30 MB larger file on that copy). A read-only pass never
     /// writes, so it keeps the old plan until tracking resumes.
     static let rollupIndex = "usage_rollup"
-    func ensureRollupIndex() throws {
+    func ensureRollupIndex(now: Date = Date()) throws {
         if try query("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?", [Self.rollupIndex]).first?.first == "1" { return }
+        if let last = try query("SELECT value FROM meta WHERE key=?", [Self.rollupFailedKey]).first?.first.flatMap(Double.init),
+           now.timeIntervalSince1970 - last < Self.rollupRetrySeconds { return }
         try Self.execute(db, "CREATE INDEX IF NOT EXISTS \(Self.rollupIndex) ON events(day,provider,model,input,output,cache_read,cache_write,usd)")
+    }
+    /// 0.5.387 (D4, Q1 M1): a build that fails for any reason but a busy history (disk full, an I/O error, a damaged
+    /// file, a name already taken) never fails the report. It is logged, the time is kept (best effort, since the same
+    /// fault may stop that write too) so the build is tried again only after a day, and this pass reads the old way.
+    static let rollupFailedKey = "rollup_index_failed_at"
+    static let rollupRetrySeconds: TimeInterval = 24 * 3600
+    private static let usageLog = Logger(subsystem: "com.gotcos.control.helper", category: "usage")
+    func rollupIndexFailed(_ error: Error, now: Date = Date()) {
+        Self.usageLog.error("usage_rollup index not built: \(String(describing: error), privacy: .public)")
+        try? run("INSERT OR REPLACE INTO meta VALUES(?,?)", [Self.rollupFailedKey, String(now.timeIntervalSince1970)])
     }
     func refresh(maxBytes: Int = 64*1024*1024, seconds: TimeInterval = 12, cursorEnabled: Bool = false, cursorSyncFailed: Bool = false, readOnly: Bool = false) throws -> SessionUsageReport {
         let fm = FileManager.default
@@ -827,7 +840,7 @@ final class SessionUsageCollector {
             historyBusy = true
         }
         if !readOnly {
-            do { try ensureRollupIndex() } catch let failure as Failure where failure.busy { historyBusy = true }
+            do { try ensureRollupIndex() } catch let failure as Failure where failure.busy { historyBusy = true } catch { rollupIndexFailed(error) }
         }
         let rows = try query(Self.rollupSQL)
         let buckets = rows.map { r in SessionUsageBucket(day:r[0],provider:r[1],model:r[2],counts:SessionUsageCounts(input:Int64(r[3]) ?? 0,output:Int64(r[4]) ?? 0,cacheRead:Int64(r[5]) ?? 0,cacheWrite:Int64(r[6]) ?? 0),events:Int(r[7]) ?? 0,pricedEvents:Int(r[8]) ?? 0,estimatedUSD:Double(r[9]) ?? 0) }
