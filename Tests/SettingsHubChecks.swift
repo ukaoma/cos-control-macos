@@ -310,7 +310,9 @@ import Foundation
         }
         // Recovery rows (lead, 2026-11-09): every control another surface tells a person to press is Basic, not Advanced, and
         // found by search under the name that surface uses.
-        check(SettingsHubCatalog.recoveryRows.count == 12, "twelve recovery rows (Clear stuck uploads added after Q1's review)")
+        check(SettingsHubCatalog.recoveryRows.count == 13, "thirteen recovery rows (Clear stuck uploads after Q1's review, Pair on home Wi-Fi after the final review)")
+        check(ids("allow pairing on this wi-fi").contains("SG-12") && ids("pair on home wi-fi").contains("SG-12"),
+              "search finds Pair on home Wi-Fi by the glasses app's words and by its name")
         // Q1 review M2: only an explicit "Just my Mac" is the Mac-only path; no stored choice counts as possibly glasses.
         check(SettingsHubCatalog.choseMacOnly(storedDevicePath: "mac") && !SettingsHubCatalog.choseMacOnly(storedDevicePath: "glasses")
               && !SettingsHubCatalog.choseMacOnly(storedDevicePath: nil) && !SettingsHubCatalog.choseMacOnly(storedDevicePath: ""),

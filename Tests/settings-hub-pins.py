@@ -351,7 +351,7 @@ pin(all(k in fn for k in ("runtimeState(snapshot:", "readToken()", '"/api/web-se
 # 0.5.387 recovery rows (lead, 2026-11-09): what the glasses app, Control Web and the phone tell a person to press in COS Control.
 recovery = dict((i, n) for n, i in re.findall(r'\("([^"]+)", "([A-Z]+-\d\d)"\)', body(catalog, "    static let recoveryRows: [(name: String, id: String)] = [", "\n    ]\n")))
 basic_ids = set(re.findall(r'"([A-Z]+-\d\d)"', body(catalog, "    static let basicIDs: Set<String> = [", "\n    ]\n")))
-pin(set(recovery) == {"C-01", "C-03", "C-04", "C-05", "UT-14", "SG-05", "SG-11", "UT-21", "UT-29", "WB-01", "SG-01", "UT-10"}, f"the recovery rows are the named twelve ({sorted(recovery)})")
+pin(set(recovery) == {"C-01", "C-03", "C-04", "C-05", "UT-14", "SG-05", "SG-11", "UT-21", "UT-29", "WB-01", "SG-01", "UT-10", "SG-12"}, f"the recovery rows are the named thirteen ({sorted(recovery)})")
 glasses_basic = set(re.findall(r'"([A-Z]+-\d\d)"', body(catalog, "    static let glassesPathBasic: Set<String> = [", "]")))
 pin(glasses_basic == {"UT-21"}, f"only Copy pairing token is placed by the device path ({sorted(glasses_basic)})")
 pin(set(recovery) <= basic_ids | glasses_basic, f"every recovery row is in Basic, Copy pairing token on the glasses path (missing {sorted(set(recovery) - basic_ids - glasses_basic)})")

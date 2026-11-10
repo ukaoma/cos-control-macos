@@ -646,7 +646,7 @@ enum SettingsHubCatalog {
         // AI and accounts
         "SG-03", "KL-01", "OUT-07",
         // Glasses, phone and web
-        "SG-02", "SG-11", "SG-13", "UT-29", "PK-01", "WB-01", "UT-10",
+        "SG-02", "SG-11", "SG-12", "SG-13", "UT-29", "PK-01", "WB-01", "UT-10",
         // Meetings
         "MT-01", "MT-03", "MT-04", "MA-01", "UT-16", "OUT-01",
         // Dictation
@@ -672,6 +672,10 @@ enum SettingsHubCatalog {
         ("Open COS on your phone", "UT-29"), ("Sign out every browser", "WB-01"), ("Setup guide", "SG-01"),
         // Q1 review M1 (lead 22:37): a recovery action the glasses app points to. It draws only while an upload is stuck.
         ("Clear stuck uploads", "UT-10"),
+        // 0.5.388 (final review V1): the live glasses app tells a phone without Tailscale to "allow pairing on this Wi-Fi in COS
+        // Control". The toggle draws inside the glasses pairing card (GlassesSetupRows), which Basic never hid; this keeps search
+        // from calling it "In All settings".
+        ("Pair on home Wi-Fi", "SG-12"),
     ]
     /// The basic rows per page stay inside these bounds (Tests/SettingsHubChecks.swift). A change outside them is a decision.
     static let basicRange: [SettingsHubCategory: ClosedRange<Int>] = [
