@@ -7,6 +7,12 @@ import AppKit
 final class SetupWindowPresenter: ObservableObject {
     private var controller: NSWindowController?
 
+    /// 0.5.387 (lane D1): COSControlApp makes this presenter at launch, before any window, status read or click, so the
+    /// install cohort is decided here once (Sources/InstallCohort.swift). Later launches only read the kept answer.
+    init() {
+        InstallCohort.decideAtLaunch()
+    }
+
     func show(model: ControllerModel) {
         if controller == nil {
             let host = NSHostingController(rootView: ControlSetupView(model: model))
