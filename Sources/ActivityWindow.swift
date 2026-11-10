@@ -593,6 +593,9 @@ struct ActivityWindow: View {
     /// Settings hub (Miles, 2026-10-27): Settings draws as the hub unless General, Advanced, Use classic Settings is on.
     @AppStorage(SettingsHub.classicKey) private var classicSettings = false
     @StateObject private var today = TodayHomeStore()
+    /// 0.5.387 (D4): the app holding the open session's prompt, from Today's host read. A property, because inside
+    /// activityContent its `today` parameter (the Frame) shadows this store.
+    private var openSessionHost: TodayHome.Host? { model.openClaudeRow.flatMap { today.hosts[$0.id] } }
     /// The ⌘K command center (Miles, 2026-10-31). Only whether it is open lives here: its words and highlight are the panel's
     /// own state, so typing never composes the window again.
     @State private var commandOpen = false
@@ -946,7 +949,7 @@ struct ActivityWindow: View {
                             }
                             ClaudeSessionDetailPane(model: model, workReceipt: workReceipt,
                                                     onOpenWork: { id in model.closeClaudeSession(); openHandoffWork(id) },
-                                                    host: model.openClaudeRow.flatMap { today.hosts[$0.id] })
+                                                    host: openSessionHost)
                                 .task { if workConnectionsEnabled { await model.loadWorkTasks() } }
                         }
                     } else {
