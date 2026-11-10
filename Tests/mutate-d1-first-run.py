@@ -143,8 +143,9 @@ def main():
                 print(f"REFUSED: the {lane} lane is red before any mutant")
                 return 2
         survived, killed = [], 0
+        only = [s for s in os.environ.get("D1_MUTANTS", "").split("|") if s]   # name substrings; empty = every mutant
         for name, lane, rel, old, new in MUTANTS:
-            if lane not in lanes:
+            if lane not in lanes or (only and not any(s in name for s in only)):
                 continue
             path = copy / rel
             original = path.read_text(encoding="utf-8")
