@@ -65,6 +65,17 @@ for script in ["scripts/build-release.sh", "scripts/build-foundation-lab.sh", "T
     for line in text.splitlines():
         if '"$ROOT/Sources/WorkTaskChat.swift"' in line and "swift" in line and not line.lstrip().startswith(("python3", "/usr/bin/python3")):
             pin('"$ROOT/Sources/WorkOrchestrator.swift"' in line, f"{script} compiles WorkOrchestrator.swift with WorkTaskChat.swift")
+# 0.5.386 (Work chat "no session", Miles 2026-11-09): the wiring the execution checks cannot reach.
+handoffview = read("Sources/WorkHandoffView.swift")
+pin("let checked = WorkOrchestrator.checkedSnapshot(" in chat and "return checked.body" in chat and "WorkOrchestrator.snapshot(" not in chat, "the pushed snapshot is the checked one (bad rows left out and counted)")
+inputfn = helper[helper.index("    private func emitWorkOrchestratorInput() throws {"):helper.index('        emit(ok: true, message: "Orchestrator input", details: answer)')]
+pin("throw HelperError.message(Self.workOrchestratorInputFailure(status: response.status, error: response.body?[\"error\"] as? String, reason: response.body?[\"reason\"] as? String))" in inputfn
+    and "could not build" not in inputfn and "\u2014" not in helper[helper.index("    static func workOrchestratorInputFailure("):helper.index("    static let workLensRoundID")], "the helper's /input failure names the real cause and keeps the server's reason")
+pin(handoffview.count("let draft = store.savedDraft(for: source) ?? WorkHandoffDraft(sourceID: source.id, sourceRevision: source.revision, prompt: source.suggestedPrompt)") == 1
+    and "let advice = WorkHandoffStore.applicableAdvice(store.advice(for: source), workID: source.id," in handoffview, "Start work: a default draft is never a destination, and another card's suggestion is never taken")
+pin(chat.count("chat.startNewSession(") == 1 and 'Button(WorkOrchestrator.startNewSessionTitle(provider))' in chat, "a new session from an empty card's round starts only from its button")
+pin(chat.count(".offerNewSession = provider") == 1 and chat.index(".offerNewSession = provider") < chat.index("    func sendAssignment("), "only a Plan offers it, never refresh, the summary or the lens")
+pin('Task { await chat.send(source: source, handoff: handoff, planner: planner, effort: effort, replanRoundID: round.id) }' in chat and "if WorkChatPolicy.canPlanAgain(round) {" in chat, "Plan again reruns the failed round in place")
 if fails:
     print("FAIL work orchestrator pins:\n  " + "\n  ".join(fails)); sys.exit(1)
 print("PASS work orchestrator pins: helper routes and timeouts, refresh before planning, every kind through submit, fork child journaled, Stop on auto-sent rounds, per-card Auto-send over the Settings default, compile lists")

@@ -860,6 +860,14 @@ struct WorkRecommendationKey: Equatable {
         }
     }
 
+    /// 0.5.386 (Miles 2026-11-09): the advice Start work may apply for Miles. On a card with no session of its own a
+    /// Continue or Fork suggestion is only an option, and one about a session linked to another card never applies.
+    nonisolated static func applicableAdvice(_ advice: SessionAdvice?, workID: String, hasSession: Bool, links: [String: WorkSessionCardLink]) -> SessionAdvice? {
+        guard let advice, advice.action != .newSession else { return advice }
+        guard hasSession else { return nil }
+        if let id = advice.sessionID, let link = links[id.lowercased()], link.workID != workID { return nil }
+        return advice
+    }
     /// What the board's Start work overlay may confirm in one click: the saved draft when it is already complete,
     /// else a Jev suggestion at `minConfidence` or more applied to it. Nil means the full chooser opens.
     /// Work that already has a handoff never gets one click: its draft may be the one already sent.
@@ -904,8 +912,28 @@ struct WorkRecommendationKey: Equatable {
     }
 
     func draft(for source: WorkSource) -> WorkHandoffDraft {
+        savedDraft(for: source)
+            ?? Self.defaultDraft(source: source, hasSession: Self.cardHasSession(workID: source.id, links: confirmedSessionCards, receipts: receipts), models: models)
+    }
+    /// The draft saved for this revision, if any. A default draft is never a saved destination (Start work's one click).
+    func savedDraft(for source: WorkSource) -> WorkHandoffDraft? {
         drafts.first { $0.sourceID == source.id && $0.sourceRevision == source.revision }
-            ?? WorkHandoffDraft(sourceID: source.id, sourceRevision: source.revision, prompt: source.suggestedPrompt)
+    }
+    /// 0.5.386 (Miles 2026-11-09): whether the card has a session of its own: a confirmed link, or a handoff that reached
+    /// a session. Cheap, because the composer reads its draft on every render.
+    nonisolated static func cardHasSession(workID: String, links: [String: WorkSessionCardLink], receipts: [WorkHandoffReceipt]) -> Bool {
+        links.values.contains { $0.workID == workID } || receipts.contains { $0.workID == workID && $0.sessionID != nil && $0.status != "refused" }
+    }
+    /// 0.5.386 (Miles 2026-11-09): a card with no session of its own opens Agent workspace on "Start a new session", on
+    /// Claude's Opus when it is available (else Codex's first model). A card with sessions keeps Continue, as before.
+    nonisolated static func defaultDraft(source: WorkSource, hasSession: Bool, models: [WorkModelChoice]) -> WorkHandoffDraft {
+        var draft = WorkHandoffDraft(sourceID: source.id, sourceRevision: source.revision, prompt: source.suggestedPrompt)
+        guard !hasSession else { return draft }
+        draft.mode = .newSession
+        guard let provider = ["claude", "codex"].first(where: { p in models.contains { $0.provider == p && $0.available } }) else { return draft }
+        draft.provider = provider
+        draft.modelID = WorkOrchestrator.preferredModel(provider: provider, models: models.filter { $0.provider == provider }.map { ($0.id, $0.available) }) ?? ""
+        return draft
     }
     func earlierDraftCount(for source: WorkSource) -> Int {
         drafts.filter { $0.sourceID == source.id && $0.sourceRevision != source.revision }.count

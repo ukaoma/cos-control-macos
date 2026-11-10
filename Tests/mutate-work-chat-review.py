@@ -16,7 +16,7 @@ C = "Sources/WorkTaskChat.swift"; S = "Sources/WorkHandoffStore.swift"; M = "Sou
 # guard alone cannot change behaviour. Any other survivor fails the gate.
 EXPECTED_SURVIVORS = {"sent receipt guard (expected survivor: state guard and submit intent id back it up)"}
 MUTANTS = [
- ("plan dispatches state", C, 'answer.assignments.isEmpty ? "Answered" : "Ready to send"', 'answer.assignments.isEmpty ? "Answered" : "Dispatched"'),
+ ("plan dispatches state", C, 'planned.isEmpty ? "Answered" : "Ready to send"', 'planned.isEmpty ? "Answered" : "Dispatched"'),
  ("no pre-flight before planning", C, 'guard held.isEmpty || hold != .stop else { blockers = held; error = WorkChatPreflight.heading; return }', 'if !held.isEmpty { blockers = held }'),
  # 0.5.317: the held branch is a switch on WorkChatHold; .stop is today's fence.
  ("no pre-flight before a send", C, '                guard held.isEmpty else {\n                    if wasQueued {', '                guard held.isEmpty || hold == .stop else {\n                    if wasQueued {'),
@@ -101,9 +101,9 @@ MUTANTS = [
  ("first Plan and send not confirmed", C, '        if WorkChatPolicy.confirmBeforeAutoSend(acknowledged: autoSendAcknowledged) { confirmAutoSend = true; return }\n', ''),
  ("confirm rule never asks", C, 'static func confirmBeforeAutoSend(acknowledged: Bool) -> Bool { !acknowledged }', 'static func confirmBeforeAutoSend(acknowledged: Bool) -> Bool { false }'),
  ("acknowledgement not remembered", C, '                autoSendAcknowledged = true\n', ''),
- ("Plan and send bypasses the guards", C, 'await dispatch(roundID: roundID, assignmentIDs: answer.assignments.map(\\.receiptID), source: source, handoff: handoff, hold: hold)',
-  'for a in answer.assignments { if let s = targets(handoff, source: source).first(where: { $0.id == a.sessionID }) { await handoff.submit(source: source, mode: .continueSession, session: s, model: nil, prompt: a.prompt, orchestrationRunID: roundID, intentID: a.receiptID) } }'),
- ("Plan and send never sends", C, '            if autoSend, !answer.assignments.isEmpty, let roundID', '            if false, autoSend, !answer.assignments.isEmpty, let roundID'),
+ ("Plan and send bypasses the guards", C, 'await dispatch(roundID: roundID, assignmentIDs: planned.map(\\.receiptID), source: source, handoff: handoff, hold: hold)',
+  'for a in planned { if let s = targets(handoff, source: source).first(where: { $0.id == a.sessionID }) { await handoff.submit(source: source, mode: .continueSession, session: s, model: nil, prompt: a.prompt, orchestrationRunID: roundID, intentID: a.receiptID) } }'),
+ ("Plan and send never sends", C, '            if autoSend, !planned.isEmpty, let roundID', '            if false, autoSend, !planned.isEmpty, let roundID'),
  ("sent without review not recorded", C, '                self.record?.rounds[index].sentWithoutReview = true\n', ''),
  ("old server warned", C, 'planners = WorkChatPolicy.planners.filter { advertised.contains($0) }; plannerNotice = nil', 'planners = WorkChatPolicy.planners.filter { advertised.contains($0) }; plannerNotice = advertised.isEmpty ? WorkChatPolicy.plannerUnavailable : nil'),
  ("planner key always sent", C, 'if let planner { body["planner"] = planner }', 'body["planner"] = planner ?? "sonnet"'),

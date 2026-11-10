@@ -1,8 +1,19 @@
 {
-  "version": "0.5.385",
+  "version": "0.5.386",
   "whatsNew": {
-    "summary": "Every meeting in Today's Next up now has Prep. Add context and files right under the meeting, then Start prep runs it in the COS chat. Plus everything in 0.5.384.",
+    "summary": "Work chat plans again when a Claude session is running in Terminal, and a task with no session gets one: Plan proposes a new Claude session and it starts when you press Send. Plus everything in 0.5.385.",
     "sections": [
+      {
+        "title": "0.5.386",
+        "items": [
+          "Work chat: Plan works again on every task while a Claude session runs in Terminal. Control used to send that session's short id to the server, which refused the whole session list.",
+          "A task with no session to continue: Plan proposes one new session and stops at Ready to send. It starts when you press Send. Claude (Opus) by default, Codex when Claude's usage is low, and never a provider that is out of usage.",
+          "If the plan comes back without one, the round offers Start a new Claude session with this request. One click starts it with your request, the task and its files, and it joins the task.",
+          "A plan that failed before it ran gets Plan again, which reruns that same round in place. No second copy of your request.",
+          "When the session list cannot be read, Work chat says why in plain words and shows the server's reason.",
+          "Agent workspace on a task with no session starts on Start a new session. A suggestion from another task is still offered, never preselected."
+        ]
+      },
       {
         "title": "0.5.385",
         "items": [

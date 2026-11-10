@@ -765,16 +765,22 @@ struct WorkHandoffView: View {
     }
 
     /// Jev's suggestion. "Use this" fills Destination and Session in one explicit click; sending stays separate.
+    /// 0.5.386: on a card with no session of its own, a Continue or Fork suggestion is an option ("Or continue in ..."),
+    /// never preselected; one on another card says so.
     @ViewBuilder private var adviceBlock: some View {
         if let advice = store.advice(for: source) {
             let session = advice.sessionID.flatMap { id in store.sessions.first { $0.id == id } }
+            let option = WorkHandoffStore.applicableAdvice(advice, workID: source.id,
+                                                          hasSession: WorkHandoffStore.cardHasSession(workID: source.id, links: store.confirmedSessionCards, receipts: store.receipts),
+                                                          links: store.confirmedSessionCards) == nil
+            let elsewhere = advice.sessionID.flatMap { store.confirmedSessionCards[$0.lowercased()] }.map { $0.workID != source.id } == true
             let applied = mode == (advice.action == .continueSession ? .continueSession : advice.action == .fork ? .fork : .newSession)
                 && (advice.action == .newSession || sessionID == advice.sessionID) && !(advice.action == .fork && !provider.isEmpty)
             HStack(alignment: .center, spacing: 10) {
                 Image(systemName: "sparkle").foregroundStyle(COSPalette.accent)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(adviceTitle(advice, session)).font(COSType.body(12.5, weight: .semibold))
-                    Text("\(advice.reason) \(advice.provider.title) · \(advice.percent)").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    Text((option ? "Or " : "") + adviceTitle(advice, session, lower: option)).font(COSType.body(12.5, weight: .semibold))
+                    Text((elsewhere ? "On another task. " : "") + "\(advice.reason) \(advice.provider.title) · \(advice.percent)").font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                 }
                 Spacer(minLength: 8)
                 Button(applied ? "Selected" : "Use this") {
@@ -786,11 +792,11 @@ struct WorkHandoffView: View {
         }
     }
 
-    private func adviceTitle(_ advice: SessionAdvice, _ session: WorkSession?) -> String {
+    private func adviceTitle(_ advice: SessionAdvice, _ session: WorkSession?, lower: Bool = false) -> String {
         switch advice.action {
-        case .continueSession: return "Continue in “\(session?.title ?? "session")”"
-        case .fork: return "Fork “\(session?.title ?? "session")”"
-        case .newSession: return "Start a new session"
+        case .continueSession: return (lower ? "continue" : "Continue") + " in “\(session?.title ?? "session")”"
+        case .fork: return (lower ? "fork" : "Fork") + " “\(session?.title ?? "session")”"
+        case .newSession: return (lower ? "start" : "Start") + " a new session"
         }
     }
 
@@ -1152,7 +1158,13 @@ struct WorkStartSheet: View {
             await store.loadAdvice(for: source)
             guard phase == .checking else { return }
             let hasHistory = !store.receipts(for: source.id).isEmpty
-            let draft = store.draft(for: source), advice = store.advice(for: source)
+            // 0.5.386: only a draft Miles saved is a destination; the default (Start a new session on an empty card) waits
+            // for his choice. Advice about another card's session, or any Continue or Fork on a card with no session of its
+            // own, is shown in the chooser and never taken for him.
+            let draft = store.savedDraft(for: source) ?? WorkHandoffDraft(sourceID: source.id, sourceRevision: source.revision, prompt: source.suggestedPrompt)
+            let advice = WorkHandoffStore.applicableAdvice(store.advice(for: source), workID: source.id,
+                                                           hasSession: WorkHandoffStore.cardHasSession(workID: source.id, links: store.confirmedSessionCards, receipts: store.receipts),
+                                                           links: store.confirmedSessionCards)
             if let start = WorkHandoffStore.startPlan(draft: draft, advice: advice, sessions: store.sessions, models: store.models, hasHistory: hasHistory) {
                 let auto = WorkHandoffStore.autoStartPlan(draft: draft, advice: advice, sessions: store.sessions, models: store.models, hasHistory: hasHistory)
                 // 0.5.254: files that need Miles's call never start by themselves.

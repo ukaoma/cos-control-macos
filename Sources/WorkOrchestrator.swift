@@ -31,27 +31,83 @@ enum WorkOrchestrator {
             || summary.hasPrefix("The following is the Codex agent history"))
     }
 
+    /// 0.5.386 (Work chat "no session", Miles 2026-11-09): the server's `SID`. A full session id: provider, a colon and a
+    /// UUID. The live list gives a running Claude CLI session by its first 8 characters (a privacy redaction), and one such
+    /// row made the server refuse the whole snapshot (400 invalid_snapshot, invalid_live_row), so Plan failed on every card.
+    static func validSessionID(_ value: String) -> Bool {
+        let parts = value.lowercased().split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2, ["claude", "codex", "cursor"].contains(String(parts[0])) else { return false }
+        let groups = parts[1].split(separator: "-", omittingEmptySubsequences: false)
+        return groups.map(\.count) == [8, 4, 4, 4, 12] && groups.allSatisfy { $0.allSatisfy { ("0"..."9").contains($0) || ("a"..."f").contains($0) } }
+    }
+    /// The server's `WORK_ID`, within its 256 UTF-16 unit bound.
+    static func validWorkID(_ value: String) -> Bool {
+        guard value.utf16.count <= 256, let colon = value.firstIndex(of: ":") else { return false }
+        let kind = value[..<colon], rest = value[value.index(after: colon)...]
+        guard let first = kind.unicodeScalars.first, ("a"..."z").contains(first), kind.unicodeScalars.count <= 31,
+              kind.unicodeScalars.allSatisfy({ ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == "_" }) else { return false }
+        return (1...250).contains(rest.utf16.count) && !rest.unicodeScalars.contains { $0.value < 0x20 }
+    }
+    /// The server's `str(v, n)`: at most `n` UTF-16 units (JavaScript's `length`, not Swift's characters) and no control
+    /// character but tab, line feed and carriage return. This drops those characters, then cuts at the last whole
+    /// character that fits, so an emoji is never split into half a surrogate pair.
+    static func clamp(_ value: String, _ limit: Int) -> String {
+        var scalars = String.UnicodeScalarView()
+        scalars.append(contentsOf: value.unicodeScalars.filter { $0.value >= 0x20 || [0x09, 0x0a, 0x0d].contains($0.value) })
+        let clean = String(scalars)
+        guard clean.utf16.count > limit else { return clean }
+        var out = "", units = 0
+        for character in clean {
+            let size = String(character).utf16.count
+            if units + size > limit { break }
+            out.append(character); units += size
+        }
+        return out
+    }
+    static let modes: Set<String> = ["continueSession", "fork", "newSession"]
+
+    /// 0.5.386: what Control pushes and how many entries it left out because the server would refuse them.
+    struct Snapshot {
+        let body: [String: Any]
+        let droppedLive: Int, droppedLinks: Int, droppedReceipts: Int
+        var dropped: Int { droppedLive + droppedLinks + droppedReceipts }
+    }
+
     /// The snapshot body, newest receipts first, each list bounded. `live` is nil when the session list could not be read.
     static func snapshot(links: [Link], receipts: [Receipt], live: [LiveRow]?, liveCheckedAt: Date?, controlVersion: String, now: Date) -> [String: Any] {
+        checkedSnapshot(links: links, receipts: receipts, live: live, liveCheckedAt: liveCheckedAt, controlVersion: controlVersion, now: now).body
+    }
+    /// 0.5.386: every entry the server's `parseSnapshot` would refuse is left out here and counted, so one odd row never
+    /// fails the plan. A live row needs a full session id; a link a full session id and a card id; a receipt a card id
+    /// and a known mode (a session id it names that is not a full one goes as null, as the server reads it). Text is
+    /// clamped in UTF-16 units, the way the server counts.
+    static func checkedSnapshot(links: [Link], receipts: [Receipt], live: [LiveRow]?, liveCheckedAt: Date?, controlVersion: String, now: Date) -> Snapshot {
         func opt(_ s: String?) -> Any { s ?? NSNull() }
+        func sid(_ s: String?) -> Any { s.flatMap { validSessionID($0) ? $0.lowercased() : nil } ?? NSNull() }
+        let goodLinks = links.filter { validSessionID($0.sessionID) && validWorkID($0.workID) && $0.at.isFinite && $0.at > 0 }
+        let goodReceipts = receipts.filter { validWorkID($0.workID) && modes.contains($0.mode) && $0.createdAt.isFinite && $0.createdAt > 0 && !clamp($0.id, 64).isEmpty }
         var body: [String: Any] = [
-            "version": 1, "controlVersion": String(controlVersion.prefix(40)), "sentAt": now.timeIntervalSince1970,
-            "links": links.sorted { $0.at > $1.at }.prefix(maxLinks).map { ["sessionID": $0.sessionID, "workID": $0.workID, "at": $0.at] as [String: Any] },
-            "receipts": receipts.sorted { $0.createdAt > $1.createdAt }.prefix(maxReceipts).map {
-                ["id": String($0.id.prefix(64)), "workID": $0.workID, "mode": $0.mode, "provider": String($0.provider.prefix(20)),
-                 "sessionID": opt($0.sessionID), "sourceSessionID": opt($0.sourceSessionID), "forkChildID": opt($0.forkChildID),
-                 "status": String($0.status.prefix(40)), "createdAt": $0.createdAt] as [String: Any]
+            "version": 1, "controlVersion": clamp(controlVersion, 40), "sentAt": now.timeIntervalSince1970,
+            "links": goodLinks.sorted { $0.at > $1.at }.prefix(maxLinks).map { ["sessionID": $0.sessionID.lowercased(), "workID": $0.workID, "at": $0.at] as [String: Any] },
+            "receipts": goodReceipts.sorted { $0.createdAt > $1.createdAt }.prefix(maxReceipts).map {
+                ["id": clamp($0.id, 64), "workID": $0.workID, "mode": $0.mode, "provider": clamp($0.provider, 20),
+                 "sessionID": sid($0.sessionID), "sourceSessionID": sid($0.sourceSessionID), "forkChildID": sid($0.forkChildID),
+                 "status": clamp($0.status, 40), "createdAt": $0.createdAt] as [String: Any]
             },
             "live": NSNull(),
         ]
+        var droppedLive = 0
         if let live, let checked = liveCheckedAt {
-            let rows = live.filter { !isGuardian(id: $0.id, title: $0.title, summary: $0.summary) }.prefix(maxLive).map {
-                ["id": $0.id, "title": String($0.title.prefix(300)), "status": String($0.status.prefix(100)), "updatedAt": opt($0.updatedAt),
-                 "busy": $0.busy, "waitingOnUser": $0.waitingOnUser, "appOwned": $0.appOwned, "summary": String($0.summary.prefix(2000))] as [String: Any]
+            let usable = live.filter { validSessionID($0.id) }
+            droppedLive = live.count - usable.count
+            let rows = usable.filter { !isGuardian(id: $0.id, title: $0.title, summary: $0.summary) }.prefix(maxLive).map {
+                ["id": $0.id.lowercased(), "title": clamp($0.title, 300), "status": clamp($0.status, 100),
+                 "updatedAt": opt($0.updatedAt.flatMap { clamp($0, 40) == $0 ? $0 : nil }),
+                 "busy": $0.busy, "waitingOnUser": $0.waitingOnUser, "appOwned": $0.appOwned, "summary": clamp($0.summary, 2000)] as [String: Any]
             }
             body["live"] = ["checkedAt": checked.timeIntervalSince1970, "rows": Array(rows)] as [String: Any]
         }
-        return body
+        return Snapshot(body: body, droppedLive: droppedLive, droppedLinks: links.count - goodLinks.count, droppedReceipts: receipts.count - goodReceipts.count)
     }
 
     // MARK: Input (what the server answers)
@@ -137,6 +193,44 @@ enum WorkOrchestrator {
         if linkedCount > 0 { return "This task's \(linkedCount) linked session\(linkedCount == 1 ? " is" : "s are") not in the session list just read, so the planner saw none." }
         return "No session is linked to this task yet, so the planner saw none."
     }
+
+    // MARK: An empty card (0.5.386, Miles 2026-11-09)
+
+    /// Providers a New session may start on: one with an available model whose plan usage is not used up.
+    static func newSessionProviders(available: Set<String>, usage: [Usage]) -> [String] {
+        ["claude", "codex"].filter { p in available.contains(p) && usage.first(where: { $0.provider == p })?.state != "exhausted" }
+    }
+    /// The one provider an empty card's New session starts on: Claude (Opus), and Codex when Claude's usage is low or
+    /// used up (a used-up provider is not offered at all). Nil when neither is offered.
+    static func emptyCardProvider(offered: [String], usage: [Usage]) -> String? {
+        let claudeLow = usage.first(where: { $0.provider == "claude" })?.state == "low"
+        if offered.contains("claude") && !(claudeLow && offered.contains("codex")) { return "claude" }
+        return offered.contains("codex") ? "codex" : nil
+    }
+    /// True when no row the planner sees can take a Continue or a Fork: the card has nothing to pick up.
+    static func nothingToContinue(rows: [Row], automaticIDs: Set<String>, forkProviders: Set<String>) -> Bool {
+        !rows.contains { automaticIDs.contains($0.id) || ($0.forkable && forkProviders.contains($0.provider)) }
+    }
+    /// The model a New session starts on: Claude's Opus when it is available, else the provider's first available model.
+    static func preferredModel(provider: String, models: [(id: String, available: Bool)]) -> String? {
+        let open = models.filter(\.available).map(\.id)
+        if provider == "claude", let opus = open.first(where: { $0 == "opus" }) ?? open.first(where: { $0.lowercased().contains("opus") }) { return opus }
+        return open.first
+    }
+    /// At most one New session per round on an empty card: the first is kept, any later one is left out.
+    static func oneNewSession<T>(_ items: [T], isNew: (T) -> Bool) -> [T] {
+        var seen = false
+        return items.filter { item in
+            guard isNew(item) else { return true }
+            defer { seen = true }
+            return !seen
+        }
+    }
+    /// What the round says while it plans, and the one button it offers when the planner still answers without one.
+    static func emptyCardPhase(_ provider: String) -> String { "No session on this task yet. Planning a new \(providerTitle(provider)) session\u{2026}" }
+    static func emptyCardNote(_ provider: String) -> String { "No session on this task yet. COS will start a new \(providerTitle(provider)) session when you press Send." }
+    static func startNewSessionTitle(_ provider: String) -> String { "Start a new \(providerTitle(provider)) session with this request" }
+    static func providerTitle(_ provider: String) -> String { provider == "codex" ? "Codex" : provider == "cursor" ? "Cursor" : "Claude" }
 
     // MARK: Assignments
 

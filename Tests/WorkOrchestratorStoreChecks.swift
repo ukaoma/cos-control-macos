@@ -8,6 +8,10 @@ private actor WorkOrchestratorFixture {
     let orchestrator: Bool
     var rows: [JSONValue]
     var plan: [JSONValue]
+    /// 0.5.386: a running CLI session the live list gives by its first 8 characters, as on 2026-11-09.
+    var shortSession = false
+    var failInput = false
+    var usage: [JSONValue] = [.object(["provider": .string("codex"), "state": .string("low"), "headroomPct": .number(8), "resetsAt": .string("2026-10-27T11:51:14.000Z"), "ageSec": .number(60), "source": .string("probe"), "plan": .string("prolite"), "stale": .bool(false), "note": .string("")])]
     private(set) var calls: [String] = []
     private(set) var chatData: [Data] = []
     private(set) var snapshotData: [Data] = []
@@ -20,6 +24,9 @@ private actor WorkOrchestratorFixture {
     }
     func setRows(_ value: [JSONValue]) { rows = value }
     func setPlan(_ value: [JSONValue]) { plan = value }
+    func setShortSession(_ value: Bool) { shortSession = value }
+    func setFailInput(_ value: Bool) { failInput = value }
+    func setUsage(_ value: [JSONValue]) { usage = value }
     func run(_ args: [String], _ data: Data?) async throws -> HelperResponse {
         let name = args.first ?? ""; calls.append(name)
         var out: [String: JSONValue] = [:]
@@ -29,9 +36,11 @@ private actor WorkOrchestratorFixture {
         }
         switch name {
         case "work-models": out = ["serverInstanceId": .string("orchestrator-fixture"), "models": .array([
+            // Sonnet is listed first, so only the 0.5.386 Opus preference starts a Claude New session on Opus.
+            .object(["id": .string("claude-sonnet"), "provider": .string("claude"), "title": .string("Claude Sonnet"), "available": .bool(true)]),
             .object(["id": .string("claude-opus"), "provider": .string("claude"), "title": .string("Claude Opus"), "available": .bool(true)]),
             .object(["id": .string("gpt-codex"), "provider": .string("codex"), "title": .string("Codex"), "available": .bool(true)])])]
-        case "claude-sessions": out = ["sessions": .array([session(sbu, "2026 SBU /XBU"), session(guardian, "Guardian review")])]
+        case "claude-sessions": out = ["sessions": .array([session(sbu, "2026 SBU /XBU"), session(guardian, "Guardian review")] + (shortSession ? [session("claude:deadbeef", "CLI session")] : []))]
         case "work-chat-capabilities":
             out = ["protocolVersion": .number(1), "planners": .array([.string("sonnet"), .string("opus")]), "efforts": .array([.string("high")])]
             if orchestrator { out["orchestrator"] = .bool(true) }
@@ -39,8 +48,17 @@ private actor WorkOrchestratorFixture {
             "task": .object(["id": .string("420a0114f1a9"), "workIdentity": .string("420a0114f1a9"), "domain": .string("quilt"), "title": .string("Toadstone review"), "text": .string("Toadstone review"), "source": .string("Fixture evidence")])]
         case "work-orchestrator-input":
             if let data { snapshotData.append(data) }
+            // As the server's parseSnapshot (7.0.12): one live row or link by an id that is not a full session id refuses the
+            // whole snapshot, and the helper turns that into its failure words.
+            let body = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["snapshot"] as? [String: Any] ?? [:]
+            let full = try! NSRegularExpression(pattern: "^(claude|codex|cursor):[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")
+            func ok(_ id: Any?) -> Bool { (id as? String).map { full.firstMatch(in: $0, range: NSRange($0.startIndex..., in: $0)) != nil } ?? false }
+            let liveRows = (body["live"] as? [String: Any])?["rows"] as? [[String: Any]] ?? []
+            if failInput || !liveRows.allSatisfy({ ok($0["id"]) && ($0["title"] as? String ?? "").utf16.count <= 300 }) || !((body["links"] as? [[String: Any]]) ?? []).allSatisfy({ ok($0["sessionID"]) }) {
+                throw HelperClientError.commandFailed("COS could not read the session list on this Mac (one session had an id COS cannot use). Server reason: invalid_snapshot, invalid_live_row (HTTP 400).")
+            }
             out = ["protocolVersion": .number(1), "workID": .string("task:quilt:420a0114f1a9"), "now": .string("2026-10-20T21:29:00Z"), "rows": .array(rows), "leftOut": .array([]),
-                   "usage": .array([.object(["provider": .string("codex"), "state": .string("low"), "headroomPct": .number(8), "resetsAt": .string("2026-10-27T11:51:14.000Z"), "ageSec": .number(60), "source": .string("probe"), "plan": .string("prolite"), "stale": .bool(false), "note": .string("")])]),
+                   "usage": .array(usage),
                    "discovered": .number(Double(rows.count)), "snapshotAgeSec": .number(0), "liveListAgeSec": .number(1), "logScanComplete": .bool(true)]
         case "work-chat":
             if let data { chatData.append(data) }
@@ -172,7 +190,8 @@ private func objects(_ data: [Data]) -> [[String: Any]] { data.compactMap { try?
         await fixture.setRows([])
         chat.setDraft("And now?")
         await chat.send(source: card, handoff: store)
-        precondition(chat.record!.rounds.last!.sessionsNote?.hasPrefix("COS found no session for this task") == true, "and says when there is none")
+        // 0.5.386: with nothing to pick up, the round says the New session it planned starts on Send.
+        precondition(chat.record!.rounds.last!.sessionsNote == WorkOrchestrator.emptyCardNote("claude"), "and says when there is none: \(chat.record!.rounds.last!.sessionsNote ?? "")")
     }
 
     // 4. An older server (no orchestrator): exactly 0.5.332's body, linked sessions only.
@@ -187,5 +206,145 @@ private func objects(_ data: [Data]) -> [[String: Any]] { data.compactMap { try?
         precondition(sessions.compactMap { $0["id"] as? String } == [sbu] && sessions.allSatisfy { Set($0.keys).isSubset(of: ["id", "title", "summary", "status", "automatic", "openWork"]) }, "only the linked session, with 0.5.332's keys")
         precondition(chat.record!.rounds.last!.orchestrated == nil && chat.record!.rounds.last!.sessionsNote == nil, "no orchestrator state on an older server's round")
     }
-    print("PASS work orchestrator store: toadstone card plans with both sessions, Guardian row out, refresh before input, Continue/Fork/New session through submit, fork child journaled, Auto-send with Stop, never-silent empty plans, older server unchanged")
+    // 5. 0.5.386 (T5 by execution): a running CLI session listed by a short id no longer fails every plan. The fixture
+    // refuses a snapshot as the 7.0.12 server does, so this round only plans when Control leaves that row out.
+    do {
+        let (fixture, store, chat) = try await setup("short-id")
+        await fixture.setShortSession(true)
+        await store.refreshActivity()
+        precondition(store.observedSessions().contains { $0.id == "claude:deadbeef" }, "the fixture lists the short-id session as the live list does")
+        chat.setDraft("Plan with a CLI session running")
+        await chat.send(source: card, handoff: store)
+        let snap = objects(await fixture.snapshotData).last?["snapshot"] as? [String: Any] ?? [:]
+        let live = ((snap["live"] as? [String: Any])?["rows"] as? [[String: Any]] ?? []).compactMap { $0["id"] as? String }
+        precondition(chat.error == nil && chat.record!.rounds.last!.state == "Ready to send", "[short id] Plan works with a short-id session running: \(chat.error ?? "")")
+        precondition(!live.contains("claude:deadbeef") && live.contains(sbu), "[short id] the short-id row is left out of the snapshot, the rest kept: \(live)")
+    }
+
+    // 6. 0.5.386 (T6): a plan that failed before the planner answered gets Plan again, which reruns THAT round in place.
+    do {
+        let (fixture, store, chat) = try await setup("plan-again")
+        await fixture.setFailInput(true)
+        // The card's history carries the earlier sections' rounds (one history per card and server): count from here.
+        let before = chat.record!.rounds.count
+        chat.setDraft("Pick up the toadstone review")
+        await chat.send(source: card, handoff: store)
+        let failed = chat.record!.rounds.last!
+        precondition(failed.state == "Needs attention" && failed.answer.isEmpty && failed.assignments.isEmpty && WorkChatPolicy.canPlanAgain(failed), "[plan again] a pre-plan failure can be planned again")
+        precondition(chat.error?.hasPrefix("COS could not read the session list on this Mac") == true && chat.error?.hasSuffix("Nothing was sent.") == true && chat.error?.contains("invalid_live_row") == true,
+                     "[plan again] the error names the real cause and keeps the server's reason: \(chat.error ?? "")")
+        chat.setDraft("Something else I am typing")
+        await fixture.setFailInput(false)
+        let chats = await fixture.chatData.count
+        await chat.send(source: card, handoff: store, planner: "opus", effort: "high", replanRoundID: failed.id)
+        let rounds = chat.record!.rounds, again = rounds.last!
+        precondition(rounds.count == before + 1 && again.id == failed.id && again.question == failed.question && again.state == "Ready to send" && !again.answer.isEmpty,
+                     "[plan again] the same round is planned in place, never a second bubble: \(rounds.count - before) round(s), \(again.state)")
+        let chatsAfter = await fixture.chatData.count
+        precondition(chat.draft.value.text == "Something else I am typing" && chatsAfter == chats + 1, "[plan again] the composer's draft is left alone and the planner ran once")
+        precondition(!WorkChatPolicy.canPlanAgain(again), "[plan again] a planned round is not a pre-plan failure")
+        await chat.send(source: card, handoff: store, replanRoundID: again.id)
+        let chatsThen = await fixture.chatData.count
+        precondition(chat.record!.rounds.count == before + 1 && chatsThen == chats + 1 && chat.record!.rounds.last!.assignments.count == 3, "[plan again] Plan again never replans a round that has a plan")
+        precondition(store.receipts.isEmpty, "[plan again] planning again sends nothing")
+    }
+
+    // 7. 0.5.386: an empty card (nothing to continue or fork). The planner is offered one provider; one New session at
+    // most; the round stops at Ready to send; nothing starts until Send.
+    do {
+        let (fixture, store, chat) = try await setup("empty-card")
+        await fixture.setRows([])
+        await fixture.setPlan([plan[2], .object(["mode": .string("newSession"), "provider": .string("claude"), "prompt": .string("A second new session.")])])
+        chat.setDraft("Start on the toadstone canaries")
+        await chat.send(source: card, handoff: store, planner: "opus", effort: "high")
+        let body = objects(await fixture.chatData).last!, round = chat.record!.rounds.last!
+        precondition((body["newSessionProviders"] as? [String]) == ["claude"], "[empty card] the planner is offered Claude only: \(body["newSessionProviders"] ?? "nil")")
+        precondition(round.state == "Ready to send" && round.assignments.count == 1 && round.assignments[0].mode == "newSession" && round.assignments[0].provider == "claude",
+                     "[empty card] one New session, stopped at Ready to send: \(round.state) \(round.assignments.count)")
+        precondition(round.sessionsNote == WorkOrchestrator.emptyCardNote("claude") && round.offerNewSession == nil, "[empty card] the round says what Send will start")
+        let jobsBefore = await fixture.newJobs
+        precondition(store.receipts.isEmpty && jobsBefore.isEmpty, "[empty card] nothing started before Send")
+        // Claude's usage low: Codex. Claude used up: Codex, and Claude is never offered.
+        await fixture.setPlan([.object(["mode": .string("newSession"), "provider": .string("codex"), "prompt": .string("Draft the canaries.")])])
+        await fixture.setUsage([.object(["provider": .string("claude"), "state": .string("low"), "headroomPct": .number(5), "resetsAt": .null, "ageSec": .number(10), "source": .string("probe"), "plan": .null, "stale": .bool(false), "note": .string("")])])
+        chat.setDraft("Again, with Claude low")
+        await chat.send(source: card, handoff: store)
+        let lowBody = objects(await fixture.chatData).last!
+        precondition((lowBody["newSessionProviders"] as? [String]) == ["codex"] && chat.record!.rounds.last!.sessionsNote == WorkOrchestrator.emptyCardNote("codex"), "[empty card] Codex when Claude's usage is low")
+        await fixture.setUsage([.object(["provider": .string("claude"), "state": .string("exhausted"), "headroomPct": .number(0), "resetsAt": .null, "ageSec": .number(10), "source": .string("probe"), "plan": .null, "stale": .bool(false), "note": .string("")])])
+        await fixture.setRows([row(sbu, live: true, reason: nil, linked: true, found: ["link"])])
+        await fixture.setPlan([plan[0]])
+        chat.setDraft("A card with a session, Claude used up")
+        await chat.send(source: card, handoff: store)
+        let outBody = objects(await fixture.chatData).last!
+        precondition((outBody["newSessionProviders"] as? [String]) == ["codex"] && chat.record!.rounds.last!.sessionsNote == nil, "[provider] a used-up provider is never offered, on any card")
+    }
+
+    // 8. 0.5.386 (T7): the planner answered without a New session on an empty card. One click starts one, through dispatch.
+    do {
+        let (fixture, store, chat) = try await setup("offer")
+        await fixture.setRows([])
+        await fixture.setPlan([])
+        chat.setDraft("What should happen on this card?")
+        await chat.send(source: card, handoff: store)
+        let round = chat.record!.rounds.last!
+        let noJobs = await fixture.newJobs
+        precondition(round.state == "Answered" && round.offerNewSession == "claude" && store.receipts.isEmpty && noJobs.isEmpty,
+                     "[offer] the round offers one click and starts nothing: \(round.state) \(round.offerNewSession ?? "nil")")
+        await chat.startNewSession(roundID: round.id, source: card, handoff: store)
+        let after = chat.record!.rounds.last!
+        let jobs = await fixture.newJobs
+        precondition(jobs == ["claude-opus"] && store.receipts.count == 1 && store.receipts[0].mode == .newSession && store.receipts[0].orchestrationRunID == round.id
+                     && store.receipts[0].prompt.contains("What should happen on this card?"),
+                     "[offer] one Claude Opus session starts, with the request, through submit and its receipt: \(jobs)")
+        precondition(after.assignments.count == 1 && after.assignments[0].mode == "newSession" && after.offerNewSession == nil && after.state != "Answered", "[offer] the round shows the one assignment it sent")
+        await chat.startNewSession(roundID: round.id, source: card, handoff: store)
+        let jobsAgain = await fixture.newJobs
+        precondition(jobsAgain.count == 1 && store.receipts.count == 1, "[offer] a second click starts nothing")
+        // One case per term of the one-click guard (the button is drawn only on an Answered round with no assignment).
+        // An Answered round that already has its assignment, with the offer forced back: the click starts nothing.
+        let sent = chat.record!
+        var answeredWithOne = sent; let last = sent.rounds.count - 1
+        answeredWithOne.rounds[last].state = "Answered"; answeredWithOne.rounds[last].offerNewSession = "claude"; chat.record = answeredWithOne
+        await chat.startNewSession(roundID: round.id, source: card, handoff: store)
+        let jobsAnswered = await fixture.newJobs
+        // (A second send would queue behind the first one's running job, so the round itself is what proves nothing moved.)
+        precondition(jobsAnswered.count == 1 && store.receipts.count == 1 && chat.record!.rounds.last!.assignments.map(\.receiptID) == sent.rounds[last].assignments.map(\.receiptID)
+                     && chat.record!.rounds.last!.state == "Answered",
+                     "[offer] an Answered round that already has an assignment gets no one-click start")
+        // A round that is not Answered (Ready to send) with no assignment, the offer forced on: the click starts nothing.
+        var notAnswered = sent
+        notAnswered.rounds[last].state = "Ready to send"; notAnswered.rounds[last].assignments = []; notAnswered.rounds[last].offerNewSession = "claude"; chat.record = notAnswered
+        await chat.startNewSession(roundID: round.id, source: card, handoff: store)
+        let jobsNotAnswered = await fixture.newJobs
+        precondition(jobsNotAnswered.count == 1 && store.receipts.count == 1 && chat.record!.rounds.last!.assignments.isEmpty && chat.record!.rounds.last!.offerNewSession == "claude",
+                     "[offer] a round that is not Answered gets no one-click start")
+        chat.record = sent
+    }
+
+    // 9. 0.5.386 (T8): Agent workspace. A card with no session of its own opens on Start a new session (Claude Opus); a
+    // card with a session keeps Continue; another card's suggestion is never taken for Miles.
+    do {
+        let (_, store, _) = try await setup("workspace")
+        let other = WorkSource.taskSnapshot(TaskRow(.object(["id": .string("b1b2c3d4e5f6"), "workIdentity": .string("b1b2c3d4e5f6"), "domain": .string("quilt"), "title": .string("A new card"), "text": .string("A new card"), "source": .string("Fixture evidence")]))!)
+        let empty = store.draft(for: other), linked = store.draft(for: card)
+        precondition(empty.mode == .newSession && empty.provider == "claude" && empty.modelID == "claude-opus", "[workspace] an empty card preselects Start a new session on Opus: \(empty.mode) \(empty.modelID)")
+        precondition(linked.mode == .continueSession && linked.modelID.isEmpty, "[workspace] a card with a session keeps Continue")
+        precondition(store.savedDraft(for: other) == nil, "[workspace] the default is not a saved destination")
+        let advice = SessionAdvice(details: ["provider": .string("subq"), "action": .string("continue"), "sessionId": .string(sbu), "confidence": .number(0.73), "reason": .string("Same topic.")])!
+        let hasSession = WorkHandoffStore.cardHasSession(workID: other.id, links: store.confirmedSessionCards, receipts: store.receipts)
+        precondition(!hasSession && WorkHandoffStore.cardHasSession(workID: card.id, links: store.confirmedSessionCards, receipts: store.receipts), "[workspace] which card has a session")
+        precondition(WorkHandoffStore.applicableAdvice(advice, workID: other.id, hasSession: false, links: store.confirmedSessionCards) == nil, "[workspace] another card's session is never preselected on an empty card")
+        let unlinked = SessionAdvice(details: ["provider": .string("jev"), "action": .string("fork"), "sessionId": .string(growth), "confidence": .number(0.9), "reason": .string("Close match.")])!
+        precondition(store.confirmedSessionCards[growth] == nil && WorkHandoffStore.applicableAdvice(unlinked, workID: other.id, hasSession: false, links: store.confirmedSessionCards) == nil,
+                     "[workspace] on an empty card no Continue or Fork suggestion is preselected, linked anywhere or not")
+        let fresh = SessionAdvice(details: ["provider": .string("jev"), "action": .string("new"), "confidence": .number(0.8)])!
+        precondition(WorkHandoffStore.applicableAdvice(fresh, workID: other.id, hasSession: false, links: store.confirmedSessionCards) == fresh, "[workspace] a New session suggestion still applies")
+        precondition(WorkHandoffStore.applicableAdvice(advice, workID: "task:quilt:c0c0c0c0c0c0", hasSession: true, links: store.confirmedSessionCards) == nil, "[workspace] nor on a card that has sessions of its own")
+        precondition(WorkHandoffStore.applicableAdvice(advice, workID: card.id, hasSession: true, links: store.confirmedSessionCards) == advice, "[workspace] the card's own session still can be")
+        let blank = WorkHandoffDraft(sourceID: other.id, sourceRevision: other.revision, prompt: other.suggestedPrompt)
+        precondition(WorkHandoffStore.startPlan(draft: blank, advice: WorkHandoffStore.applicableAdvice(advice, workID: other.id, hasSession: false, links: store.confirmedSessionCards),
+                                                sessions: store.sessions, models: store.models, hasHistory: false) == nil, "[workspace] Start work opens the chooser, never a one-click Continue elsewhere")
+    }
+    print("PASS work orchestrator store: toadstone card plans with both sessions, Guardian row out, refresh before input, Continue/Fork/New session through submit, fork child journaled, Auto-send with Stop, never-silent empty plans, older server unchanged; 0.5.386: short-id session left out, Plan again in place, empty-card New session at Ready to send, one-click start, Agent workspace default")
 }

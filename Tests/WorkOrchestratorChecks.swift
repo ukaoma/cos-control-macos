@@ -22,10 +22,54 @@ import Foundation
         check(noList["live"] is NSNull, "an unread session list is sent as unknown, never as an empty list")
         check(WorkOrchestrator.isGuardian(id: "codex:x", title: "Anything", summary: "The following is the Codex agent history whose request action") && !WorkOrchestrator.isGuardian(id: "claude:x", title: "Guardian review", summary: ""), "Guardian rows are Codex rows by title or summary")
 
-        // Rows: Continue only into a live Claude or Codex row nothing stops; Control's own rule must agree.
         func row(_ id: String, live: Bool = true, reason: String? = nil, forkable: Bool = true) -> WorkOrchestrator.Row {
             .init(id: id, title: "T", summary: "", status: "idle", discoveredBy: ["link"], linked: true, member: true, lastTouchedCard: nil, lastActivity: nil, live: live, busy: false, pickup: "note", available: reason == nil, reason: reason, forkable: forkable)
         }
+        // 0.5.386 (T5): the server's parseSnapshot refused the WHOLE snapshot for one live row by a short id
+        // (`claude:deadbeef`, a running CLI session from the live list), so Plan failed on every card. Left out and counted.
+        let short = WorkOrchestrator.LiveRow(id: "claude:deadbeef", title: "CLI", status: "running", updatedAt: nil, busy: true, waitingOnUser: false, appOwned: false, summary: "")
+        let emoji = String(repeating: "\u{1F600}", count: 151) // 302 UTF-16 units, 151 Swift characters
+        let titled = WorkOrchestrator.LiveRow(id: sbu.uppercased().replacingOccurrences(of: "CLAUDE", with: "claude"), title: emoji, status: "idle\u{0007}", updatedAt: "2026-11-09T22:00:00Z", busy: false, waitingOnUser: false, appOwned: false, summary: "a\u{0001}b\tc")
+        let checked = WorkOrchestrator.checkedSnapshot(links: [.init(sessionID: "claude:deadbeef", workID: card, at: 5), .init(sessionID: sbu, workID: "not a card", at: 6), .init(sessionID: sbu, workID: card, at: 7)],
+                                                       receipts: [.init(id: "r9", workID: card, mode: "teleport", provider: "claude", sessionID: nil, sourceSessionID: nil, forkChildID: nil, status: "x", createdAt: 1),
+                                                                  .init(id: "r8", workID: card, mode: "newSession", provider: "claude", sessionID: "claude:deadbeef", sourceSessionID: nil, forkChildID: nil, status: "delivered", createdAt: 2)],
+                                                       live: [short, titled], liveCheckedAt: now, controlVersion: "0.5.386", now: now)
+        let liveRows = (checked.body["live"] as? [String: Any])?["rows"] as? [[String: Any]] ?? []
+        check(liveRows.map { $0["id"] as? String } == [sbu] && checked.droppedLive == 1, "[T5] a live row by a short id is left out and counted; the full one goes, lowercased")
+        let sentTitle = liveRows.first?["title"] as? String ?? ""
+        check(sentTitle.utf16.count == 300 && sentTitle.count == 150 && emoji.count == 151, "[T5] a title is clamped to 300 UTF-16 units (JavaScript length), never split inside an emoji: \(sentTitle.utf16.count)")
+        check(liveRows.first?["status"] as? String == "idle" && liveRows.first?["summary"] as? String == "ab\tc", "[T5] control characters the server refuses are dropped; a tab stays")
+        let sentLinks = checked.body["links"] as? [[String: Any]] ?? []
+        check(sentLinks.count == 1 && sentLinks.first?["at"] as? Double == 7 && checked.droppedLinks == 2, "[T5] a link by a short id or to a bad card is left out")
+        let sentReceipts = checked.body["receipts"] as? [[String: Any]] ?? []
+        check(sentReceipts.map { $0["id"] as? String } == ["r8"] && sentReceipts.first?["sessionID"] is NSNull && checked.droppedReceipts == 1, "[T5] a receipt with an unknown mode is left out; a short session id it names goes as null")
+        check(WorkOrchestrator.validSessionID(sbu) && WorkOrchestrator.validSessionID(sbu.uppercased().replacingOccurrences(of: "CLAUDE", with: "claude")) && !WorkOrchestrator.validSessionID("claude:deadbeef")
+              && !WorkOrchestrator.validSessionID("ollama:32386d7e-f751-41c5-a185-a0d731416a01") && !WorkOrchestrator.validSessionID("claude:32386d7e-f751-41c5-a185-a0d731416a0g")
+              && WorkOrchestrator.validSessionID("cursor:01a1384c-0b2e-7a10-9c3e-5d6f7a8b9c0e"), "[T5] the server's SID: provider and a whole UUID")
+        check(WorkOrchestrator.validWorkID(card) && WorkOrchestrator.validWorkID("meeting:g2:abc") && !WorkOrchestrator.validWorkID("Task:x") && !WorkOrchestrator.validWorkID("task:") && !WorkOrchestrator.validWorkID("task:a\u{0001}"), "[T5] the server's WORK_ID")
+        check(WorkOrchestrator.clamp("\u{1F600}", 1) == "" && WorkOrchestrator.clamp("abc", 2) == "ab" && WorkOrchestrator.clamp("a\r\nb", 9) == "a\r\nb", "[T5] clamp counts UTF-16 units at whole characters")
+        check(WorkOrchestrator.snapshot(links: [], receipts: [], live: [short], liveCheckedAt: now, controlVersion: "x", now: now)["live"].map { (($0 as? [String: Any])?["rows"] as? [Any])?.isEmpty == true } == true, "[T5] the plain snapshot filters too")
+
+        // 0.5.386: an empty card. Providers out of usage are never offered; Claude unless its usage is low; Opus first.
+        func usage(_ p: String, _ state: String) -> WorkOrchestrator.Usage { .init(provider: p, state: state, headroomPct: nil, resetsAt: nil, ageSec: nil, source: "probe", plan: nil, stale: false, note: "") }
+        check(WorkOrchestrator.newSessionProviders(available: ["claude", "codex"], usage: []) == ["claude", "codex"]
+              && WorkOrchestrator.newSessionProviders(available: ["claude", "codex"], usage: [usage("claude", "exhausted")]) == ["codex"]
+              && WorkOrchestrator.newSessionProviders(available: ["claude"], usage: [usage("claude", "low")]) == ["claude"], "[provider] a used-up provider is never offered")
+        check(WorkOrchestrator.emptyCardProvider(offered: ["claude", "codex"], usage: [usage("codex", "low")]) == "claude", "[provider] Claude by default")
+        check(WorkOrchestrator.emptyCardProvider(offered: ["claude", "codex"], usage: [usage("claude", "low")]) == "codex", "[provider] Codex when Claude's usage is low")
+        check(WorkOrchestrator.emptyCardProvider(offered: ["codex"], usage: [usage("claude", "exhausted")]) == "codex" && WorkOrchestrator.emptyCardProvider(offered: ["claude"], usage: [usage("claude", "low")]) == "claude"
+              && WorkOrchestrator.emptyCardProvider(offered: [], usage: []) == nil, "[provider] Codex when Claude is used up; low Claude when there is nothing else; none when nothing is offered")
+        check(WorkOrchestrator.preferredModel(provider: "claude", models: [("sonnet", true), ("opus", true)]) == "opus" && WorkOrchestrator.preferredModel(provider: "claude", models: [("sonnet", true), ("claude-opus-4", true)]) == "claude-opus-4"
+              && WorkOrchestrator.preferredModel(provider: "claude", models: [("sonnet", true), ("opus", false)]) == "sonnet" && WorkOrchestrator.preferredModel(provider: "codex", models: [("codex-frontier", true)]) == "codex-frontier"
+              && WorkOrchestrator.preferredModel(provider: "codex", models: [("x", false)]) == nil, "[provider] Claude starts on Opus when it is available")
+        check(WorkOrchestrator.nothingToContinue(rows: [], automaticIDs: [], forkProviders: ["claude", "codex"]), "[empty] no rows is an empty card")
+        check(!WorkOrchestrator.nothingToContinue(rows: [row(sbu)], automaticIDs: [sbu], forkProviders: []), "[empty] a row that can Continue is not")
+        check(!WorkOrchestrator.nothingToContinue(rows: [row(growth, live: false, reason: "not_in_session_list")], automaticIDs: [], forkProviders: ["claude", "codex"]), "[empty] a row that can Fork is not")
+        check(WorkOrchestrator.nothingToContinue(rows: [row(growth, live: false, reason: "not_in_session_list", forkable: false), row("cursor:01a1384c-0b2e-7a10-9c3e-5d6f7a8b9c0e")], automaticIDs: [], forkProviders: ["claude", "codex"]), "[empty] rows that can neither Continue nor Fork leave the card empty")
+        check(WorkOrchestrator.oneNewSession([1, 2, 3, 4], isNew: { $0 % 2 == 0 }) == [1, 2, 3], "[empty] at most one New session per round")
+        check(WorkOrchestrator.startNewSessionTitle("claude") == "Start a new Claude session with this request" && !WorkOrchestrator.emptyCardNote("codex").contains("\u{2014}") && WorkOrchestrator.emptyCardPhase("codex").contains("Codex"), "[empty] the words Miles asked for, no em dash")
+
+        // Rows: Continue only into a live Claude or Codex row nothing stops; Control's own rule must agree.
         check(WorkOrchestrator.automatic(row(sbu), controlAllows: true), "a live linked Claude row can Continue")
         check(!WorkOrchestrator.automatic(row(sbu), controlAllows: false), "Control's own rule (not app owned) still decides")
         check(!WorkOrchestrator.automatic(row(sbu, live: false), controlAllows: true), "a row outside the session list cannot Continue")
@@ -80,6 +124,6 @@ import Foundation
         check(WorkOrchestrator.stopAction(state: "running", queuedState: q, receiptStatus: "running", channel: "turn", jobID: nil, sessionID: sbu) == .cancelTurn(provider: "claude", threadID: "32386d7e-f751-41c5-a185-a0d731416a01"), "a Continue's turn is cancelled by its session")
         if case .unavailable = WorkOrchestrator.stopAction(state: "running", queuedState: q, receiptStatus: "running", channel: "fork", jobID: nil, sessionID: nil) {} else { check(false, "a fork in progress says it cannot be stopped here") }
         check(WorkOrchestrator.stopAction(state: "delivered", queuedState: q, receiptStatus: "delivered", channel: "turn", jobID: nil, sessionID: sbu) == .none, "a finished handoff has nothing to stop")
-        print("PASS work orchestrator: \(passed) checks (snapshot, rows, never-silent empty plans, assignment kinds, per-card Auto-send golden, Stop)")
+        print("PASS work orchestrator: \(passed) checks (snapshot, 0.5.386 id filter and UTF-16 clamp, empty-card provider rules, rows, never-silent empty plans, assignment kinds, per-card Auto-send golden, Stop)")
     }
 }

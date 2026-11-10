@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""0.5.333 mutation gate for the Work orchestrator (server 6.83.0 input, per-card Auto-send, Stop, fork child journal).
+"""0.5.333 mutation gate for the Work orchestrator (0.5.386: the snapshot id filter and clamp, the empty card, Plan again, the Agent workspace default) (server 6.83.0 input, per-card Auto-send, Stop, fork child journal).
 
     python3 Tests/mutate-work-orchestrator.py <control worktree> [--tier pure|hub] [name ...]   (run by hand, never by a gate)
 
@@ -22,10 +22,26 @@ only = set(args)
 O = "Sources/WorkOrchestrator.swift"; C = "Sources/WorkTaskChat.swift"; S = "Sources/WorkHandoffStore.swift"; H = "HelperSources/main.swift"
 MUTANTS = [
  # pure: the snapshot
- ("pure", "Guardian rows reach the server", O, "let rows = live.filter { !isGuardian(id: $0.id, title: $0.title, summary: $0.summary) }.prefix(maxLive)", "let rows = live.prefix(maxLive)"),
+ ("pure", "Guardian rows reach the server", O, "let rows = usable.filter { !isGuardian(id: $0.id, title: $0.title, summary: $0.summary) }.prefix(maxLive)", "let rows = usable.prefix(maxLive)"),
  ("pure", "Guardian test ignores the title", O, 'id.hasPrefix("codex:") && (title.trimmingCharacters(in: .whitespaces) == "Guardian review"', 'id.hasPrefix("codex:") && (false'),
- ("pure", "receipts oldest first", O, '"receipts": receipts.sorted { $0.createdAt > $1.createdAt }', '"receipts": receipts.sorted { $0.createdAt < $1.createdAt }'),
- ("pure", "missing ids become empty text", O, "        func opt(_ s: String?) -> Any { s ?? NSNull() }", '        func opt(_ s: String?) -> Any { s ?? "" }'),
+ ("pure", "receipts oldest first", O, '"receipts": goodReceipts.sorted { $0.createdAt > $1.createdAt }', '"receipts": goodReceipts.sorted { $0.createdAt < $1.createdAt }'),
+ ("pure", "missing ids become empty text", O, "        func sid(_ s: String?) -> Any { s.flatMap { validSessionID($0) ? $0.lowercased() : nil } ?? NSNull() }", '        func sid(_ s: String?) -> Any { s.flatMap { validSessionID($0) ? $0.lowercased() : nil } ?? "" }'),
+ # pure: 0.5.386 the snapshot leaves out what the server refuses (T5)
+ ("pure", "short live ids reach the server", O, "            let usable = live.filter { validSessionID($0.id) }", "            let usable = live"),
+ ("pure", "short link ids reach the server", O, "        let goodLinks = links.filter { validSessionID($0.sessionID) && validWorkID($0.workID)", "        let goodLinks = links.filter { validWorkID($0.workID)"),
+ ("pure", "bad card ids reach the server", O, "        let goodLinks = links.filter { validSessionID($0.sessionID) && validWorkID($0.workID)", "        let goodLinks = links.filter { validSessionID($0.sessionID)"),
+ ("pure", "unknown receipt mode sent", O, "validWorkID($0.workID) && modes.contains($0.mode) && $0.createdAt.isFinite", "validWorkID($0.workID) && $0.createdAt.isFinite"),
+ ("pure", "short receipt session ids sent", O, "        func sid(_ s: String?) -> Any { s.flatMap { validSessionID($0) ? $0.lowercased() : nil } ?? NSNull() }", "        func sid(_ s: String?) -> Any { s.map { $0 as Any } ?? NSNull() }"),
+ ("pure", "titles clamped by characters", O, '"title": clamp($0.title, 300)', '"title": String($0.title.prefix(300))'),
+ ("pure", "control characters kept", O, "        scalars.append(contentsOf: value.unicodeScalars.filter { $0.value >= 0x20 || [0x09, 0x0a, 0x0d].contains($0.value) })", "        scalars.append(contentsOf: value.unicodeScalars)"),
+ ("pure", "SID takes any id", O, "        return groups.map(\\.count) == [8, 4, 4, 4, 12] && groups", "        return true || groups"),
+ ("pure", "no dropped count", O, "            droppedLive = live.count - usable.count\n", ""),
+ # pure: 0.5.386 an empty card
+ ("pure", "used-up provider offered", O, "available.contains(p) && usage.first(where: { $0.provider == p })?.state != \"exhausted\"", "available.contains(p)"),
+ ("pure", "Claude even when its usage is low", O, '        if offered.contains("claude") && !(claudeLow && offered.contains("codex")) { return "claude" }', '        if offered.contains("claude") { return "claude" }'),
+ ("pure", "a forkable row counts as empty", O, "        !rows.contains { automaticIDs.contains($0.id) || ($0.forkable && forkProviders.contains($0.provider)) }", "        !rows.contains { automaticIDs.contains($0.id) }"),
+ ("pure", "Opus not preferred", O, '        if provider == "claude", let opus', '        if provider == "never", let opus'),
+ ("pure", "two New sessions kept", O, "            return !seen\n", "            return true\n"),
  ("pure", "unread list sent as empty", O, '        if let live, let checked = liveCheckedAt {', '        if true { let live = live ?? [], checked = liveCheckedAt ?? now'),
  # pure: Continue gate and rows
  ("pure", "Continue ignores the list", O, '["claude", "codex"].contains(row.provider) && row.live && row.reason == nil && controlAllows', '["claude", "codex"].contains(row.provider) && row.reason == nil && controlAllows'),
@@ -54,7 +70,7 @@ MUTANTS = [
  ("pure", "turn stop unavailable", O, '            return .cancelTurn(provider: String(id[..<colon]), threadID: String(id[id.index(after: colon)...]))', '            return .unavailable(String(id[..<colon]))'),
  ("pure", "a finished handoff shows Stop", O, '        guard let status = receiptStatus, ["running", "queued", "sending"].contains(status) else { return .none }', '        guard let status = receiptStatus else { return .none }'),
  # pure tier also runs the wiring pins
- ("pure", "helper drops the capability", H, '"orchestrator": body["orchestrator"] as? Int == 1])', '"orchestrator": false])'),
+ ("pure", "helper drops the capability", H, '"orchestrator": body["orchestrator"] as? Int == 1,', '"orchestrator": false,'),
  ("pure", "helper waves any row through", H, 'if orchestrator, row["linked"] as? Bool != true, let found = row["discoveredBy"] as? [String], !found.isEmpty { return true }', 'if orchestrator { return true }'),
  ("pure", "Control gives up before the helper", S, '(args.first == "work-orchestrator-input" ? 60 : 45)', '(args.first == "work-orchestrator-input" ? 45 : 45)'),
  ("pure", "no refresh before the input", C, "                await handoff.refreshActivity()\n                orchestrated = try await orchestratorInput(", "                orchestrated = try await orchestratorInput("),
@@ -68,7 +84,31 @@ MUTANTS = [
  ("hub", "empty plan silent", C, "                self.record?.rounds[index].sessionsNote = WorkOrchestrator.emptyExplanation(", "                _ = WorkOrchestrator.emptyExplanation("),
  ("hub", "Stop never reaches the server", C, '            await requestStop(assignmentID: assignmentID, args: ["work-job-cancel", "--job-id", job], handoff: handoff)', '            _ = job'),
  ("hub", "Stop on rounds waiting for review", C, "sentWithoutReview: round.sentWithoutReview == true || round.sentFromGlasses == true)", "sentWithoutReview: true)"),
+ # hub: 0.5.386, by execution against the fixture that refuses a snapshot as server 7.0.12 does
+ ("hub", "short-id live row pushed", O, "            let usable = live.filter { validSessionID($0.id) }", "            let usable = live"),
+ ("hub", "Plan again appends a round", C, "        if let replan {\n", "        if let replan, replan < 0 {\n"),
+ ("hub", "Plan again replans any round", C, "record.rounds.firstIndex { $0.id == id && WorkChatPolicy.canPlanAgain($0) }", "record.rounds.firstIndex { $0.id == id }"),
+ ("hub", "Plan again takes the draft", C, "        let question = replan.map { record.rounds[$0].question } ?? record.draft", "        let question = replan.map { _ in record.draft.trimmingCharacters(in: .whitespacesAndNewlines) } ?? record.draft"),
+ ("hub", "empty card offers every provider", C, "                    emptyCard = provider; newProviders = [provider]", "                    emptyCard = provider"),
+ ("hub", "empty card keeps every New session", C, '                    planned = WorkOrchestrator.oneNewSession(answer.assignments) { $0.mode == "newSession" }', "                    planned = answer.assignments"),
+ ("hub", "no one-click offer", C, "                    else if planned.isEmpty { self.record?.rounds[index].offerNewSession = provider }", "                    else if false { self.record?.rounds[index].offerNewSession = provider }"),
+ ("hub", "empty card not told", C, "{ self.record?.rounds[index].sessionsNote = WorkOrchestrator.emptyCardNote(provider) }", "{ _ = provider }"),
+ ("hub", "one click sends nothing", C, "        await dispatch(roundID: roundID, assignmentIDs: [assignment.receiptID], source: source, handoff: handoff, hold: holdChoice(whenHeld, autoSend: false, handoff: handoff))\n", ""),
+ ("hub", "one click on any round", C, "              round.state == \"Answered\", round.assignments.isEmpty, round.orchestrated != nil,", "              round.orchestrated != nil,"),
+ ("hub", "one click on a round not Answered", C, "              round.state == \"Answered\", round.assignments.isEmpty, round.orchestrated != nil,", "              round.assignments.isEmpty, round.orchestrated != nil,"),
+ ("hub", "one click on a round with an assignment", C, "              round.state == \"Answered\", round.assignments.isEmpty, round.orchestrated != nil,", "              round.state == \"Answered\", round.orchestrated != nil,"),
+ ("hub", "New session on the first Claude model", C, "$0.provider == provider && $0.available && $0.id == preferred }", "$0.provider == provider && $0.available }"),
+ ("hub", "used-up provider offered (store)", C, "newProviders = WorkOrchestrator.newSessionProviders(available: Set(handoff.models.filter(\\.available).map(\\.provider)), usage: orchestrated!.usage)", "newProviders = [\"claude\", \"codex\"].filter { p in handoff.models.contains { $0.provider == p && $0.available } }"),
+ ("hub", "empty card keeps Continue", S, "        draft.mode = .newSession\n", ""),
+ ("hub", "every card starts new", S, "        guard !hasSession else { return draft }\n", ""),
+ ("hub", "another card's advice applied", S, "        if let id = advice.sessionID, let link = links[id.lowercased()], link.workID != workID { return nil }\n", ""),
+ ("hub", "empty card takes advice", S, "        guard hasSession else { return nil }\n", ""),
  ("hub", "Guardian rows are targets", C, "        return handoff.observedSessions().filter { allowed.contains($0.id) && !WorkOrchestrator.isGuardian(id: $0.id, title: $0.title, summary: $0.summary) }", "        return handoff.observedSessions().filter { allowed.contains($0.id) || WorkOrchestrator.isGuardian(id: $0.id, title: $0.title, summary: $0.summary) }"),
+ # helper: 0.5.386 the /input failure words, executed by `cos-control-helper self-test-work`
+ ("helper", "short-id cause not named", H, '        case "invalid_live_row": cause = "COS could not read the session list on this Mac (one session had an id COS cannot use)."', '        case "invalid_live_row_never": cause = ""'),
+ ("helper", "server reason dropped", H, "        let codes = [error, reason].compactMap { $0 }", "        let codes = [error].compactMap { $0 }"),
+ ("helper", "server prose echoed", H, '        func code(_ v: String?) -> String? { v.flatMap { $0.range(of: "^[A-Za-z0-9_-]{1,100}$", options: .regularExpression) != nil ? $0 : nil } }', "        func code(_ v: String?) -> String? { v }"),
+ ("helper", "link cause not named", H, '        case "invalid_link": cause = "COS could not read this Mac\'s session links (one link had an id COS cannot use)."', '        case "invalid_link_never": cause = ""'),
 ]
 EXPECTED_SURVIVORS = {
     # Defense in depth: the plan's targets come from the server's rows, which never include a Guardian row (the snapshot
@@ -79,8 +119,23 @@ EXPECTED_SURVIVORS = {
 def idle():
     while subprocess.run(["pgrep", "-x", "swift-frontend"], capture_output=True).returncode == 0: time.sleep(15)
 
+def run_helper(work):
+    out = work / "helper-bin"
+    if out.exists(): out.unlink()
+    b = subprocess.run(["/usr/bin/python3", str(work / "Tests/kit-compile.py"), str(work / "Tests/compile-guard.sh"), "swiftc", "-target", "arm64-apple-macosx14.0", "-swift-version", "6", "-strict-concurrency=complete",
+        *[str(work / f) for f in ("HelperSources/main.swift", "HelperSources/ProviderStatusCore.swift", "HelperSources/PairingCore.swift", "HelperSources/SessionUsageCollector.swift", "Sources/SessionUsageCore.swift", "Sources/WorkSessionLinks.swift")],
+        "-framework", "Security", "-framework", "AppKit", "-o", str(out)], cwd=work, capture_output=True, text=True)
+    if b.returncode: return 2, "", next((l.strip() for l in (b.stdout + b.stderr).splitlines() if " error: " in l), "compile failed"), b.stdout + b.stderr
+    home = tempfile.mkdtemp(dir="/private/tmp")
+    r = subprocess.run([str(out), "self-test-work"], capture_output=True, text=True, env={"COS_CONTROL_TEST_HOME": home, "PATH": "/usr/bin:/bin"})
+    shutil.rmtree(home, ignore_errors=True)
+    text = r.stdout + r.stderr
+    named = "Work orchestrator input failure copy self-test failed" if "Work orchestrator input failure copy self-test failed" in text else ""
+    return (0 if r.returncode == 0 and '"ok":true' in text.replace(" ", "") else 1), named, "", text
+
 def run(work, tier):
     idle()
+    if tier == "helper": return run_helper(work)
     script = "Tests/run-work-orchestrator.sh" if tier == "pure" else "Tests/run-work-session-hub.sh"
     r = subprocess.run(["/bin/zsh", str(work / script)], cwd=work, capture_output=True, text=True)
     out = r.stdout + r.stderr
@@ -92,7 +147,7 @@ def run(work, tier):
     return r.returncode, named, compile_error, out
 
 results = {"killed": [], "survived": [], "invalid": [], "missing": [], "expected": []}
-for tier in ("pure", "hub"):
+for tier in ("pure", "helper", "hub"):
     if tier_only and tier != tier_only: continue
     chosen = [m for m in MUTANTS if m[0] == tier and (not only or m[1] in only)]
     if not chosen: continue

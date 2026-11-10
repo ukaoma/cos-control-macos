@@ -45,8 +45,11 @@ assert gate.index("if WorkChatPolicy.confirmBeforeAutoSend(acknowledged: autoSen
 dialog = chat[chat.index('.confirmationDialog("Send plans without review?"'):]
 assert dialog.index("autoSendAcknowledged = true") < dialog.index("autoSend:true"), "confirming records the acknowledgement"
 assert chat.count("autoSend:true") == 2 and chat.count('Button("Plan and send") { planAndSend() }') == 2, "both Plan and send buttons go through the gate"
-auto = chat[chat.index("            if autoSend, !answer.assignments.isEmpty"):chat.index("        } catch {", chat.index("            if autoSend, !answer.assignments.isEmpty"))]
-assert "await dispatch(roundID: roundID, assignmentIDs: answer.assignments.map(\\.receiptID), source: source, handoff: handoff, hold: hold)" in auto and "submit(" not in auto, "Plan and send uses the guarded send path, never submit directly"
+# 0.5.386: what is sent is the plan as kept (an empty card keeps one New session), still through the guarded path.
+auto = chat[chat.index("            if autoSend, !planned.isEmpty"):chat.index("        } catch {", chat.index("            if autoSend, !planned.isEmpty"))]
+assert "await dispatch(roundID: roundID, assignmentIDs: planned.map(\\.receiptID), source: source, handoff: handoff, hold: hold)" in auto and "submit(" not in auto, "Plan and send uses the guarded send path, never submit directly"
+fresh = chat[chat.index("    func startNewSession("):chat.index("    private func holdChoice(")]
+assert "await dispatch(roundID: roundID, assignmentIDs: [assignment.receiptID]" in fresh and "submit(" not in fresh, "Start a new session goes through the guarded send path, never submit directly"
 assert '@AppStorage(WorkContextMeter.expandedKey) private var expanded = ""' in meter, "item lists must start collapsed (empty memory)"
 assert 'static let expandedKey = "cos.workContextExpanded"' in meter, "the open state is remembered per Mac"
 assert "private var isOpen: Bool { WorkContextMeter.isExpanded(expanded, assignment.receiptID) }" in meter and "if isOpen {" in meter, "the list shows only when opened"

@@ -21213,10 +21213,27 @@ final class COSControlHelper {
         }
         if response.status == 404 { throw HelperError.message("This server does not build the orchestrator input (HTTP 404).") }
         guard response.status == 200, let answer = response.body, answer["protocolVersion"] as? Int == 1, answer["workID"] as? String == workID else {
-            let code = (response.body?["error"] as? String).map { " · \($0)" } ?? ""
-            throw HelperError.message("The server could not build this task's session list (HTTP \(response.status)\(code)).")
+            throw HelperError.message(Self.workOrchestratorInputFailure(status: response.status, error: response.body?["error"] as? String, reason: response.body?["reason"] as? String))
         }
         emit(ok: true, message: "Orchestrator input", details: answer)
+    }
+    /// 0.5.386 (Miles 2026-11-09): the real cause in plain words, then the server's own codes. "The server could not build
+    /// this task's session list" read as "this task has no sessions"; the cause was one running session whose short id
+    /// the server refused (`invalid_live_row`), which made Plan fail on every card. Only machine codes are echoed.
+    static func workOrchestratorInputFailure(status: Int, error: String?, reason: String?) -> String {
+        func code(_ v: String?) -> String? { v.flatMap { $0.range(of: "^[A-Za-z0-9_-]{1,100}$", options: .regularExpression) != nil ? $0 : nil } }
+        let error = code(error), reason = code(reason)
+        let cause: String
+        switch reason ?? error {
+        case "invalid_live_row": cause = "COS could not read the session list on this Mac (one session had an id COS cannot use)."
+        case "invalid_live": cause = "COS could not read the session list on this Mac (the list was malformed)."
+        case "invalid_link": cause = "COS could not read this Mac's session links (one link had an id COS cannot use)."
+        case "invalid_receipt": cause = "COS could not read this Mac's handoff history (one receipt was malformed)."
+        case "invalid_snapshot": cause = "The server refused the Work state this Mac sent."
+        default: cause = status >= 500 || status == 0 ? "The server could not answer for this task's sessions." : "The server refused this task's session request."
+        }
+        let codes = [error, reason].compactMap { $0 }
+        return cause + " Server reason: " + (codes.isEmpty ? "none given" : codes.joined(separator: ", ")) + " (HTTP \(status))."
     }
 
     /// 0.5.333 lens plans (server 6.83.0, `lensPlans: 1`): COS Control's inbox poll. Rounds the lens recorded and COS Control
@@ -21627,6 +21644,16 @@ final class COSControlHelper {
               Self.workMessageEra(["era": "legacy"]) == "legacy",
               Self.workMessageEra(["era": "bad/era"]) == nil else {
             throw HelperError.message("Work model/admission contract self-test failed")
+        }
+        // 0.5.386: the orchestrator input's failure names the real cause and keeps the server's reason; never HTML or prose.
+        guard Self.workOrchestratorInputFailure(status: 400, error: "invalid_snapshot", reason: "invalid_live_row")
+                == "COS could not read the session list on this Mac (one session had an id COS cannot use). Server reason: invalid_snapshot, invalid_live_row (HTTP 400).",
+              Self.workOrchestratorInputFailure(status: 400, error: "invalid_snapshot", reason: "invalid_link").hasPrefix("COS could not read this Mac's session links"),
+              Self.workOrchestratorInputFailure(status: 400, error: "invalid_snapshot", reason: nil).hasPrefix("The server refused the Work state this Mac sent."),
+              Self.workOrchestratorInputFailure(status: 502, error: "<html>", reason: "x y") == "The server could not answer for this task's sessions. Server reason: none given (HTTP 502).",
+              !Self.workOrchestratorInputFailure(status: 400, error: "invalid_snapshot", reason: "invalid_live_row").contains("\u{2014}"),
+              !Self.workOrchestratorInputFailure(status: 400, error: "invalid_snapshot", reason: "invalid_live_row").contains("could not build this task's session list") else {
+            throw HelperError.message("Work orchestrator input failure copy self-test failed")
         }
         // 0.5.250: a Claude New session's name rides in the job request only when there is one, cleaned again here.
         let named = Self.workNewPayload(clientJobId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", query: "test", model: "opus",

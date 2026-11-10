@@ -482,7 +482,9 @@ private actor HandoffTransport {
         let draftTransport = HandoffTransport(.dropped)
         let drafts = make("drafts", draftTransport)
         var draft = drafts.draft(for: source)
-        precondition(draft.prompt == source.suggestedPrompt && draft.sessionID.isEmpty && draft.provider.isEmpty && draft.modelID.isEmpty)
+        // 0.5.386: a card with no session of its own opens on Start a new session, on the first available provider's model.
+        precondition(draft.prompt == source.suggestedPrompt && draft.sessionID.isEmpty && draft.mode == .newSession && draft.provider == "codex" && draft.modelID == choice.id
+            && drafts.savedDraft(for: source) == nil)
         draft.prompt = "Operator's unsent edits"; draft.mode = .newSession
         draft.sessionID = other.id; draft.provider = "codex"; draft.modelID = choice.id
         precondition(drafts.updateDraft(draft, for: source))
@@ -493,7 +495,7 @@ private actor HandoffTransport {
             && restored.provider == "codex" && restored.modelID == choice.id)
         let revised = WorkSource(id: source.id, title: source.title, revision: "changed", project: source.project, context: "Revised source")
         let revisionDraft = draftReload.draft(for: revised)
-        precondition(revisionDraft.prompt == revised.suggestedPrompt && revisionDraft.sessionID.isEmpty && revisionDraft.modelID.isEmpty)
+        precondition(revisionDraft.prompt == revised.suggestedPrompt && revisionDraft.sessionID.isEmpty && revisionDraft.editVersion == 0 && draftReload.savedDraft(for: revised) == nil)
         precondition(!draftReload.updateDraft(restored, for: revised), "A stale source draft cannot be written into a different revision")
         precondition(draftReload.draft(for: source).prompt == "Operator's unsent edits")
         let competingDrafts = make("drafts", draftTransport)
