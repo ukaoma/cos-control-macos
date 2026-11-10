@@ -310,7 +310,7 @@ pin("hubCategoryContent(hubCategory)\n                                    .envir
 pin("SettingsHubView.resolved(stored: hubViewChoice.isEmpty ? nil : hubViewChoice,\n                                                           newInstall: hubCohort == InstallCohort.Cohort.new.rawValue)" in views
     and "@AppStorage(SettingsHubView.key) private var hubViewChoice = \"\"" in views_raw and "@AppStorage(InstallCohort.key) private var hubCohort: String?" in views_raw,
     "Basic for a Mac kept as new (read lazily, observed), All otherwise, a choice wins")
-pin("func hubDraws(_ id: String) -> Bool { hubGroupShown(id) && (hubView == .all || SettingsHubCatalog.hasBasicRows(id)) }" in views
+pin("func hubDraws(_ id: String) -> Bool { hubGroupShown(id) && (hubView == .all || (SettingsHubCatalog.hasBasicRows(id) && hubBasicCardHasRows(id))) }" in views
     and "SettingsHubCatalog.groups(in: category).filter { hubDraws($0.id) }" in views, "On this page and the cards share one test, Basic included")
 pin("if SettingsHubCatalog.drawn(id, view: hubView, glassesPath: glassesPath), SettingsHubCatalog.inlineShown(id, open: inlineAdvancedOpen) { row }" in shell
     and "if hosted, SettingsHubCatalog.drawn(id, view: hubView) { content.id(\"item.\" + id) } else if !hosted { content }" in shell,
@@ -327,7 +327,8 @@ pin("if !hostedInActivity { allSettingsRow }" in main_panel and main_panel.index
     "the menu-bar panel opens with an All settings row, above the status card")
 pin("Button { model.showSettings?() } label: {" in body(views, "    private var allSettingsRow: some View {", "\n    }\n"), "All settings opens Settings")
 head = body(views, "    private var header: some View {", "\n    }\n")
-pin("if voiceGuide.devicePath == .glasses {\n                Button { confirmResetMessageCount = true }" in head, "the header's Reset message count only on the glasses path")
+pin("if !SettingsHubCatalog.choseMacOnly(storedDevicePath: storedDevicePath) {\n                Button { confirmResetMessageCount = true }" in head,
+    "the header's Reset message count hidden only for an explicit Just my Mac")
 # 0.5.387: copy that points at a real screen, with the button beside it.
 pin("setup wizard" not in views and 'Button("Open Dictionary") { model.openDictionaryInActivity() }' in views, "no setup wizard: the Dictionary, with its button")
 pin("Turn on Live transcript in Settings" not in views and 'Button("Turn on Live transcript") { showLiveTranscript = true; model.liveTranscriptSettingChanged() }' in views,
@@ -350,15 +351,24 @@ pin(all(k in fn for k in ("runtimeState(snapshot:", "readToken()", '"/api/web-se
 # 0.5.387 recovery rows (lead, 2026-11-09): what the glasses app, Control Web and the phone tell a person to press in COS Control.
 recovery = dict((i, n) for n, i in re.findall(r'\("([^"]+)", "([A-Z]+-\d\d)"\)', body(catalog, "    static let recoveryRows: [(name: String, id: String)] = [", "\n    ]\n")))
 basic_ids = set(re.findall(r'"([A-Z]+-\d\d)"', body(catalog, "    static let basicIDs: Set<String> = [", "\n    ]\n")))
-pin(set(recovery) == {"C-01", "C-03", "C-04", "C-05", "UT-14", "SG-05", "SG-11", "UT-21", "UT-29", "WB-01", "SG-01"}, f"the recovery rows are the named eleven ({sorted(recovery)})")
+pin(set(recovery) == {"C-01", "C-03", "C-04", "C-05", "UT-14", "SG-05", "SG-11", "UT-21", "UT-29", "WB-01", "SG-01", "UT-10"}, f"the recovery rows are the named twelve ({sorted(recovery)})")
 glasses_basic = set(re.findall(r'"([A-Z]+-\d\d)"', body(catalog, "    static let glassesPathBasic: Set<String> = [", "]")))
 pin(glasses_basic == {"UT-21"}, f"only Copy pairing token is placed by the device path ({sorted(glasses_basic)})")
 pin(set(recovery) <= basic_ids | glasses_basic, f"every recovery row is in Basic, Copy pairing token on the glasses path (missing {sorted(set(recovery) - basic_ids - glasses_basic)})")
 devices_all = body(views, 'hubCard("glasses.devices"', 'hubCard("glasses.video"')
 devices_card, devices_adv = devices_all.split("} advanced: {", 1)
-glasses_block = devices_card[devices_card.index("if voiceGuide.devicePath == .glasses {"):]
-pin("pairingTokenRow" in glasses_block and "if !hubGlassesPath { pairingTokenRow }" in devices_adv and views.count('hubRow("UT-21")') == 1,
+pin("if hubGlassesPath { pairingTokenRow }" in devices_card and "if !hubGlassesPath { pairingTokenRow }" in devices_adv and views.count('hubRow("UT-21")') == 1
+    and views.count("pairingTokenRow") == 3,
     "Copy pairing token: on the Devices card on the glasses path, under its Advanced on the Mac-only path, drawn once")
+# Q1 review M2 (lead 22:37): only an explicit "Just my Mac" moves a glasses row; no stored choice keeps it.
+pin('static func choseMacOnly(storedDevicePath stored: String?) -> Bool { stored == "mac" }' in catalog
+    and "var hubGlassesPath: Bool { !SettingsHubCatalog.choseMacOnly(storedDevicePath: storedDevicePath) }" in views
+    and "if !SettingsHubCatalog.choseMacOnly(storedDevicePath: storedDevicePath) {\n                Button { confirmResetMessageCount = true }" in views
+    and "@AppStorage(SetupGuideState.devicePathKey) private var storedDevicePath: String?" in views_raw,
+    "Reset message count and Copy pairing token move only for an explicit Just my Mac")
+# Q1 review M1: Clear stuck uploads is Basic; its card draws in Basic only while an upload is stuck.
+pin("func hubBasicCardHasRows(_ id: String) -> Bool { id != \"glasses.video\" || model.status.videoUploadV2Receiving > 0 }" in views,
+    "Video uploads draws in Basic only while an upload is stuck")
 # 0.5.387: the server notice sits in the top strip of every page, with its action.
 top = body(views, "    func hubTopStrip(_ reader: ScrollViewProxy) -> some View {", "    func hubLabel(_ id: String) -> String {")
 pin("SettingsHubServerNotice.line(checked: model.status.runtimeState != \"unknown\", running: model.status.running)" in top

@@ -40,7 +40,7 @@ enum SettingsHubView: String, CaseIterable, Sendable {
     /// The switch on each page. Plain words, one control.
     static let switchLabel = "Show all settings"
     static let basicLine = "Basic view: the settings most people change."
-    static let allLine = "Every setting is shown."
+    static let allLine = "All settings, with rarely used ones under Advanced."
     /// Beside a search result for a row Basic leaves out. Opening it switches to All settings.
     static let hiddenByBasic = "In All settings"
 }
@@ -635,6 +635,7 @@ enum SettingsHubCatalog {
     /// - REACH-01 Pings and REACH-05 Quiet hours: the brief keeps these two of COS reaching out's 17 rows visible.
     /// - PM-05 to PM-07: the permission list is one block (PermissionGuideList), so Basic draws every row in it.
     /// - DR-01 Check results: the answer to Run checks, which is in Basic.
+    /// - UT-10 Clear stuck uploads: a recovery row (Q1 review M1); its card draws in Basic only while an upload is stuck.
     /// - WB-01 Sign out every browser: Miles, 2026-11-09 ("Renew while in use, 30-day cap"), beside Open COS on your phone.
     /// - Recovery rows (lead, 2026-11-09): every control another COS surface tells a person to press is in Basic, on its page
     ///   (recoveryRows). So UT-14 Repair Whisper, UT-21 Copy pairing token (glasses path only, glassesPathBasic), and C-02 to C-05
@@ -645,7 +646,7 @@ enum SettingsHubCatalog {
         // AI and accounts
         "SG-03", "KL-01", "OUT-07",
         // Glasses, phone and web
-        "SG-02", "SG-11", "SG-13", "UT-29", "PK-01", "WB-01",
+        "SG-02", "SG-11", "SG-13", "UT-29", "PK-01", "WB-01", "UT-10",
         // Meetings
         "MT-01", "MT-03", "MT-04", "MA-01", "UT-16", "OUT-01",
         // Dictation
@@ -669,10 +670,12 @@ enum SettingsHubCatalog {
         ("Update server", "C-04"), ("Restart", "C-01"), ("Start", "C-03"), ("Install server", "C-05"),
         ("Repair Whisper", "UT-14"), ("Voice setup", "SG-05"), ("Scan code", "SG-11"), ("Copy pairing token", "UT-21"),
         ("Open COS on your phone", "UT-29"), ("Sign out every browser", "WB-01"), ("Setup guide", "SG-01"),
+        // Q1 review M1 (lead 22:37): a recovery action the glasses app points to. It draws only while an upload is stuck.
+        ("Clear stuck uploads", "UT-10"),
     ]
     /// The basic rows per page stay inside these bounds (Tests/SettingsHubChecks.swift). A change outside them is a decision.
     static let basicRange: [SettingsHubCategory: ClosedRange<Int>] = [
-        .general: 5...7, .ai: 2...4, .glasses: 3...8, .meetings: 5...7, .dictation: 6...9, .voice: 1...4,
+        .general: 5...7, .ai: 2...4, .glasses: 3...9, .meetings: 5...7, .dictation: 6...9, .voice: 1...4,
         .work: 8...11, .privacy: 4...8, .pet: 2...4, .system: 4...11,
     ]
     static func isBasic(_ id: String) -> Bool { basicIDs.contains(id) }
@@ -689,6 +692,10 @@ enum SettingsHubCatalog {
     /// Rows placed by the device path (lead, 2026-11-09). On the glasses path they sit on their card, in Basic and All. On the
     /// Mac-only path they stay where 0.5.385 had them: under Advanced, in All only (the catalog's own `advanced` flag).
     static let glassesPathBasic: Set<String> = ["UT-21"]
+    /// Q1 review M2 (lead 22:37): only a person who chose "Just my Mac" is on the Mac-only path. The device choice is stored only
+    /// since 2026-10-14 (cos.setupGuide.devicePath), so a Mac without it may well be a glasses user from before then: it keeps
+    /// Reset message count in the panel header and Copy pairing token on the card. `stored` is that key's raw value.
+    static func choseMacOnly(storedDevicePath stored: String?) -> Bool { stored == "mac" }
     /// Whether a row sits under its card's Advanced on this path.
     static func placedAdvanced(_ id: String, glassesPath: Bool) -> Bool {
         guard let row = item(id) else { return false }
@@ -824,6 +831,8 @@ extension SettingsHubSearch {
         case "dictation.microphone", "dictation.shortcuts", "dictation.sounds", "dictation.text", "dictation.polish":
             return "Shows when dictation is on."
         case "pet.characters": return "Shows when the session pet is on."
+        // These hide while COS reads them, not only on an older server (Q1 review, copy).
+        case "voice.models": return c.serverRunning ? "Shows once the server reports its transcription settings." : serverLine
         case "work.fences": return "Shows when COS has paused a thread."
         case "work.reach":
             if !c.serverRunning { return serverLine }
@@ -901,7 +910,8 @@ enum SettingsHubWebRevoke {
         case "answered": return ("Done. Every browser is signed out. Sign in again with Open COS on your phone.", true)
         case "unsupported": return ("This COS server cannot sign browsers out yet. Update the server in System and updates.", false)
         case "not_ready": return ("The COS server is not running or not verified yet. Start it, then try again.", false)
-        case "unavailable": return ("The COS server did not answer. Nothing was signed out. Try again in a moment.", false)
+        // Q1 review M3: a timeout can come after the server already acted, so this never says nothing changed.
+        case "unavailable": return ("The COS server did not answer, so COS could not confirm the sign-out. Try again in a moment.", false)
         case "no_token": return ("COS Control could not read the server's pairing token. Nothing was signed out. Run checks in System and updates.", false)
         default:
             let status = httpStatus.map { " (\($0))" } ?? ""

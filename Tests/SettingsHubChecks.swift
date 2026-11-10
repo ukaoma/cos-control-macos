@@ -310,7 +310,11 @@ import Foundation
         }
         // Recovery rows (lead, 2026-11-09): every control another surface tells a person to press is Basic, not Advanced, and
         // found by search under the name that surface uses.
-        check(SettingsHubCatalog.recoveryRows.count == 11, "eleven recovery rows")
+        check(SettingsHubCatalog.recoveryRows.count == 12, "twelve recovery rows (Clear stuck uploads added after Q1's review)")
+        // Q1 review M2: only an explicit "Just my Mac" is the Mac-only path; no stored choice counts as possibly glasses.
+        check(SettingsHubCatalog.choseMacOnly(storedDevicePath: "mac") && !SettingsHubCatalog.choseMacOnly(storedDevicePath: "glasses")
+              && !SettingsHubCatalog.choseMacOnly(storedDevicePath: nil) && !SettingsHubCatalog.choseMacOnly(storedDevicePath: ""),
+              "only a stored Just my Mac hides the glasses rows; a Mac with no stored choice keeps them")
         for (name, id) in SettingsHubCatalog.recoveryRows {
             let row = SettingsHubCatalog.item(id)
             // On the glasses path every recovery row is in Basic and not under Advanced; on the Mac-only path every one but the
@@ -331,6 +335,9 @@ import Foundation
         }
         check(SettingsHubWebRevoke.shown(phoneSignInTooOld: false) && !SettingsHubWebRevoke.shown(phoneSignInTooOld: true),
               "Sign out every browser shows where the phone sign-in does, and hides on a server without it")
+        // Q1 review M3: a timeout cannot know whether the server acted, so it never says nothing changed.
+        let timedOut = SettingsHubWebRevoke.result(transport: "unavailable", httpStatus: nil).line
+        check(!timedOut.contains("Nothing") && timedOut.contains("could not confirm"), "a timeout says COS could not confirm, never that nothing was signed out")
         let done = SettingsHubWebRevoke.result(transport: "answered", httpStatus: 200)
         check(done.ok && done.line.hasPrefix("Done."), "the server's yes says Done")
         for (transport, status) in [("unsupported", 404), ("not_ready", nil), ("unavailable", nil), ("no_token", nil), ("failed", 500), (nil, nil)] as [(String?, Int?)] {

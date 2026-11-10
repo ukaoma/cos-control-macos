@@ -550,6 +550,8 @@ struct ControlPanel: View {
     @AppStorage(SettingsHubView.key) private var hubViewChoice = ""
     /// The install cohort's kept answer (InstallCohort.key), observed so a Mac kept as new mid-launch redraws in Basic.
     @AppStorage(InstallCohort.key) private var hubCohort: String?
+    /// The stored device choice (nil before 2026-10-14 or before Welcome), for the rows only a Mac-only choice moves (Q1 review M2).
+    @AppStorage(SetupGuideState.devicePathKey) private var storedDevicePath: String?
     /// 0.5.387: All settings for this visit only, after a search result or a link to a row Basic leaves out. Never stored.
     @State private var hubShowAllForNow = false
     @State private var hubCategory: SettingsHubCategory = SettingsHub.lastCategory()
@@ -1465,9 +1467,9 @@ struct ControlPanel: View {
             }
             Spacer()
             if model.busy { ProgressView().controlSize(.small) }
-            // 0.5.387 (audit D2): a glasses action, so only on the glasses path. Everyone keeps it in Settings, Glasses, phone
-            // and web, Devices, Advanced.
-            if voiceGuide.devicePath == .glasses {
+            // 0.5.387 (audit D2, Q1 review M2): a glasses action, hidden only for a person who chose "Just my Mac". No stored
+            // choice keeps it (glasses users from before 2026-10-14). Everyone keeps it in Settings, Devices, Advanced.
+            if !SettingsHubCatalog.choseMacOnly(storedDevicePath: storedDevicePath) {
                 Button { confirmResetMessageCount = true } label: { Image(systemName: "archivebox") }
                     .buttonStyle(COSIconButtonStyle(size: 24))
                     .disabled(model.busy)
@@ -2359,7 +2361,7 @@ struct ControlPanel: View {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("All settings").font(COSType.display(13, weight: .semibold))
-                    Text("Every setting, with search").font(COSType.body(10.5)).foregroundStyle(.secondary)
+                    Text("Open Settings, with search").font(COSType.body(10.5)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Label("Open", systemImage: "gearshape")
@@ -3211,7 +3213,7 @@ struct ControlPanel: View {
                 .toggleStyle(COSSwitchStyle())
                 .help("Activity opens on Today: what needs you, what is running and what is next.")
             if todayHomeEnabled {
-                Toggle("Quiet hours", isOn: $todayQuietHours)
+                Toggle("Fold evenings and weekends", isOn: $todayQuietHours)
                     .toggleStyle(COSSwitchStyle())
                     .help("From 6 PM to 6 AM and on weekends, Today folds what can wait under For tomorrow.")
                 Toggle("Work runs from Today", isOn: $todayWorkRuns)
@@ -3833,7 +3835,8 @@ private extension ControlPanel {
     func hubSetView(_ view: SettingsHubView) { hubShowAllForNow = false; hubViewChoice = view.rawValue }
     /// A search result or a link to a row Basic leaves out: All settings now, without storing a choice.
     func hubShowAll() { if hubView == .basic { hubShowAllForNow = true } }
-    var hubGlassesPath: Bool { voiceGuide.devicePath == .glasses }
+    /// Not "Just my Mac": the glasses path, or no stored choice (Q1 review M2). Places Copy pairing token.
+    var hubGlassesPath: Bool { !SettingsHubCatalog.choseMacOnly(storedDevicePath: storedDevicePath) }
 
     func settingsHub(_ host: SettingsHubHost) -> some View {
         hubLoaders(
@@ -4073,7 +4076,9 @@ private extension ControlPanel {
     }
 
     /// 0.5.387 Basic: a group draws when the page would draw it and, in Basic, when it holds a basic row.
-    func hubDraws(_ id: String) -> Bool { hubGroupShown(id) && (hubView == .all || SettingsHubCatalog.hasBasicRows(id)) }
+    func hubDraws(_ id: String) -> Bool { hubGroupShown(id) && (hubView == .all || (SettingsHubCatalog.hasBasicRows(id) && hubBasicCardHasRows(id))) }
+    /// In Basic, a card whose only basic row draws sometimes: Video uploads holds Clear stuck uploads, drawn only while one is stuck.
+    func hubBasicCardHasRows(_ id: String) -> Bool { id != "glasses.video" || model.status.videoUploadV2Receiving > 0 }
     /// A block the page draws without a row of the catalog's (a status list, a hosted view): drawn in Basic only for a basic row.
     func hubRowDrawn(_ id: String) -> Bool { SettingsHubCatalog.drawn(id, view: hubView) }
 
@@ -4314,10 +4319,11 @@ private extension ControlPanel {
                     GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ = model.providerGuide.openURL($0) })
                 }
                 hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }
-                // 0.5.387 (recovery rows, lead 2026-11-09): the glasses app tells people to press Copy pairing token, so on the
-                // glasses path it is on the card, in Basic and All. The Mac-only path keeps it under Advanced, as in 0.5.385.
-                pairingTokenRow
             }
+            // 0.5.387 (recovery rows, lead 2026-11-09; Q1 review M2): the glasses app tells people to press Copy pairing token, so
+            // unless the person chose "Just my Mac" it is on the card, in Basic and All (no stored choice counts: glasses users from
+            // before 2026-10-14). The Mac-only choice keeps it under Advanced, as in 0.5.385.
+            if hubGlassesPath { pairingTokenRow }
         } advanced: {
             if !hubGlassesPath { pairingTokenRow }
             // O-10: Reset live message count, which the panel keeps in its header, reachable in every host.
@@ -4327,7 +4333,7 @@ private extension ControlPanel {
         }
         if hubDraws("glasses.video") {
             hubCard("glasses.video", advanced: hubAdvancedCount("glasses.video")) {
-                if model.status.videoUploadV2Enabled != nil { SettingsHubBlock { statusVideoRows(clearButton: false) } }
+                if model.status.videoUploadV2Enabled != nil, hubRowDrawn("ST-10") { SettingsHubBlock { statusVideoRows(clearButton: false) } }
                 // A stuck upload blocks Repair, so its warning and Clear stay on the card, not under Advanced (QA S6).
                 if model.status.videoUploadV2Receiving > 0 {
                     hubRow("UT-10", detail: "A stopped upload can wait here for 4 hours and block Repair.") {
