@@ -51,7 +51,9 @@ MUTANTS = [
      " catch { rollupIndexFailed(error) }", "",
      "a non-busy index failure never fails the report"),
     ("usage-index-retries-every-pass", "helper", "HelperSources/SessionUsageCollector.swift",
-     "now.timeIntervalSince1970 - last < Self.rollupRetrySeconds { return }", "false { return }",
+     # The rollup's own back-off: U1's session table (0.5.388) repeats the second line under its own key.
+     "[Self.rollupFailedKey]).first?.first.flatMap(Double.init),\n           now.timeIntervalSince1970 - last < Self.rollupRetrySeconds { return }",
+     "[Self.rollupFailedKey]).first?.first.flatMap(Double.init),\n           false { return }",
      "no retry within a day of a failed build"),
     ("usage-index-not-covering", "helper", "HelperSources/SessionUsageCollector.swift",
      "ON events(day,provider,model,input,output,cache_read,cache_write,usd)", "ON events(day,provider,model)",
