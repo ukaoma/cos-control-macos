@@ -14034,6 +14034,116 @@ enum TodayHome {
     }
     static let promptPendingLine = "This session is waiting on a question at its own prompt. Answer it there."
 
+    // MARK: Session question card (0.5.388, D4 item 7, X1 contract v1)
+
+    /// One question a live Claude session waits on: an entry of GET /api/session-questions `waiting[]` (servers with
+    /// X1's contract; older servers send none and the row keeps 0.5.387's "Answer in ..."). Held in memory only.
+    struct SessionQuestion: Identifiable, Equatable, Sendable {
+        struct Option: Equatable, Sendable { let label: String; let detail: String }
+        struct Item: Equatable, Sendable { let question: String; let multiSelect: Bool; let options: [Option] }
+        enum State: String, Sendable { case held, atMac = "at_mac", answered }
+        static let maxQuestions = 8, maxOptions = 40
+        let key: String
+        let sessionId: String
+        let state: State
+        /// Set only for a question the server holds and says is answerable, and only when every question and option
+        /// fits on the card: the server needs one answer per question, so a card that dropped one could never send.
+        let heldId: String?
+        let questions: [Item]
+        let askedAt: String
+        var id: String { key }
+        var answerable: Bool { state == .held && heldId != nil && !questions.isEmpty }
+
+        init?(_ value: JSONValue) {
+            guard let o = value.object, o["provider"]?.string == "claude",
+                  let key = o["key"]?.string, !key.isEmpty, key.utf8.count <= 300,
+                  let session = o["sessionId"]?.string, !session.isEmpty, session.utf8.count <= 200,
+                  let state = State(rawValue: o["state"]?.string ?? "") else { return nil }
+            let held = o["heldId"]?.string
+            if let held, held.range(of: #"\Apq_[0-9a-f]{24}\z"#, options: .regularExpression) == nil { return nil }
+            let rows = o["questions"]?.array ?? []
+            var items: [Item] = []
+            var fits = rows.count <= Self.maxQuestions
+            for row in rows.prefix(Self.maxQuestions) {
+                guard let q = row.object, let text = q["question"]?.string, !text.isEmpty else { return nil }
+                let raw = q["options"]?.array ?? []
+                if raw.count > Self.maxOptions { fits = false }
+                let options = raw.prefix(Self.maxOptions).compactMap { option -> Option? in
+                    guard let p = option.object, let label = p["label"]?.string, !label.isEmpty else { return nil }
+                    return Option(label: label, detail: p["description"]?.string ?? "")
+                }
+                items.append(Item(question: text, multiSelect: q["multiSelect"]?.bool == true, options: options))
+            }
+            self.key = key; sessionId = session; self.state = state
+            heldId = state == .held && o["answerable"]?.bool == true && fits ? held : nil
+            questions = state == .answered ? [] : items
+            askedAt = o["askedAt"]?.string ?? ""
+        }
+    }
+
+    /// The same session: equal native ids, or one the 8-character short form of the other (the helper's live overlay).
+    static func sameSession(_ a: String, _ b: String) -> Bool {
+        a == b || (min(a.count, b.count) >= 8 && (a.hasPrefix(b) || b.hasPrefix(a)))
+    }
+
+    /// This session's card: a held question first, then one waiting at the Mac, then one just answered; newest first
+    /// within each. Only `waiting[]` entries are read, which carry their own key (never a held item matched by session).
+    static func question(for session: ClaudeSession, in list: [SessionQuestion]) -> SessionQuestion? {
+        guard session.provider == "claude" else { return nil }
+        func rank(_ q: SessionQuestion) -> Int { q.answerable ? 0 : q.state == .held || q.state == .atMac ? 1 : 2 }
+        return list.filter { sameSession($0.sessionId, session.sessionId) }
+            .min { rank($0) != rank($1) ? rank($0) < rank($1) : $0.askedAt > $1.askedAt }
+    }
+
+    struct QuestionPick: Equatable, Sendable {
+        var labels: Set<String> = []
+        var other = ""
+    }
+
+    /// The answer's POST body, or nil while any question lacks an answer the server would take. The server's rules
+    /// (validateQuestionAnswers): one entry per question in order, known labels only, sent exactly; free text counts
+    /// unless it is only whitespace and is at most 2,000 UTF-16 units; a single-select question takes exactly one.
+    static func answerBody(_ q: SessionQuestion, picks: [QuestionPick], clientAnswerId: String) -> [String: Any]? {
+        guard q.answerable, picks.count == q.questions.count,
+              clientAnswerId.range(of: #"\A[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\z"#, options: .regularExpression) != nil else { return nil }
+        var answers: [[String: Any]] = []
+        for (item, pick) in zip(q.questions, picks) {
+            let labels = item.options.map(\.label).filter(pick.labels.contains)
+            guard labels.count == pick.labels.count else { return nil }
+            let other = pick.other.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : pick.other
+            guard other.utf16.count <= 2_000 else { return nil }
+            let count = labels.count + (other.isEmpty ? 0 : 1)
+            guard count >= 1, item.multiSelect || count == 1 else { return nil }
+            var entry: [String: Any] = ["labels": labels]
+            if !other.isEmpty { entry["other"] = other }
+            answers.append(entry)
+        }
+        return ["clientAnswerId": clientAnswerId, "answers": answers]
+    }
+
+    enum AnswerOutcome: Equatable, Sendable {
+        case answered
+        /// Settled elsewhere or no longer answerable here: nothing to retry.
+        case settled(String)
+        /// Not taken; the same answer id may be sent again (the server replays an answer it already took).
+        case failed(String)
+    }
+    static let answerUnconfirmed = "The answer was not confirmed. Check the session before answering again."
+    static func answerOutcome(status: Int, error: String?) -> AnswerOutcome {
+        switch (status, error) {
+        case (200, _): return .answered
+        case (409, "already_answered"?): return .settled("Already answered, here or at the Mac.")
+        case (409, "handed_to_desk"?): return .settled("Left for the Mac. Answer it in Claude.")
+        case (409, _), (410, _): return .settled("This question can no longer be answered here. Answer it in Claude.")
+        case (404, _): return .settled("This question is gone. The session may have moved on.")
+        case (400, _): return .failed("COS did not take that answer. Check the choices and send it again.")
+        default: return .failed(answerUnconfirmed)
+        }
+    }
+    static let heldLine = "Answer here or at your Mac. The first answer counts."
+    static let composerWaitsLine = "A message here waits until this question is answered."
+    static let answeredLine = "Answered."
+
     /// "in Terminal", "in Claude", "in the Codex app", "in Cursor", "from Work, on the server".
     static func placeWords(_ platform: Platform, host: Host?) -> String {
         switch platform {

@@ -64,7 +64,9 @@ need("if reachable == true { checkedAt = Date() }" in tick and tick.count("check
 need('reachable = response.details["unreachable"]?.bool != true' in tick and len(re.findall(r"\breachable = ", store)) == 1,
      "[reachability] unreachable only when the helper says nothing answered")
 need("async let" not in today and "TaskGroup" not in today, "[polling] the home's loads are serial")
-need("session-questions" not in win and "session-questions" not in helper, "[polling] never poll /api/session-questions")
+# 0.5.388 (D4 item 7): the helper reads the question list for the question card, without `client`, only while a Claude
+# session waits (Tests/session-question-pins.py); the window itself still never names the route.
+need("session-questions" not in win, "[polling] the window never polls /api/session-questions itself")
 need("activity-signals" not in today and "loadActivitySignals" not in today, "[polling] the home is not a second reader of activity-signals")
 ticker = body(today, "    func todayTick() async {", "\n    func todayOpenLoads() async {")
 need("if !model.petEnabled { await model.loadClaudeSessions() }" in ticker, "[pet off] the tick refreshes sessions when the pet is off")
