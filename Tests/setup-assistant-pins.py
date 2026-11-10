@@ -787,7 +787,14 @@ pin(".onSubmit { model.submitChatFromReturn() }" in window and ".onSubmit { mode
 cm_code = code(read("Sources/ControllerModel.swift"))
 pin("didSet { chatPrefill.draftChanged(chatDraft) }" in cm_code and "chatPrefill.clear()" in block(cm_code, "    private func resetSessionChat() {", "    private func prepareSessionChat("), "an edit ends the block, and opening a session clears it")
 pin("guard !chatPrefill.blocksReturn else { return }\n        sendChatMessage()" in cm_code, "Return in the composer sends nothing while placed words stand")
-pin(cm_code.count("chatPrefill.place(") == 1 and "func prefillChat(_ words: String) {" in cm_code and window.count("prefillChat(") == 1, "one place sets the block, and one caller uses it")
+# 0.5.389 (lane D4 section 8): two more callers, each pinned to its function: Today's turn-end reply opens the session and places
+# the words unsent (todayReplyInControl), and the session view's turn-end block places then sends through the session's own Continue.
+_cont_caller = block(window, "    func commandContinueIn(_ id: String, words: String) -> CommandEffect {", "\n    }\n")
+_today_caller = block(window, "    func todayReplyInControl(_ session: ClaudeSession, words: String) {", "\n    }\n")
+_block_send = block(window, "    private func send(_ words: String) {", "\n    }\n")
+pin(cm_code.count("chatPrefill.place(") == 1 and "func prefillChat(_ words: String) {" in cm_code and window.count("prefillChat(") == 3
+    and _cont_caller.count("prefillChat(") == 1 and _today_caller.count("prefillChat(") == 1 and "sendChatMessage" not in _today_caller
+    and _block_send.count("prefillChat(") == 1, "one place sets the block, and its three callers are Continue in, Today's turn-end reply (unsent) and the turn-end block")
 cmod = block(core, "        static func continueTarget(", "\n        }\n")
 pin("enabledFor.contains(decides)" in cmod and "static let continueProviders: Set<MeaningProvider> = [.jev]" in core and "top.strength == .strong" in cmod and "p >= continueFloor" in cmod and "p - second >= continueGap" in cmod and "top.canContinue" in cmod, "Continue in is Jev only, Strong only, with a clear gap, for a session that can take a message")
 pin("static let continueGap = 0.25" in core and "static let continueFloor = 0.6" in core, "the gap and the floor are named")

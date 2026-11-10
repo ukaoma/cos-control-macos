@@ -1651,6 +1651,8 @@ zsh "$ROOT/Tests/run-work-handoff.sh"
 zsh "$ROOT/Tests/run-session-question-card.sh"
 # 0.5.388 lane T1: Today's headline keeps its height and the summary holds through session-read polls.
 zsh "$ROOT/Tests/run-today-summary-headline.sh"
+# 0.5.389 lane D4 section 8: a turn that ended with a question shows its ask and reply choices (TurnEndAskChecks and pins).
+zsh "$ROOT/Tests/run-turn-end-ask.sh"
 # 0.5.379: the Today summary's wiring (view, store, helper); its rules execute in ActivityTodayChecks above.
 /usr/bin/python3 "$ROOT/Tests/today-summary-pins.py" "$ROOT"
 # QA 0.5.379: the numbers Control copies from server/lib/today-brief.ts, read from both repos (fails if the server file is absent).
