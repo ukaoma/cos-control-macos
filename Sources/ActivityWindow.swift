@@ -6389,6 +6389,66 @@ struct SessionChatHugWidth: Layout {
 /// 0.5.388 (D4 item 7, X1 contract v1): a question a live Claude session waits on. Held and answerable: its options, an
 /// Other box and Send answer (the caller keeps "Answer in ..." beside it). At the Mac: the words, read only. Answered: one
 /// line. Nothing here approves a tool or hands a question back; those stay on the glasses, the phone and the Mac.
+/// 0.5.389 (D4, X1 DESIGN_turn_end_ask): a Claude session whose turn ended with the app's next-step box. A choice goes
+/// through this session's own Continue (the composer's send, with its gates and confirmations) as an attributed reply;
+/// typing in the composer is the other reply. "Answer in ..." stays: pressing the app's own button is the person's voice.
+struct TurnEndAskBlock: View {
+    @ObservedObject var model: ControllerModel
+    let session: ClaudeSession
+    let ask: TodayHome.TurnEndAsk
+    let answerLabel: String
+    @State private var other = ""
+
+    private func send(_ words: String) {
+        model.prefillChat(words)
+        model.sendChatMessage()
+    }
+
+    var body: some View {
+        let gate = model.sessionChatGateMessage(for: session)
+        let busy = model.chatSending || model.chatPolling || model.openClaudeRow.map { !ClaudeSession.sameSession($0.id, session.id) } ?? true
+        VStack(alignment: .leading, spacing: 8) {
+            Text(TodayHome.turnEndAskedLine)
+                .font(COSType.body(12.5, weight: .medium))
+                .fixedSize(horizontal: false, vertical: true)
+            Text(ask.ask.map { "\u{201C}" + $0 + "\u{201D}" } ?? TodayHome.wordsUnavailableLine)
+                .font(COSType.body(12.5))
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                ForEach(ask.choices, id: \.self) { choice in
+                    Button(choice) { send(TodayHome.turnEndReply(choice: choice)) }
+                        .buttonStyle(COSPrimaryButtonStyle())
+                        .controlSize(.small)
+                        .disabled(gate != nil || busy)
+                }
+                Button(answerLabel) { model.openSessionInPlatform(session) }
+                    .buttonStyle(COSQuietButtonStyle())
+                    .controlSize(.small)
+                    .disabled(model.platformOpening)
+                    .accessibilityIdentifier("session-answer-at-prompt")
+            }
+            HStack(spacing: 8) {
+                TextField(TodayHome.turnEndOtherLabel, text: $other)
+                    .textFieldStyle(.plain)
+                    .cosField()
+                    .disabled(gate != nil || busy)
+                Button("Send") {
+                    if let words = TodayHome.turnEndReply(other: other) { other = ""; send(words) }
+                }
+                .controlSize(.small)
+                .disabled(gate != nil || busy || TodayHome.turnEndReply(other: other) == nil)
+            }
+            Text(gate ?? TodayHome.turnEndHonestLine)
+                .font(COSType.body(11.5))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityIdentifier("session-turn-end-ask")
+    }
+}
+
 struct SessionQuestionCard: View {
     @ObservedObject var model: ControllerModel
     let question: TodayHome.SessionQuestion
@@ -6565,6 +6625,10 @@ struct ClaudeSessionDetailPane: View {
             if let row = model.openClaudeRow, case let live = model.petSession(id: row.id) ?? row,
                let answer = TodayHome.answerAtPrompt(live, host: host) {
                 VStack(alignment: .leading, spacing: 8) {
+                    // 0.5.389 (D4): a turn that ended with the app's next-step box is answered by a reply, so its choices send.
+                    if let turnEnd = TodayHome.turnEndAsk(live) {
+                        TurnEndAskBlock(model: model, session: live, ask: turnEnd, answerLabel: answer)
+                    } else {
                     // 0.5.388 (D4 item 7): a question the server holds is answered here; its words otherwise.
                     let card = model.sessionQuestion(for: live)
                     if card?.answerable != true {
@@ -6599,6 +6663,7 @@ struct ClaudeSessionDetailPane: View {
                             .controlSize(.small)
                             .disabled(model.platformOpening)
                             .accessibilityIdentifier("session-answer-at-prompt")
+                    }
                     }
                 }
                 .padding(.horizontal, 24)
@@ -9630,6 +9695,10 @@ extension ActivityWindow {
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
+                // 0.5.389 (D4): a turn that ended with the app's next-step box shows its reply choices.
+                if let session = row.session, let turnEnd = TodayHome.turnEndAsk(session) {
+                    todayTurnEndChoices(session, ask: turnEnd).padding(.top, 10)
+                }
                 todayNeedActions(row).padding(.top, 10)
                 if let source = row.source {
                     Text(source).font(COSType.body(12)).foregroundStyle(TodayInk.grey).padding(.top, 8).fixedSize(horizontal: false, vertical: true)
@@ -9655,7 +9724,8 @@ extension ActivityWindow {
             case .session:
                 // 0.5.388 (D4 item 7): with an answerable card, Send answer is the primary and this one is quiet.
                 Button(row.openLabel ?? "Open session") { todayOpenNeed(row) }
-                    .buttonStyle(TodayButtonStyle(primary: row.session.flatMap { model.sessionQuestion(for: $0) }?.answerable != true))
+                    .buttonStyle(TodayButtonStyle(primary: row.session.flatMap { model.sessionQuestion(for: $0) }?.answerable != true
+                                                  && row.session.flatMap(TodayHome.turnEndAsk) == nil))
                 // 0.5.387 (D4): the primary opens the app that holds the prompt; Control's own view stays one click away.
                 if row.answersAtPrompt, let session = row.session {
                     Button("Open session") { todayOpen(.inSessions(session.id)) }.buttonStyle(TodayButtonStyle())
@@ -10871,6 +10941,44 @@ extension ActivityWindow {
 
     /// Whether the session's composer would be there and would take a message: not a Work run or a job the COS server holds, a provider the
     /// server publishes with Continue on, and no key lane that refuses it. Read where a row is made and again at the click.
+    /// 0.5.389 (D4): a turn-end ask's reply choices on Today. A choice opens the session in Sessions' reader with the
+    /// attributed reply in its composer, unsent (the Command-K "continue in" route); nothing is sent from Today.
+    @ViewBuilder
+    func todayTurnEndChoices(_ session: ClaudeSession, ask: TodayHome.TurnEndAsk) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                ForEach(ask.choices, id: \.self) { choice in
+                    Button(choice) { todayReplyInControl(session, words: TodayHome.turnEndReply(choice: choice)) }
+                        .buttonStyle(TodayButtonStyle(primary: true))
+                }
+                // The prefix in place, the person's own words after it.
+                Button(TodayHome.turnEndOtherLabel) { todayReplyInControl(session, words: TodayHome.turnEndPrefix) }
+                    .buttonStyle(TodayButtonStyle())
+            }
+            Text(TodayHome.turnEndTodayLine)
+                .font(COSType.body(12)).foregroundStyle(TodayInk.sub).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Opens the session in Sessions' reader and places `words` in its composer, unsent. Never over another session's
+    /// unsent reply (opening clears the composer), and only for a session whose composer can take a message.
+    func todayReplyInControl(_ session: ClaudeSession, words: String) {
+        guard commandCanContinue(session) else {
+            today.flash("That session cannot take a message from here now. Answer it in its app.")
+            return
+        }
+        if let open = model.openClaudeRow, !ClaudeSession.sameSession(open.id, session.id),
+           !model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            today.flash("Another session has an unsent reply. Send or clear it first.")
+            return
+        }
+        select(.sessions)
+        sessionsPane = .sessions
+        selectedSessionID = session.id
+        model.openClaudeSession(session)
+        model.prefillChat(words)
+    }
+
     func commandCanContinue(_ session: ClaudeSession) -> Bool {
         model.canMessagePetSession(session) && KeyLanes.refusal(sessionID: session.sessionId) == nil
     }

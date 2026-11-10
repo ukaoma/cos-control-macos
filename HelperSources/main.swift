@@ -11941,6 +11941,8 @@ final class COSControlHelper {
         ("agent_state", "agentState"), ("state_source", "stateSource"), ("state_since", "stateSince"),
         ("waiting_kind", "waitingKind"), ("waiting_detail", "waitingDetail"), ("failure", "failure"),
         ("last_reply", "lastReply"), ("queued_turns", "queuedTurns"),
+        // 0.5.389 (D4, X1 turn-end asks): additive, sent only while the server's COS_TURN_END_ASKS is on.
+        ("waiting_source", "waitingSource"), ("waiting_choices", "waitingChoices"),
     ]
 
     static func serverStateProjection(_ row: [String: Any]) -> [String: Any] {
@@ -25530,6 +25532,14 @@ final class COSControlHelper {
                    && projectedRow?["queuedTurns"] as? Int == 2 && projectedRow?["lastReply"] as? String == "done"
                    && projectedRow?["stateSince"] as? String == "2026-09-15T23:00:00.000Z",
                    "the row projection carries the eight server state fields camelCase")
+        // 0.5.389: a turn-end ask's two additive fields ride the same projection; a row without them gains none.
+        var turnEndRow = serverRow
+        turnEndRow["waiting_kind"] = "question"; turnEndRow["waiting_source"] = "turn_end"; turnEndRow["waiting_choices"] = ["Good Morning", "Control pane"]
+        let projectedTurnEnd = Self.agentSessionRowProjection(turnEndRow)
+        try expect(projectedTurnEnd?["waitingSource"] as? String == "turn_end"
+                   && projectedTurnEnd?["waitingChoices"] as? [String] == ["Good Morning", "Control pane"]
+                   && projectedRow?["waitingSource"] == nil && projectedRow?["waitingChoices"] == nil,
+                   "a turn-end ask's waiting_source and waiting_choices ride the projection, and only when the server sent them")
         let projectedPeer = Self.claudePeerProjection(["id": "9a9a9a9a", "alive": true, "status": "busy", "agent_state": "running", "state_source": "registry", "queued_turns": 1])
         try expect(projectedPeer?["agentState"] as? String == "running" && projectedPeer?["stateSource"] as? String == "registry" && projectedPeer?["queuedTurns"] as? Int == 1,
                    "the peer projection carries the server state too")
