@@ -3285,7 +3285,8 @@ struct WorkIntakeView: View {
     @FocusState private var keyboardFocus: Bool
     /// Activity Today (plan v2, D2): with the Today home on, today's meetings belong to Today, and Sort holds only the
     /// older ones (TodayHome.intakeSplit, the same filter the home and the rail count).
-    @AppStorage(TodayHome.enabledKey) private var todayHome = false
+    /// 0.5.387 (lane D1): the person's value, else ON for a new install only (TodayHome.enabledKey's note).
+    @CohortDefault(TodayHome.enabledKey, newInstall: true) private var todayHome
     private static func only(_ snapshot: WorkIntakeSnapshot, _ items: [WorkIntakeItem]) -> WorkIntakeSnapshot {
         var next = snapshot; next.items = items; return next
     }

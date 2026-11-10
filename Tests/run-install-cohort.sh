@@ -3,7 +3,7 @@
 #   run-install-cohort.sh                          pins (Tests/install-cohort-pins.py), then the decision table, the KeyLanes
 #                                                  adoption, the lazy defaults and the live probes, compiled with
 #                                                  InstallCohort.swift and Models.swift (Tests/InstallCohortChecks.swift)
-#   COS_INSTALL_COHORT_LANE=pins|checks ...        one lane alone (Tests/mutate-install-cohort.py)
+#   COS_INSTALL_COHORT_LANE=pins|readers|checks ...  one lane alone (Tests/mutate-install-cohort.py)
 # Fixtures only: a throwaway home and defaults suite, no window, no server.
 set -euo pipefail
 ROOT="${0:A:h:h}"
@@ -17,6 +17,13 @@ if [[ "$LANE" == "all" || "$LANE" == "pins" ]]; then
   print -r -- "$OUT"
   COUNT="${${OUT##*pins: }%% passed*}"
   (( COUNT >= 24 )) || { print -u2 "install cohort pins ran only $COUNT (expected at least 24)"; exit 1; }
+fi
+
+# Every reader of the Today home key goes through CohortDefault / TodayHome.enabled. Green only once D2's two readers
+# (Views.swift, SettingsHubViews.swift) are merged: on D1's branch alone it names exactly those two lines.
+if [[ "$LANE" == "all" || "$LANE" == "readers" ]]; then
+  OUT="$(/usr/bin/python3 "$ROOT/Tests/today-home-readers-pins.py" "$ROOT")" || { print -r -- "$OUT"; exit 1; }
+  print -r -- "$OUT"
 fi
 
 if [[ "$LANE" == "all" || "$LANE" == "checks" ]]; then
