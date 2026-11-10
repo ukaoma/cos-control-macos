@@ -33,7 +33,7 @@ MUTANTS = [
      "single select takes exactly one"),
     ("unknown-label-sent", "models", "Sources/Models.swift",
      "guard labels.count == pick.labels.count else { return nil }", "",
-     "an unknown label is never sent"),
+     "a known label beside an unknown one is never sent"),
     ("short-id-matches-anything", "models", "Sources/Models.swift",
      "min(a.count, b.count) >= 8 && ", "",
      "fewer than 8 characters never matches"),
