@@ -324,7 +324,7 @@ enum SettingsHubCatalog {
         .init("SG-11", "Connect glasses", "Set up Tailscale on both devices, then pair with a code.", old: "Glasses: Tailscale on this Mac (Get Tailscale / Open Tailscale), Tailscale on your iPhone (QR), Connect your glasses (pairing QR, code, Show a new code, Try…", group: "glasses.devices", advanced: false, mount: .group, keywords: ["tailscale", "pair", "qr code", "iphone", "scan code", "scan", "pairing code"]),
         .init("SG-12", "Pair on home Wi-Fi", "Let a phone on this Wi-Fi pair for 10 minutes. Use it at home only.", old: "Allow pairing on this Wi-Fi (home only)", group: "glasses.devices", advanced: false, mount: .group),
         .init("SG-13", "Glasses app", "Get the COS app for your glasses.", old: "The COS app for your glasses", group: "glasses.devices", advanced: false, mount: .group),
-        .init("UT-21", "Copy pairing token", "Copies the pairing token. Anyone with it can reach COS on this Mac.", old: "Copy Pairing Token", group: "glasses.devices", advanced: false, mount: .group, keywords: ["token", "pairing token", "clipboard"]),
+        .init("UT-21", "Copy pairing token", "Copies the pairing token. Anyone with it can reach COS on this Mac.", old: "Copy Pairing Token", group: "glasses.devices", advanced: true, mount: .group, keywords: ["token", "pairing token", "clipboard"]),
         .init("H-04", "Reset message count", "Live messages start again at #1. History stays in Archive.", old: "\"Archive live messages and start numbering at #1\" (archivebox icon), confirm \"Reset live message count?\" / \"Reset count\"", group: "glasses.devices", advanced: true, mount: .group, keywords: ["archive", "message number", "era"]),
         .init("UT-09", "Reliable video uploads", "Beta. Sends videos in chunks that resume after a restart.", old: "Reliable video uploads (beta) + Apply", group: "glasses.video", advanced: true, mount: .group),
         .init("ST-10", "Video uploads", "Uploads in progress and finished uploads waiting for the phone.", old: "Video uploads; \"Sideload or a killed upload can sit here for 4 hours and block Repair.\"; completed receipts await acknowledgment", group: "glasses.video", advanced: false, mount: .group),
@@ -637,7 +637,7 @@ enum SettingsHubCatalog {
     /// - DR-01 Check results: the answer to Run checks, which is in Basic.
     /// - WB-01 Sign out every browser: Miles, 2026-11-09 ("Renew while in use, 30-day cap"), beside Open COS on your phone.
     /// - Recovery rows (lead, 2026-11-09): every control another COS surface tells a person to press is in Basic, on its page
-    ///   (recoveryRows). So UT-14 Repair Whisper, UT-21 Copy pairing token (out of Advanced, for everyone), and C-02 to C-05
+    ///   (recoveryRows). So UT-14 Repair Whisper, UT-21 Copy pairing token (glasses path only, glassesPathBasic), and C-02 to C-05
     ///   (Stop, Start, Update server, Install server: buttons inside C-01's row, marked so search never says "In All settings").
     static let basicIDs: Set<String> = [
         // General
@@ -645,7 +645,7 @@ enum SettingsHubCatalog {
         // AI and accounts
         "SG-03", "KL-01", "OUT-07",
         // Glasses, phone and web
-        "SG-02", "SG-11", "SG-13", "UT-21", "UT-29", "PK-01", "WB-01",
+        "SG-02", "SG-11", "SG-13", "UT-29", "PK-01", "WB-01",
         // Meetings
         "MT-01", "MT-03", "MT-04", "MA-01", "UT-16", "OUT-01",
         // Dictation
@@ -663,6 +663,8 @@ enum SettingsHubCatalog {
     ]
     /// Controls the glasses app, Control Web and the phone tell a person to press in COS Control, by the name they use. Each
     /// must be in Basic and found by search under that name (G1's copy says "search Settings for <name>").
+    /// Copy pairing token (UT-21) counts as a recovery row on the glasses path only (glassesPathBasic): the Mac-only path has no
+    /// glasses app to send anyone there.
     static let recoveryRows: [(name: String, id: String)] = [
         ("Update server", "C-04"), ("Restart", "C-01"), ("Start", "C-03"), ("Install server", "C-05"),
         ("Repair Whisper", "UT-14"), ("Voice setup", "SG-05"), ("Scan code", "SG-11"), ("Copy pairing token", "UT-21"),
@@ -681,8 +683,16 @@ enum SettingsHubCatalog {
     }
     /// Whether a row draws in this view: every row in All, the basic ones in Basic. Rows the catalog does not know (a hosted
     /// view's own line) are never hidden by Basic.
-    static func drawn(_ id: String, view: SettingsHubView) -> Bool {
-        view == .all || item(id) == nil || isBasic(id)
+    static func drawn(_ id: String, view: SettingsHubView, glassesPath: Bool = false) -> Bool {
+        view == .all || item(id) == nil || isBasic(id) || (glassesPath && glassesPathBasic.contains(id))
+    }
+    /// Rows placed by the device path (lead, 2026-11-09). On the glasses path they sit on their card, in Basic and All. On the
+    /// Mac-only path they stay where 0.5.385 had them: under Advanced, in All only (the catalog's own `advanced` flag).
+    static let glassesPathBasic: Set<String> = ["UT-21"]
+    /// Whether a row sits under its card's Advanced on this path.
+    static func placedAdvanced(_ id: String, glassesPath: Bool) -> Bool {
+        guard let row = item(id) else { return false }
+        return row.advanced && !(glassesPath && glassesPathBasic.contains(id))
     }
     /// In a card whose Advanced rows sit among its others (`open` is that Advanced's state; nil for every other card): an
     /// Advanced row draws only while it is open. A row the catalog does not know always draws.
@@ -835,11 +845,11 @@ extension SettingsHubSearch {
     /// The line under a search result, or nil when the row is drawn where the result opens. A hidden group comes first (it
     /// says what to fix), then a hidden row, then a switch above it (gateLine), then Basic.
     static func note(_ item: SettingsHubItem, groupShown: Bool, rowShown: Bool, conditions: SettingsHubConditions,
-                     gateLine: String?, view: SettingsHubView) -> String? {
+                     gateLine: String?, view: SettingsHubView, glassesPath: Bool = false) -> String? {
         if let group = item.group, !groupShown { return hiddenLine(group: group, conditions) }
         if !rowShown { return hiddenRowLine(item.id, conditions) ?? (conditions.serverRunning ? newerServerLine : serverLine) }
         if let gateLine { return gateLine }
-        if !SettingsHubCatalog.drawn(item.id, view: view) { return SettingsHubView.hiddenByBasic }
+        if !SettingsHubCatalog.drawn(item.id, view: view, glassesPath: glassesPath) { return SettingsHubView.hiddenByBasic }
         return nil
     }
     /// Where a result for a hidden group opens instead: the row that turns its group on. Nil: the page's top, where the

@@ -25,6 +25,7 @@ struct SettingsHubRow<Control: View>: View {
     let control: Control
     /// 0.5.387: the page's view. In Basic a row whose anchor names a row outside the basic set draws nothing.
     @Environment(\.settingsHubView) private var hubView
+    @Environment(\.settingsHubGlassesPath) private var glassesPath
     /// 0.5.387: inside a card whose Advanced rows sit among its others (COS reaching out), whether that Advanced is open. Nil
     /// everywhere else, where a row's place decides.
     @Environment(\.settingsHubInlineAdvancedOpen) private var inlineAdvancedOpen
@@ -35,7 +36,7 @@ struct SettingsHubRow<Control: View>: View {
 
     var body: some View {
         let id = SettingsHubCatalog.rowID(anchor: anchor) ?? ""
-        if SettingsHubCatalog.drawn(id, view: hubView), SettingsHubCatalog.inlineShown(id, open: inlineAdvancedOpen) { row }
+        if SettingsHubCatalog.drawn(id, view: hubView, glassesPath: glassesPath), SettingsHubCatalog.inlineShown(id, open: inlineAdvancedOpen) { row }
     }
 
     private var row: some View {
@@ -366,6 +367,8 @@ struct SettingsHubSearchResults: View {
     /// Why a result's row is not drawn where it opens: its group is hidden (the server, dictation), its switch is off, or
     /// Basic leaves it out (SettingsHubSearch.note). Nil: drawn.
     var note: (SettingsHubItem) -> String? = { _ in nil }
+    /// Whether a result's row sits under Advanced where it opens (a row placed by the device path differs by path).
+    var placedAdvanced: (SettingsHubItem) -> Bool = { $0.advanced }
     var body: some View {
         VStack(alignment: .leading, spacing: 26) {
             let count = sections.reduce(0) { $0 + $1.items.count }
@@ -406,7 +409,7 @@ struct SettingsHubSearchResults: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            Text(item.advanced ? where_ + ", Advanced" : where_).font(COSType.body(12.5)).foregroundStyle(TodayInk.grey).lineLimit(1)
+            Text(placedAdvanced(item) ? where_ + ", Advanced" : where_).font(COSType.body(12.5)).foregroundStyle(TodayInk.grey).lineLimit(1)
             Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(TodayInk.grey)
         }
         .padding(.horizontal, 20).padding(.vertical, 12)
@@ -675,6 +678,7 @@ private struct SettingsHubHostedKey: EnvironmentKey { static let defaultValue = 
 /// outside the hub's page ever hides a row.
 private struct SettingsHubViewKey: EnvironmentKey { static let defaultValue = SettingsHubView.all }
 private struct SettingsHubInlineAdvancedKey: EnvironmentKey { static let defaultValue: Bool? = nil }
+private struct SettingsHubGlassesPathKey: EnvironmentKey { static let defaultValue = false }
 
 extension EnvironmentValues {
     var settingsHubHosted: Bool {
@@ -684,6 +688,11 @@ extension EnvironmentValues {
     var settingsHubView: SettingsHubView {
         get { self[SettingsHubViewKey.self] }
         set { self[SettingsHubViewKey.self] = newValue }
+    }
+    /// 0.5.387: the page's device path, for rows placed by it (SettingsHubCatalog.glassesPathBasic).
+    var settingsHubGlassesPath: Bool {
+        get { self[SettingsHubGlassesPathKey.self] }
+        set { self[SettingsHubGlassesPathKey.self] = newValue }
     }
     var settingsHubInlineAdvancedOpen: Bool? {
         get { self[SettingsHubInlineAdvancedKey.self] }

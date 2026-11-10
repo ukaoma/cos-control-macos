@@ -223,9 +223,15 @@ import Foundation
         for query in ["phone", "browser", "sign in", "web", "QR", "Control Web", "open cos on your phone", "safari"] {
             check(ids(query).contains("UT-29"), "search finds Open COS on your phone by \(query)")
         }
-        // 0.5.387 (recovery rows): Copy pairing token left Advanced; Reset message count stays.
-        check(SettingsHubCatalog.advancedCount("glasses.devices") == 1 && SettingsHubCatalog.item("H-04")?.advanced == true
-              && SettingsHubCatalog.item("UT-21")?.advanced == false, "Devices' Advanced is Reset message count; Copy pairing token is on the card")
+        // 0.5.387 (recovery rows, lead 2026-11-09): Copy pairing token is on the card on the glasses path only; the Mac-only path keeps
+        // 0.5.385's place, Devices' Advanced, beside Reset message count.
+        check(SettingsHubCatalog.advancedCount("glasses.devices") == 2 && SettingsHubCatalog.item("UT-21")?.advanced == true,
+              "Devices' Advanced in the catalog is still Copy token and Reset message count")
+        check(!SettingsHubCatalog.placedAdvanced("UT-21", glassesPath: true) && SettingsHubCatalog.placedAdvanced("UT-21", glassesPath: false)
+              && SettingsHubCatalog.drawn("UT-21", view: .basic, glassesPath: true) && !SettingsHubCatalog.drawn("UT-21", view: .basic, glassesPath: false)
+              && SettingsHubCatalog.drawn("UT-21", view: .all, glassesPath: false), "Copy pairing token: on the card in Basic on the glasses path; Advanced, All only, on the Mac-only path")
+        check(SettingsHubCatalog.placedAdvanced("H-04", glassesPath: true) && !SettingsHubCatalog.placedAdvanced("G-01", glassesPath: false),
+              "the device path moves only the rows it names")
         // 0.5.362: the cue mode and general limit rows are found by their names and their keywords.
         check(ids("cue mode").first == "HUB-CM" && ids("grounded").contains("HUB-CG") && ids("daily web searches").first == "HUB-GW", "search finds the cue mode, Grounded cues and the daily web searches")
         check(ids("general cues").contains("HUB-GB") && ids("general cues").contains("HUB-GI") && ids("insight").contains("HUB-GM") && ids("public topics").contains("HUB-CM"),
@@ -307,7 +313,13 @@ import Foundation
         check(SettingsHubCatalog.recoveryRows.count == 11, "eleven recovery rows")
         for (name, id) in SettingsHubCatalog.recoveryRows {
             let row = SettingsHubCatalog.item(id)
-            check(row?.mount == .group && row?.advanced == false && SettingsHubCatalog.isBasic(id), "recovery row \(name) (\(id)) is in Basic, not Advanced")
+            // On the glasses path every recovery row is in Basic and not under Advanced; on the Mac-only path every one but the
+            // glasses-path rows is.
+            check(row?.mount == .group && !SettingsHubCatalog.placedAdvanced(id, glassesPath: true) && SettingsHubCatalog.drawn(id, view: .basic, glassesPath: true),
+                  "recovery row \(name) (\(id)) is in Basic, not Advanced, on the glasses path")
+            if !SettingsHubCatalog.glassesPathBasic.contains(id) {
+                check(SettingsHubCatalog.isBasic(id) && row?.advanced == false, "recovery row \(name) (\(id)) is in Basic on every path")
+            }
             check(ids(name).contains(id), "search for \(name) finds \(id)")
         }
         // Sign out every browser (Miles 2026-11-09): under Open COS on your phone, Basic and All, never Advanced.

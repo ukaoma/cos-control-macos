@@ -3833,6 +3833,7 @@ private extension ControlPanel {
     func hubSetView(_ view: SettingsHubView) { hubShowAllForNow = false; hubViewChoice = view.rawValue }
     /// A search result or a link to a row Basic leaves out: All settings now, without storing a choice.
     func hubShowAll() { if hubView == .basic { hubShowAllForNow = true } }
+    var hubGlassesPath: Bool { voiceGuide.devicePath == .glasses }
 
     func settingsHub(_ host: SettingsHubHost) -> some View {
         hubLoaders(
@@ -3961,12 +3962,14 @@ private extension ControlPanel {
                             hubTopStrip(reader)
                             if hubSearching {
                                 SettingsHubSearchResults(query: hubQuery, sections: SettingsHubSearch.results(hubQuery),
-                                                         open: { hubOpen($0, reader) }, note: hubSearchNote)
+                                                         open: { hubOpen($0, reader) }, note: hubSearchNote,
+                                                         placedAdvanced: { SettingsHubCatalog.placedAdvanced($0.id, glassesPath: hubGlassesPath) })
                             } else {
                                 SettingsHubPageHeader(title: hubCategory.title, line: hubCategory.blurb, busy: model.busy)
                                 SettingsHubViewSwitch(view: hubView, set: hubSetView)
                                 hubCategoryContent(hubCategory)
                                     .environment(\.settingsHubView, hubView)
+                                    .environment(\.settingsHubGlassesPath, hubGlassesPath)
                             }
                         }
                         .padding(EdgeInsets(top: 40, leading: pad, bottom: 72, trailing: pad))
@@ -4041,7 +4044,7 @@ private extension ControlPanel {
         hubCategory = destination.category
         if destination.opensAdvanced { hubAdvanced.insert(destination.group) }
         // 0.5.387: a row Basic leaves out switches to All settings, then scrolls to it.
-        if !SettingsHubCatalog.drawn(item.id, view: hubView) { hubShowAll() }
+        if !SettingsHubCatalog.drawn(item.id, view: hubView, glassesPath: hubGlassesPath) { hubShowAll() }
         // A row that is not drawn (its switch is off) opens the row that holds the switch (Settings Release A). A row in a group
         // that is hidden (dictation off, the pet off, Drop it off) opens the row that turns the group on.
         let landing = hubGroupShown(destination.group)
@@ -4056,7 +4059,8 @@ private extension ControlPanel {
     /// 0.5.387 (audit F2): the line under a search result whose row the page is not drawing now, and why.
     func hubSearchNote(_ item: SettingsHubItem) -> String? {
         SettingsHubSearch.note(item, groupShown: item.group.map(hubGroupShown) ?? true, rowShown: hubItemShown(item.id),
-                               conditions: hubConditions, gateLine: SettingsHubCatalog.gateLine(item.id, hidden: hubOptionHidden), view: hubView)
+                               conditions: hubConditions, gateLine: SettingsHubCatalog.gateLine(item.id, hidden: hubOptionHidden), view: hubView,
+                               glassesPath: hubGlassesPath)
     }
 
     /// A row inside a drawn group that the page still leaves out: Find sessions by meaning and Drop it.
@@ -4139,7 +4143,7 @@ private extension ControlPanel {
     func hubRow<Control: View>(_ id: String, label: String? = nil, detail: String? = nil, @ViewBuilder _ control: () -> Control) -> some View {
         let item = SettingsHubCatalog.item(id)
         return SettingsHubRow(label: label ?? item?.label ?? id, detail: detail ?? item?.detail ?? "",
-                              advanced: item?.advanced ?? false, anchor: "item." + id, control: control)
+                              advanced: SettingsHubCatalog.placedAdvanced(id, glassesPath: hubGlassesPath), anchor: "item." + id, control: control)
     }
 
     func hubSwitch(_ id: String, isOn: Binding<Bool>, detail: String? = nil) -> some View {
@@ -4310,14 +4314,12 @@ private extension ControlPanel {
                     GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ = model.providerGuide.openURL($0) })
                 }
                 hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }
+                // 0.5.387 (recovery rows, lead 2026-11-09): the glasses app tells people to press Copy pairing token, so on the
+                // glasses path it is on the card, in Basic and All. The Mac-only path keeps it under Advanced, as in 0.5.385.
+                pairingTokenRow
             }
-            // 0.5.387 (recovery rows): the glasses app and the phone tell people to press Copy pairing token, so it is on the
-            // card, in Basic and All, for every device path (it used to sit under Advanced).
-            hubRow("UT-21") {
-                Button("Copy token") { model.perform("token") }.buttonStyle(TodayButtonStyle(small: true)).disabled(pairingTokenBlocked)
-            }
-            .disabled(model.busy)
         } advanced: {
+            if !hubGlassesPath { pairingTokenRow }
             // O-10: Reset live message count, which the panel keeps in its header, reachable in every host.
             hubRow("H-04") {
                 Button("Reset count…") { confirmResetMessageCount = true }.buttonStyle(TodayButtonStyle(small: true)).disabled(model.busy)
@@ -4510,8 +4512,18 @@ private extension ControlPanel {
         return SettingsHubCatalog.items(inGroup: group).filter { $0.advanced && hubAdvancedShown($0.id) }.count
     }
 
+    /// UT-21, drawn once on whichever side the device path puts it.
+    var pairingTokenRow: some View {
+        hubRow("UT-21") {
+            Button("Copy token") { model.perform("token") }.buttonStyle(TodayButtonStyle(small: true)).disabled(pairingTokenBlocked)
+        }
+        .disabled(model.busy)
+    }
+
     func hubAdvancedShown(_ id: String) -> Bool {
         switch id {
+        // Copy pairing token sits under Devices' Advanced only on the Mac-only path.
+        case "UT-21": return !hubGlassesPath
         case "JV-03", "JV-04", "JV-05": return model.decisionSettings != nil
         // 0.5.387: Live cues' Advanced, as LiveCuesSettingsRow draws them: the limits from a server that reports them, and the
         // general cue limits only while the mode searches the web.

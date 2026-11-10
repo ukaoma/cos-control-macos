@@ -298,7 +298,7 @@ pin(page.index("SettingsHubSearchField(query: $hubQuery, focused: $hubSearchFocu
 pin("confirmHubRollback = false" in opened.split("switch category")[0], "a new page cancels an open inline confirm")
 # 0.5.387 (lane D2, audit F2): search finds every row; a row the page is not drawing carries the reason, from the same tests the page
 # draws by (hubGroupShown, hubItemShown, hubOptionHidden, the view).
-pin("SettingsHubSearchResults(query: hubQuery, sections: SettingsHubSearch.results(hubQuery),\n                                                         open: { hubOpen($0, reader) }, note: hubSearchNote)" in views
+pin("SettingsHubSearchResults(query: hubQuery, sections: SettingsHubSearch.results(hubQuery),\n                                                         open: { hubOpen($0, reader) }, note: hubSearchNote,\n                                                         placedAdvanced: { SettingsHubCatalog.placedAdvanced($0.id, glassesPath: hubGlassesPath) })" in views
     and "guard item.group != nil else { return nil }" in catalog and "shown(" not in body(catalog, "    static func results(_ query: String) -> [Section] {", "\n    }\n"),
     "search never leaves a hidden row out")
 pin("SettingsHubSearch.note(item, groupShown: item.group.map(hubGroupShown) ?? true, rowShown: hubItemShown(item.id)," in hub
@@ -312,11 +312,11 @@ pin("SettingsHubView.resolved(stored: hubViewChoice.isEmpty ? nil : hubViewChoic
     "Basic for a Mac kept as new (read lazily, observed), All otherwise, a choice wins")
 pin("func hubDraws(_ id: String) -> Bool { hubGroupShown(id) && (hubView == .all || SettingsHubCatalog.hasBasicRows(id)) }" in views
     and "SettingsHubCatalog.groups(in: category).filter { hubDraws($0.id) }" in views, "On this page and the cards share one test, Basic included")
-pin("if SettingsHubCatalog.drawn(id, view: hubView), SettingsHubCatalog.inlineShown(id, open: inlineAdvancedOpen) { row }" in shell
+pin("if SettingsHubCatalog.drawn(id, view: hubView, glassesPath: glassesPath), SettingsHubCatalog.inlineShown(id, open: inlineAdvancedOpen) { row }" in shell
     and "if hosted, SettingsHubCatalog.drawn(id, view: hubView) { content.id(\"item.\" + id) } else if !hosted { content }" in shell,
     "a hub row and a hosted anchor leave themselves out in Basic")
 pin("guard hubView == .all || inBasic else { return 0 }" in views and views.count("inBasic: legacy") == 1, "Basic draws no Advanced, but a legacy server's next step")
-pin("if !SettingsHubCatalog.drawn(item.id, view: hubView) { hubShowAll() }" in views, "a result Basic leaves out switches to All settings")
+pin("if !SettingsHubCatalog.drawn(item.id, view: hubView, glassesPath: hubGlassesPath) { hubShowAll() }" in views, "a result Basic leaves out switches to All settings")
 # Lead, 2026-11-09: cos.settings.view is written only by the switch; a result or a link shows All for the visit only.
 pin(views.count("hubViewChoice = ") == 2 and views.count("hubViewChoice = view.rawValue") == 1 and "func hubSetView(_ view: SettingsHubView) { hubShowAllForNow = false; hubViewChoice = view.rawValue }" in views
     and views.count("hubSetView(") == 1 and views.count("hubSetView") == 2 and "SettingsHubViewSwitch(view: hubView, set: hubSetView)" in views,
@@ -351,9 +351,14 @@ pin(all(k in fn for k in ("runtimeState(snapshot:", "readToken()", '"/api/web-se
 recovery = dict((i, n) for n, i in re.findall(r'\("([^"]+)", "([A-Z]+-\d\d)"\)', body(catalog, "    static let recoveryRows: [(name: String, id: String)] = [", "\n    ]\n")))
 basic_ids = set(re.findall(r'"([A-Z]+-\d\d)"', body(catalog, "    static let basicIDs: Set<String> = [", "\n    ]\n")))
 pin(set(recovery) == {"C-01", "C-03", "C-04", "C-05", "UT-14", "SG-05", "SG-11", "UT-21", "UT-29", "WB-01", "SG-01"}, f"the recovery rows are the named eleven ({sorted(recovery)})")
-pin(set(recovery) <= basic_ids, f"every recovery row is in Basic (missing {sorted(set(recovery) - basic_ids)})")
-devices_card = body(views, 'hubCard("glasses.devices"', 'hubCard("glasses.video"').split("} advanced: {", 1)[0]
-pin('hubRow("UT-21")' in devices_card, "Copy pairing token is on the Devices card, not under its Advanced")
+glasses_basic = set(re.findall(r'"([A-Z]+-\d\d)"', body(catalog, "    static let glassesPathBasic: Set<String> = [", "]")))
+pin(glasses_basic == {"UT-21"}, f"only Copy pairing token is placed by the device path ({sorted(glasses_basic)})")
+pin(set(recovery) <= basic_ids | glasses_basic, f"every recovery row is in Basic, Copy pairing token on the glasses path (missing {sorted(set(recovery) - basic_ids - glasses_basic)})")
+devices_all = body(views, 'hubCard("glasses.devices"', 'hubCard("glasses.video"')
+devices_card, devices_adv = devices_all.split("} advanced: {", 1)
+glasses_block = devices_card[devices_card.index("if voiceGuide.devicePath == .glasses {"):]
+pin("pairingTokenRow" in glasses_block and "if !hubGlassesPath { pairingTokenRow }" in devices_adv and views.count('hubRow("UT-21")') == 1,
+    "Copy pairing token: on the Devices card on the glasses path, under its Advanced on the Mac-only path, drawn once")
 # 0.5.387: the server notice sits in the top strip of every page, with its action.
 top = body(views, "    func hubTopStrip(_ reader: ScrollViewProxy) -> some View {", "    func hubLabel(_ id: String) -> String {")
 pin("SettingsHubServerNotice.line(checked: model.status.runtimeState != \"unknown\", running: model.status.running)" in top
