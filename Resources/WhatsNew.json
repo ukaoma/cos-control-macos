@@ -1,8 +1,22 @@
 {
-  "version": "0.5.386",
+  "version": "0.5.387",
   "whatsNew": {
-    "summary": "Work chat plans again when a Claude session is running in Terminal, and a task with no session gets one: Plan proposes a new Claude session and it starts when you press Send. Plus everything in 0.5.385.",
+    "summary": "A steadier COS Control: an honest first run that can install Claude Code for you, a Basic view in Settings, crash and disk fixes, and a price for every model in Usage. Plus everything in 0.5.386.",
     "sections": [
+      {
+        "title": "0.5.387",
+        "items": [
+          "First run: Connect your AI can install Claude Code for you. Install opens Terminal and runs Claude's official installer, shown on screen, then the row moves on to sign in.",
+          "New installs start on Today, with the Ask box and Command-K, and open Settings in a Basic view. Existing Macs keep what they have.",
+          "Settings: one Show all settings switch on every page, search that finds every setting and says why one is hidden, and a notice at the top when the COS server is not answering.",
+          "Glasses, phone and web: a Phone and web section first, with Open COS on your phone, Phone approvals and a new Sign out every browser.",
+          "Permissions shows Microphone, System Audio Recording and Calendars with their real status. Dictation with no shortcut says so and puts the recorder right there.",
+          "Fixed a crash when two session rows shared one id, and a meeting calendar crash on a repeated day.",
+          "Usage no longer writes tens of megabytes to disk on every refresh, and an open Work chat no longer rewrites its history every 15 seconds.",
+          "A session waiting on a question at its own prompt now says where to answer it: Answer in Claude, or in your terminal app.",
+          "Usage prices every model it can: new models from a small price list, an estimate marked est. when there is no list price yet, and Local, no API cost for models on your Mac."
+        ]
+      },
       {
         "title": "0.5.386",
         "items": [
