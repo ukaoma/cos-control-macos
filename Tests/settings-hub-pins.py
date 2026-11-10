@@ -339,7 +339,7 @@ pin(views.count("SettingsHubWebRevokeRow(model: model, phone: model.phoneSignIn)
     and views.index('.settingsHubAnchor("PK-01")') < views.index("SettingsHubWebRevokeRow(model: model, phone: model.phoneSignIn)") < views.index('hubCard("glasses.devices"'),
     "Sign out every browser mounts once, under the phone rows in Phone and web")
 row = body(shell, "struct SettingsHubWebRevokeRow: View {", "\n/// 0.5.387 (audit F1)") if "\n/// 0.5.387 (audit F1)" in shell else body(shell, "struct SettingsHubWebRevokeRow: View {", "struct SettingsHubServerNoticeLine")
-pin("if !phone.serverTooOld {" in row and row.count("run()") == 2 and 'Button(SettingsHubWebRevoke.confirmButton) { run() }' in row
+pin("if SettingsHubWebRevoke.shown(phoneSignInTooOld: phone.serverTooOld) {" in row and row.count("run()") == 2 and 'Button(SettingsHubWebRevoke.confirmButton) { run() }' in row
     and 'Button(SettingsHubWebRevoke.button) { result = nil; confirming = true }' in row and row.count('"web-revoke-all"') == 1,
     "two steps: the first press only asks, the confirm runs web-revoke-all; hidden like the phone sign-in on an older server")
 pin('case "web-revoke-all": try emitWebRevokeAll()' in helper and helper.count('"/api/web-session/revoke-all"') == 1

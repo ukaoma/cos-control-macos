@@ -306,6 +306,8 @@ import Foundation
         for query in ["sign out", "browser", "revoke", "sign out every browser"] {
             check(ids(query).contains("WB-01"), "search finds Sign out every browser by \(query)")
         }
+        check(SettingsHubWebRevoke.shown(phoneSignInTooOld: false) && !SettingsHubWebRevoke.shown(phoneSignInTooOld: true),
+              "Sign out every browser shows where the phone sign-in does, and hides on a server without it")
         let done = SettingsHubWebRevoke.result(transport: "answered", httpStatus: 200)
         check(done.ok && done.line.hasPrefix("Done."), "the server's yes says Done")
         for (transport, status) in [("unsupported", 404), ("not_ready", nil), ("unavailable", nil), ("no_token", nil), ("failed", 500), (nil, nil)] as [(String?, Int?)] {

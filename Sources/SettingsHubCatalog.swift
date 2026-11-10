@@ -873,6 +873,9 @@ enum SettingsHubWebRevoke {
     static let button = "Sign out…"
     static let confirmLine = "Every phone and browser signed in to Control Web must sign in again. The glasses and the phone app stay connected."
     static let confirmButton = "Sign out every browser"
+    /// The row draws where the phone sign-in does: hidden on a server without Control Web sign-in (PhoneSignInState's
+    /// serverTooOld, the same test as PhoneSignInBlock).
+    static func shown(phoneSignInTooOld: Bool) -> Bool { !phoneSignInTooOld }
     static func result(transport: String?, httpStatus: Int?) -> (line: String, ok: Bool) {
         switch transport {
         case "answered": return ("Done. Every browser is signed out. Sign in again with Open COS on your phone.", true)

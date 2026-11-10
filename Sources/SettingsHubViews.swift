@@ -720,7 +720,7 @@ struct SettingsHubWebRevokeRow: View {
     @State private var busy = false
     @State private var result: (line: String, ok: Bool)?
     var body: some View {
-        if !phone.serverTooOld {
+        if SettingsHubWebRevoke.shown(phoneSignInTooOld: phone.serverTooOld) {
             SettingsHubRow("WB-01") {
                 if confirming {
                     HStack(spacing: 8) {
