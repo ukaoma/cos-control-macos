@@ -1924,7 +1924,7 @@ extension Checks {
         try write(".claude/projects/p2/s-work.jsonl", try claudeRow("w-before", "2026-10-30T10:00:00Z", session: "s-work") + claudeRow("w-after", "2026-10-30T13:00:00Z", session: "s-work"))
         try write(".claude/projects/p2/s-old.jsonl", try claudeRow("ancient", "2026-08-01T10:00:00Z", session: "s-old") + claudeRow("fresh", "2026-10-30T14:00:30Z", session: "s-old"))
         try write(".codex/sessions/2026/10/30/rollout-2026-10-30T12-00-00-11111111-1111-1111-1111-111111111111.jsonl",
-            try json(["type": "session_meta", "payload": ["id": "11111111-1111-1111-1111-111111111111", "model_provider": "openai"]]) + json(["type": "turn_context", "payload": ["model": "gpt-5.6-terra"]])
+            try json(["type": "session_meta", "payload": ["id": "11111111-1111-1111-1111-111111111111", "model_provider": "openai"]]) + json(["type": "turn_context", "payload": ["model": "gpt-5.6-sol"]]) // U1: Terra is in the shared table now; Sol's promotion is still view-time only
             + json(["type": "event_msg", "timestamp": "2026-10-30T15:00:30Z", "payload": ["type": "token_count", "info": ["total_token_usage": ["input_tokens": 1_000, "output_tokens": 100, "cached_input_tokens": 0], "last_token_usage": ["input_tokens": 1_000, "output_tokens": 100, "cached_input_tokens": 0]]]]))
         try write(".codex/sessions/2026/10/30/rollout-2026-10-30T12-00-00-22222222-2222-2222-2222-222222222222.jsonl.zst", "not really zstd")
         func runLine(_ id: String, _ patch: [String: Any]) throws -> String { try json(["runId": id, "ts": "2026-10-30T12:00:00Z", "patch": patch]) }
@@ -1983,7 +1983,7 @@ extension Checks {
         // s-main: m1 at its fullest (1040) plus the subagent (1020), not the other session's row. s-old: fresh only (1020). x1 is Codex (1100, priced by the new rate). s-gone and x2 have no readable log.
         check(answers.measuredTokens == 1040 + 1020 + 1020 + 1100, "a slice keeps one fragment per message, adds subagents and leaves another session's rows out")
         check(answers.calls == 3 && answers.measuredCalls == 3, "three runs with logs are three measured answers")
-        check(abs(answers.addsToTotalUSD - (1000*2.0 + 100*12.0)/1_000_000) < 1e-9, "only the Codex slice on a new rate adds to the total")
+        check(abs(answers.addsToTotalUSD - (1000*4.0 + 100*20.0)/1_000_000) < 1e-9, "only the Codex slice on a new rate adds to the total")
         check(row(.dictation, full).estimatedCalls == 1, "polish stays an estimate")
         check(row(.liveAndUpkeep, full).measuredCalls == 1 && row(.liveAndUpkeep, full).estimatedCalls == 0, "the reader dedupes a gist row against its run")
         check(abs(row(.liveAndUpkeep, full).measuredUSD - (0.25 + 0.042)) < 1e-9, "a gist's cost and a priced day ledger add up, and the old day is out")
