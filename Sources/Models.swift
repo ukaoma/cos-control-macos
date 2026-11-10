@@ -14009,6 +14009,22 @@ enum TodayHome {
         }
     }
 
+    /// 0.5.387 (D4, Miles 11/09: "there is no ability to answer the question"): a Claude session waiting on a question
+    /// at its own prompt is answered in the app that holds that prompt, so the primary action names it. Control cannot
+    /// answer it. Nil: no desk prompt to send the person to (another provider, a plan, a permission, a tool's input, or
+    /// a run only the COS server writes, which `isWaiting` already leaves out).
+    static func answerAtPrompt(_ session: ClaudeSession, host: Host?) -> String? {
+        guard session.provider == "claude", isWaiting(session),
+              !["plan", "permission", "mcp_input"].contains(session.waitingKind) else { return nil }
+        switch platform(session, host: host) {
+        case .claude: return "Answer in Claude"
+        // Hosts not read yet: which app holds the prompt is unknown, so the label does not guess one.
+        case .claudeCode: return host.map { "Answer in " + $0.app } ?? "Answer at its prompt"
+        default: return nil
+        }
+    }
+    static let promptPendingLine = "This session is waiting on a question at its own prompt. Answer it there."
+
     /// "in Terminal", "in Claude", "in the Codex app", "in Cursor", "from Work, on the server".
     static func placeWords(_ platform: Platform, host: Host?) -> String {
         switch platform {
@@ -14436,6 +14452,8 @@ enum TodayHome {
         var meeting: ReviewableMeeting? = nil
         var move: WorkYourMove? = nil
         var openLabel: String? = nil
+        /// 0.5.387 (D4): openLabel is "Answer in ..." (answerAtPrompt), and Open session is the second button.
+        var answersAtPrompt = false
     }
 
     struct NeedInputs {
@@ -14480,10 +14498,11 @@ enum TodayHome {
         for session in waitingSessions(input.waiting) {
             let host = input.hosts[session.id]
             let open = openFor(session, host: host, cursorTrusted: input.cursorTrusted)
-            let label = session.provider == "claude" ? "Open session" : open.label
+            let answer = answerAtPrompt(session, host: host)
+            let label = answer ?? (session.provider == "claude" ? "Open session" : open.label)
             rows.append(NeedRow(id: "session:" + session.id, kind: .session, tier: 1, title: askedTitle(session),
                                 quote: questionText(session), why: askedWhy(session), source: sessionSource(session, host: host),
-                                since: waitingSince(session), session: session, openLabel: label))
+                                since: waitingSince(session), session: session, openLabel: label, answersAtPrompt: answer != nil))
         }
         // One by one: a group with a name to confirm, or one heard today. Everything else is one row that opens Speakers.
         var voiceRows = 0, heldVoices = 0

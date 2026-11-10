@@ -945,7 +945,8 @@ struct ActivityWindow: View {
                                 }
                             }
                             ClaudeSessionDetailPane(model: model, workReceipt: workReceipt,
-                                                    onOpenWork: { id in model.closeClaudeSession(); openHandoffWork(id) })
+                                                    onOpenWork: { id in model.closeClaudeSession(); openHandoffWork(id) },
+                                                    host: model.openClaudeRow.flatMap { today.hosts[$0.id] })
                                 .task { if workConnectionsEnabled { await model.loadWorkTasks() } }
                         }
                     } else {
@@ -6386,6 +6387,8 @@ struct ClaudeSessionDetailPane: View {
     /// 0.5.241: the Work handoff that started or sent to this session, if any.
     var workReceipt: WorkHandoffReceipt? = nil
     var onOpenWork: ((String) -> Void)? = nil
+    /// 0.5.387 (D4): the app holding this session's prompt (Today's host read), so a pending question names it.
+    var host: TodayHome.Host? = nil
 
     /// A server-run session has no title of its own ("Claude session"); the Work item names it.
     nonisolated static func headerTitle(detail: String?, row: String?, workTitle: String?) -> String {
@@ -6444,6 +6447,33 @@ struct ClaudeSessionDetailPane: View {
             .padding(.top, 18)
             .padding(.bottom, 12)
             Divider()
+            // 0.5.387 (D4): a question at the session's own prompt cannot be answered from here, so say where it is
+            // and open that app. Its words show read only when the helper read them; a failed open says so below.
+            if let row = model.openClaudeRow, case let live = model.petSession(id: row.id) ?? row,
+               let answer = TodayHome.answerAtPrompt(live, host: host) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(TodayHome.promptPendingLine)
+                        .font(COSType.body(12.5, weight: .medium))
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let quote = TodayHome.questionText(live) {
+                        Text("\u{201C}" + quote + "\u{201D}")
+                            .font(COSType.body(12.5))
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Button(answer) { model.openSessionInPlatform(live) }
+                        .buttonStyle(COSPrimaryButtonStyle())
+                        .controlSize(.small)
+                        .disabled(model.platformOpening)
+                        .accessibilityIdentifier("session-answer-at-prompt")
+                }
+                .padding(.horizontal, 24)
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(COSPalette.accent.opacity(0.06))
+                Divider()
+            }
 
             // 0.5.343: the conversation builds in place on first open (COSBuildUp); the chain is today's.
             COSBuildUp(.turns(6), tune: .sessionTurns, loading: !(model.openClaudeRow?.isScheduledJob ?? false) && model.claudeSessionDetailLoading && model.claudeSessionDetail == nil,
@@ -9471,6 +9501,10 @@ extension ActivityWindow {
             switch row.kind {
             case .session:
                 Button(row.openLabel ?? "Open session") { todayOpenNeed(row) }.buttonStyle(TodayButtonStyle(primary: true))
+                // 0.5.387 (D4): the primary opens the app that holds the prompt; Control's own view stays one click away.
+                if row.answersAtPrompt, let session = row.session {
+                    Button("Open session") { todayOpen(.inSessions(session.id)) }.buttonStyle(TodayButtonStyle())
+                }
             case .voice:
                 if let group = row.group {
                     switch today.voices[group.id] {

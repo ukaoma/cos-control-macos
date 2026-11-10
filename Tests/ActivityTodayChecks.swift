@@ -332,8 +332,11 @@ import Foundation
     static func needsChecks() {
         let rows = TodayHome.things(needInputs(runningInputs()))
         check(rows.map(\.kind) == [.session, .session, .voice, .work, .memories, .olderToSort], "ranked: sessions, voices, Work, memories, older", "\(rows.map(\.kind))")
-        check(rows[0].title == "Cigars POS Gen 2 Modules asked you a question" && rows[0].quote?.hasPrefix("Build the age-gate") == true && rows[0].openLabel == "Open session",
-              "the oldest question first, its text read only, one Open session")
+        // 0.5.387 (D4): a question at the session's own prompt names where to answer it; no host read yet, so no app named.
+        check(rows[0].title == "Cigars POS Gen 2 Modules asked you a question" && rows[0].quote?.hasPrefix("Build the age-gate") == true
+              && rows[0].openLabel == "Answer at its prompt" && rows[0].answersAtPrompt,
+              "the oldest question first, its text read only, and the prompt it is answered at")
+        check(!rows[1].answersAtPrompt, "a Cursor wait keeps its one Open")
         check(rows[1].openLabel == "Open in Cursor", "a Cursor wait opens in Cursor")
         check(rows[2].why == "Sounds like Priya Shah, similarity 0.82." && rows[2].title == "Name a voice from Design review", "a voice shows its similarity, never agreeing counts")
         check(!rows.contains { $0.move?.id == "mv2" }, "a Work item for a waiting session is that session's row")

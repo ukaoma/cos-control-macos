@@ -63,9 +63,47 @@ struct StabilityD4Checks {
         precondition(LibraryMeetingDay.countsByDate([]) == [:], "no days, no counts")
     }
 
+    /// 0.5.387 (D4) item 5: a Claude question at the session's own prompt names the app to answer it in.
+    static func waiting(_ native: String, provider: String = "claude", kind: String = "question", state: String = "waiting",
+                        question: String = "Ship the footer now, or wait for review?", job: String? = nil) -> ClaudeSession {
+        var o: [String: JSONValue] = ["id": .string(native), "provider": .string(provider), "name": .string("Footer"), "state": .string(state),
+                                      "alive": .bool(true), "waitingKind": .string(kind), "waitingQuestion": .string(question),
+                                      "workspace": .string("cos"), "updatedAt": .string("2026-11-09T14:10:00Z"), "createdAt": .string("2026-11-09T14:00:00Z")]
+        if let job { o["origin"] = .string("job"); o["jobLabel"] = .string(job) }
+        return ClaudeSession(.object(o))!
+    }
+
+    static func checkAnswerAtPrompt() {
+        let desktop = TodayHome.Host(app: "Claude", terminal: false)
+        let terminal = TodayHome.Host(app: "iTerm2", terminal: true)
+        let q = waiting("q1")
+        precondition(TodayHome.answerAtPrompt(q, host: desktop) == "Answer in Claude", "a Claude desktop question answers in Claude")
+        precondition(TodayHome.answerAtPrompt(q, host: terminal) == "Answer in iTerm2", "a terminal question names its terminal app")
+        precondition(TodayHome.answerAtPrompt(q, host: nil) == "Answer at its prompt", "no host read: no app is guessed")
+        for kind in ["plan", "permission", "mcp_input"] {
+            precondition(TodayHome.answerAtPrompt(waiting("k-" + kind, kind: kind), host: desktop) == nil, "a \(kind) keeps today's Open")
+        }
+        precondition(TodayHome.answerAtPrompt(waiting("c1", provider: "cursor"), host: nil) == nil, "Cursor keeps its own Open")
+        precondition(TodayHome.answerAtPrompt(waiting("r1", state: "running"), host: desktop) == nil, "a running session has no question")
+        precondition(TodayHome.answerAtPrompt(waiting("j1", job: "Meeting watcher"), host: desktop) == nil,
+            "a run only the COS server writes has no desk prompt")
+        precondition(TodayHome.promptPendingLine == "This session is waiting on a question at its own prompt. Answer it there.",
+            "the detail line's copy")
+
+        var input = TodayHome.NeedInputs()
+        input.waiting = [q, waiting("p1", kind: "plan")]
+        input.hosts = ["claude:q1": desktop, "claude:p1": desktop]
+        let rows = TodayHome.things(input).filter { $0.kind == .session }
+        let question = rows.first { $0.id == "session:claude:q1" }, plan = rows.first { $0.id == "session:claude:p1" }
+        precondition(question?.openLabel == "Answer in Claude" && question?.answersAtPrompt == true,
+            "the Needs you row for a question says Answer in Claude, with Open session second")
+        precondition(plan?.openLabel == "Open session" && plan?.answersAtPrompt == false, "a plan row is unchanged")
+    }
+
     static func main() {
         checkPetDuplicates()
         checkCalendarDuplicates()
-        print("StabilityD4Checks: pet duplicate ids and calendar duplicate dates PASS")
+        checkAnswerAtPrompt()
+        print("StabilityD4Checks: pet duplicate ids, calendar duplicate dates and Answer at the prompt PASS")
     }
 }
