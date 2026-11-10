@@ -283,21 +283,35 @@ enum ProviderGate {
 /// 0.5.388 (C1): the helper's proof failure, in plain words first. Its own text stays below for anyone who needs it.
 enum SetupFailureWords {
     static let marker = "no AI provider proved a real query"
+    /// The helper's proofSkipReason for provider_auth (HelperSources/main.swift).
+    static let notSignedIn = "not signed in"
 
-    /// nil when `error` is not the proof failure. Names the AIs the helper named ("Claude skipped: not signed in; ...").
-    static func plain(_ error: String) -> String? {
-        guard let range = error.range(of: marker) else { return nil }
+    /// The helper's "(Claude skipped: not signed in; Codex skipped: timed out)", as (provider, reason) in its order.
+    static func skips(_ error: String) -> [(provider: AIProvider, reason: String)] {
+        guard let range = error.range(of: marker) else { return [] }
         let rest = error[range.upperBound...]
-        let named = AIProvider.agents.filter { provider in
-            rest.contains(provider.rawValue.capitalized + " skipped")
-        }.map(\.cliName)
-        let who: String
-        switch named.count {
-        case 0: who = "your AI"
-        case 1: who = named[0]
-        default: who = named.dropLast().joined(separator: ", ") + " or " + named.last!
+        guard let open = rest.firstIndex(of: "("), let close = rest.lastIndex(of: ")"), open < close else { return [] }
+        return rest[rest.index(after: open)..<close].components(separatedBy: "; ").compactMap { part in
+            guard let provider = AIProvider.agents.first(where: { part.hasPrefix($0.rawValue.capitalized + " skipped: ") }) else { return nil }
+            return (provider, String(part.dropFirst((provider.rawValue.capitalized + " skipped: ").count)))
         }
-        return "Setup stopped: none of your AIs answered a test request. Sign in to \(who), then press Try again."
+    }
+
+    /// nil when `error` is not the proof failure. "Sign in to X" ONLY when every reason the helper gave is not signed in
+    /// (Q1, final review); a usage limit, a timeout or a missing binary says "Check X". The helper's text stays below.
+    static func plain(_ error: String) -> String? {
+        guard error.contains(marker) else { return nil }
+        let found = skips(error)
+        let names = found.map(\.provider.cliName)
+        let who: String
+        switch names.count {
+        case 0: who = "your AI"
+        case 1: who = names[0]
+        default: who = names.dropLast().joined(separator: ", ") + " or " + names.last!
+        }
+        let allSignedOut = !found.isEmpty && found.allSatisfy { $0.reason == notSignedIn }
+        return "Setup stopped: none of your AIs answered a test request. "
+            + (allSignedOut ? "Sign in to \(who), then press Try again." : "Check \(who), then press Try again.")
     }
 }
 
@@ -606,11 +620,11 @@ final class ProviderGuide: ObservableObject {
     /// The pass in flight per provider (one at a time): provider -> tag.
     @Published private(set) var passes: [AIProvider: String] = [:]
     /// Rows whose Install in Terminal the person started and whose CLI has not appeared yet (they also wait).
-    @Published private(set) var installing: Set<AIProvider> = []
-    /// 0.5.388 (C3): Install was clicked and Terminal has not answered yet.
-    @Published private(set) var installStarting: Set<AIProvider> = [] {
+    @Published private(set) var installing: Set<AIProvider> = [] {
         didSet { if !pasting.isSubset(of: installing) { pasting.formIntersection(installing) } }
     }
+    /// 0.5.388 (C3): Install was clicked and Terminal has not answered yet.
+    @Published private(set) var installStarting: Set<AIProvider> = []
     /// Q1 D1 M1: installs waiting on the person's paste (the script could not type into Terminal). Always within installing.
     @Published private(set) var pasting: Set<AIProvider> = []
     /// The ONE store of provider skips (the setup guide reads it too; QA 2026-10-08 W7).
@@ -803,8 +817,6 @@ final class ProviderGuide: ObservableObject {
         waiting[provider] = nil
         passes[provider] = nil
         installing.remove(provider)
-        // Q1 D1 M1's paste wait ends too (its check, "Stop waiting ends the paste wait too", was red at b2135ac).
-        pasting.remove(provider)
     }
 
     func skip(_ provider: AIProvider) {

@@ -509,11 +509,21 @@ struct ProviderConnectChecks {
         let helper = "Update failed. Control restored the previous version. Original error: Managed server transactional verification failed: no AI provider proved a real query (Claude skipped: not signed in)."
         check(SetupFailureWords.plain(helper) == "Setup stopped: none of your AIs answered a test request. Sign in to Claude Code, then press Try again.",
               "C1 failure words", SetupFailureWords.plain(helper) ?? "nil")
-        let two = "x: no AI provider proved a real query (Claude skipped: not signed in; Codex skipped: timed out)"
-        check(SetupFailureWords.plain(two)?.contains("Sign in to Claude Code or Codex, then press Try again.") == true, "C1 failure words", SetupFailureWords.plain(two) ?? "nil")
+        // "Sign in to" only when EVERY reason is not signed in (Q1, final review); anything else says "Check".
+        let bothOut = "x: no AI provider proved a real query (Claude skipped: not signed in; Codex skipped: not signed in)"
+        check(SetupFailureWords.plain(bothOut)?.hasSuffix("Sign in to Claude Code or Codex, then press Try again.") == true, "C1 failure words", SetupFailureWords.plain(bothOut) ?? "nil")
+        let mixed = "x: no AI provider proved a real query (Claude skipped: not signed in; Codex skipped: timed out)"
+        check(SetupFailureWords.plain(mixed)?.hasSuffix("Check Claude Code or Codex, then press Try again.") == true, "C1 failure words", SetupFailureWords.plain(mixed) ?? "nil")
+        let limit = "no AI provider proved a real query (Claude skipped: session or usage limit)"
+        check(SetupFailureWords.plain(limit)?.hasSuffix("Check Claude Code, then press Try again.") == true, "C1 failure words", SetupFailureWords.plain(limit) ?? "nil")
+        let gone = "no AI provider proved a real query (Claude skipped: binary not found)"
+        check(SetupFailureWords.plain(gone)?.contains("Sign in") == false, "C1 failure words", "a missing binary never says sign in")
         let three = "no AI provider proved a real query (Claude skipped: a; Codex skipped: b; Cursor skipped: c)"
-        check(SetupFailureWords.plain(three)?.contains("Sign in to Claude Code, Codex or Cursor Agent, then") == true, "C1 failure words", SetupFailureWords.plain(three) ?? "nil")
-        check(SetupFailureWords.plain("no AI provider proved a real query (no provider could be proved)")?.contains("Sign in to your AI,") == true, "C1 failure words", "none named")
+        check(SetupFailureWords.plain(three)?.hasSuffix("Check Claude Code, Codex or Cursor Agent, then press Try again.") == true, "C1 failure words", SetupFailureWords.plain(three) ?? "nil")
+        check(SetupFailureWords.plain("no AI provider proved a real query (no provider could be proved)")?.hasSuffix("Check your AI, then press Try again.") == true, "C1 failure words", "none named")
+        let parsed = SetupFailureWords.skips(mixed)
+        check(parsed.count == 2 && parsed[0].provider == .claude && parsed[0].reason == "not signed in" && parsed[1].provider == .codex && parsed[1].reason == "timed out",
+              "C1 failure words", "the helper's reasons are read per AI")
         check(SetupFailureWords.plain("Update failed. npm could not be reached.") == nil, "C1 failure words", "any other failure keeps the helper's words alone")
         // C3: a second click while the first waits on Terminal (macOS's control prompt) starts nothing.
         let missing = report(status("claude", installed: false, signIn: "unknown", version: nil))
@@ -532,6 +542,16 @@ struct ProviderConnectChecks {
         check(startingDuring && c.installStarting.isEmpty && c.installing == [.claude], "C3 one installer", "marked before the wait, cleared after")
         await c.install(.claude)
         check(effects.terminal.count == 2, "C3 one installer", "Run it again still works once the first has answered")
+        // Q1 (final review): with a paste wait open, the CLI appearing ends the paste wait (installing's didSet).
+        let landedNow = report(status("claude", path: "/Users/x/.local/bin/claude", signIn: "signInRequired"))
+        let pasteEffects = Effects(); pasteEffects.terminalWorks = false
+        let p = guide([missing, landedNow], effects: pasteEffects)
+        p.openTerminalApp = { true }
+        await p.refresh()
+        await p.install(.claude)
+        check(p.pasting == [.claude] && p.installing == [.claude], "Q1 paste wait", "the paste wait is open")
+        await p.refresh()
+        check(p.installing.isEmpty && p.pasting.isEmpty, "Q1 paste wait", "after the CLI appears, the paste wait is gone: \(p.pasting)")
     }
 
     static func passFlow() async {
