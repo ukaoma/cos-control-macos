@@ -283,10 +283,15 @@ import Foundation
               "an unknown stored value falls back to the cohort")
         // Lead, 2026-11-09: the cohort table behind the default (D1's InstallCohort). Undecided or existing gives All; new gives
         // Basic; an explicit choice wins in all three. A Mac carrying cos.keyLanes.install = new from an older build is existing.
-        let undecided = false  // InstallCohort.isNewInstall while undecided, and outside the shipped app
-        let existing = InstallCohort.decide(InstallCohort.Evidence(runningBuild: 441, keyLanesInstall: "new")) == .new
-        let fresh = InstallCohort.decide(InstallCohort.Evidence(runningBuild: 441)) == .new
-        check(!existing && fresh, "the cohort table: a Mac with cos.keyLanes.install = new is existing, a clean Mac is new")
+        // The page reads `hubCohort == "new"` (InstallCohort.key), as InstallCohort.current does: undecided reads as existing.
+        let launchClean = InstallCohort.decideAtLaunch(InstallCohort.Evidence(runningBuild: 441))
+        let launchOld = InstallCohort.decideAtLaunch(InstallCohort.Evidence(runningBuild: 441, keyLanesInstall: "new"))
+        let adopted = InstallCohort.adopt(stored: nil, keyLanes: "new")
+        check(launchClean == nil && launchOld == .existing && adopted == .new,
+              "the cohort table: a clean Mac waits for KeyLanes, a Mac with cos.keyLanes.install already set is existing, then KeyLanes' new is kept")
+        let undecided = launchClean?.rawValue == InstallCohort.Cohort.new.rawValue
+        let existing = launchOld?.rawValue == InstallCohort.Cohort.new.rawValue
+        let fresh = adopted?.rawValue == InstallCohort.Cohort.new.rawValue
         check(SettingsHubView.resolved(stored: nil, newInstall: undecided) == .all, "undecided cohort gives All")
         check(SettingsHubView.resolved(stored: nil, newInstall: existing) == .all, "existing cohort gives All")
         check(SettingsHubView.resolved(stored: nil, newInstall: fresh) == .basic, "new cohort with no stored choice gives Basic")

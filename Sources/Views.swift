@@ -522,7 +522,8 @@ struct ControlPanel: View {
     /// 0.5.278: Settings, "Show live meeting transcript". Off: no Live now row, no live dots, no live-transcript helper.
     @AppStorage(LiveTranscript.enabledKey) private var showLiveTranscript = true
     /// Activity Today home (plan v2): the opt-in candidate switch, quiet hours and Work runs from Today.
-    @AppStorage(TodayHome.enabledKey) private var todayHomeEnabled = false
+    // 0.5.387 (lane D1's request): Today home's default follows the install cohort, read lazily, never written.
+    @CohortDefault(TodayHome.enabledKey, newInstall: true) private var todayHomeEnabled
     @AppStorage(TodayHome.quietHoursKey) private var todayQuietHours = true
     @AppStorage(TodayHome.workRunsKey) private var todayWorkRuns = true
     /// 0.5.362: what was chosen for ⌘K's search by meaning, per decision model. Empty is ask, which sends nothing.
@@ -547,6 +548,8 @@ struct ControlPanel: View {
     /// 0.5.387: Basic or All settings. Empty until the person uses the switch; then the pick wins (SettingsHubView.resolved).
     /// Written only by the switch (lead, 2026-11-09), so the cohort default is read lazily on every draw.
     @AppStorage(SettingsHubView.key) private var hubViewChoice = ""
+    /// The install cohort's kept answer (InstallCohort.key), observed so a Mac kept as new mid-launch redraws in Basic.
+    @AppStorage(InstallCohort.key) private var hubCohort: String?
     /// 0.5.387: All settings for this visit only, after a search result or a link to a row Basic leaves out. Never stored.
     @State private var hubShowAllForNow = false
     @State private var hubCategory: SettingsHubCategory = SettingsHub.lastCategory()
@@ -3823,7 +3826,8 @@ private extension ControlPanel {
     var hubSearching: Bool { !hubQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     /// 0.5.387: Basic for a new install, All for everyone else, until the person picks with the switch on each page.
     var hubView: SettingsHubView {
-        hubShowAllForNow ? .all : SettingsHubView.resolved(stored: hubViewChoice.isEmpty ? nil : hubViewChoice, newInstall: InstallCohort.isNewInstall)
+        hubShowAllForNow ? .all : SettingsHubView.resolved(stored: hubViewChoice.isEmpty ? nil : hubViewChoice,
+                                                           newInstall: hubCohort == InstallCohort.Cohort.new.rawValue)
     }
     /// The switch: the person's choice, stored.
     func hubSetView(_ view: SettingsHubView) { hubShowAllForNow = false; hubViewChoice = view.rawValue }

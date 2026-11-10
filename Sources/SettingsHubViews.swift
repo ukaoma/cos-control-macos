@@ -493,7 +493,8 @@ struct SettingsHubFactsReader<Content: View>: View {
     @ObservedObject var cues: LiveCuesStore
     @ObservedObject var stt: TranscriptionSettingsStore
     @ObservedObject var setup: SetupGuideState
-    @AppStorage(TodayHome.enabledKey) private var todayHome = false
+    // 0.5.387 (lane D1's request): the same lazy cohort default as every other Today reader.
+    @CohortDefault(TodayHome.enabledKey, newInstall: true) private var todayHome
     let content: (SettingsHubFacts) -> Content
 
     init(model: ControllerModel, permissions: PermissionGuide, dictation: MacDictationStore, cues: LiveCuesStore,

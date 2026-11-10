@@ -1,8 +1,9 @@
 import Foundation
 
-/// Lane D1 (0.5.387): InstallCohort (Sources/InstallCohort.swift), executed. Compiled with that file alone by
-/// Tests/run-install-cohort.sh. Walks the whole decision table, then the live probes against a throwaway home and a
-/// throwaway defaults suite. Prints "install cohort checks: N passed".
+/// Lane D1 (0.5.387): InstallCohort and CohortDefault (Sources/InstallCohort.swift) and the Today home default
+/// (TodayHome.enabled, Sources/Models.swift), executed. Compiled with those two files by Tests/run-install-cohort.sh.
+/// Walks the launch table, the KeyLanes adoption, the lazy defaults, then the live probes against a throwaway home and
+/// throwaway defaults suites. Prints "install cohort checks: N passed".
 @main struct InstallCohortChecks {
     nonisolated(unsafe) static var passed = 0
 
@@ -21,71 +22,114 @@ import Foundation
     typealias E = InstallCohort.Evidence
 
     static func main() {
-        let decide = InstallCohort.decide
+        let launch: (E) -> InstallCohort.Cohort? = InstallCohort.decideAtLaunch
 
-        // ── A brand-new Mac: this build running, nothing else. The ONLY row that answers new.
-        let clean = E(runningBuild: 441)
-        check(decide(clean) == .new, "a clean Mac is new")
-        // This launch already wrote its own build as last seen (ControllerModel's init runs first): still new.
-        check(decide(E(runningBuild: 441, lastSeenBuild: 441)) == .new, "this build's own last-seen value is not a prior install")
+        // ── Launch, a brand-new Mac: no answer yet, it waits for KeyLanes.
+        check(launch(E(runningBuild: 441)) == nil, "a clean Mac waits for KeyLanes")
+        check(launch(E(runningBuild: 441, lastSeenBuild: 441)) == nil, "this build's own last-seen value (written this launch) is not a prior install")
 
-        // ── A stored answer always wins, both ways, whatever else is true.
-        check(decide(E(stored: "existing", runningBuild: 441)) == .existing, "stored existing is kept on a clean-looking Mac")
-        check(decide(E(stored: "new", runningBuild: 441, lastSeenBuild: 439, priorSetupKey: true, runtimeFolder: true)) == .new,
-              "stored new is kept after the user finishes setup")
-        check(decide(E(stored: "garbage", runningBuild: 441)) == .new, "an unreadable stored value is decided again")
-        check(decide(E(stored: "garbage", runningBuild: 441, runtimeFolder: true)) == .existing, "an unreadable stored value is decided again (existing)")
+        // ── A kept answer always wins, both ways, whatever else is true.
+        check(launch(E(stored: "existing", runningBuild: 441)) == .existing, "kept existing stays")
+        check(launch(E(stored: "new", runningBuild: 441, lastSeenBuild: 439, priorSetupKey: true, keyLanesInstall: "new", runtimeFolder: true)) == .new,
+              "kept new stays after setup, an update and a key lanes answer")
+        check(launch(E(stored: "garbage", runningBuild: 441)) == nil, "an unreadable kept value is decided again")
 
         // ── Unsure: the running build is unreadable.
-        check(decide(E(runningBuild: nil)) == .existing, "no build number: existing")
-        check(decide(E(runningBuild: 0)) == .existing, "build 0: existing")
+        check(launch(E(runningBuild: nil)) == .existing, "no build number: existing")
+        check(launch(E(runningBuild: 0)) == .existing, "build 0: existing")
 
-        // ── Each prior-Control signal alone makes it existing.
-        check(decide(E(runningBuild: 441, lastSeenBuild: 439)) == .existing, "an older build ran here (the 0.5.385 upgrade)")
-        check(decide(E(runningBuild: 441, lastSeenBuild: 450)) == .existing, "a newer build ran here (a rollback)")
-        check(decide(E(runningBuild: 441, priorSetupKey: true)) == .existing, "setup finished, hidden or past glasses")
-        check(decide(E(runningBuild: 441, keyLanesInstall: "new")) == .existing, "key lanes decided on an earlier launch (new)")
-        check(decide(E(runningBuild: 441, keyLanesInstall: "existing")) == .existing, "key lanes decided on an earlier launch (existing)")
-        check(decide(E(runningBuild: 441, runtimeFolder: true)) == .existing, "a managed runtime folder")
-        check(decide(E(runningBuild: 441, updaterRecord: true)) == .existing, "the updater swapped a build in")
-
-        // ── Every combination of the five signals: new only when all are absent.
+        // ── The lead's required case: a Mac carrying cos.keyLanes.install = new from an older build is EXISTING.
+        check(launch(E(runningBuild: 441, keyLanesInstall: "new")) == .existing, "key lanes new from an older build: existing")
+        check(launch(E(runningBuild: 441, keyLanesInstall: "existing")) == .existing, "key lanes existing from an older build: existing")
+        // Every other sign of an earlier Control, alone.
+        check(launch(E(runningBuild: 441, lastSeenBuild: 439)) == .existing, "an older build ran here (the 0.5.385 upgrade)")
+        check(launch(E(runningBuild: 441, lastSeenBuild: 450)) == .existing, "a newer build ran here (a rollback)")
+        check(launch(E(runningBuild: 441, priorSetupKey: true)) == .existing, "setup finished, hidden or past glasses")
+        check(launch(E(runningBuild: 441, runtimeFolder: true)) == .existing, "a managed runtime folder")
+        check(launch(E(runningBuild: 441, updaterRecord: true)) == .existing, "the updater swapped a build in")
+        // Every combination of the five signs: waits only when all are absent.
         for mask in 0..<32 {
             let e = E(runningBuild: 441, lastSeenBuild: mask & 1 != 0 ? 439 : nil, priorSetupKey: mask & 2 != 0,
                       keyLanesInstall: mask & 4 != 0 ? "new" : nil, runtimeFolder: mask & 8 != 0, updaterRecord: mask & 16 != 0)
-            check(decide(e) == (mask == 0 ? .new : .existing), "signal mask \(mask)")
+            check(launch(e) == (mask == 0 ? nil : .existing), "sign mask \(mask)")
         }
 
-        // ── Outside the shipped app: existing, and nothing written.
-        check(!InstallCohort.isShippedApp, "this harness is not the shipped app")
+        // ── Adoption, when KeyLanes decides on this launch.
+        check(InstallCohort.adopt(stored: nil, keyLanes: "new") == .new, "KeyLanes says new: keep new")
+        check(InstallCohort.adopt(stored: nil, keyLanes: "existing") == .existing, "KeyLanes says existing: keep existing")
+        check(InstallCohort.adopt(stored: nil, keyLanes: nil) == nil, "KeyLanes has not decided: keep nothing")
+        check(InstallCohort.adopt(stored: nil, keyLanes: "maybe") == nil, "an unreadable KeyLanes answer: keep nothing")
+        check(InstallCohort.adopt(stored: "existing", keyLanes: "new") == nil, "a kept existing is never turned new")
+        check(InstallCohort.adopt(stored: "new", keyLanes: "existing") == nil, "a kept new is never turned existing")
+        check(InstallCohort.adopt(stored: "garbage", keyLanes: "new") == .new, "an unreadable kept value takes KeyLanes' answer")
+
+        // ── The kept answer; undecided reads as existing.
         let d = freshDefaults()
-        check(InstallCohort.current(defaults: d) == .existing, "a test host answers existing")
-        check(d.object(forKey: InstallCohort.key) == nil, "a test host writes no cohort")
-        check(!InstallCohort.isNewInstall, "isNewInstall is false in a test host")
+        check(InstallCohort.current(d) == .existing, "undecided reads as existing")
+        d.set("new", forKey: InstallCohort.key)
+        check(InstallCohort.current(d) == .new, "kept new reads as new")
+        d.set("garbage", forKey: InstallCohort.key)
+        check(InstallCohort.current(d) == .existing, "an unreadable kept value reads as existing")
+
+        // ── Lazy defaults (CohortDefault's rule): the person's value first, else the cohort's.
+        let value = CohortDefault.value
+        check(value(nil, nil, true, false) == false, "undecided: the existing default (classic home)")
+        check(value(nil, "existing", true, false) == false, "existing: the existing default")
+        check(value(nil, "new", true, false) == true, "new: the new-install default (Today home)")
+        check(value(false, "new", true, false) == false, "a new Mac that turned Today off stays off")
+        check(value(true, "existing", true, false) == true, "an existing Mac that turned Today on keeps it")
+        check(value(nil, "garbage", true, false) == false, "an unreadable cohort: the existing default")
+        check(value(nil, "new", false, true) == false && value(nil, nil, false, true) == true, "the rule is general (new off, existing on)")
+
+        // ── TodayHome.enabled (Models.swift), the non-view reader, follows the same rule and writes nothing.
+        let t = freshDefaults()
+        check(!TodayHome.enabled(t), "Today: undecided Mac, classic home")
+        t.set("existing", forKey: InstallCohort.key)
+        check(!TodayHome.enabled(t), "Today: existing Mac that never chose, classic home")
+        t.set("new", forKey: InstallCohort.key)
+        check(TodayHome.enabled(t), "Today: new Mac that never chose, Today home")
+        check(t.object(forKey: TodayHome.enabledKey) == nil, "Today: reading wrote no value")
+        t.set(false, forKey: TodayHome.enabledKey)
+        check(!TodayHome.enabled(t), "Today: new Mac that turned it off")
+        let upgraded = freshDefaults()
+        upgraded.set("new", forKey: InstallCohort.keyLanesInstallKey)
+        upgraded.set(439, forKey: InstallCohort.lastSeenBuildKey)
+        check(launch(InstallCohort.liveEvidence(defaults: upgraded, home: URL(fileURLWithPath: "/nonexistent-cos-home"))) == .existing,
+              "the lead's case, from live defaults: key lanes new from 0.5.385 decides existing")
+        upgraded.set("existing", forKey: InstallCohort.key)
+        check(!TodayHome.enabled(upgraded), "the lead's case: the upgraded Mac keeps the classic home")
+
+        // ── Outside the shipped app: the writers write nothing.
+        check(!InstallCohort.isShippedApp, "this harness is not the shipped app")
+        let host = freshDefaults()
+        check(InstallCohort.decideAtLaunch(defaults: host) == nil && host.object(forKey: InstallCohort.key) == nil, "a test host keeps no answer at launch")
+        InstallCohort.adoptKeyLanes("new", defaults: host)
+        check(host.object(forKey: InstallCohort.key) == nil, "a test host keeps no adopted answer")
 
         // ── Live probes read the right keys and folders (a throwaway home, never the real one).
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("cos-install-cohort-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: home) }
         let support = home.appendingPathComponent("Library/Application Support/COS Control", isDirectory: true)
         try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-        var live = InstallCohort.liveEvidence(defaults: d, home: home)
+        let p = freshDefaults()
+        var live = InstallCohort.liveEvidence(defaults: p, home: home)
         check(live.runningBuild == nil, "the harness has no CFBundleVersion")
         check(!live.runtimeFolder && !live.updaterRecord && !live.priorSetupKey && live.lastSeenBuild == nil && live.keyLanesInstall == nil,
               "an empty COS Control folder is no evidence (ControlInstance makes it at launch)")
         try? FileManager.default.createDirectory(at: support.appendingPathComponent("runtime"), withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: support.appendingPathComponent("updates"), withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: support.appendingPathComponent("updates/success.json").path, contents: Data("{}".utf8))
-        d.set(439, forKey: "cos.whatsNew.lastSeenBuild")
-        d.set(true, forKey: "cos.setupGuide.hidden")
-        d.set("existing", forKey: "cos.keyLanes.install")
-        d.set("new", forKey: InstallCohort.key)
-        live = InstallCohort.liveEvidence(defaults: d, home: home)
+        p.set(439, forKey: InstallCohort.lastSeenBuildKey)
+        p.set(true, forKey: "cos.setupGuide.hidden")
+        p.set("existing", forKey: InstallCohort.keyLanesInstallKey)
+        p.set("new", forKey: InstallCohort.key)
+        live = InstallCohort.liveEvidence(defaults: p, home: home)
         check(live.runtimeFolder, "the runtime folder is seen")
         check(live.updaterRecord, "the updater record is seen")
         check(live.lastSeenBuild == 439, "the last-seen build is read")
         check(live.priorSetupKey, "a setup-guide key is seen")
         check(live.keyLanesInstall == "existing", "the key lanes answer is read")
-        check(live.stored == "new", "the stored cohort is read")
+        check(live.stored == "new", "the kept cohort is read")
         for key in InstallCohort.priorSetupKeys {
             let e = freshDefaults(); e.set(true, forKey: key)
             check(InstallCohort.liveEvidence(defaults: e, home: home).priorSetupKey, "\(key) counts as prior setup")

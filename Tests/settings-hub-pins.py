@@ -307,8 +307,9 @@ pin("SettingsHubSearch.note(item, groupShown: item.group.map(hubGroupShown) ?? t
 # 0.5.387: Basic. The page's content reads the view; search results never do (they show every row).
 pin("hubCategoryContent(hubCategory)\n                                    .environment(\\.settingsHubView, hubView)" in views
     and "SettingsHubViewSwitch(view: hubView, set: hubSetView)" in views, "the page draws in its view, with the one switch under its title")
-pin("SettingsHubView.resolved(stored: hubViewChoice.isEmpty ? nil : hubViewChoice, newInstall: InstallCohort.isNewInstall)" in views
-    and "@AppStorage(SettingsHubView.key) private var hubViewChoice = \"\"" in views_raw, "Basic for a new install, All otherwise, a choice wins")
+pin("SettingsHubView.resolved(stored: hubViewChoice.isEmpty ? nil : hubViewChoice,\n                                                           newInstall: hubCohort == InstallCohort.Cohort.new.rawValue)" in views
+    and "@AppStorage(SettingsHubView.key) private var hubViewChoice = \"\"" in views_raw and "@AppStorage(InstallCohort.key) private var hubCohort: String?" in views_raw,
+    "Basic for a Mac kept as new (read lazily, observed), All otherwise, a choice wins")
 pin("func hubDraws(_ id: String) -> Bool { hubGroupShown(id) && (hubView == .all || SettingsHubCatalog.hasBasicRows(id)) }" in views
     and "SettingsHubCatalog.groups(in: category).filter { hubDraws($0.id) }" in views, "On this page and the cards share one test, Basic included")
 pin("if SettingsHubCatalog.drawn(id, view: hubView), SettingsHubCatalog.inlineShown(id, open: inlineAdvancedOpen) { row }" in shell
