@@ -14072,10 +14072,11 @@ enum TodayHome {
         }
         return TurnEndAsk(ask: guarded(session.waitingDetail).map { ActivityHome.clip($0, 240) }, choices: choices)
     }
-    /// The words a reply sends: X1 CONTRACT v1, exact (COORD 07:18; Q1 PASS 07:19). Attributed, never as if typed at
+    /// The words a reply sends: X1 CONTRACT v1 with Q1's text fix (COORD 07:23, W1 5c0588b): "not typed at this Mac" is
+    /// false when the reply comes from COS Control on the Mac itself, so it says "not typed in this session". Attributed, never as if typed at
     /// the desk (X1 canary C16: a bare label is not taken as the person's decision). The same prefix leads a free reply.
     static let turnEndSurface = "COS Control on the Mac"
-    static let turnEndPrefix = "Answer sent from " + turnEndSurface + " through COS, not typed at this Mac: "
+    static let turnEndPrefix = "Answer sent from " + turnEndSurface + " through COS, not typed in this session: "
     static func turnEndReply(choice: String) -> String { turnEndPrefix + choice }
     static func turnEndReply(other text: String) -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)

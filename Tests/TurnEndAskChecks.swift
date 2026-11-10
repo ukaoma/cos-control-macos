@@ -42,7 +42,7 @@ struct TurnEndAskChecks {
     }
 
     static func checkReply() {
-        let prefix = "Answer sent from COS Control on the Mac through COS, not typed at this Mac: "
+        let prefix = "Answer sent from COS Control on the Mac through COS, not typed in this session: "
         precondition(TodayHome.turnEndPrefix == prefix, "X1 CONTRACT v1's exact prefix for Control on the Mac")
         precondition(TodayHome.turnEndReply(choice: "Good Morning + Today") == prefix + "Good Morning + Today", "a choice: the prefix, then the label")
         precondition(TodayHome.turnEndReply(other: "  Use the pane  ") == prefix + "  Use the pane  ", "Other: the prefix, then the text as written")
