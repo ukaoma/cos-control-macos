@@ -63,6 +63,33 @@ import Foundation
         check(InstallCohort.adopt(stored: "new", keyLanes: "existing") == nil, "a kept new is never turned existing")
         check(InstallCohort.adopt(stored: "garbage", keyLanes: "new") == .new, "an unreadable kept value takes KeyLanes' answer")
 
+        // ── The lead's table as launches over one Mac's defaults: (cohort kept?, key lanes at launch?, KeyLanes' answer this launch).
+        // Simulates the shipped app's two writers with the pure rules, so a quit at any point is a row.
+        func simulate(_ steps: [(lanesAtLaunch: String?, classifiesAs: String?)], start: String? = nil) -> String? {
+            var kept = start
+            var lanes: String? = nil
+            for step in steps {
+                if let at = step.lanesAtLaunch { lanes = at }
+                if let decided = launch(E(stored: kept, runningBuild: 441, keyLanesInstall: lanes)) { kept = decided.rawValue }
+                if let answer = step.classifiesAs, lanes == nil {   // KeyLanes decides only once, on a launch where it is unset
+                    lanes = answer
+                    if let adopted = InstallCohort.adopt(stored: kept, keyLanes: answer) { kept = adopted.rawValue }
+                }
+            }
+            return kept
+        }
+        check(simulate([(nil, "new")]) == "new", "table: fresh Mac, KeyLanes says new this launch: new")
+        check(simulate([(nil, "existing")]) == "existing", "table: fresh-looking Mac, KeyLanes says existing: existing")
+        check(simulate([(nil, nil)]) == nil, "table: quit before the status is known: nothing kept (reads existing)")
+        check(simulate([(nil, nil), (nil, nil), (nil, "new")]) == "new", "table: two quits before status, then KeyLanes new: new")
+        check(simulate([("new", nil)]) == "existing", "table: key lanes new stored by an older build: existing")
+        check(simulate([("existing", nil)]) == "existing", "table: key lanes existing stored by an older build: existing")
+        check(simulate([("new", "new")]) == "existing", "table: key lanes stored at launch, never re-decided: existing")
+        check(simulate([(nil, "new"), (nil, nil)]) == "new", "table: new stays new on the next launch")
+        check(simulate([(nil, nil)], start: "existing") == "existing" && simulate([(nil, "new")], start: "existing") == "existing",
+              "table: a kept existing never turns new")
+        check(InstallCohort.current(freshDefaults()) == .existing, "table: undecided reads as not new")
+
         // ── The kept answer; undecided reads as existing.
         let d = freshDefaults()
         check(InstallCohort.current(d) == .existing, "undecided reads as existing")
