@@ -77,6 +77,11 @@ let d1SignedIn = d1Data(d1Row("claude", path: "/Users/you/.local/bin/claude", ve
         try render(ControlSetupView(model: d1FirstRun(await d1Guide(d1SignedIn), installed: true, connect: true)),
                    width: 560, height: 1000, name: "06-connect-signed-in-get-started", out: out)
 
+        // 6b. 0.5.388 (C1): setup stopped at the proof, plain words first, the helper's text below.
+        let failedModel = d1FirstRun(await d1Guide(d1ClaudeFound), installed: true, connect: true)
+        failedModel.error = "Update failed. Control restored the previous version. Original error: Managed server transactional verification failed: no AI provider proved a real query (Claude skipped: not signed in)."
+        try render(ControlSetupView(model: failedModel), width: 560, height: 1160, name: "11-connect-setup-stopped-proof", out: out)
+
         // 7. Permissions (Welcome's access step). The step re-reads its facts on appear, so the facts come from fixture
         // probes the guide's own read() calls: nothing asked yet, then a no while the feature is on, unreadable, add only.
         func permissionGuide(_ probes: PermissionProbes) -> PermissionGuide {
