@@ -1842,7 +1842,8 @@ struct CosCostView: View {
     }
 
     @ViewBuilder private func page(_ report: CosUsageReport) -> some View {
-        let parts = P.headlineParts(report: report, ran: ran, usage: usageState, ranPartial: ranPartial(report))
+        let parts = P.headlineParts(report: report, ran: ran, usage: usageState, ranPartial: ranPartial(report),
+                                    ranEstimated: P.ranEstimated(usageBuckets: usage.report?.buckets ?? [], report: report, usage: usageState))
         (Text(parts.answer).foregroundStyle(.primary) + Text(parts.caveat).foregroundStyle(COSPalette.subtle))
             .font(COSType.display(narrow ? 24 : 29))
             .lineSpacing(narrow ? 3 : 5)

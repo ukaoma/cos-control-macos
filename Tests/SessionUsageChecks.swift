@@ -1358,9 +1358,13 @@ extension Checks {
             // Valid JSON padded past the cap, so only the size rule can refuse it.
             check(refused(Data((UsagePriceBundled.json + String(repeating: " ", count: T.maxBytes)).utf8)) && refused(Data("{".utf8)), "U1: an oversized or broken file is refused")
             // The price file: newer wins, a tie and an older file lose, a bad file never replaces the last good copy.
-            var newer = table; newer.published = "2099-01-01"; newer.version = "newer"
+            var newer = table; newer.version = table.published + ".10"
+            var nine = table; nine.version = table.published + ".9"
             var older = table; older.published = "2000-01-01"; older.version = "older"
-            check(UsagePriceFill.active(bundled: table, fetched: newer).version == "newer" && UsagePriceFill.active(bundled: table, fetched: older).version == table.version
+            var postdated = table; postdated.published = "2099-01-01"; postdated.version = "2099-01-01.1"
+            check(UsagePriceFill.active(bundled: nine, fetched: newer, now: Date()).version == newer.version, "U1: a later version number wins on the same day, read as a number")
+            check(UsagePriceFill.active(bundled: table, fetched: postdated, now: Date()).version == table.version, "U1: a price file dated well ahead is ignored")
+            check(UsagePriceFill.active(bundled: table, fetched: older).version == table.version
                   && UsagePriceFill.active(bundled: table, fetched: { var same = table; same.models = [table.models[0]]; return same }()).models.count == table.models.count
                   && UsagePriceFill.active(bundled: table, fetched: nil).version == table.version,
                   "U1: a newer carried table wins over an older price file")
@@ -1594,8 +1598,8 @@ extension Checks {
         check(rows[.answers] == nil && abs(finished.work.widerUSD - 0.004) < 1e-12, "a dispatch's audit row is not also an answer")
         a = make(work: ["codex:t1": workStart], events: [event("2026-10-30T12:20:00Z", session: "codex:t1", input: 100_000, model: "gpt-5.6-sol", provider: "OpenAI"), event("2026-10-30T12:21:00Z", session: "codex:t1", input: 1000, model: "gpt-made-up", provider: "OpenAI")])
         finished = a.finish(handoffsFound: true, workRuns: 1, workRunsWithoutLogs: 0)
-        // U1: Terra is in the shared table now, so recording prices it. Sol's promotion is still priced only at view time.
-        check(abs(finished.work.widerUSD - 0.4) < 1e-9 && abs(finished.work.addsToTotalUSD - 0.4) < 1e-9, "a slice priced only by a new rate adds to the total, because Usage has no price for it")
+        // U1 (Q1 M1): Usage prices Sol's promotion days itself now (the view fill), so the slice is counted, never added again.
+        check(abs(finished.work.widerUSD - 0.4) < 1e-9 && finished.work.addsToTotalUSD == 0, "a slice Usage prices itself never adds to the total again")
         check(finished.work.widerUnpricedEvents == 1, "a Work event with no rate is counted, so the wider figure can say it leaves it out")
         // The Work run itself, as against what the person did later in the session.
         let handoff = R.epoch("2026-10-30T12:00:00Z")!
@@ -1751,6 +1755,12 @@ extension Checks {
         var e = CosCostRow(category: .dictation); e.calls = 1685; e.estimatedCalls = 1685; e.estimatedUSD = 0.44
         check(P.headline(report: report([m, e]), ran: 18_612, usage: .ready) == "Measured: COS used $284 of the $18,612 you ran in the last 30 days. 1,685 more calls have only character counts, so the real figure is higher.", "the mixed headline says measured, total and the calls left out")
         check(P.headline(report: report([m]), ran: 18_612, usage: .ready) == "Measured: COS used $284 of the $18,612 you ran in the last 30 days.", "a fully measured headline has no second sentence")
+        // U1 (Q1 M1): the total marks what Usage marks.
+        check(P.headlineParts(report: report([m]), ran: 18_612, usage: .ready, ranPartial: true, ranEstimated: true).answer == "Measured: COS used $284 of the $18,612+ est. you ran in the last 30 days.", "the COS total says est. when Usage holds an estimate")
+        let estimatedDay = SessionUsageBucket(day: "2026-10-20", provider: "Anthropic", model: "claude-fable-5-3", counts: SessionUsageCounts(input: 10), events: 1, pricedEvents: 1, estimatedUSD: 1, estimatedEvents: 1, floorEvents: 1)
+        let window = report([m])
+        check(P.ranEstimated(usageBuckets: [estimatedDay], report: window, usage: .ready) && P.ranPartial(usageBuckets: [estimatedDay], report: window, usage: .ready)
+              && !P.ranEstimated(usageBuckets: [estimatedDay], report: window, usage: .paused), "a floor makes the total partial and an estimate makes it est.")
         check(P.headline(report: report([e]), ran: 18_612, usage: .ready) == "COS made 1,685 calls in the last 30 days. This server doesn't measure their cost yet.", "with nothing measured the headline names no dollars")
         check(!P.headline(report: report([e]), ran: 18_612, usage: .ready).contains("$"), "an estimate never reaches the headline's dollars")
         check(P.headline(report: report([]), ran: 0, usage: .ready) == "COS made no calls in the last 30 days.", "no calls says so")
@@ -1983,7 +1993,7 @@ extension Checks {
         // s-main: m1 at its fullest (1040) plus the subagent (1020), not the other session's row. s-old: fresh only (1020). x1 is Codex (1100, priced by the new rate). s-gone and x2 have no readable log.
         check(answers.measuredTokens == 1040 + 1020 + 1020 + 1100, "a slice keeps one fragment per message, adds subagents and leaves another session's rows out")
         check(answers.calls == 3 && answers.measuredCalls == 3, "three runs with logs are three measured answers")
-        check(abs(answers.addsToTotalUSD - (1000*4.0 + 100*20.0)/1_000_000) < 1e-9, "only the Codex slice on a new rate adds to the total")
+        check(answers.addsToTotalUSD == 0, "a Codex slice Usage prices itself adds nothing to the total")
         check(row(.dictation, full).estimatedCalls == 1, "polish stays an estimate")
         check(row(.liveAndUpkeep, full).measuredCalls == 1 && row(.liveAndUpkeep, full).estimatedCalls == 0, "the reader dedupes a gist row against its run")
         check(abs(row(.liveAndUpkeep, full).measuredUSD - (0.25 + 0.042)) < 1e-9, "a gist's cost and a priced day ledger add up, and the old day is out")
