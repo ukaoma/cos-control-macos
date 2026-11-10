@@ -351,7 +351,7 @@ pin(all(k in fn for k in ("runtimeState(snapshot:", "readToken()", '"/api/web-se
 # 0.5.387 recovery rows (lead, 2026-11-09): what the glasses app, Control Web and the phone tell a person to press in COS Control.
 recovery = dict((i, n) for n, i in re.findall(r'\("([^"]+)", "([A-Z]+-\d\d)"\)', body(catalog, "    static let recoveryRows: [(name: String, id: String)] = [", "\n    ]\n")))
 basic_ids = set(re.findall(r'"([A-Z]+-\d\d)"', body(catalog, "    static let basicIDs: Set<String> = [", "\n    ]\n")))
-pin(set(recovery) == {"C-01", "C-03", "C-04", "C-05", "UT-14", "SG-05", "SG-11", "UT-21", "UT-29", "WB-01", "SG-01", "UT-10"}, f"the recovery rows are the named twelve ({sorted(recovery)})")
+pin(set(recovery) == {"C-01", "C-03", "C-04", "C-05", "UT-14", "SG-05", "SG-11", "UT-21", "UT-29", "WB-01", "SG-01", "UT-10", "SG-12"}, f"the recovery rows are the named thirteen ({sorted(recovery)})")
 glasses_basic = set(re.findall(r'"([A-Z]+-\d\d)"', body(catalog, "    static let glassesPathBasic: Set<String> = [", "]")))
 pin(glasses_basic == {"UT-21"}, f"only Copy pairing token is placed by the device path ({sorted(glasses_basic)})")
 pin(set(recovery) <= basic_ids | glasses_basic, f"every recovery row is in Basic, Copy pairing token on the glasses path (missing {sorted(set(recovery) - basic_ids - glasses_basic)})")
@@ -371,7 +371,9 @@ pin("func hubBasicCardHasRows(_ id: String) -> Bool { id != \"glasses.video\" ||
     "Video uploads draws in Basic only while an upload is stuck")
 # 0.5.387: the server notice sits in the top strip of every page, with its action.
 top = body(views, "    func hubTopStrip(_ reader: ScrollViewProxy) -> some View {", "    func hubLabel(_ id: String) -> String {")
-pin("SettingsHubServerNotice.line(checked: model.status.runtimeState != \"unknown\", running: model.status.running)" in top
+pin("SettingsHubServerNotice.line(checked: model.status.runtimeState != \"unknown\", running: model.status.running,\n                                                       needsFirstRun: model.status.needsFirstRun)" in top
+    and "needsFirstRun: model.status.needsFirstRun)\n                SettingsHubServerNoticeLine(" in top and "case .openSystem: hubSelect(.system)" in top
+    and "        if installed && repairable.contains(runtimeState) { return .repair }" in catalog
     and "SettingsHubServerNoticeLine(" in top, "the server notice on every page")
 pin('static let accessibilityRepairHint = "Already on? Use Reset and add again in Settings, Session pet."' in code(read("Sources/ControllerModel.swift"))
     and '.help("Turn the pet off. Turn it back on in Settings, Session pet.")' in connect_views,

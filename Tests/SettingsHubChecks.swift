@@ -310,7 +310,9 @@ import Foundation
         }
         // Recovery rows (lead, 2026-11-09): every control another surface tells a person to press is Basic, not Advanced, and
         // found by search under the name that surface uses.
-        check(SettingsHubCatalog.recoveryRows.count == 12, "twelve recovery rows (Clear stuck uploads added after Q1's review)")
+        check(SettingsHubCatalog.recoveryRows.count == 13, "thirteen recovery rows (Clear stuck uploads after Q1's review, Pair on home Wi-Fi after the final review)")
+        check(ids("allow pairing on this wi-fi").contains("SG-12") && ids("pair on home wi-fi").contains("SG-12"),
+              "search finds Pair on home Wi-Fi by the glasses app's words and by its name")
         // Q1 review M2: only an explicit "Just my Mac" is the Mac-only path; no stored choice counts as possibly glasses.
         check(SettingsHubCatalog.choseMacOnly(storedDevicePath: "mac") && !SettingsHubCatalog.choseMacOnly(storedDevicePath: "glasses")
               && !SettingsHubCatalog.choseMacOnly(storedDevicePath: nil) && !SettingsHubCatalog.choseMacOnly(storedDevicePath: ""),
@@ -369,7 +371,10 @@ import Foundation
             check(SettingsHubCatalog.item(id)?.advanced == true, "\(id) is Advanced")
         }
         check(SettingsHubRoute.destination("decision-models")?.opensAdvanced == true, "the anchor that asks for a Jev or SubQ key opens Decision models' Advanced")
-        check(SettingsHubRoute.destination("transcription")?.opensAdvanced == false, "the other panel anchors open no Advanced")
+        // 0.5.388 final review E7: Open Transcription settings lands on the model pickers, under Models' Advanced.
+        check(SettingsHubRoute.destination("transcription")?.opensAdvanced == true, "the Transcription anchor opens Models' Advanced, where the pickers are")
+        check(SettingsHubRoute.destination("setup-guide")?.opensAdvanced == false && SettingsHubRoute.destination("key-lanes")?.opensAdvanced == false,
+              "the other panel anchors open no Advanced")
         // The two Quiet hours: the one the person sets hours for keeps the name; Today's fixed fold says what it does.
         check(SettingsHubCatalog.item("REACH-05")?.label == "Quiet hours" && SettingsHubCatalog.item("WK-07")?.label == "Fold evenings and weekends",
               "one Quiet hours")
@@ -429,13 +434,31 @@ import Foundation
               && SettingsHubSearch.conditionLanding(group: "work.reach") == "DROP-01" && SettingsHubSearch.conditionLanding(group: "work.brief") == nil,
               "a result in a hidden group opens the switch that shows it, or the page top")
         // The server notice: only once checked and not answering, and the action that brings it back.
-        check(SettingsHubServerNotice.line(checked: false, running: false) == nil && SettingsHubServerNotice.line(checked: true, running: true) == nil
-              && SettingsHubServerNotice.line(checked: true, running: false) != nil, "the notice shows only while a checked server is not answering")
-        check(SettingsHubServerNotice.action(runtimeState: "notInstalled", installed: false) == .install
-              && SettingsHubServerNotice.action(runtimeState: "stopped", installed: true) == .start
-              && SettingsHubServerNotice.action(runtimeState: "managedDegraded", installed: true) == .repair, "install, start or repair")
-        let lines = [SettingsHubServerNotice.line(checked: true, running: false) ?? "", SettingsHubSearch.serverLine, SettingsHubSearch.newerServerLine]
-            + [SettingsHubServerNotice.Action.start, .install, .repair].map(SettingsHubServerNotice.title)
+        check(SettingsHubServerNotice.line(checked: false, running: false, needsFirstRun: false) == nil
+              && SettingsHubServerNotice.line(checked: true, running: true, needsFirstRun: false) == nil
+              && SettingsHubServerNotice.line(checked: true, running: false, needsFirstRun: false) == SettingsHubServerNotice.notAnsweringLine,
+              "the notice shows only while a checked server is not answering")
+        check(SettingsHubServerNotice.action(runtimeState: "notInstalled", installed: false, needsFirstRun: false) == .install
+              && SettingsHubServerNotice.action(runtimeState: "stopped", installed: true, needsFirstRun: false) == .start
+              && SettingsHubServerNotice.action(runtimeState: "managedDegraded", installed: true, needsFirstRun: false) == .repair, "install, start or repair")
+        // 0.5.388 final review C2: a Mac never set up hears that COS is not set up, never "not answering", and gets no button.
+        let firstRunLine = SettingsHubServerNotice.line(checked: true, running: false, needsFirstRun: true)
+        check(firstRunLine == SettingsHubServerNotice.notSetUpLine && firstRunLine?.contains("not answering") == false,
+              "before first run the notice says COS is not set up, not that the server is not answering")
+        check(SettingsHubServerNotice.action(runtimeState: "notInstalled", installed: false, needsFirstRun: true) == .none
+              && SettingsHubServerNotice.title(.none) == nil, "before first run the notice offers no Install server: Get started is the one way in")
+        // E2: Repair only where the helper's repair works (a managed install); every other server goes to System and updates.
+        for state in ["legacyStopped", "legacyService", "legacyForeground", "ownerConflict", "managedInPlace", "unknown"] {
+            check(SettingsHubServerNotice.action(runtimeState: state, installed: true, needsFirstRun: false) == .openSystem,
+                  "\(state) never offers Repair the helper refuses; it opens System and updates")
+        }
+        check(SettingsHubServerNotice.title(.openSystem) == "Open System and updates", "the button names where it goes")
+        // Q1 02:40: a managed state with no manifest (installed false) is never offered Repair; the helper refuses it.
+        check(SettingsHubServerNotice.action(runtimeState: "managedDegraded", installed: false, needsFirstRun: false) == .openSystem
+              && SettingsHubServerNotice.action(runtimeState: "managedHealthy", installed: false, needsFirstRun: false) == .openSystem,
+              "a managed state with no manifest never offers Repair")
+        let lines = [SettingsHubServerNotice.notAnsweringLine, SettingsHubServerNotice.notSetUpLine, SettingsHubSearch.serverLine, SettingsHubSearch.newerServerLine]
+            + [SettingsHubServerNotice.Action.start, .install, .repair, .openSystem].compactMap(SettingsHubServerNotice.title)
         for line in lines { check(!line.contains("—") && !line.contains("→") && !line.isEmpty, "\(line) is plain") }
     }
 
