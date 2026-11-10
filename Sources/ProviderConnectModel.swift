@@ -250,6 +250,69 @@ enum ProviderGate {
         guard let report else { return true }
         return ProviderRules.needCount(report, skipped: skipped) == 0
     }
+
+    // MARK: 0.5.388 (C1, final review): setup proves one signed-in AI at its last step
+    //
+    // Get started's hard gate stays "installed" (a wrong not-signed-in read must never lock anyone out). But the helper's
+    // install fails closed when no AI answers a real test request (HelperSources/main.swift transactionalRuntimeProofFailure,
+    // required from server 6.15.2, so on every Get started). So the step says so before, Skip is offered only when
+    // another AI is signed in, and the failure says it in plain words after.
+
+    /// An installed agent CLI reads signed in (an API key counts).
+    static func anySignedIn(_ report: ProviderStatusReport?) -> Bool {
+        AIProvider.agents.contains { report?.status($0)?.signedIn == true }
+    }
+    /// Skip for now on `provider` only while ANOTHER agent reads signed in, so skipping can never leave setup with none.
+    static func skipAllowed(_ provider: AIProvider, _ report: ProviderStatusReport?) -> Bool {
+        AIProvider.agents.contains { $0 != provider && report?.status($0)?.signedIn == true }
+    }
+
+    enum Line: Equatable, Sendable { case install, needsSignedIn, signInOrSkip, getStarted }
+    static let needsSignedInWords = "Setup needs one AI that is signed in. Without one it stops at its last step, after the download. Sign in above, then press Get started."
+
+    /// The line under the list. "Get started downloads..." only once an AI reads signed in.
+    static func line(setupProviderInstalled: Bool, report: ProviderStatusReport?, skipped: Set<AIProvider>) -> Line {
+        guard setupProviderInstalled else { return .install }
+        guard anySignedIn(report) else { return .needsSignedIn }
+        return signInStepDone(report, skipped: skipped) ? .getStarted : .signInOrSkip
+    }
+    /// Get started is the primary button only on the getStarted line; otherwise it stays enabled but secondary.
+    static func getStartedPrimary(_ line: Line) -> Bool { line == .getStarted }
+}
+
+/// 0.5.388 (C1): the helper's proof failure, in plain words first. Its own text stays below for anyone who needs it.
+enum SetupFailureWords {
+    static let marker = "no AI provider proved a real query"
+    /// The helper's proofSkipReason for provider_auth (HelperSources/main.swift).
+    static let notSignedIn = "not signed in"
+
+    /// The helper's "(Claude skipped: not signed in; Codex skipped: timed out)", as (provider, reason) in its order.
+    static func skips(_ error: String) -> [(provider: AIProvider, reason: String)] {
+        guard let range = error.range(of: marker) else { return [] }
+        let rest = error[range.upperBound...]
+        guard let open = rest.firstIndex(of: "("), let close = rest.lastIndex(of: ")"), open < close else { return [] }
+        return rest[rest.index(after: open)..<close].components(separatedBy: "; ").compactMap { part in
+            guard let provider = AIProvider.agents.first(where: { part.hasPrefix($0.rawValue.capitalized + " skipped: ") }) else { return nil }
+            return (provider, String(part.dropFirst((provider.rawValue.capitalized + " skipped: ").count)))
+        }
+    }
+
+    /// nil when `error` is not the proof failure. "Sign in to X" ONLY when every reason the helper gave is not signed in
+    /// (Q1, final review); a usage limit, a timeout or a missing binary says "Check X". The helper's text stays below.
+    static func plain(_ error: String) -> String? {
+        guard error.contains(marker) else { return nil }
+        let found = skips(error)
+        let names = found.map(\.provider.cliName)
+        let who: String
+        switch names.count {
+        case 0: who = "your AI"
+        case 1: who = names[0]
+        default: who = names.dropLast().joined(separator: ", ") + " or " + names.last!
+        }
+        let allSignedOut = !found.isEmpty && found.allSatisfy { $0.reason == notSignedIn }
+        return "Setup stopped: none of your AIs answered a test request. "
+            + (allSignedOut ? "Sign in to \(who), then press Try again." : "Check \(who), then press Try again.")
+    }
 }
 
 // MARK: - Sign in (Terminal)
@@ -560,6 +623,8 @@ final class ProviderGuide: ObservableObject {
     @Published private(set) var installing: Set<AIProvider> = [] {
         didSet { if !pasting.isSubset(of: installing) { pasting.formIntersection(installing) } }
     }
+    /// 0.5.388 (C3): Install was clicked and Terminal has not answered yet.
+    @Published private(set) var installStarting: Set<AIProvider> = []
     /// Q1 D1 M1: installs waiting on the person's paste (the script could not type into Terminal). Always within installing.
     @Published private(set) var pasting: Set<AIProvider> = []
     /// The ONE store of provider skips (the setup guide reads it too; QA 2026-10-08 W7).
@@ -606,9 +671,12 @@ final class ProviderGuide: ObservableObject {
     var signInStepDone: Bool { ProviderGate.signInStepDone(report, skipped: skipped) }
 
     func row(_ provider: AIProvider) -> ProviderRowModel {
-        ProviderRules.row(provider, report?.status(provider), skipped: skipped.contains(provider),
-                          waiting: waiting[provider] != nil, expired: expired.contains(provider),
-                          installing: installing.contains(provider) && waiting[provider] != nil, pasting: pasting.contains(provider))
+        var row = ProviderRules.row(provider, report?.status(provider), skipped: skipped.contains(provider),
+                                    waiting: waiting[provider] != nil, expired: expired.contains(provider),
+                                    installing: installing.contains(provider) && waiting[provider] != nil, pasting: pasting.contains(provider))
+        // 0.5.388 (C1): Skip for now only while another AI reads signed in.
+        if row.canSkip && !ProviderGate.skipAllowed(provider, report) { row.canSkip = false }
+        return row
     }
 
     func refreshApps() {
@@ -723,6 +791,11 @@ final class ProviderGuide: ObservableObject {
     /// missing), the command goes on the clipboard, Terminal is opened directly, and the notice gives the manual path.
     func install(_ provider: AIProvider) async {
         guard let command = ProviderInstall.command(provider) else { return }
+        // 0.5.388 (C3): one installer at a time. Marked BEFORE the await, so a second click while macOS asks to let COS
+        // control Terminal (the await can take that long) starts nothing. The buttons are disabled while it is set.
+        guard !installStarting.contains(provider) else { return }
+        installStarting.insert(provider)
+        defer { installStarting.remove(provider) }
         expired.remove(provider)
         if await runInTerminal(ProviderLogin.terminalScript(command)) {
             installing.insert(provider)

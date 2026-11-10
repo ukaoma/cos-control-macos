@@ -213,6 +213,26 @@ for false_claim in ("No Terminal or separate server setup", "you do not need Hom
         pin(false_claim not in read("Sources/" + name), "first-run copy", f"{name} still says {false_claim!r}")
 pin("Sign in opens Terminal and runs this command for you:" in connect_views, "first-run copy", "the sign-in line says Sign in opens Terminal")
 
+# 0.5.388 final review (C1, C3, E1).
+step_body = body(connect_views, "struct ConnectYourAIStep: View {", "/// The card the menu-bar panel shows in place")
+pin("ProviderGate.line(setupProviderInstalled: setupProviderInstalled, report: guide.report, skipped: guide.skipped)" in step_body
+    and "case .needsSignedIn:" in step_body and "Text(ProviderGate.needsSignedInWords)" in step_body
+    and "if ProviderGate.getStartedPrimary(line) {" in step_body, "C1 line", "the step says setup needs a signed-in AI and keeps Get started secondary until one is")
+pin(step_body.count(".disabled(!ProviderGate.getStartedEnabled(setupProviderInstalled: setupProviderInstalled, busy: busy))") == 2,
+    "C1 hard gate", "Get started is still disabled only by installed and busy, in both styles")
+pin("if row.canSkip && !ProviderGate.skipAllowed(provider, report) { row.canSkip = false }" in connect, "C1 skip", "the guide's rows allow Skip only with another AI signed in")
+expired_branch = body(connect_views, "            } else if guide.expired.contains(provider) {", "            } else {\n                Button(\"Sign in\")")
+pin("if row.canSkip {" in expired_branch and expired_branch.count('Button("Skip for now")') == 1,
+    "C1 skip", "the stopped-checking row offers Skip only through row.canSkip")
+pin("if let plain = SetupFailureWords.plain(error) {" in setup and "Text(error).font(COSType.body(12)).foregroundStyle(.secondary).textSelection(.enabled)" in setup,
+    "C1 failure words", "the Welcome window shows the plain words first and keeps the helper's text below")
+pin(connect_views.count(".disabled(guide.installStarting.contains(provider))") == 2, "C3", "Install and Run it again are disabled while an install is starting")
+install_fn = body(connect, "    func install(_ provider: AIProvider) async {", "    /// Stop waiting on a sign-in")
+pin(before(install_fn, "installStarting.insert(provider)", "await runInTerminal(") and "guard !installStarting.contains(provider) else { return }" in install_fn,
+    "C3", "the install is marked starting before the Terminal wait, and a second call returns")
+pin("facts.permissionsNeedCount = PermissionGuideRules.setupNeedCount(permissionGuide.rows, newInstall: InstallCohort.isNewInstall)" in connect_views,
+    "E1", "Finish setup counts the 0.5.387 permission rows only on a new install")
+
 if failed:
     print("\n".join(failed), file=sys.stderr)
     sys.exit(1)

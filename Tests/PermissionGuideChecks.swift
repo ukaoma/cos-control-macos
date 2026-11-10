@@ -58,6 +58,7 @@ struct PermissionGuideChecks {
         await staleReset()
         await featureAsks()
         mediaRows()
+        setupCardCount()
         await mediaReads()
         if failures > 0 {
             FileHandle.standardError.write(Data("\(failures) permission guide check(s) failed, \(passes) passed\n".utf8))
@@ -67,6 +68,24 @@ struct PermissionGuideChecks {
     }
 
     // MARK: Microphone, System Audio Recording, Calendars (0.5.387, lane D1)
+
+    /// 0.5.388 (E1): Finish setup's count leaves the rows new in 0.5.387 out for an existing install.
+    static func setupCardCount() {
+        var f = PermissionFacts()
+        f.accessibilityTrusted = true; f.notifications = .allowed(alertsOn: true); f.loginItem = .enabled
+        f.microphone = .denied; f.microphoneWanted = true
+        f.calendars = .writeOnly; f.calendarsWanted = true
+        f.systemAudio = .denied; f.systemAudioWanted = true
+        let r = rows(f)
+        check(PermissionGuideRules.needCount(r) == 3, "E1 page count", "the Permissions page still counts all three: \(PermissionGuideRules.needCount(r))")
+        check(PermissionGuideRules.setupNeedCount(r, newInstall: false) == 0, "E1 existing", "an existing install's Finish setup ignores the new rows")
+        check(PermissionGuideRules.setupNeedCount(r, newInstall: true) == 3, "E1 new", "a new install's Finish setup counts them")
+        f.accessibilityTrusted = false; f.accessibilityWanted = true
+        let r2 = rows(f)
+        check(PermissionGuideRules.setupNeedCount(r2, newInstall: false) == 1 && PermissionGuideRules.setupNeedCount(r2, newInstall: true) == 4,
+              "E1 old rows", "Accessibility still counts for everyone")
+        check(PermissionGuideRules.rowsNewIn0_5_387 == [.microphone, .systemAudio, .calendars], "E1 set", "exactly the three rows")
+    }
 
     static func mediaRows() {
         func row(_ facts: PermissionFacts, _ kind: PermissionKind) -> PermissionRow { rows(facts).first { $0.kind == kind }! }

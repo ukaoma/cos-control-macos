@@ -538,6 +538,14 @@ enum PermissionGuideRules {
 
     static func needCount(_ rows: [PermissionRow]) -> Int { rows.filter { $0.status == .needsYou }.count }
 
+    /// 0.5.388 (E1, final review): the Finish setup card's count. The rows added in 0.5.387 (Microphone, System Audio
+    /// Recording, Calendars) count only on a new install, so the card never comes back for someone who finished setup
+    /// before those rows existed. The Permissions page and its own count show every row to everyone.
+    static let rowsNewIn0_5_387: Set<PermissionKind> = [.microphone, .systemAudio, .calendars]
+    static func setupNeedCount(_ rows: [PermissionRow], newInstall: Bool) -> Int {
+        rows.filter { $0.status == .needsYou && (newInstall || !rowsNewIn0_5_387.contains($0.kind)) }.count
+    }
+
     static func summary(_ rows: [PermissionRow]) -> String {
         let count = needCount(rows)
         switch count {

@@ -111,6 +111,7 @@ struct ProviderConnectChecks {
         await pollLoop()
         await signInFlow()
         await installFlow()
+        await finalReviewFixes()
         await passFlow()
         dock()
         petIntro()
@@ -465,6 +466,94 @@ struct ProviderConnectChecks {
         check(pure.status == "Installing…", "install row", "\(pure)")
         let installedAnyway = ProviderRules.row(.claude, landed.status(.claude), skipped: false, waiting: true, installing: true)
         check(installedAnyway.action == .signIn, "install row", "an installed CLI never reads as installing: \(installedAnyway)")
+    }
+
+    /// 0.5.388 final review: C1 (setup proves one signed-in AI) and C3 (one installer at a time).
+    static func finalReviewFixes() async {
+        let claudeOut = report(status("claude", path: "/Users/x/.local/bin/claude", signIn: "signInRequired"),
+                               status("codex", installed: false, signIn: "unknown", version: nil), status("cursor", installed: false, signIn: "unknown", version: nil))
+        let codexIn = report(status("claude", path: "/Users/x/.local/bin/claude", signIn: "signInRequired"),
+                             status("codex", path: chatgptCodex, signIn: "signedIn"), status("cursor", installed: false, signIn: "unknown", version: nil))
+        let keyed = report(status("claude", path: "/Users/x/.local/bin/claude", signIn: "signInRequired"),
+                           status("codex", path: chatgptCodex, signIn: "apiKey"))
+        let allOut = report(status("claude", path: "/Users/x/.local/bin/claude", signIn: "signInRequired"),
+                            status("codex", path: chatgptCodex, signIn: "signInRequired"))
+        let claudeIn = report(status("claude", path: "/Users/x/.local/bin/claude"), status("codex", installed: false, signIn: "unknown", version: nil))
+        // Skip only while ANOTHER agent reads signed in.
+        check(!ProviderGate.skipAllowed(.claude, claudeOut), "C1 skip", "the only installed AI cannot be skipped")
+        check(ProviderGate.skipAllowed(.claude, codexIn) && ProviderGate.skipAllowed(.claude, keyed), "C1 skip", "another signed-in AI (or an API key) allows it")
+        check(!ProviderGate.skipAllowed(.claude, allOut) && !ProviderGate.skipAllowed(.codex, allOut), "C1 skip", "two installed, none signed in: no skip")
+        check(!ProviderGate.skipAllowed(.codex, codexIn), "C1 skip", "a signed-in AI's own sign-in does not count for itself")
+        check(!ProviderGate.skipAllowed(.claude, nil), "C1 skip", "an unread status allows no skip")
+        let g = guide([claudeOut], effects: Effects())
+        await g.refresh()
+        check(!g.row(.claude).canSkip && g.row(.claude).action == .signIn, "C1 skip row", "\(g.row(.claude))")
+        let h = guide([codexIn], effects: Effects())
+        await h.refresh()
+        check(h.row(.claude).canSkip, "C1 skip row", "with Codex signed in, Claude can be skipped")
+        // The line under the list, and Get started's style. The hard gate (installed) never changes.
+        check(ProviderGate.line(setupProviderInstalled: false, report: nil, skipped: []) == .install, "C1 line", "nothing installed")
+        check(ProviderGate.line(setupProviderInstalled: true, report: claudeOut, skipped: []) == .needsSignedIn, "C1 line", "installed, none signed in")
+        check(ProviderGate.line(setupProviderInstalled: true, report: claudeOut, skipped: [.claude]) == .needsSignedIn, "C1 line",
+              "an older build's skip does not hide that none is signed in")
+        check(ProviderGate.line(setupProviderInstalled: true, report: allOut, skipped: [.claude, .codex]) == .needsSignedIn, "C1 line", "everything skipped, none signed in")
+        check(ProviderGate.line(setupProviderInstalled: true, report: codexIn, skipped: []) == .signInOrSkip, "C1 line", "one signed in, one still out")
+        check(ProviderGate.line(setupProviderInstalled: true, report: codexIn, skipped: [.claude]) == .getStarted, "C1 line", "the other skipped")
+        check(ProviderGate.line(setupProviderInstalled: true, report: claudeIn, skipped: []) == .getStarted, "C1 line", "signed in")
+        check(ProviderGate.getStartedPrimary(.getStarted) && !ProviderGate.getStartedPrimary(.needsSignedIn) && !ProviderGate.getStartedPrimary(.signInOrSkip),
+              "C1 primary", "Get started is primary only on the get-started line")
+        check(ProviderGate.getStartedEnabled(setupProviderInstalled: true, busy: false), "C1 hard gate", "installed still enables Get started, signed in or not")
+        check(ProviderGate.needsSignedInWords.contains("signed in") && ProviderGate.needsSignedInWords.contains("last step")
+              && !ProviderGate.needsSignedInWords.contains("\u{2014}"), "C1 words", ProviderGate.needsSignedInWords)
+        // The proof failure, in plain words, naming the AIs the helper named.
+        let helper = "Update failed. Control restored the previous version. Original error: Managed server transactional verification failed: no AI provider proved a real query (Claude skipped: not signed in)."
+        check(SetupFailureWords.plain(helper) == "Setup stopped: none of your AIs answered a test request. Sign in to Claude Code, then press Try again.",
+              "C1 failure words", SetupFailureWords.plain(helper) ?? "nil")
+        // "Sign in to" only when EVERY reason is not signed in (Q1, final review); anything else says "Check".
+        let bothOut = "x: no AI provider proved a real query (Claude skipped: not signed in; Codex skipped: not signed in)"
+        check(SetupFailureWords.plain(bothOut)?.hasSuffix("Sign in to Claude Code or Codex, then press Try again.") == true, "C1 failure words", SetupFailureWords.plain(bothOut) ?? "nil")
+        let mixed = "x: no AI provider proved a real query (Claude skipped: not signed in; Codex skipped: timed out)"
+        check(SetupFailureWords.plain(mixed)?.hasSuffix("Check Claude Code or Codex, then press Try again.") == true, "C1 failure words", SetupFailureWords.plain(mixed) ?? "nil")
+        let limit = "no AI provider proved a real query (Claude skipped: session or usage limit)"
+        check(SetupFailureWords.plain(limit)?.hasSuffix("Check Claude Code, then press Try again.") == true, "C1 failure words", SetupFailureWords.plain(limit) ?? "nil")
+        let gone = "no AI provider proved a real query (Claude skipped: binary not found)"
+        check(SetupFailureWords.plain(gone)?.contains("Sign in") == false, "C1 failure words", "a missing binary never says sign in")
+        let three = "no AI provider proved a real query (Claude skipped: a; Codex skipped: b; Cursor skipped: c)"
+        check(SetupFailureWords.plain(three)?.hasSuffix("Check Claude Code, Codex or Cursor Agent, then press Try again.") == true, "C1 failure words", SetupFailureWords.plain(three) ?? "nil")
+        check(SetupFailureWords.plain("no AI provider proved a real query (no provider could be proved)")?.hasSuffix("Check your AI, then press Try again.") == true, "C1 failure words", "none named")
+        let parsed = SetupFailureWords.skips(mixed)
+        check(parsed.count == 2 && parsed[0].provider == .claude && parsed[0].reason == "not signed in" && parsed[1].provider == .codex && parsed[1].reason == "timed out",
+              "C1 failure words", "the helper's reasons are read per AI")
+        check(SetupFailureWords.plain("Update failed. npm could not be reached.") == nil, "C1 failure words", "any other failure keeps the helper's words alone")
+        // C3: a second click while the first waits on Terminal (macOS's control prompt) starts nothing.
+        let missing = report(status("claude", installed: false, signIn: "unknown", version: nil))
+        let effects = Effects()
+        let c = guide([missing], effects: effects)
+        await c.refresh()
+        var startingDuring = false
+        var clicks = 0
+        c.runInTerminal = { script in
+            effects.terminal.append(script)
+            startingDuring = startingDuring || c.installStarting.contains(.claude)
+            clicks += 1
+            if clicks == 1 { await c.install(.claude) }   // ONE second click, while the first is still waiting (never recursive)
+            return true
+        }
+        await c.install(.claude)
+        check(effects.terminal.count == 1, "C3 one installer", "a click during the wait starts no second installer: \(effects.terminal.count)")
+        check(startingDuring && c.installStarting.isEmpty && c.installing == [.claude], "C3 one installer", "marked before the wait, cleared after")
+        await c.install(.claude)
+        check(effects.terminal.count == 2, "C3 one installer", "Run it again still works once the first has answered")
+        // Q1 (final review): with a paste wait open, the CLI appearing ends the paste wait (installing's didSet).
+        let landedNow = report(status("claude", path: "/Users/x/.local/bin/claude", signIn: "signInRequired"))
+        let pasteEffects = Effects(); pasteEffects.terminalWorks = false
+        let p = guide([missing, landedNow], effects: pasteEffects)
+        p.openTerminalApp = { true }
+        await p.refresh()
+        await p.install(.claude)
+        check(p.pasting == [.claude] && p.installing == [.claude], "Q1 paste wait", "the paste wait is open")
+        await p.refresh()
+        check(p.installing.isEmpty && p.pasting.isEmpty, "Q1 paste wait", "after the CLI appears, the paste wait is gone: \(p.pasting)")
     }
 
     static func passFlow() async {

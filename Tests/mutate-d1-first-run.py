@@ -81,6 +81,25 @@ MUTANTS = [
      '"retryable": passing,\n                                "reason": "http_\\(status)"])', '"retryable": passing])'),
     ("dictation: every 200 without text is empty_text", "dictcore", PS,
      '        return "engine_refused"\n', '        return "empty_text"\n'),
+    ("C1: Skip allowed on the only AI", "connect", PC,
+     '        AIProvider.agents.contains { $0 != provider && report?.status($0)?.signedIn == true }',
+     '        AIProvider.agents.contains { report?.status($0)?.signedIn == true } || true'),
+    ("C1: the guide ignores the skip rule", "connect", PC,
+     '        if row.canSkip && !ProviderGate.skipAllowed(provider, report) { row.canSkip = false }\n', ''),
+    ("C1: the line says Get started with none signed in", "connect", PC,
+     '        guard anySignedIn(report) else { return .needsSignedIn }\n', ''),
+    ("C1: the failure words name nobody", "connect", PC,
+     '        case 1: who = names[0]\n', '        case 1: who = "your AI"\n'),
+    ("C3: a second click starts a second installer", "connect", PC,
+     '        guard !installStarting.contains(provider) else { return }\n', ''),
+    ("E1: existing installs count the new rows", "permission", PG,
+     '(newInstall || !rowsNewIn0_5_387.contains($0.kind))', 'true'),
+    ("Q1: installing loses its didSet (the paste wait outlives the install)", "connect", PC,
+     '    @Published private(set) var installing: Set<AIProvider> = [] {\n        didSet { if !pasting.isSubset(of: installing) { pasting.formIntersection(installing) } }\n    }',
+     '    @Published private(set) var installing: Set<AIProvider> = []'),
+    ("C1: the failure words say Sign in for any reason", "connect", PC,
+     '        let allSignedOut = !found.isEmpty && found.allSatisfy { $0.reason == notSignedIn }',
+     '        let allSignedOut = true'),
     ("gap: Start and stop alone does not count", "gap", MD,
      "enabled && !hold && !toggle }", "enabled && !hold }"),
     ("permission: a Microphone no is always Needs you", "permission", PG,
@@ -100,7 +119,10 @@ MUTANTS = [
 
 
 def run(lane, copy, out):
-    p = subprocess.run(lane_command(lane, copy, out), capture_output=True, text=True, cwd=copy)
+    try:
+        p = subprocess.run(lane_command(lane, copy, out), capture_output=True, text=True, cwd=copy, timeout=240)
+    except subprocess.TimeoutExpired as e:   # a mutant that hangs the checks is caught by them too, never silent
+        return 124, f"lane timed out after 240 s (hung)\n{(e.stdout or b'')[-500:] if isinstance(e.stdout, bytes) else (e.stdout or '')[-500:]}"
     return p.returncode, (p.stdout + p.stderr)[-1500:]
 
 
@@ -124,8 +146,9 @@ def main():
                 print(f"REFUSED: the {lane} lane is red before any mutant")
                 return 2
         survived, killed = [], 0
+        only = [s for s in os.environ.get("D1_MUTANTS", "").split("|") if s]   # name substrings; empty = every mutant
         for name, lane, rel, old, new in MUTANTS:
-            if lane not in lanes:
+            if lane not in lanes or (only and not any(s in name for s in only)):
                 continue
             path = copy / rel
             original = path.read_text(encoding="utf-8")
@@ -143,7 +166,9 @@ def main():
                 print(f"SURVIVED {name}", flush=True)
             else:
                 killed += 1
-                last = [l for l in tail.splitlines() if "FAIL" in l or "failed" in l][-1:] or tail.splitlines()[-1:]
+                # The named failing check first (Q1, final review), else the lane's failure line.
+                named = [l for l in tail.splitlines() if "check failed [" in l or "check FAILED" in l or "pin failed [" in l or l.startswith("FAIL [")]
+                last = named[:1] or [l for l in tail.splitlines() if "FAIL" in l or "failed" in l][-1:] or tail.splitlines()[-1:]
                 print(f"killed   {name}: {last[0][:180] if last else ''}", flush=True)
         total = killed + len(survived)
         print(f"d1 mutants: {killed}/{total} killed")

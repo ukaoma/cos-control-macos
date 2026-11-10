@@ -92,7 +92,13 @@ struct ControlSetupView: View {
                             .font(COSType.body(12)).foregroundStyle(.secondary)
                     }
                     if let error = model.error {
-                        Text(error).foregroundStyle(COSPalette.danger).textSelection(.enabled)
+                        // 0.5.388 (C1): the proof failure in plain words first; the helper's own text stays below.
+                        if let plain = SetupFailureWords.plain(error) {
+                            Text(plain).foregroundStyle(COSPalette.danger).fixedSize(horizontal: false, vertical: true)
+                            Text(error).font(COSType.body(12)).foregroundStyle(.secondary).textSelection(.enabled)
+                        } else {
+                            Text(error).foregroundStyle(COSPalette.danger).textSelection(.enabled)
+                        }
                     }
                     if model.status.needsFirstRun {
                         Text("An internet connection is needed for setup. macOS asks for access when you use a feature that needs it.")
