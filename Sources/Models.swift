@@ -3270,10 +3270,17 @@ enum PetCompletionDetector {
         suppressedIDs: Set<String>,
         now: Date = Date()
     ) -> [PetCompletion] {
-        let currentByID = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })
+        // 0.5.387 (D4): two rows can share an id (Control 0.5.383 trapped here twice on 11/09 08:18 with
+        // uniqueKeysWithValues). The most active copy wins (working, then waiting, then the first seen), so a
+        // session never reads as finished while any copy of it still runs or waits. A repeated prior emits once.
+        func activity(_ row: ClaudeSession) -> Int { row.isPetWorking ? 2 : row.state == "waiting" ? 1 : 0 }
+        let currentByID = Dictionary(current.map { ($0.id, $0) }, uniquingKeysWith: { kept, other in
+            activity(other) > activity(kept) ? other : kept
+        })
         var out: [PetCompletion] = []
+        var emitted = Set<String>()
         for prior in previous where prior.isPetWorking {
-            guard !suppressedIDs.contains(prior.id) else { continue }
+            guard !suppressedIDs.contains(prior.id), emitted.insert(prior.id).inserted else { continue }
             if let now_ = currentByID[prior.id] {
                 // running -> waiting is a handoff to Miles, not a finish.
                 guard !now_.isPetWorking, now_.state != "waiting" else { continue }
@@ -5919,6 +5926,12 @@ struct LibraryMeetingDay: Sendable, Hashable {
         guard let o = value?.object, let date = o["date"]?.string, !date.isEmpty else { return nil }
         self.date = date
         count = o["count"]?.int ?? Int(o["count"]?.string ?? "") ?? 0
+    }
+
+    /// 0.5.387 (D4): the calendar's counts by date. `days` comes from the server, and a repeated date trapped in
+    /// uniqueKeysWithValues. A repeat keeps the larger count, so a day is never shown as busier than one row says.
+    static func countsByDate(_ days: [LibraryMeetingDay]) -> [String: Int] {
+        Dictionary(days.map { ($0.date, $0.count) }, uniquingKeysWith: { max($0, $1) })
     }
 }
 
@@ -13613,14 +13626,23 @@ enum PetPause {
 
 // MARK: - Work loop support (0.5.337, loop audit W1)
 
-/// The shipped server has only the four Intake routes; the work-loop routes (seen, undo, expired, waiting, dropped, batch)
-/// arrive with a newer server. The helper answers every 404 as `unsupported`; these are the rules Control reads it with.
+/// No COS server has the work-loop routes the helper allows (dismiss, undo, seen, decisions, expired, restore, settings,
+/// set-settings, dropped, waiting, batch): 7.0.13 serves only the Intake list, items, resolve and meeting-ask, and sends
+/// no `workBatch` capability (checked 2026-11-09, lane D4). The helper answers every 404 as `unsupported`; these are the
+/// rules Control reads it with. 0.5.387: the words never promise a newer server, since none has them yet.
 enum WorkLoopSupport {
     static func unsupported(_ details: [String: JSONValue]) -> Bool { details["unsupported"]?.bool == true }
     /// Undo is offered only on a server that has the routes, and never after this server said undo is missing.
     static func undoOffered(available: Bool?, unsupported: Set<String>) -> Bool { available == true && !unsupported.contains("undo") }
     /// Said where Undo would be, on a server without it.
-    static let undoMissing = "Undo needs a newer COS server. To change a card, open it in Work."
+    static let undoMissing = "Undo is not available. To change a card, open it in Work."
+    /// Said in place of Sort's Keep, Drop and Delegate on a card when the server takes no card batch: three controls
+    /// that could never do anything there.
+    static let cardActionsMissing = "Keep and Drop are not available here. To change a card, open it in Work."
+    /// The card row's actions, or the line that stands in for them.
+    static func cardActionsLine(batchAvailable: Bool) -> String? { batchAvailable ? nil : cardActionsMissing }
+    /// Waiting on and Dropped cards read lists no server serves yet.
+    static func listMissing(dropped: Bool) -> String { dropped ? "Dropped cards are not available." : "Waiting on is not available." }
 }
 
 // MARK: - One Intake resolve's answer (0.5.337)
@@ -14002,6 +14024,22 @@ enum TodayHome {
         case .glasses, .question: return ("Open in Messages", .messages(nil), nil)
         }
     }
+
+    /// 0.5.387 (D4, Miles 11/09: "there is no ability to answer the question"): a Claude session waiting on a question
+    /// at its own prompt is answered in the app that holds that prompt, so the primary action names it. Control cannot
+    /// answer it. Nil: no desk prompt to send the person to (another provider, a plan, a permission, a tool's input, or
+    /// a run only the COS server writes, which `isWaiting` already leaves out).
+    static func answerAtPrompt(_ session: ClaudeSession, host: Host?) -> String? {
+        guard session.provider == "claude", isWaiting(session),
+              !["plan", "permission", "mcp_input"].contains(session.waitingKind) else { return nil }
+        switch platform(session, host: host) {
+        case .claude: return "Answer in Claude"
+        // Hosts not read yet: which app holds the prompt is unknown, so the label does not guess one.
+        case .claudeCode: return host.map { "Answer in " + $0.app } ?? "Answer at its prompt"
+        default: return nil
+        }
+    }
+    static let promptPendingLine = "This session is waiting on a question at its own prompt. Answer it there."
 
     /// "in Terminal", "in Claude", "in the Codex app", "in Cursor", "from Work, on the server".
     static func placeWords(_ platform: Platform, host: Host?) -> String {
@@ -14430,6 +14468,8 @@ enum TodayHome {
         var meeting: ReviewableMeeting? = nil
         var move: WorkYourMove? = nil
         var openLabel: String? = nil
+        /// 0.5.387 (D4): openLabel is "Answer in ..." (answerAtPrompt), and Open session is the second button.
+        var answersAtPrompt = false
     }
 
     struct NeedInputs {
@@ -14474,10 +14514,11 @@ enum TodayHome {
         for session in waitingSessions(input.waiting) {
             let host = input.hosts[session.id]
             let open = openFor(session, host: host, cursorTrusted: input.cursorTrusted)
-            let label = session.provider == "claude" ? "Open session" : open.label
+            let answer = answerAtPrompt(session, host: host)
+            let label = answer ?? (session.provider == "claude" ? "Open session" : open.label)
             rows.append(NeedRow(id: "session:" + session.id, kind: .session, tier: 1, title: askedTitle(session),
                                 quote: questionText(session), why: askedWhy(session), source: sessionSource(session, host: host),
-                                since: waitingSince(session), session: session, openLabel: label))
+                                since: waitingSince(session), session: session, openLabel: label, answersAtPrompt: answer != nil))
         }
         // One by one: a group with a name to confirm, or one heard today. Everything else is one row that opens Speakers.
         var voiceRows = 0, heldVoices = 0

@@ -3366,11 +3366,17 @@ struct WorkIntakeView: View {
                                 VStack(alignment: .leading, spacing: 7) {
                                     Text(card.text).font(COSType.body(12.5, weight: .medium))
                                     Text([card.createdAt, card.owner, card.dueDate.isEmpty ? "" : "Due " + card.dueDate].filter { !$0.isEmpty }.joined(separator: " · ")).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
-                                    HStack {
-                                        Button("Keep") { Task { _ = await model.changeWorkCard(card, action: "stage", fields: ["workStage": "planned"]) } }
-                                        Button("Drop") { Task { _ = await model.changeWorkCard(card, action: "drop") } }
-                                        WorkDelegateControl(model: model, task: card)
-                                    }.disabled(!model.workBatchAvailable || model.workBatchBusy)
+                                    // 0.5.387 (D4): with no card batch on the server these were three greyed controls that
+                                    // could never work; one line says so instead.
+                                    if let missing = WorkLoopSupport.cardActionsLine(batchAvailable: model.workBatchAvailable) {
+                                        Text(missing).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                                    } else {
+                                        HStack {
+                                            Button("Keep") { Task { _ = await model.changeWorkCard(card, action: "stage", fields: ["workStage": "planned"]) } }
+                                            Button("Drop") { Task { _ = await model.changeWorkCard(card, action: "drop") } }
+                                            WorkDelegateControl(model: model, task: card)
+                                        }.disabled(model.workBatchBusy)
+                                    }
                                 }.padding(12).background(COSPalette.raised, in: RoundedRectangle(cornerRadius: 9))
                             }
                             group("Items to decide", selected.items, note: "Keep what you own. Other people's asks can become cards when you take them on.") { item in
@@ -3549,7 +3555,7 @@ struct WorkWaitingView: View {
             Text(dropped ? "Restore a dropped card with its identity and links intact." : "Follow up by person. These cards also appear in 1:1 prep.").font(COSType.body(12)).foregroundStyle(COSPalette.muted)
             // 0.5.337 (loop audit W1): an older server has no Waiting or Dropped list; say so instead of an empty view.
             if model.workLoopUnsupported.contains(dropped ? "dropped" : "waiting") {
-                Text(dropped ? "Dropped cards need a newer COS server." : "Waiting on needs a newer COS server.").font(COSType.body(12)).foregroundStyle(COSPalette.muted)
+                Text(WorkLoopSupport.listMissing(dropped: dropped)).font(COSType.body(12)).foregroundStyle(COSPalette.muted)
             }
             if let error = model.workLoopError { Text(error).foregroundStyle(COSPalette.danger) }
             ScrollView {

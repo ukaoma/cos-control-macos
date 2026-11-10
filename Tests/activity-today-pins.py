@@ -129,7 +129,10 @@ need(in_order(undo_model, 'guard await workLoop("undo", body: ["batchId": batchI
 # Session questions are read only (B1): one Open button, never an answer.
 actions = body(today, "    func todayNeedActions(", "\n    func todayRunningPanel(")
 session_case = body(actions, "case .session:", "case .voice:")
-need(session_case.count("Button(") == 1 and "todayOpenNeed(row)" in session_case, "[read only questions] a session row has one Open button and no options")
+# 0.5.387 (D4): plus Open session (Control's own view) when the primary is "Answer in ...", which opens the app holding the prompt.
+need(session_case.count("Button(") == 2 and "todayOpenNeed(row)" in session_case
+     and 'if row.answersAtPrompt, let session = row.session {\n                    Button("Open session") { todayOpen(.inSessions(session.id)) }' in session_case,
+     "[read only questions] a session row opens its app, plus Open session when the question is at its prompt; no options")
 need("session-chat-send" not in today and "permission" not in session_case, "[read only questions] Today never answers a session")
 
 # Voices: no listen or owner acknowledgement sent from home; nothing stale read.

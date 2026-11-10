@@ -691,6 +691,18 @@ final class SessionUsageCollector {
     }
 
     /// Bounded slices keep the helper and desktop responsive. The next pass resumes all partial files.
+    /// The page's totals, one row per day, provider and model.
+    static let rollupSQL = "SELECT day,provider,model,SUM(input),SUM(output),SUM(cache_read),SUM(cache_write),COUNT(*),COUNT(usd),COALESCE(SUM(usd),0) FROM events GROUP BY day,provider,model ORDER BY day,provider,model"
+    /// 0.5.387 (D4): rollupSQL reads this index in order, so it never sorts. Before it, every pass sorted all of `events`
+    /// through temp files: 26.5 MB written per pass on a 513,383-row copy, every 15 s while logs were pending, and macOS
+    /// filed 14 disk-write reports (2.1 to 34.4 GB) against the helper from 11/02 to 11/09. With it, 0 bytes per pass.
+    /// The first importing pass builds it once (88.6 MB written, 30 MB larger file on that copy). A read-only pass never
+    /// writes, so it keeps the old plan until tracking resumes.
+    static let rollupIndex = "usage_rollup"
+    func ensureRollupIndex() throws {
+        if try query("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?", [Self.rollupIndex]).first?.first == "1" { return }
+        try Self.execute(db, "CREATE INDEX IF NOT EXISTS \(Self.rollupIndex) ON events(day,provider,model,input,output,cache_read,cache_write,usd)")
+    }
     func refresh(maxBytes: Int = 64*1024*1024, seconds: TimeInterval = 12, cursorEnabled: Bool = false, cursorSyncFailed: Bool = false, readOnly: Bool = false) throws -> SessionUsageReport {
         let fm = FileManager.default
         let roots = [("claude", home.appendingPathComponent(".claude/projects")), ("codex", home.appendingPathComponent(".codex/sessions")), ("codex", home.appendingPathComponent(".codex/archived_sessions"))]
@@ -814,7 +826,10 @@ final class SessionUsageCollector {
         } catch let failure as Failure where failure.busy {
             historyBusy = true
         }
-        let rows = try query("SELECT day,provider,model,SUM(input),SUM(output),SUM(cache_read),SUM(cache_write),COUNT(*),COUNT(usd),COALESCE(SUM(usd),0) FROM events GROUP BY day,provider,model ORDER BY day,provider,model")
+        if !readOnly {
+            do { try ensureRollupIndex() } catch let failure as Failure where failure.busy { historyBusy = true }
+        }
+        let rows = try query(Self.rollupSQL)
         let buckets = rows.map { r in SessionUsageBucket(day:r[0],provider:r[1],model:r[2],counts:SessionUsageCounts(input:Int64(r[3]) ?? 0,output:Int64(r[4]) ?? 0,cacheRead:Int64(r[5]) ?? 0,cacheWrite:Int64(r[6]) ?? 0),events:Int(r[7]) ?? 0,pricedEvents:Int(r[8]) ?? 0,estimatedUSD:Double(r[9]) ?? 0) }
         let cursors = try query("SELECT state FROM files").compactMap { $0[0].data(using:.utf8) }.compactMap { try? JSONDecoder().decode(Cursor.self,from:$0) }
         // Only a file still on disk: a failed log that has since been deleted is no longer a gap to report.

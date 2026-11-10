@@ -284,8 +284,24 @@ private actor HandoffTransport {
         precondition(!queueCalls.contains { $0.args.first == "session-chat-send" || $0.args.first == "session-chat-attach" })
         let parked = try require(queueCalls.first { $0.args.first == "session-chat-queue" })
         precondition(value(parked.args, "--client-turn-id") == queued.id && value(parked.args, "--thread-id") == target.nativeID)
+        // 0.5.387 (D4): a poll that learns nothing writes nothing. The journal keeps its inode, its date and its bytes.
+        let queueJournal = root.appendingPathComponent("queue.json")
+        func journalStamp() throws -> (inode: Int, modified: Date, bytes: Data) {
+            let attributes = try FileManager.default.attributesOfItem(atPath: queueJournal.path)
+            return (try require(attributes[.systemFileNumber] as? Int), try require(attributes[.modificationDate] as? Date), try Data(contentsOf: queueJournal))
+        }
+        await queuedStore.refreshReceipts()
+        precondition(queuedStore.receipts.first?.status == "queued", "fixture: the queued turn is still waiting")
+        let settled = try journalStamp()
+        for _ in 0..<3 { await queuedStore.refreshReceipts() }
+        let unchanged = try journalStamp()
+        precondition(queuedStore.receipts.first?.status == "queued" && queuedStore.error == nil, "fixture: three more polls, still queued")
+        precondition(unchanged.inode == settled.inode && unchanged.modified == settled.modified && unchanged.bytes == settled.bytes,
+            "an unchanged poll must not rewrite the handoff journal")
         await queue.setQueueDelivered(); await queuedStore.refreshReceipts()
         precondition(queuedStore.receipts.first?.status == "delivered" && queuedStore.receipts.first?.blocksNewHandoff == true)
+        let delivered = try journalStamp()
+        precondition(delivered.inode != settled.inode, "a poll that changes a receipt still saves it")
         print("PASS: busy queue uses exact receipt identity; delivery is not task completion")
 
         let fork = HandoffTransport(.fork)

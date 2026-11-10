@@ -761,6 +761,13 @@ struct WorkRecommendationKey: Equatable {
         row.provider == "cursor" && row.channel == "job" && row.appOpen != nil && row.appOpen?.openedAt == nil && row.appOpen?.skipped == nil
     }
     nonisolated static let cursorRetired = "cursor_retired"
+    /// Same stored content: the receipts compare as sorted-key JSON, so no field can be missed and nothing new has to be
+    /// Equatable. An encoding failure answers "different", which saves, as before.
+    nonisolated static func sameReceipt(_ a: WorkHandoffReceipt, _ b: WorkHandoffReceipt) -> Bool {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        guard let left = try? encoder.encode(a), let right = try? encoder.encode(b) else { return false }
+        return left == right
+    }
     private func persist() throws {
         guard storageReady else { throw failure("History is unavailable; sending is disabled.") }
         let folder = storageURL.deletingLastPathComponent()
@@ -2294,7 +2301,9 @@ struct WorkRecommendationKey: Equatable {
             var changed = false
             for row in receipts where row.blocksNewHandoff && row.status != "delivered" {
                 let next = try await reconciled(row)
-                try save(next)
+                // 0.5.387 (D4): a tick that learned nothing writes nothing. Saving every blocking receipt on every
+                // 15 s poll rewrote the whole journal (606,044 bytes on Miles's Mac, 5 rewrites in 2 minutes on 11/09).
+                if !Self.sameReceipt(row, next) { try save(next) }
                 if Self.changesWorkSessions(from: row, to: next) { changed = true }
             }
             // 0.5.250: a session linked (or released) by Check status or a Work refresh is marked at once, as elsewhere.
