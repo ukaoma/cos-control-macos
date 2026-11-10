@@ -145,6 +145,21 @@ for script in list((root / "Tests").glob("*.sh")) + list((root / "scripts").glob
             for f in files:
                 pin(f'"$ROOT/Sources/{f}"' in command, "source lists", f"{script.name} compiles ControllerModel without {f}")
 
+# 0.5.387 lane D1: the Microphone, System Audio Recording and Calendars rows read status only. Showing the page must never
+# prompt, so the probes file never calls a request API for them, and the three probes are status reads.
+code = "\n".join(line for line in system.splitlines() if not line.strip().startswith("//"))
+for request in ("requestAccess(", "requestFullAccessToEvents", "requestWriteOnlyAccessToEvents", "TCCAccessRequest", "SystemAudioPermission.request"):
+    pin(request not in code, "media rows read only", f"PermissionGuideSystem.swift calls {request}")
+pin("AVCaptureDevice.authorizationStatus(for: .audio)" in code, "media rows read only", "the Microphone probe is a status read")
+pin("EKEventStore.authorizationStatus(for: .event)" in code, "media rows read only", "the Calendars probe is a status read")
+pin("systemAudio: { SystemAudioPermission.preflight.map { SystemAudioFact(preflight: $0) } }" in code, "media rows read only",
+    "the System Audio probe is TCCAccessPreflight, and nil (unreadable) stays nil")
+read_body = guide[guide.index("    private func read() async {"):guide.index("    /// Remembers the last build Accessibility worked for")]
+for probe in ("probes.microphone()", "probes.systemAudio()", "probes.calendars()"):
+    pin(probe in read_body, "media rows read", f"the guide's read calls {probe}")
+pin("rows += [microphone(facts), systemAudio(facts, appName: appName, appPath: appPath), calendars(facts)]" in guide,
+    "media rows", "every Mac gets the three rows")
+
 if failed:
     print("\n".join(failed), file=sys.stderr)
     sys.exit(1)

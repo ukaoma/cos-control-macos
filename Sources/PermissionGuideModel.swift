@@ -11,6 +11,8 @@ import Combine
 /// One thing COS asks macOS for.
 enum PermissionKind: String, Sendable, CaseIterable {
     case accessibility, notifications, launchAtLogin, backgroundJobs, automation, calendar
+    /// 0.5.387 (lane D1): what the product really asks for, read only (the page never prompts).
+    case microphone, systemAudio, calendars
 }
 
 enum PermissionStatus: String, Sendable, Equatable {
@@ -28,9 +30,11 @@ enum PermissionStatus: String, Sendable, Equatable {
 /// The System Settings panes the guide opens.
 enum PermissionPane: String, Sendable, Equatable {
     case accessibility, fullDiskAccess, automation, notifications
-    /// 0.5.318: System Audio Recording, which Mute other apps and All Mac audio need. It has no row in the guide: only
-    /// the feature that uses it asks (`PermissionGuide.drag`), after macOS's own prompt (SystemAudioAsk).
+    /// 0.5.318: System Audio Recording, which Mute other apps and All Mac audio need. The feature that uses it asks
+    /// (`PermissionGuide.drag`), after macOS's own prompt (SystemAudioAsk). 0.5.387: it also has a read-only row.
     case systemAudio
+    /// 0.5.387 (lane D1): the Microphone and Calendars lists, opened from their rows.
+    case microphone, calendars
 
     var title: String {
         switch self {
@@ -39,6 +43,8 @@ enum PermissionPane: String, Sendable, Equatable {
         case .automation: "Automation"
         case .notifications: "Notifications"
         case .systemAudio: "System Audio Recording"
+        case .microphone: "Microphone"
+        case .calendars: "Calendars"
         }
     }
 
@@ -57,6 +63,8 @@ enum PermissionPane: String, Sendable, Equatable {
         case .systemAudio: macOSMajor >= 26
             ? "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture"
             : "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        case .microphone: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+        case .calendars: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars"
         }
         return URL(string: raw)!
     }
@@ -177,6 +185,27 @@ struct LaunchJob: Sendable, Equatable {
     var lastExit: Int?
 }
 
+/// 0.5.387 (lane D1): macOS's answer for the Microphone (AVCaptureDevice.authorizationStatus) and for Calendars
+/// (EKEventStore.authorizationStatus), read without asking. `unknown`: the probe gave nothing it could read.
+enum MediaAccessFact: Sendable, Equatable { case allowed, denied, notAsked, restricted, unknown }
+
+/// Calendars adds "add only" (macOS 14 writeOnly): COS can add events but read none, so Today and prep get nothing.
+enum CalendarsAccessFact: Sendable, Equatable {
+    case allowed, writeOnly, denied, notAsked, restricted, unknown
+
+    /// CalendarReader.accessState's words (Sources/CalendarSource.swift).
+    init(accessState: String) {
+        switch accessState {
+        case "granted": self = .allowed
+        case "writeOnly": self = .writeOnly
+        case "denied": self = .denied
+        case "restricted": self = .restricted
+        case "notDetermined": self = .notAsked
+        default: self = .unknown
+        }
+    }
+}
+
 enum CalendarFact: Sendable, Equatable {
     case allowed
     case denied
@@ -220,12 +249,23 @@ struct PermissionFacts: Sendable, Equatable {
     /// CalendarFetch.app, when the COS pipeline has one, and its last run.
     var calendarAppPath: String?
     var calendar: CalendarFact = .unknown
+    /// 0.5.387 (lane D1). Each "wanted" is a feature that needs it switched on, so a no there reads Needs you.
+    var microphone: MediaAccessFact = .unknown
+    var microphoneWanted = false
+    /// nil: macOS gave no way to read it (TCCAccessPreflight missing).
+    var systemAudio: SystemAudioFact?
+    var systemAudioWanted = false
+    var calendars: CalendarsAccessFact = .unknown
+    var calendarsWanted = false
 
     static func == (a: PermissionFacts, b: PermissionFacts) -> Bool {
         a.accessibilityTrusted == b.accessibilityTrusted && a.accessibilityWanted == b.accessibilityWanted
             && a.staleGrantSuspected == b.staleGrantSuspected && a.notifications == b.notifications
             && a.loginItem == b.loginItem && a.jobs == b.jobs && a.calendarAppPath == b.calendarAppPath
             && a.calendar == b.calendar
+            && a.microphone == b.microphone && a.microphoneWanted == b.microphoneWanted
+            && a.systemAudio == b.systemAudio && a.systemAudioWanted == b.systemAudioWanted
+            && a.calendars == b.calendars && a.calendarsWanted == b.calendarsWanted
             && a.automation.map(\.target) == b.automation.map(\.target) && a.automation.map(\.fact) == b.automation.map(\.fact)
     }
 }
@@ -244,6 +284,7 @@ enum PermissionGuideRules {
     /// The rows this Mac needs, in a fixed order. Rows that do not apply here are left out, never shown greyed.
     static func rows(_ facts: PermissionFacts, appName: String, appPath: String) -> [PermissionRow] {
         var rows = [accessibility(facts, appName: appName, appPath: appPath), notifications(facts), loginItem(facts)]
+        rows += [microphone(facts), systemAudio(facts, appName: appName, appPath: appPath), calendars(facts)]
         rows += backgroundJobRows(facts.jobs)
         rows += facts.automation.map { automation($0.target, $0.fact) }
         if let calendar = calendarRow(facts) { rows.append(calendar) }
@@ -302,6 +343,85 @@ enum PermissionGuideRules {
         case .off:
             row.status = .notNeededYet
             row.action = .turnOnLoginItem
+        }
+        return row
+    }
+
+    // MARK: Microphone, System Audio Recording, Calendars (0.5.387, lane D1)
+    //
+    // Read only: no row here ever asks macOS. A no reads Needs you only while a feature that needs it is on; otherwise
+    // Not needed yet, with the reason and the button to the pane. Not asked yet says when macOS will ask.
+
+    static let microphoneAsks = "macOS asks the first time you dictate or record on this Mac."
+    static let systemAudioAsks = "macOS asks the first time you record all Mac audio or turn on Mute other apps."
+    static let calendarsAsks = "macOS asks when you connect Calendars in Settings, General."
+
+    static func microphone(_ facts: PermissionFacts) -> PermissionRow {
+        var row = PermissionRow(
+            id: "microphone", kind: .microphone, title: "Microphone",
+            unlocks: "Lets you dictate into Mac apps and record meetings on this Mac.",
+            status: .allowed, detail: nil, action: .none)
+        switch facts.microphone {
+        case .allowed: break
+        case .denied:
+            row.status = facts.microphoneWanted ? .needsYou : .notNeededYet
+            row.detail = "Turned off for COS Control in System Settings."
+            row.action = .openSettings(.microphone)
+        case .restricted:
+            row.status = facts.microphoneWanted ? .needsYou : .notNeededYet
+            row.detail = "Blocked by a setting on this Mac, such as Screen Time or a profile."
+            row.action = .openSettings(.microphone)
+        case .notAsked, .unknown:
+            row.status = .notNeededYet
+            row.detail = microphoneAsks
+        }
+        return row
+    }
+
+    static func systemAudio(_ facts: PermissionFacts, appName: String, appPath: String) -> PermissionRow {
+        var row = PermissionRow(
+            id: "systemAudio", kind: .systemAudio, title: "System Audio Recording",
+            unlocks: "Lets COS record all Mac audio in a meeting, and mute other apps while you dictate.",
+            status: .allowed, detail: nil, action: .none)
+        switch facts.systemAudio {
+        case .allowed: break
+        case .denied:
+            row.status = facts.systemAudioWanted ? .needsYou : .notNeededYet
+            row.detail = "Turned off for COS Control in System Settings."
+            row.action = .drag(.systemAudio, PermissionDragSource(path: appPath, name: appName))
+        case .notAsked:
+            row.status = .notNeededYet
+            row.detail = systemAudioAsks
+        case nil:
+            row.status = .notNeededYet
+            row.detail = "This Mac does not let COS read this setting. " + systemAudioAsks
+            row.action = .openSettings(.systemAudio)
+        }
+        return row
+    }
+
+    static func calendars(_ facts: PermissionFacts) -> PermissionRow {
+        var row = PermissionRow(
+            id: "calendars", kind: .calendars, title: "Calendars",
+            unlocks: "Lets COS read the calendars you pick, for Today and meeting prep.",
+            status: .allowed, detail: nil, action: .none)
+        switch facts.calendars {
+        case .allowed: break
+        case .writeOnly:
+            row.status = facts.calendarsWanted ? .needsYou : .notNeededYet
+            row.detail = "COS can add events but cannot read them. Allow full access in System Settings."
+            row.action = .openSettings(.calendars)
+        case .denied:
+            row.status = facts.calendarsWanted ? .needsYou : .notNeededYet
+            row.detail = "Turned off for COS Control in System Settings."
+            row.action = .openSettings(.calendars)
+        case .restricted:
+            row.status = facts.calendarsWanted ? .needsYou : .notNeededYet
+            row.detail = "Blocked by a setting on this Mac, such as Screen Time or a profile."
+            row.action = .openSettings(.calendars)
+        case .notAsked, .unknown:
+            row.status = .notNeededYet
+            row.detail = calendarsAsks
         }
         return row
     }
@@ -635,6 +755,15 @@ struct PermissionProbes: Sendable {
     var resetAccessibility: @Sendable (_ bundleID: String) async -> Bool
     /// Starts one job that stopped with exit 78, so a fresh run says whether the new grant worked.
     var kickstart: @Sendable (_ label: String) async -> Void
+    /// 0.5.387 (lane D1): read only, never a prompt. Defaults are a Mac where nothing was asked and nothing is on.
+    var microphone: @Sendable () -> MediaAccessFact = { .unknown }
+    /// nil: macOS gave no way to read it.
+    var systemAudio: @Sendable () -> SystemAudioFact? = { nil }
+    var calendars: @Sendable () -> CalendarsAccessFact = { .unknown }
+    /// Dictation on (Microphone); dictation on with Mute other apps (System Audio Recording); Calendars connected.
+    var microphoneWanted: @Sendable () -> Bool = { false }
+    var systemAudioWanted: @Sendable () -> Bool = { false }
+    var calendarsWanted: @Sendable () -> Bool = { false }
 
     /// A Mac where nothing has been granted and nothing is installed. The checks start from this.
     static let inert = PermissionProbes(
@@ -744,6 +873,12 @@ final class PermissionGuide: ObservableObject {
         next.automation = automation
         next.calendarAppPath = probes.calendarAppPath()
         if next.calendarAppPath != nil { next.calendar = probes.calendar() }
+        next.microphone = probes.microphone()
+        next.microphoneWanted = probes.microphoneWanted()
+        next.systemAudio = probes.systemAudio()
+        next.systemAudioWanted = probes.systemAudioWanted() || waitingFeature["systemAudio"] != nil
+        next.calendars = probes.calendars()
+        next.calendarsWanted = probes.calendarsWanted()
         apply(next)
     }
 

@@ -57,11 +57,106 @@ struct PermissionGuideChecks {
         await staleGrant()
         await staleReset()
         await featureAsks()
+        mediaRows()
+        await mediaReads()
         if failures > 0 {
             FileHandle.standardError.write(Data("\(failures) permission guide check(s) failed, \(passes) passed\n".utf8))
             exit(1)
         }
         print("PASS: permission guide logic (\(passes) checks)")
+    }
+
+    // MARK: Microphone, System Audio Recording, Calendars (0.5.387, lane D1)
+
+    static func mediaRows() {
+        func row(_ facts: PermissionFacts, _ kind: PermissionKind) -> PermissionRow { rows(facts).first { $0.kind == kind }! }
+        var f = PermissionFacts()
+        // Nothing read yet: Not needed yet, and each says when macOS will ask. No button opens a pane that would not list COS.
+        let mic = row(f, .microphone)
+        check(mic.title == "Microphone" && mic.status == .notNeededYet && mic.action == .none
+              && mic.detail == "macOS asks the first time you dictate or record on this Mac.", "microphone row", "\(mic)")
+        let audio = row(f, .systemAudio)
+        check(audio.id == "systemAudio" && audio.title == "System Audio Recording" && audio.status == .notNeededYet
+              && audio.detail == "This Mac does not let COS read this setting. macOS asks the first time you record all Mac audio or turn on Mute other apps."
+              && audio.action == .openSettings(.systemAudio), "system audio row", "unreadable: says so and when it is asked: \(audio)")
+        let cal = row(f, .calendars)
+        check(cal.title == "Calendars" && cal.status == .notNeededYet && cal.action == .none
+              && cal.detail == "macOS asks when you connect Calendars in Settings, General.", "calendars row", "\(cal)")
+        // Not asked yet.
+        f.microphone = .notAsked; f.systemAudio = .notAsked; f.calendars = .notAsked
+        f.microphoneWanted = true; f.systemAudioWanted = true; f.calendarsWanted = true
+        check(row(f, .microphone).status == .notNeededYet && row(f, .microphone).action == .none, "microphone row", "not asked, even when wanted: never Needs you")
+        check(row(f, .systemAudio).detail == "macOS asks the first time you record all Mac audio or turn on Mute other apps."
+              && row(f, .systemAudio).action == .none && row(f, .systemAudio).status == .notNeededYet, "system audio row", "\(row(f, .systemAudio))")
+        check(row(f, .calendars).status == .notNeededYet && row(f, .calendars).action == .none, "calendars row", "not asked")
+        // Allowed.
+        f.microphone = .allowed; f.systemAudio = .allowed; f.calendars = .allowed
+        for kind in [PermissionKind.microphone, .systemAudio, .calendars] {
+            check(row(f, kind).status == .allowed && row(f, kind).action == .none && row(f, kind).detail == nil, "media allowed", "\(kind): \(row(f, kind))")
+        }
+        // A no: Needs you only while a feature that needs it is on, with the button to the right pane either way.
+        f.microphone = .denied; f.systemAudio = .denied; f.calendars = .denied
+        check(row(f, .microphone).status == .needsYou && row(f, .microphone).action == .openSettings(.microphone), "microphone denied", "\(row(f, .microphone))")
+        check(row(f, .systemAudio).status == .needsYou
+              && row(f, .systemAudio).action == .drag(.systemAudio, PermissionDragSource(path: appPath, name: "COS Control")), "system audio denied", "\(row(f, .systemAudio))")
+        check(row(f, .calendars).status == .needsYou && row(f, .calendars).action == .openSettings(.calendars), "calendars denied", "\(row(f, .calendars))")
+        f.microphoneWanted = false; f.systemAudioWanted = false; f.calendarsWanted = false
+        for kind in [PermissionKind.microphone, .systemAudio, .calendars] {
+            check(row(f, kind).status == .notNeededYet && row(f, kind).action != .none
+                  && row(f, kind).detail == "Turned off for COS Control in System Settings.", "media denied unwanted", "\(kind): \(row(f, kind))")
+        }
+        f.microphone = .restricted; f.calendars = .restricted
+        check(row(f, .microphone).detail?.contains("Screen Time") == true && row(f, .microphone).action == .openSettings(.microphone), "microphone restricted", "\(row(f, .microphone))")
+        check(row(f, .calendars).detail?.contains("Screen Time") == true && row(f, .calendars).status == .notNeededYet, "calendars restricted", "\(row(f, .calendars))")
+        f.calendarsWanted = true
+        check(row(f, .calendars).status == .needsYou, "calendars restricted", "wanted: Needs you")
+        f.calendars = .writeOnly
+        check(row(f, .calendars).status == .needsYou && row(f, .calendars).detail == "COS can add events but cannot read them. Allow full access in System Settings."
+              && row(f, .calendars).action == .openSettings(.calendars), "calendars add only", "\(row(f, .calendars))")
+        // The panel count follows: three Needs you rows say so.
+        var all = PermissionFacts(); all.accessibilityTrusted = true; all.notifications = .allowed(alertsOn: true); all.loginItem = .enabled
+        all.microphone = .denied; all.microphoneWanted = true; all.systemAudio = .allowed; all.calendars = .allowed
+        check(PermissionGuideRules.summary(rows(all)) == "1 needs you", "media summary", PermissionGuideRules.summary(rows(all)))
+        all.microphoneWanted = false
+        check(PermissionGuideRules.summary(rows(all)) == "All set", "media summary", "an unwanted no is not counted")
+        // The panes.
+        check(PermissionPane.microphone.settingsURL().absoluteString == "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+              && PermissionPane.microphone.title == "Microphone" && !PermissionPane.microphone.takesDrag, "microphone pane", "")
+        check(PermissionPane.calendars.settingsURL().absoluteString == "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars"
+              && PermissionPane.calendars.title == "Calendars" && !PermissionPane.calendars.takesDrag, "calendars pane", "")
+        // CalendarReader.accessState's words.
+        let words: [(String, CalendarsAccessFact)] = [("granted", .allowed), ("writeOnly", .writeOnly), ("denied", .denied),
+                                                     ("restricted", .restricted), ("notDetermined", .notAsked), ("other", .unknown)]
+        for (word, fact) in words { check(CalendarsAccessFact(accessState: word) == fact, "calendars words", word) }
+        // Facts equality sees the new fields (a published change must not be swallowed).
+        var a = PermissionFacts(), b = PermissionFacts(); b.microphone = .denied
+        check(a != b, "facts equality", "microphone"); b = a; b.systemAudio = .allowed
+        check(a != b, "facts equality", "system audio"); b = a; b.calendarsWanted = true
+        check(a != b, "facts equality", "calendars wanted"); a.microphoneWanted = true; b = a
+        check(a == b, "facts equality", "same facts")
+    }
+
+    /// The guide reads the new probes, and a System Audio wait counts as wanted. Nothing here may ask.
+    static func mediaReads() async {
+        let asked = Box(0)
+        var probes = PermissionProbes.inert
+        probes.microphone = { .denied }
+        probes.systemAudio = { .denied }
+        probes.calendars = { .writeOnly }
+        probes.microphoneWanted = { true }
+        probes.calendarsWanted = { false }
+        probes.requestNotifications = { asked.value += 1; return false }
+        probes.automation = { _, ask in if ask { asked.value += 1 }; return .notRunning }
+        let g = guide(probes)
+        await g.refresh()
+        check(g.facts.microphone == .denied && g.facts.systemAudio == .denied && g.facts.calendars == .writeOnly, "media reads", "\(g.facts.microphone) \(String(describing: g.facts.systemAudio)) \(g.facts.calendars)")
+        check(g.row(kind: .microphone)?.status == .needsYou && g.row(kind: .calendars)?.status == .notNeededYet
+              && g.row(kind: .systemAudio)?.status == .notNeededYet, "media reads", "wanted flags drive Needs you")
+        check(asked.value == 0, "media reads never ask", "a refresh asked macOS \(asked.value) time(s)")
+        // A feature waiting on System Audio Recording makes its no a Needs you.
+        g.drag(.systemAudio, for: "Mute other apps")
+        await g.refresh()
+        check(g.row(kind: .systemAudio)?.status == .needsYou, "media reads", "a waiting feature wants System Audio Recording")
     }
 
     // MARK: Status model
@@ -126,7 +221,8 @@ struct PermissionGuideChecks {
 
     static func relevance() {
         let bare = rows(PermissionFacts())
-        check(bare.map(\.kind) == [.accessibility, .notifications, .launchAtLogin], "row relevance", "a Mac without COS scripts gets three rows: \(bare.map(\.id))")
+        check(bare.map(\.kind) == [.accessibility, .notifications, .launchAtLogin, .microphone, .systemAudio, .calendars], "row relevance",
+              "a Mac without COS scripts gets the three it always had, then Microphone, System Audio Recording and Calendars: \(bare.map(\.id))")
         var facts = PermissionFacts()
         facts.jobs = [job("com.cos.meeting-sync", "/u/venv/bin/python", runs: 1, exit: 0),
                       job("com.cos.glasses-control-recovery", "/u/Library/Application Support/COS Control/bin/cos-control-helper", protected: false),
