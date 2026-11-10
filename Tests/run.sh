@@ -156,6 +156,9 @@ zsh "$ROOT/Tests/run-mac-recording.sh"
 zsh "$ROOT/Tests/run-mac-dictation.sh"
 # 0.5.387 lane D1: dictation on with no start shortcut says so, with the recorder right there.
 zsh "$ROOT/Tests/run-dictation-shortcut-gap.sh"
+# 0.5.387 lane D1: the permission guide's logic and pins (Tests/run-permission-guide.sh) had no caller here. One small compile
+# (PermissionGuideModel.swift, Foundation and Combine only, stand-in probes): no window, no TCC read, no prompt.
+zsh "$ROOT/Tests/run-permission-guide.sh"
 # 0.5.331 paste first, polish in place (Miles 2026-10-20 07:49). Call sites, code only (comments never count); the full
 # set with its mutants is Tests/dictation-swap-pins.py inside run-mac-dictation.sh above.
 SWAP_SRC="$(grep -v -E '^[[:space:]]*//' "$ROOT/Sources/MacDictation.swift")"
