@@ -1,8 +1,16 @@
 {
-  "version": "0.5.388",
+  "version": "0.5.389",
   "whatsNew": {
-    "summary": "A Today page that holds still, setup that tells the truth about signing in, and a question card for COS servers that hold questions (off by default). Plus everything in 0.5.387.",
+    "summary": "A session that ends its turn with a question now shows as waiting, and you can answer it from COS Control. Plus everything in 0.5.388.",
     "sections": [
+      {
+        "title": "0.5.389",
+        "items": [
+          "A Claude session that ends its turn with a question and reply buttons now shows as waiting on you in Today and in the session view, with its choices. It needs a COS server with turn-end asks (7.0.18), and shows after your Mac has been idle; at the Mac, answer in the Claude app as before.",
+          "In the session view, a choice or your own reply goes to the session through its Continue. In Today, a tap opens the session with the reply ready to send, and nothing is sent until you send it.",
+          "Your reply reaches the session as a message from COS, not as if you typed it at the Mac, and the session may ask you to confirm."
+        ]
+      },
       {
         "title": "0.5.388",
         "items": [
