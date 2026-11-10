@@ -26,5 +26,5 @@ if [[ "$LANE" == "all" || "$LANE" == "checks" ]]; then
   OUT="$(env CFFIXED_USER_HOME="$DIR/home" HOME="$DIR/home" "$DIR/install-cohort-checks")" || { print -r -- "$OUT"; exit 1; }
   print -r -- "$OUT"
   COUNT="${${OUT##*checks: }%% passed*}"
-  (( COUNT >= 84 )) || { print -u2 "install cohort checks ran only $COUNT (expected at least 84)"; exit 1; }
+  (( COUNT >= 94 )) || { print -u2 "install cohort checks ran only $COUNT (expected at least 94)"; exit 1; }
 fi
