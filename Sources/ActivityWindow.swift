@@ -9093,7 +9093,10 @@ extension ActivityWindow {
         // 0.5.380: a sessions or Today read that failed and now answers arms one reconnect ask (Control Web's BRIEF.reconnect).
         today.reconnects.observe(failed: model.claudeSessionsError != nil || today.reachable == false || today.tickFailed)
         // 0.5.379: the summary is asked about only while the Today home is on screen (Control Web asks only on its Today pane).
-        if section == nil && !showingSettings { await today.askSummary(model: model, body: todaySummaryBody(now: Date())) }
+        // T1: not while the session read is in flight (the body would say the list could not be read), at most 5 minutes.
+        if section == nil && !showingSettings && TodaySummaryHold.askNow(sessions: todaySourceInputs().sessions, lastSent: today.summary.sentAt, now: Date()) {
+            await today.askSummary(model: model, body: todaySummaryBody(now: Date()))
+        }
     }
 
     /// Once, after loadOverviewIfNeeded: what it does not already read (voices, Work's your move, Work's runs and models, the
@@ -9268,13 +9271,10 @@ extension ActivityWindow {
                 // 0.5.379: the server's summary exactly as written (it opens with its own count sentence), as Control Web's
                 // renderStory shows it (TodaySummary.headline); off, failed or an older server: the local headline, word for word.
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(TodaySummary.headline(todayBriefCounts(frame, now: now), summary: todaySummaryShown(frame)))
-                        .font(COSType.display(wide ? 25 : 22))
-                        .lineSpacing(wide ? 8 : 6)
-                        .foregroundStyle(TodayInk.ink)
-                        .frame(maxWidth: 980, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityAddTraits(.isHeader)
+                    // T1: at a held height, so a rewrite never moves what is under it (TodayHeadlineHeight).
+                    TodayHeadlineText(text: TodaySummary.headline(todayBriefCounts(frame, now: now), summary: todaySummaryShown(frame)),
+                                      font: COSType.display(wide ? 25 : 22), lineSpacing: wide ? 8 : 6, color: TodayInk.ink,
+                                      resetKey: ActivityHome.dayKey(now) + "|" + String(today.refresh.doneAt?.timeIntervalSince1970 ?? 0))
                     todaySummaryLine(frame, now: now)
                     todayAskAboutField(frame)
                 }
@@ -9312,7 +9312,8 @@ extension ActivityWindow {
     /// is not answering (Control Web's offline Today shows no summary either; the local headline says what failed).
     func todaySummaryShown(_ frame: TodayHome.Frame) -> TodaySummary.Reply? {
         guard frame.reachable else { return nil }
-        return TodaySummary.shown(today.summary.reply, sessionsRead: frame.counts.sessionsKnown)
+        // T1: a session read in flight or failed no longer drops the summary, its Updated line and the Ask box (TodaySummaryHold).
+        return TodaySummaryHold.shown(today.summary.reply, now: Date())
     }
 
     /// Under the headline: "Updated N min ago." when a summary shows, then Refresh and its note (Updating, the 30 s
