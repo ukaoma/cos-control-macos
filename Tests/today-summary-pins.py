@@ -21,18 +21,26 @@ def body(text, start, stop):
     return text[a:b]
 
 home = body(win, "    func todayHomeView(", "    func todayHeader(now: Date)")
-need(home.count("Text(TodaySummary.headline(todayBriefCounts(frame, now: now), summary: todaySummaryShown(frame)))") == 1,
+need(home.count("TodayHeadlineText(text: TodaySummary.headline(todayBriefCounts(frame, now: now), summary: todaySummaryShown(frame))") == 1,
      "the headline is the server's exact summary, over the quiet-hours fold")
+# T1 (2026-11-09): the headline keeps its height across rewrites (Sources/TodaySummaryHeadline.swift), re-fitting on a new
+# day and after Refresh, with the same font, spacing and ink as before.
+need(home.count('font: COSType.display(wide ? 25 : 22), lineSpacing: wide ? 8 : 6, color: TodayInk.ink,') == 1
+     and home.count('resetKey: ActivityHome.dayKey(now) + "|" + String(today.refresh.doneAt?.timeIntervalSince1970 ?? 0))') == 1,
+     "the headline is held (TodayHeadlineText) and re-fits on a new day and after Refresh")
 need("todaySummaryLine(frame, now: now)" in home, "the Updated line and Refresh sit under the headline")
 shown = body(win, "    func todaySummaryShown(", "    func todaySummaryLine(")
-need("TodaySummary.shown(today.summary.reply, sessionsRead: frame.counts.sessionsKnown)" in shown, "a summary shows only over a session list that was read")
+# T1 (Miles's 9:33 PM screenshots): a session read in flight or failed no longer drops today's summary, its Updated line and
+# the Ask box; the automatic ask waits while the read is pending (at most 5 minutes). Was: shown only over a read list.
+need("TodaySummaryHold.shown(today.summary.reply, now: Date())" in shown and "TodaySummary.shown(" not in shown, "today's summary stays shown through a session read in flight")
+need("TodaySummaryHold.askNow(sessions: todaySourceInputs().sessions, lastSent: today.summary.sentAt, now: Date())" in win, "the automatic ask waits while the session read is in flight")
 need("guard frame.reachable else { return nil }" in shown, "no summary while the server is not answering (Control Web's offline Today)")
 line = body(win, "    func todaySummaryLine(", "    func todaySummaryBody(")
 need("COSTextButtonStyle()" in line and ".disabled(refresh.busy || counting)" in line, "Refresh is a COS text button, off while busy or counting down")
 need("TimelineView(.periodic(from: now, by: 1))" in line and line.index("if counting {") < line.index("TimelineView("),
      "the note ticks once a second only while a countdown runs")
 tick = body(win, "    func todayTick() async {", "    func todayOpenLoads() async {")
-need(tick.count("today.askSummary(") == 1 and "if section == nil && !showingSettings { await today.askSummary(" in tick,
+need(tick.count("today.askSummary(") == 1 and "if section == nil && !showingSettings && TodaySummaryHold.askNow(" in tick,
      "Today asks once per tick, only while the home is on screen")
 need(win.count("today.askSummary(") == 1 and win.count("today.refreshToday(") == 1, "one automatic ask and one Refresh path")
 refresh = body(win, "    func todayRefresh() async {", "    func todayHeader(now: Date)")

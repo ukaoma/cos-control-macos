@@ -794,9 +794,15 @@ import Foundation
 
     static func actionChecks() {
         let cc = session("claude:h1", "running", name: "Holiday promo landing page")
+        // T1 (lead 2026-11-09): a WORKING session with no host found is running somewhere (tmux, the Claude app's Code tab):
+        // Open session through the platform route, and no word about a terminal. Was: "Terminal is not running this session any more."
         let read = TodayHome.openFor(cc, host: nil, cursorTrusted: true, hostsRead: true)
-        check(read.label == "In Sessions" && read.note == "Terminal is not running this session any more." && read.action == .inSessions(cc.id),
-              "no host after the lookup: section 6's fallback, In Sessions")
+        check(read.label == "Open session" && read.note == nil && read.action == .platform(cc.id),
+              "a working session with no host after the lookup: Open session routes, no terminal claim")
+        let quiet = session("claude:h2", "idle", name: "Holiday promo landing page")
+        let gone = TodayHome.openFor(quiet, host: nil, cursorTrusted: true, hostsRead: true)
+        check(!TodayHome.isWorking(quiet) && gone.label == "In Sessions" && gone.note == "Terminal is not running this session any more." && gone.action == .inSessions(quiet.id),
+              "a session that is not working, no host after the lookup: section 6's fallback, In Sessions")
         check(TodayHome.openFor(cc, host: nil, cursorTrusted: true, hostsRead: false).label == "Open session", "before the lookup: Open session routes")
         var asking = session("claude:q3", "waiting", name: "Docs", kind: "question", question: "Sandbox or new draft?")
         asking.waitingQuestionCount = 3

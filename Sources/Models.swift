@@ -13990,7 +13990,9 @@ enum TodayHome {
         case .claudeCode:
             if let host { return ("Open in " + host.app, .platform(session.id), nil) }
             // Hosts not read yet: Open session lets the platform route decide. Read, and no process holds it: section 6's fallback.
-            return hostsRead ? ("In Sessions", .inSessions(session.id), "Terminal is not running this session any more.")
+            // T1 (lead 2026-11-09): only for a session that is not working. A working one with no host found (tmux, the
+            // Claude app's Code tab, no pid file) is running somewhere: Open session routes, and nothing is said about a terminal.
+            return hostsRead && !isWorking(session) ? ("In Sessions", .inSessions(session.id), "Terminal is not running this session any more.")
                 : ("Open session", .platform(session.id), nil)
         case .glasses, .question: return ("Open in Messages", .messages(nil), nil)
         }
