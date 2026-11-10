@@ -531,10 +531,12 @@ struct ProviderConnectChecks {
         let c = guide([missing], effects: effects)
         await c.refresh()
         var startingDuring = false
+        var clicks = 0
         c.runInTerminal = { script in
             effects.terminal.append(script)
-            startingDuring = c.installStarting.contains(.claude)
-            await c.install(.claude)   // the second click, while the first is still waiting
+            startingDuring = startingDuring || c.installStarting.contains(.claude)
+            clicks += 1
+            if clicks == 1 { await c.install(.claude) }   // ONE second click, while the first is still waiting (never recursive)
             return true
         }
         await c.install(.claude)

@@ -119,7 +119,10 @@ MUTANTS = [
 
 
 def run(lane, copy, out):
-    p = subprocess.run(lane_command(lane, copy, out), capture_output=True, text=True, cwd=copy)
+    try:
+        p = subprocess.run(lane_command(lane, copy, out), capture_output=True, text=True, cwd=copy, timeout=240)
+    except subprocess.TimeoutExpired as e:   # a mutant that hangs the checks is caught by them too, never silent
+        return 124, f"lane timed out after 240 s (hung)\n{(e.stdout or b'')[-500:] if isinstance(e.stdout, bytes) else (e.stdout or '')[-500:]}"
     return p.returncode, (p.stdout + p.stderr)[-1500:]
 
 
