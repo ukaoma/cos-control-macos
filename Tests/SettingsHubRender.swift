@@ -98,10 +98,14 @@ import SwiftUI
         while done.wait(timeout: .now()) == .timedOut, spins < 250 { RunLoop.main.run(until: Date().addingTimeInterval(0.02)); spins += 1 }
     }
 
-    /// 0.5.387: a stopped server (installed, checked, not answering).
+    /// 0.5.387: a stopped server (installed, checked, not answering). The feature flags come from /api/health, so a status
+    /// read with no answer leaves them off (ServerStatus reads each `?? false`); the fixture clears them the same way.
     static func serverDown(_ model: ControllerModel) {
         var s = model.status
         s.running = false; s.runtimeState = "stopped"
+        s.backgroundJobsSupported = false; s.morningBriefSupported = false; s.videoUploadV2Supported = false; s.tasksGate = nil
+        s.idleMetalHqSupported = false; s.adaptiveAudioCleanupSupported = false; s.progressiveHqEnabled = nil
+        s.threadAttachSupported = false; s.meetingPreviewSupported = false; s.contextBrowserSupported = false
         model.status = s
     }
 

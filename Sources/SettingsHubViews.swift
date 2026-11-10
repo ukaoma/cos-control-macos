@@ -710,11 +710,16 @@ struct SettingsHubViewSwitch: View {
             Text(view == .basic ? SettingsHubView.basicLine : SettingsHubView.allLine)
                 .font(COSType.body(13)).foregroundStyle(TodayInk.grey)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Text(SettingsHubView.switchLabel).font(COSType.body(13, weight: .medium)).foregroundStyle(TodayInk.ink)
-            Toggle(isOn: Binding(get: { view == .all }, set: { set($0 ? .all : .basic) })) { EmptyView() }
-                .toggleStyle(COSSwitchStyle())
-                .accessibilityLabel(SettingsHubView.switchLabel)
-                .accessibilityIdentifier("settings-view-all")
+            // The words sit right beside their switch (render review 21:45: the switch stretched and left the words mid-page).
+            HStack(spacing: 10) {
+                Text(SettingsHubView.switchLabel).font(COSType.body(13, weight: .medium)).foregroundStyle(TodayInk.ink)
+                Toggle(isOn: Binding(get: { view == .all }, set: { set($0 ? .all : .basic) })) { EmptyView() }
+                    .toggleStyle(COSSwitchStyle())
+                    .labelsHidden()
+                    .accessibilityLabel(SettingsHubView.switchLabel)
+                    .accessibilityIdentifier("settings-view-all")
+            }
+            .fixedSize()
         }
         .frame(maxWidth: SettingsHubLayout.pageMaxWidth, alignment: .leading)
     }
