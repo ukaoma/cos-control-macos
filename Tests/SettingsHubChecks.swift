@@ -453,6 +453,10 @@ import Foundation
                   "\(state) never offers Repair the helper refuses; it opens System and updates")
         }
         check(SettingsHubServerNotice.title(.openSystem) == "Open System and updates", "the button names where it goes")
+        // Q1 02:40: a managed state with no manifest (installed false) is never offered Repair; the helper refuses it.
+        check(SettingsHubServerNotice.action(runtimeState: "managedDegraded", installed: false, needsFirstRun: false) == .openSystem
+              && SettingsHubServerNotice.action(runtimeState: "managedHealthy", installed: false, needsFirstRun: false) == .openSystem,
+              "a managed state with no manifest never offers Repair")
         let lines = [SettingsHubServerNotice.notAnsweringLine, SettingsHubServerNotice.notSetUpLine, SettingsHubSearch.serverLine, SettingsHubSearch.newerServerLine]
             + [SettingsHubServerNotice.Action.start, .install, .repair, .openSystem].compactMap(SettingsHubServerNotice.title)
         for line in lines { check(!line.contains("—") && !line.contains("→") && !line.isEmpty, "\(line) is plain") }

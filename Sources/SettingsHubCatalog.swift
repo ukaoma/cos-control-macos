@@ -898,7 +898,9 @@ enum SettingsHubServerNotice {
         if needsFirstRun { return .none }
         if !installed && runtimeState == "notInstalled" { return .install }
         if runtimeState == "stopped" { return .start }
-        if repairable.contains(runtimeState) { return .repair }
+        // Q1 02:40: the helper reports managedDegraded with no manifest too (main.swift runtimeState, an in-place or loaded
+        // service), and `installed` is that manifest (statusDetails "installed": manifest != nil). Repair needs both.
+        if installed && repairable.contains(runtimeState) { return .repair }
         return .openSystem
     }
     /// The runtime states the helper's repair accepts: a COS Control managed install with its manifest. Not managedInPlace (a
