@@ -672,10 +672,28 @@ struct WebKeyChecks {
         check(!SignerTLSCore.trusted(chain: minted, host: leafHost, at: now, anchors: [other]), "audit anchors only", "another root does not vouch for this chain")
         check(!SignerTLSCore.trusted(chain: minted, host: leafHost, at: now.addingTimeInterval(40 * 86_400), anchors: [root]), "audit expiry",
               "the leaf is refused after its notAfter")
-        check(!SignerTLSCore.trusted(chain: [], host: leafHost, at: now, anchors: [root]) && !SignerTLSCore.trusted(chain: minted, host: leafHost, at: now, anchors: [])
-              && !SignerTLSCore.trusted(chain: minted, host: "", at: now, anchors: [root])
-              && !SignerTLSCore.trusted(chain: Array(repeating: minted[0], count: 9), host: leafHost, at: now, anchors: [root]),
-              "audit chain bounds", "no chain, no anchor, no host, or more than 8 certificates: refused")
+        check(!SignerTLSCore.trusted(chain: Array(repeating: minted[0], count: 9), host: leafHost, at: now, anchors: [root]),
+              "audit chain bounds", "more than 8 certificates: refused, though SecTrust takes the padded chain")
+
+        // The three empty inputs, each on an input that is otherwise VALID (the controls above pass these same chains,
+        // dates and anchors), so the empty value is the only reason left to refuse. Each prints why: "input" is the
+        // guard; anything else is SecTrust refusing on its own (Q1 and the lead, 14:27).
+        func refusedWithEvidence(_ tag: String, _ result: (trusted: Bool, why: String)) -> Bool {
+            print("EVIDENCE [\(tag)]: trusted=\(result.trusted) why=\(result.why)")
+            return !result.trusted
+        }
+        check(refusedWithEvidence("audit empty host", SignerTLSCore.evaluate(chain: minted, host: "", at: now, anchors: [root])), "audit empty host",
+              "a valid chain under its own root, with host \"\": refused")
+        check(refusedWithEvidence("audit empty host", SignerTLSCore.evaluate(chain: x2, host: "", at: pinned, anchors: roots)), "audit empty host",
+              "the public LE X2 chain inside its validity, system roots, host \"\": refused")
+        check(refusedWithEvidence("audit empty anchors", SignerTLSCore.evaluate(chain: x2, host: "valid-isrgrootx2.letsencrypt.org", at: pinned, anchors: [])),
+              "audit empty anchors", "the public LE X2 chain (ISRG Root X2 is a system root) with an EMPTY anchor list: refused, never the system roots")
+        check(refusedWithEvidence("audit empty anchors", SignerTLSCore.evaluate(chain: x1, host: "valid-isrgrootx1.letsencrypt.org", at: pinned, anchors: [])),
+              "audit empty anchors", "the public LE X1 chain with an EMPTY anchor list: refused")
+        check(refusedWithEvidence("audit empty chain", SignerTLSCore.evaluate(chain: [], host: "valid-isrgrootx2.letsencrypt.org", at: pinned, anchors: roots)),
+              "audit empty chain", "no certificates at all: refused")
+        let control = SignerTLSCore.evaluate(chain: x2, host: "valid-isrgrootx2.letsencrypt.org", at: pinned, anchors: roots)
+        check(control.trusted && control.why == "ok", "audit empty anchors", "control: the same X2 chain, date and host with the system roots is trusted (why ok)")
     }
 
     static func cancellation() async {

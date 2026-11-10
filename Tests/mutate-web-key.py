@@ -149,16 +149,19 @@ mutants = [
     ("TLS-9 the admin domain's roots", P, "SecTrustSettingsCopyCertificates(.system, &list)", "SecTrustSettingsCopyCertificates(.admin, &list)", "[audit system roots]"),
     ("TLS-10 no host name in the SSL policy", P, "SecPolicyCreateSSL(true, host as CFString)", "SecPolicyCreateSSL(true, nil)", "[audit hostname]"),
     ("TLS-11 the keychain's trust counts too", P, "SecTrustSetAnchorCertificatesOnly(trust, true)", "SecTrustSetAnchorCertificatesOnly(trust, false)", "[audit anchors only]"),
-    ("TLS-12 the date is ignored", P, "SecTrustSetVerifyDate(trust, date as CFDate) == errSecSuccess else { return false }", "true else { return false }", "[audit expiry]"),
-    ("TLS-13 the anchors are never set", P, "              SecTrustSetAnchorCertificates(trust, anchors as CFArray) == errSecSuccess,\n", "", "[audit evaluator]"),
-    ("TLS-14 more than 8 certificates", P, "guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return false }",
-     "guard !chain.isEmpty, !anchors.isEmpty, !host.isEmpty else { return false }", "[audit chain bounds]"),
-    ("TLS-15 an empty host name", P, "guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return false }",
-     "guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty else { return false }", "[audit chain bounds]"),
-    ("TLS-16 no anchors at all", P, "guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return false }",
-     "guard !chain.isEmpty, chain.count <= 8, !host.isEmpty else { return false }", "[audit chain bounds]"),
-    ("TLS-17 an empty chain", P, "guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return false }",
-     "guard chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return false }", "[audit chain bounds]"),
+    ("TLS-12 the date is ignored", P, 'SecTrustSetVerifyDate(trust, date as CFDate) == errSecSuccess else { return (false, "setup") }',
+     'true else { return (false, "setup") }', "[audit expiry]"),
+    ("TLS-13 the anchors are never set", P, "        guard SecTrustSetAnchorCertificates(trust, anchors as CFArray) == errSecSuccess,\n              SecTrustSetAnchorCertificatesOnly",
+     "        guard SecTrustSetAnchorCertificatesOnly", "[audit evaluator]"),
+    ("TLS-14 more than 8 certificates", P, 'guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return (false, "input") }',
+     'guard !chain.isEmpty, !anchors.isEmpty, !host.isEmpty else { return (false, "input") }', "[audit chain bounds]"),
+    # 14:27 (Q1 and the lead): each empty input on an otherwise-valid input, with an EVIDENCE line saying who refused.
+    ("TLS-15 an empty host name", P, 'guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return (false, "input") }',
+     'guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty else { return (false, "input") }', "[audit empty host]"),
+    ("TLS-16 no anchors at all", P, 'guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return (false, "input") }',
+     'guard !chain.isEmpty, chain.count <= 8, !host.isEmpty else { return (false, "input") }', "[audit empty anchors]"),
+    ("TLS-17 an empty chain", P, 'guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return (false, "input") }',
+     'guard chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return (false, "input") }', "[audit empty chain]"),
     ("TLS-18 network fetch allowed (pins)", P, "SecTrustSetNetworkFetchAllowed(trust, false)", "SecTrustSetNetworkFetchAllowed(trust, true)", "[audit evaluator wiring]"),
     ("TLS-19 the audit skips the chain check (pins)", H,
      '            guard SignerTLSCore.trusted(chain: answer.chain, host: host, at: Date(), anchors: anchors) else { return refused("signer_tls") }\n', "",
@@ -202,7 +205,20 @@ mutants = [
 only = [part for part in os.environ.get("MUTATE_ONLY", "").split("|") if part]
 if only:
     mutants = [m for m in mutants if any(part in m[0] for part in only)]
+log_dir = os.environ.get("MUTATE_LOG_DIR")
+if log_dir:
+    # Evidence mode (0.5.390): the commit and the worktree state up front, then each mutant's exact substitution and the
+    # whole lane output, so a survivor's log shows the guard removed and what the lane printed with it gone.
+    log_dir = pathlib.Path(log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    head = sh("git rev-parse HEAD")[1].strip()
+    porcelain = sh("git status --porcelain")[1]
+    state = "clean" if not porcelain.strip() else "DIRTY"
+    (log_dir / "stamp.txt").write_text("commit " + head + "\nworktree " + state + "\n" + porcelain)
+    print("stamp: commit " + head + ", worktree " + state, flush=True)
 code, out = sh(LANE)
+if log_dir:
+    (log_dir / "baseline.log").write_text(out)
 if code != 0 or "web key pins: all passed" not in out:
     print(f"BASELINE RED:\n{out[-3000:]}")
     sys.exit(1)
@@ -230,6 +246,10 @@ for name, path, old, new, expect in mutants:
     verdict = ("KILLED" if killed else "SURVIVED") + (f" by {expect}" if killed and by else " (other failure)" if killed else "") + ("" if landed else " (MUTATION DID NOT LAND)")
     results.append((name, verdict))
     print(f"{verdict:70s} {name}", flush=True)
+    if log_dir:
+        slug = name.split(" ")[0]
+        (log_dir / f"{slug}.log").write_text(f"mutant {name}\nfile {path}\nlanded {landed}\nexit {code}\nverdict {verdict}\n"
+                                             f"--- removed\n{old}\n--- put in its place\n{new}\n--- lane output\n{out}")
     if killed and not by:
         print(out[-1500:])
 print("\nsummary:")

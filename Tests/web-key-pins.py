@@ -234,9 +234,12 @@ bytes_at = audit_fn.find("WebKeyAssetsCore.verified(served, sha: sha)")
 need(audit_fn.count(judged) == 1 and 0 <= anchors_at < audit_fn.find("for (path, sha) in signerFiles") < answer_at < judged_at < bytes_at,
      "audit judges each chain", "system roots before the loop; every fetch's own chain is judged before its bytes count")
 trusted_fn = body_of(pairing, pairing.index("static func trusted(chain: [Data], host: String, at date: Date, anchors: [SecCertificate]) -> Bool"))
-need(trusted_fn.count("SecPolicyCreateSSL(true, host as CFString)") == 1 and trusted_fn.count("SecTrustSetAnchorCertificates(trust, anchors as CFArray)") == 1
-     and trusted_fn.count("SecTrustSetAnchorCertificatesOnly(trust, true)") == 1 and trusted_fn.count("SecTrustSetNetworkFetchAllowed(trust, false)") == 1
-     and trusted_fn.count("SecTrustSetVerifyDate(trust, date as CFDate)") == 1 and trusted_fn.count("SecTrustEvaluateWithError(trust, nil)") == 1,
+evaluate_fn = body_of(pairing, pairing.index("static func evaluate(chain: [Data], host: String, at date: Date, anchors: [SecCertificate]) -> (trusted: Bool, why: String)"))
+need(trusted_fn.strip("{} \n") == "evaluate(chain: chain, host: host, at: date, anchors: anchors).trusted",
+     "audit evaluator wiring", "trusted() is exactly evaluate()'s answer, so the evidence lines describe what the audit runs")
+need(evaluate_fn.count("SecPolicyCreateSSL(true, host as CFString)") == 1 and evaluate_fn.count("SecTrustSetAnchorCertificates(trust, anchors as CFArray)") == 1
+     and evaluate_fn.count("SecTrustSetAnchorCertificatesOnly(trust, true)") == 1 and evaluate_fn.count("SecTrustSetNetworkFetchAllowed(trust, false)") == 1
+     and evaluate_fn.count("SecTrustSetVerifyDate(trust, date as CFDate)") == 1 and evaluate_fn.count("SecTrustEvaluateWithError(trust, &error)") == 1,
      "audit evaluator wiring", "SSL policy with the host name, the given anchors ONLY, no network fetch, the given date")
 roots_fn = body_of(pairing, pairing.index("static func systemRoots() -> [SecCertificate]"))
 need(roots_fn.count("SecTrustSettingsCopyCertificates(.system, &list)") == 1 and ".admin" not in pairing and ".user" not in roots_fn,

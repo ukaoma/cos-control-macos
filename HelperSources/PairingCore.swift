@@ -527,22 +527,30 @@ enum SignerTLSCore {
     /// name, anchors only, no network fetch. The audit passes systemRoots() and its ts.net host; the checks also pass a
     /// throwaway root, and real Let's Encrypt chains at a pinned date.
     static func trusted(chain: [Data], host: String, at date: Date, anchors: [SecCertificate]) -> Bool {
-        // chain.count <= 8 is load-bearing: SecTrust accepts a padded chain (mutant TLS-14). The three empty checks are
-        // defence in depth only: on Darwin 27.2 SecTrust refuses an empty chain, an empty anchor list (with anchors-only)
-        // and an empty host name by itself (mutants TLS-15 to TLS-17 survive), and this code does not rely on that.
-        guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return false }
+        evaluate(chain: chain, host: host, at: date, anchors: anchors).trusted
+    }
+
+    /// trusted(), with why it said no: "input" (the guard), "certificate" (a block that is not DER), "create" or "setup"
+    /// (SecTrust would not take the inputs), or SecTrust's own error. The checks print it as evidence; the audit reads only
+    /// the Bool.
+    static func evaluate(chain: [Data], host: String, at date: Date, anchors: [SecCertificate]) -> (trusted: Bool, why: String) {
+        // chain.count <= 8 is load-bearing: SecTrust accepts a padded chain (mutant TLS-14). The empty-input checks are
+        // proven per input by "audit empty host", "audit empty anchors" and "audit empty chain" (mutants TLS-15 to 17).
+        guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return (false, "input") }
         var certificates: [SecCertificate] = []
         for der in chain {
-            guard let certificate = SecCertificateCreateWithData(nil, der as CFData) else { return false }
+            guard let certificate = SecCertificateCreateWithData(nil, der as CFData) else { return (false, "certificate") }
             certificates.append(certificate)
         }
         var made: SecTrust?
-        guard SecTrustCreateWithCertificates(certificates as CFArray, SecPolicyCreateSSL(true, host as CFString), &made) == errSecSuccess,
-              let trust = made,
-              SecTrustSetAnchorCertificates(trust, anchors as CFArray) == errSecSuccess,
+        let created = SecTrustCreateWithCertificates(certificates as CFArray, SecPolicyCreateSSL(true, host as CFString), &made)
+        guard created == errSecSuccess, let trust = made else { return (false, "create \(created)") }
+        guard SecTrustSetAnchorCertificates(trust, anchors as CFArray) == errSecSuccess,
               SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess,
               SecTrustSetNetworkFetchAllowed(trust, false) == errSecSuccess,
-              SecTrustSetVerifyDate(trust, date as CFDate) == errSecSuccess else { return false }
-        return SecTrustEvaluateWithError(trust, nil)
+              SecTrustSetVerifyDate(trust, date as CFDate) == errSecSuccess else { return (false, "setup") }
+        var error: CFError?
+        let accepted = SecTrustEvaluateWithError(trust, &error)
+        return (accepted, accepted ? "ok" : "SecTrust: " + (error.map { CFErrorCopyDescription($0) as String } ?? "no error"))
     }
 }
