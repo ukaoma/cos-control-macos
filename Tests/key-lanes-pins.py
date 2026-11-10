@@ -72,7 +72,9 @@ check('KeyLanesSetupStep(model: model)' in ready, 'the optional step is in the R
 check(setup.count('.background(KeyLanesInstallLatch(model: model))') == 1, 'one install latch, in a background (no layout place)')
 for name, src in (('Views.swift', panel), ('ControlSetup.swift', setup)):
     code_lines = [l for l in src.splitlines() if 'KeyLanes' in l and not l.strip().startswith('//')]
-    check(len(code_lines) == (1 if name == 'Views.swift' else 2), f'{name} carries only the hook')
+    # 0.5.387 (lane D1): ControlSetup also copies the latch's answer into the install cohort (one .onReceive line).
+    check(len(code_lines) == (1 if name == 'Views.swift' else 3), f'{name} carries only the hook')
+check(setup.count('.onReceive(KeyLanesStore.shared.$install) { InstallCohort.adoptKeyLanes($0?.rawValue) }') == 1, 'the third ControlSetup line only hands the latch answer to InstallCohort')
 
 def body(src, signature):
     start = src.index(signature)

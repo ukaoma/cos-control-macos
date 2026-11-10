@@ -44,7 +44,7 @@ sources = {p.name: p.read_text() for p in (root / "Sources").glob("*.swift")}
 
 # Where it is: the Meeting assistant card, below Home city, one store.
 card = body(ask, "struct MeetingAskSettings: View {", "struct HomeCitySettings: View {")
-check(card.count("LiveCuesSettingsRow(store: store.liveCues, model: model)") == 1, "the row is in the Meeting assistant card")
+check(card.count("LiveCuesSettingsRow(store: store.liveCues, model: model, hubPart: part)") == 1, "the row is in the Meeting assistant card")  # 0.5.387 (D2): hubPart splits the limits under Advanced
 check(card.index("HomeCitySettings(store: store.homeArea, model: model)") < card.index("LiveCuesSettingsRow("), "the row sits below Home city")
 check(sum(s.count("LiveCuesSettingsRow(") for s in sources.values()) == 1, "the row is drawn in one place")
 check("    let liveCues = LiveCuesStore()\n" in ask and sum(s.count("LiveCuesStore()") for s in sources.values()) == 1, "one store, on MeetingAskStore")
@@ -70,9 +70,11 @@ for banned in (".sheet(", ".alert(", ".confirmationDialog(", ".popover(", "NSAle
     check(banned not in row, f"the row has no {banned} (inline only; no pill tabs or caps kicker)")
 
 # 0.5.329: the spend limits, under the switch, only from a server that reports them, moved only through the store.
-check("if let limits = store.settings?.limits {\n                LiveCuesLimitsRows(store: store, limits: limits, run: Self.run(model))" in row
+# 0.5.387 (lane D2): the limits moved into limitRows, drawn under the switch (and, in the hub, alone under Live cues' Advanced).
+LIMIT_CALL = "if !hosted || hubPart == .all { limitRows }"
+check("if let limits = store.settings?.limits {\n            LiveCuesLimitsRows(store: store, limits: limits, run: Self.run(model))" in row
       and sum(s.count("LiveCuesLimitsRows(") for s in sources.values()) == 1, "the limits draw only when the server sends them, in one place")
-check(row.index("Toggle(LiveCues.title") < row.index("LiveCuesLimitsRows(") < row.index("Text(LiveCues.glassesLine)"), "the limits sit under the switch")
+check(row.count(LIMIT_CALL) == 1 and row.index("Toggle(LiveCues.title") < row.index(LIMIT_CALL) < row.index("Text(LiveCues.glassesLine)"), "the limits sit under the switch")
 limits_view = body(ask, "struct LiveCuesLimitsRows: View {", "/// Transcription (server 6.72.0): its own Settings card.")
 check(limits_view.count("store.propose(") == 2 and "runHelper" not in limits_view, "the bar and the steppers move only through the store")
 check(limits_view.count("if limit.locked {") == 2 and "LiveCues.envNote" in limits_view, "a limit set in .env shows read-only with Set in .env")
@@ -91,9 +93,10 @@ check("state = LiveCues.state(answer?.details)" in body(store_src, "func flushLi
 # moved only through the store, a menu (never a row of pill buttons), the web mode's state in words.
 check("if let v3 = store.settings?.v3 {\n                LiveCuesModeRows(store: store, v3: v3, run: Self.run(model))" in row
       and sum(s.count("LiveCuesModeRows(") for s in sources.values()) == 1, "the cue mode and Grounded cues draw only when the server answered v 3, in one place")
-check("if let v3 = store.settings?.v3, LiveCues.searchesWeb(v3.mode.value), let limits = store.settings?.limits {\n                LiveCuesGeneralRows(" in row
+check("if let v3 = store.settings?.v3, LiveCues.searchesWeb(v3.mode.value), let limits = store.settings?.limits {\n            LiveCuesGeneralRows(" in row
       and sum(s.count("LiveCuesGeneralRows(") for s in sources.values()) == 1, "the general limits draw only for a v 3 server whose mode searches the web, in one place")
-check(row.index("Toggle(LiveCues.title") < row.index("LiveCuesModeRows(") < row.index("LiveCuesLimitsRows(") < row.index("LiveCuesGeneralRows(") < row.index("Text(LiveCues.glassesLine)"),
+check(row.index("Toggle(LiveCues.title") < row.index("LiveCuesModeRows(") < row.index(LIMIT_CALL) < row.index("Text(LiveCues.glassesLine)")
+      and row.index("LiveCuesLimitsRows(") < row.index("LiveCuesGeneralRows(") < row.index("private var mainBody"),
       "the mode sits under the switch, the general limits under the v 2 limits")
 modes_view = body(ask, "struct LiveCuesModeRows: View {", "struct LiveCuesGeneralRows: View {")
 check("COSDropdown(LiveCues.cueModeTitle, selection: modeBinding," in modes_view and "LiveCueMode.allCases.map { COSDropdownOption($0, LiveCues.modeTitle($0)) }" in modes_view,

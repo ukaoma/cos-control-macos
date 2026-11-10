@@ -149,8 +149,13 @@ need("guard model.status.dropIt.available else { todaySubmitAsk(words); return }
 
 # ── Settings.
 need("if model.status.dropIt.supported { DropItSettingRow(model: model, store: model.dropIt) }" in views, "settings row", "the switch shows only for a server that has Drop it")
-need('($0 != "DROP-01" || model.status.dropIt.supported)' in views, "settings search", "search lists it only when it is drawn")
-need(catalog.count('.init("DROP-01", "Drop it",') == 1 and '"DROP-01"' not in catalog.replace('.init("DROP-01", "Drop it",', ""), "settings row", "one DROP-01 row in the catalog")
+# 0.5.387 (lane D2): hub search lists every row and says why a row is not drawn, so the drawn test now feeds that reason line (hubItemShown).
+need('(id != "DROP-01" || model.status.dropIt.supported)' in views, "settings search", "the hub draws it only for a server that has Drop it, and search marks it otherwise")
+# 0.5.387 (lane D2): besides its row, the catalog names DROP-01 only in the Basic set, the hidden-row reason and the landing for COS reaching out.
+_d2_allowed = ('.init("DROP-01", "Drop it",', '"MB-02", "DROP-01", "REACH-01"', 'case "DROP-01": return c.serverRunning ? newerServerLine : serverLine', 'case "work.reach": return "DROP-01"')
+_d2_rest = catalog
+for _a in _d2_allowed: _d2_rest = _d2_rest.replace(_a, "")
+need(catalog.count('.init("DROP-01", "Drop it",') == 1 and all(catalog.count(_a) == 1 for _a in _d2_allowed) and '"DROP-01"' not in _d2_rest, "settings row", "one DROP-01 row in the catalog")
 need('Toggle(isOn: Binding(get: { model.status.dropIt.enabled }, set: { on in Task { await model.setDropItEnabled(on) } }))' in drop_views,
      "settings row", "the switch is the server's value and PUTs through the model")
 
@@ -184,11 +189,11 @@ for script in list((root / "Tests").glob("*.sh")) + list((root / "scripts").glob
 
 # ── Version touchpoints and the lanes.
 plist = read("Resources/Info.plist")
-need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.386</string>", plist) and re.search(r"<key>CFBundleVersion</key>\s*<string>440</string>", plist),
-     "version", "Info.plist is 0.5.386 (build 440), Work chat with no session, Prep on every Next up row, Today Next up and Ask about this, phone approvals registration only, Sessions file cards, the Mac parity bundle and calendars on top of 0.5.377: pet session counts on top of Meeting Prep, Ask Work review, the Messages cleanup, quit fix, P2 and Drop it")
+need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.387</string>", plist) and re.search(r"<key>CFBundleVersion</key>\s*<string>441</string>", plist),
+     "version", "Info.plist is 0.5.387 (build 441), production hardening, Work chat with no session, Prep on every Next up row, Today Next up and Ask about this, phone approvals registration only, Sessions file cards, the Mac parity bundle and calendars on top of 0.5.377: pet session counts on top of Meeting Prep, Ask Work review, the Messages cleanup, quit fix, P2 and Drop it")
 whats = json.loads(read("Resources/WhatsNew.json"))
 sec = [s for s in whats["whatsNew"]["sections"] if s["title"] == "0.5.371"]
-need(whats.get("version") == "0.5.386" and len(sec) == 1 and any("Drop it" in i for i in sec[0]["items"]), "version", "What's New has one 0.5.371 section naming Drop it")
+need(whats.get("version") == "0.5.387" and len(sec) == 1 and any("Drop it" in i for i in sec[0]["items"]), "version", "What's New has one 0.5.371 section naming Drop it")
 need("\n## 0.5.371 (build 425)" in "\n" + read("CHANGELOG.md"), "version", "the changelog has its 0.5.371 (build 425) entry")
 need('python3 "$ROOT/Tests/drop-it-helper-checks.py" "$TMP/cos-control-helper"' in run_sh, "lanes wired", "Tests/run.sh runs the helper checks")
 for lane in ("pins", "models", "wiring"):
