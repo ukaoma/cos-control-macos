@@ -166,7 +166,8 @@ final class MeetingAskStore: ObservableObject {
                 guard history.count < 10_000 else { throw HelperClientError.commandFailed("Meeting history exceeds this app's local cache limit. Saved server history is retained.") }
             } while true
             guard history.allSatisfy({ $0.sessionId == session && $0.serverInstanceId == config.serverInstanceId }) else { throw HelperClientError.commandFailed("Meeting history identity did not match. Local recovery is preserved.") }
-            var merged = Dictionary(uniqueKeysWithValues: (records[session]?.exchanges ?? []).map { ($0.id, $0) })
+            // 0.5.387 (D4, Q1): a hand-edited or damaged local cache may repeat an id; the newer copy wins instead of a trap.
+            var merged = Dictionary((records[session]?.exchanges ?? []).map { ($0.id, $0) }, uniquingKeysWith: { $0.updatedAt >= $1.updatedAt ? $0 : $1 })
             for row in history {
                 if let local = merged[row.id], local.updatedAt > row.updatedAt || (local.terminal && !row.terminal) { continue }
                 merged[row.id] = row

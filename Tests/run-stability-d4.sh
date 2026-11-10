@@ -20,4 +20,5 @@ fi
 if /usr/bin/awk '/static func diff\(/,/^    }$/' "$ROOT/Sources/Models.swift" | /usr/bin/grep -n -F 'Dictionary(uniqueKeysWithValues:'; then
   print -u2 "FAIL: PetCompletionDetector.diff must not use uniqueKeysWithValues"; exit 1
 fi
+/usr/bin/python3 "$ROOT/Tests/stability-d4-pins.py" "$ROOT"
 print "run-stability-d4: PASS"
