@@ -31,7 +31,7 @@
       {
         "title": "0.5.385",
         "items": [
-          "Today, Next up: every meeting has Prep, not just the first. It opens a small panel under that meeting: add context (goals, people, what you want out of it) and files, then Start prep.",
+          "With Today home on. Today, Next up: every meeting has Prep, not just the first. It opens a small panel under that meeting: add context (goals, people, what you want out of it) and files, then Start prep.",
           "Start prep opens the COS chat with that meeting's prep, keeps your context as its notes and its files with it, and starts it. With an older COS server it asks COS to prep you for that meeting, with your context and files.",
           "The first meeting keeps Prep me and Open meeting, and adds Add context. Holds and blocks (Blocked, Busy, Hold, Focus, Travel, Personal, OOO, Lunch and the like) get no Prep.",
           "One panel opens at a time, Escape closes it, and what you typed stays while Today refreshes. Prep shows only when the server answers and the COS chat can ask."
@@ -40,7 +40,7 @@
       {
         "title": "0.5.384",
         "items": [
-          "Today, Next up: the meeting on now or next, then up to four more with their times. All-day events are left out. \"+N more today\" opens Meetings when there are more.",
+          "With Today home on. Today, Next up: the meeting on now or next, then up to four more with their times. All-day events are left out. \"+N more today\" opens Meetings when there are more.",
           "When the calendar was last read a while ago, Next up says \"Calendar as of\" and the time. With an older COS server, Next up shows the one event it did before.",
           "Ask about this: under the Today summary, type a question or tell a session what to do. It opens the COS chat and asks there, with the summary and the sessions it read, so COS can answer or pass the instruction on.",
           "The box shows only when a summary is on screen, the server answers, and the COS chat can ask (Work runs from Today on in Settings)."
@@ -49,10 +49,7 @@
       {
         "title": "0.5.383",
         "items": [
-          "Settings, Glasses and iPhone, Devices: Phone approvals. Your iPhone can approve agent actions with its passkey, and Touch ID on this Mac enrolls the phone. It shows only when your COS server turns phone approvals on.",
-          "Registration only: when your COS server 7.0.9 or later turns on just the registration switch, Devices shows only this Mac's key. Register it with Touch ID to start its 24 hour clock. Phone enrollment and approvals stay off.",
-          "The full key hash and the time the server registered the key are shown, to check against the pin. Commit the pin by hand as web_key_anchor.json. COS Control never writes or commits it.",
-          "Cancelling Touch ID registers nothing. Both switches are off by default, and with them off nothing new shows."
+          "Phone approvals are off by default, and with them off nothing changes. When your COS server turns them on, Settings, Glasses, phone and web shows Phone approvals."
         ]
       },
       {
@@ -185,7 +182,7 @@
       {
         "title": "0.5.367",
         "items": [
-          "Settings, Glasses and iPhone has a new row, Open COS on your phone. Scan its QR with your iPhone camera and Safari opens COS already signed in. The QR works once, for 2 minutes, and only on your tailnet.",
+          "Settings, Glasses, phone and web has a new row, Open COS on your phone. Scan its QR with your iPhone camera and Safari opens COS already signed in. The QR works once, for 2 minutes, and only on your tailnet.",
           "Show a sign-in code gives you a short code to type on the sign-in page instead. It works once, for 5 minutes.",
           "COS makes the QR only while the row is on screen, and a new one about every 90 seconds. It needs the newer COS server: on an older one the row says to update it, and without Tailscale on this Mac it says to turn it on.",
           "The row sits first under Devices, and the glasses pairing QR now says it is for the COS Glasses app, not the iPhone Camera."
@@ -305,7 +302,7 @@
       {
         "title": "0.5.352",
         "items": [
-          "Settings opens in Activity with ten categories on the left: General, AI and accounts, Glasses and iPhone, Meetings, Dictation, Transcription and voice, Work and agents, Privacy and permissions, Pet and appearance, and System and updates.",
+          "Settings opens in Activity with ten categories on the left: General, AI and accounts, Glasses, phone and web, Meetings, Dictation, Transcription and voice, Work and agents, Privacy and permissions, Pet and appearance, and System and updates.",
           "Each category is a set of cards. The settings you rarely need sit under Advanced in each card. On this page lists the cards in the category and jumps to the one you pick.",
           "Many settings have clearer, shorter names, for example Run checks for Run Doctor and Notes folder for COS Data. Search settings (Command-F) finds a setting by its new or its old name and says where it is. Your saved preferences do not change.",
           "Command-comma, the Dock menu, the pet, the welcome window and links from other views open the new Settings at the right place.",
