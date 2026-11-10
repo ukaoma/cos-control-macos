@@ -406,7 +406,7 @@ struct MeetingMonthCalendar: View {
     let onSelectDay: (String?) -> Void
 
     var body: some View {
-        let counts = Dictionary(uniqueKeysWithValues: days.map { ($0.date, $0.count) })
+        let counts = LibraryMeetingDay.countsByDate(days)
         VStack(spacing: 10) {
             HStack {
                 Button { onShift(-1) } label: {

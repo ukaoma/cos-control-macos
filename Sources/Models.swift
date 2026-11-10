@@ -3270,10 +3270,17 @@ enum PetCompletionDetector {
         suppressedIDs: Set<String>,
         now: Date = Date()
     ) -> [PetCompletion] {
-        let currentByID = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })
+        // 0.5.387 (D4): two rows can share an id (Control 0.5.383 trapped here twice on 11/09 08:18 with
+        // uniqueKeysWithValues). The most active copy wins (working, then waiting, then the first seen), so a
+        // session never reads as finished while any copy of it still runs or waits. A repeated prior emits once.
+        func activity(_ row: ClaudeSession) -> Int { row.isPetWorking ? 2 : row.state == "waiting" ? 1 : 0 }
+        let currentByID = Dictionary(current.map { ($0.id, $0) }, uniquingKeysWith: { kept, other in
+            activity(other) > activity(kept) ? other : kept
+        })
         var out: [PetCompletion] = []
+        var emitted = Set<String>()
         for prior in previous where prior.isPetWorking {
-            guard !suppressedIDs.contains(prior.id) else { continue }
+            guard !suppressedIDs.contains(prior.id), emitted.insert(prior.id).inserted else { continue }
             if let now_ = currentByID[prior.id] {
                 // running -> waiting is a handoff to Miles, not a finish.
                 guard !now_.isPetWorking, now_.state != "waiting" else { continue }
@@ -5919,6 +5926,12 @@ struct LibraryMeetingDay: Sendable, Hashable {
         guard let o = value?.object, let date = o["date"]?.string, !date.isEmpty else { return nil }
         self.date = date
         count = o["count"]?.int ?? Int(o["count"]?.string ?? "") ?? 0
+    }
+
+    /// 0.5.387 (D4): the calendar's counts by date. `days` comes from the server, and a repeated date trapped in
+    /// uniqueKeysWithValues. A repeat keeps the larger count, so a day is never shown as busier than one row says.
+    static func countsByDate(_ days: [LibraryMeetingDay]) -> [String: Int] {
+        Dictionary(days.map { ($0.date, $0.count) }, uniquingKeysWith: { max($0, $1) })
     }
 }
 
