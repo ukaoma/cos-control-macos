@@ -228,13 +228,13 @@ struct UsagePriceTable: Codable, Equatable, Sendable {
     /// major * 100 + minor. Anything else (codex-auto-review, a local model, "Unknown model") has no family.
     static func family(provider: String, model: String) -> (family: String, version: Int)? {
         let name = normalized(model)
-        let pattern: String
+        let found: NSRegularExpression?
         switch provider {
-        case "Anthropic": pattern = #"^claude-([a-z]+)-([0-9]{1,2})(?:-([0-9]{1,2}))?$"#
-        case "OpenAI": pattern = #"^gpt-([0-9]{1,2})(?:\.([0-9]{1,2}))?(?:-([a-z]+))?$"#
+        case "Anthropic": found = anthropicFamily
+        case "OpenAI": found = openAIFamily
         default: return nil
         }
-        guard let regex = try? NSRegularExpression(pattern: pattern),
+        guard let regex = found,
               let match = regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) else { return nil }
         func group(_ i: Int) -> String? { Range(match.range(at: i), in: name).map { String(name[$0]) } }
         if provider == "Anthropic" {
@@ -245,9 +245,15 @@ struct UsagePriceTable: Codable, Equatable, Sendable {
         return (group(3).map { "gpt-" + $0 } ?? "gpt", major * 100 + (group(2).flatMap(Int.init) ?? 0))
     }
 
+    // Built once: resolve runs for every row on every redraw.
+    nonisolated(unsafe) private static let anthropicFamily = try? NSRegularExpression(pattern: #"^claude-([a-z]+)-([0-9]{1,2})(?:-([0-9]{1,2}))?$"#)
+    nonisolated(unsafe) private static let openAIFamily = try? NSRegularExpression(pattern: #"^gpt-([0-9]{1,2})(?:\.([0-9]{1,2}))?(?:-([a-z]+))?$"#)
+    nonisolated(unsafe) private static let ollamaTag = try? NSRegularExpression(pattern: #"^[a-z0-9][a-z0-9._\-]*:[0-9]+(\.[0-9]+)?[bm]$"#)
     /// A model run on this Mac: Codex's Ollama provider, or an Ollama tag such as "qwen3.8:27b".
     static func isLocal(provider: String, model: String) -> Bool {
-        provider == "Ollama" || normalized(model).range(of: #"^[a-z0-9][a-z0-9._\-]*:[0-9]+(\.[0-9]+)?[bm]$"#, options: .regularExpression) != nil
+        if provider == "Ollama" { return true }
+        let name = normalized(model)
+        return ollamaTag?.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) != nil
     }
 
     enum Resolution: Equatable, Sendable {
@@ -389,9 +395,18 @@ enum SessionUsagePricing {
 enum UsagePriceFill {
     /// The table the page prices with: the price file when it is newer than the table this build carries, else the
     /// carried one. A tie goes to the carried table.
-    static func active(bundled: UsagePriceTable, fetched: UsagePriceTable?) -> UsagePriceTable {
-        guard let fetched, (fetched.published, fetched.version) > (bundled.published, bundled.version) else { return bundled }
+    static func active(bundled: UsagePriceTable, fetched: UsagePriceTable?, now: Date = Date()) -> UsagePriceTable {
+        guard let fetched, !postdated(fetched, now: now), rank(fetched) > rank(bundled) else { return bundled }
         return fetched
+    }
+    /// Published date first, then the number after the last dot of the version ("2026-11-09.10" is above ".9").
+    static func rank(_ table: UsagePriceTable) -> (String, Int) {
+        (table.published, Int(table.version.split(separator: ".").last ?? "") ?? 0)
+    }
+    /// A file dated more than two days ahead is wrong, and would shadow every later build's table, so it is ignored.
+    static func postdated(_ table: UsagePriceTable, now: Date) -> Bool {
+        let limit = SessionUsagePresentation.dayFormatter(timeZone: TimeZone(identifier: "UTC")!).string(from: now.addingTimeInterval(2 * 86_400))
+        return table.published > limit
     }
     /// A whole day at a row's prices. Writes are valued at the short retention rate because a day does not keep how
     /// many were long, and a day's prompt sizes are not kept either, so the figure is a floor (shown with +) whenever
@@ -1344,7 +1359,7 @@ enum SessionUsagePresentation {
     /// How API value is priced, with the date of the price list in use.
     static func priceListNote(_ table: UsagePriceTable) -> String {
         let date = SessionUsageDay(table.published).map { "\(monthNames[$0.month - 1]) \($0.day), \($0.year)" } ?? table.published
-        return "API value is the standard API rate from the COS price list of \(date), applied to all dates. A model with no list price yet is estimated from the nearest model in its family and marked est. A model that runs on this Mac has no API cost. It leaves out discounts, speed tiers, tools and taxes, and it is not your subscription bill. Cursor's value is the per-request cost Cursor reports."
+        return "API value is the standard API rate. A record keeps the price it was given when it was recorded. A day recorded with no price uses the COS price list of \(date). A model with no list price yet is estimated from the nearest model in its family and marked est. A model that runs on this Mac has no API cost. It leaves out discounts, speed tiers, tools and taxes, and it is not your subscription bill. Cursor's value is the per-request cost Cursor reports."
     }
     /// The comparison line's qualifier: " (priced records only)", " (includes estimates)", or both in one bracket.
     static func comparisonNote(partial: Bool, estimated: Bool) -> String {
@@ -2580,7 +2595,9 @@ struct CosCostAccumulator {
         work.runsWithoutLogs = silentRuns
         for event in ordered {
             let usd = CosCostRates.usd(provider: event.provider, model: event.model, counts: event.counts, oneHour: event.oneHour, on: event.at)
-            let extra = SessionUsagePricing.estimate(provider: event.provider, model: event.model, counts: event.counts, oneHour: event.oneHour) == nil ? usd ?? 0 : 0
+            // U1 (Q1 M1): Usage prices these days itself now, from the same table (the record-time price, or the view fill for
+            // a price that ends), so a slice priced here is already in Usage's total. Adding it again counted Sol twice.
+            let extra = 0.0
             if let start = workStarts[event.session], event.at >= start - Self.runLeadSeconds {
                 if !event.id.isEmpty && !counted.insert(event.id).inserted { continue }
                 work.widerUSD += usd ?? 0
@@ -2869,7 +2886,13 @@ enum CosCostPresentation {
         // A paused or unread Usage shows no total, so there is nothing for the flag to qualify.
         guard usage != .paused, usage != .unavailable else { return false }
         let bounds = report.windowStart...report.windowEnd
-        return usageBuckets.contains { bounds.contains($0.day) && $0.pricedEvents < $0.events }
+        return usageBuckets.contains { bounds.contains($0.day) && ($0.pricedEvents < $0.events || $0.floor > 0) }
+    }
+    /// U1 (Q1 M1): the total holds a family estimate, so it says est. as Usage's own figures do.
+    static func ranEstimated(usageBuckets: [SessionUsageBucket], report: CosUsageReport, usage: UsageState) -> Bool {
+        guard usage != .paused, usage != .unavailable else { return false }
+        let bounds = report.windowStart...report.windowEnd
+        return usageBuckets.contains { bounds.contains($0.day) && $0.estimated > 0 }
     }
     /// Usage with no call behind it: the day ledgers and Work. A headline of "no calls" would sit right above it.
     static func hasUsageWithoutCalls(_ report: CosUsageReport) -> Bool {
@@ -2883,14 +2906,14 @@ enum CosCostPresentation {
         return " This server doesn't measure their cost yet."
     }
     /// The answer, then what it leaves out. The two read as one sentence pair, in two tones.
-    static func headlineParts(report: CosUsageReport, ran: Double, usage: UsageState, ranPartial: Bool = false) -> (answer: String, caveat: String) {
-        let parts = baseHeadline(report: report, ran: ran, usage: usage, ranPartial: ranPartial)
+    static func headlineParts(report: CosUsageReport, ran: Double, usage: UsageState, ranPartial: Bool = false, ranEstimated: Bool = false) -> (answer: String, caveat: String) {
+        let parts = baseHeadline(report: report, ran: ran, usage: usage, ranPartial: ranPartial, ranEstimated: ranEstimated)
         // The audit is where the calls are written. Present and unreadable, it says nothing about what COS did.
         guard report.auditUnreadable else { return parts }
         if calls(report) == 0 { return ("COS could not read its record of calls, so there is no count to show.", "") }
         return (parts.answer, parts.caveat + " COS could not read its record of calls, so some are missing here.")
     }
-    private static func baseHeadline(report: CosUsageReport, ran: Double, usage: UsageState, ranPartial: Bool) -> (answer: String, caveat: String) {
+    private static func baseHeadline(report: CosUsageReport, ran: Double, usage: UsageState, ranPartial: Bool, ranEstimated: Bool = false) -> (answer: String, caveat: String) {
         let total = calls(report), measured = measuredCalls(report), estimated = estimatedCalls(report), usd = measuredUSD(report)
         if !report.auditFound && total == 0 { return ("COS has no record of its calls on this Mac yet.", " The record starts with its first one.") }
         if total == 0 {
@@ -2900,7 +2923,7 @@ enum CosCostPresentation {
         guard measured > 0 else { return ("COS made \(total.formatted()) \(callWord) in the last 30 days.", notMeasuredWhy(report: report, usage: usage)) }
         let lead = report.sessions.reading || report.sessions.failed ? "Measured so far: COS used " : "Measured: COS used "
         let usdText = money(usd) + (measuredPartial(report) ? "+" : "")
-        let ranText = money(ran) + (ranPartial ? "+" : "")
+        let ranText = money(ran) + (ranPartial ? "+" : "") + (ranEstimated ? " est." : "")
         var sentence: String
         if usd <= 0 {
             sentence = "COS made \(total.formatted()) \(callWord) in the last 30 days. \(measured.formatted()) were measured, on models with no verified price."
