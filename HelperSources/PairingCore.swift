@@ -535,7 +535,10 @@ enum SignerTLSCore {
     /// the Bool.
     static func evaluate(chain: [Data], host: String, at date: Date, anchors: [SecCertificate]) -> (trusted: Bool, why: String) {
         // chain.count <= 8 is load-bearing: SecTrust accepts a padded chain (mutant TLS-14). The empty-input checks are
-        // proven per input by "audit empty host", "audit empty anchors" and "audit empty chain" (mutants TLS-15 to 17).
+        // defence in depth, equivalent by observation on Darwin 27.2 (2026-11-10, otherwise-valid inputs, guard removed):
+        // an empty host gets "certificate name does not match input" (no skipped name check), an empty anchor list gets
+        // "ISRG Root X2 certificate is not trusted" (no fall back to the system roots), an empty chain gets create -50.
+        // This code does not rely on that; "audit empty host", "audit empty anchors" and "audit empty chain" hold it.
         guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return (false, "input") }
         var certificates: [SecCertificate] = []
         for der in chain {
