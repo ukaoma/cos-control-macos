@@ -97,11 +97,25 @@ struct SessionQuestionCardChecks {
         precondition(lines.allSatisfy { !$0.contains("\u{2014}") && !$0.contains("\u{2192}") }, "no em dash or arrow in the card's copy")
     }
 
+    static func checkPendingWords() {
+        let held = TodayHome.SessionQuestion(entry("held"))!
+        let atMacEmpty = TodayHome.SessionQuestion(entry("at_mac", held: nil, answerable: false, questions: 0))!
+        let bare = session("9644b527-da59-4c1e-9d0a-111122223333")
+        let worded = ClaudeSession(.object(["id": .string("w1"), "provider": .string("claude"), "name": .string("Footer"), "state": .string("waiting"),
+                                            "alive": .bool(true), "waitingKind": .string("question"), "waitingDetail": .string("Ship the footer now?")]))!
+        precondition(TodayHome.pendingWords(bare, card: held) == .card(held), "a held question shows its card")
+        precondition(TodayHome.pendingWords(worded, card: nil) == .words("Ship the footer now?"), "no card: the row's words (the server's first 80 characters)")
+        precondition(TodayHome.pendingWords(worded, card: atMacEmpty) == .words("Ship the footer now?"), "a card with no words falls back to the row's words")
+        precondition(TodayHome.pendingWords(bare, card: nil) == .none, "no card and no words: the plain line, never invented words")
+        precondition(TodayHome.wordsUnavailableLine == "COS cannot read this question's words. They are on the session's own prompt.", "copy")
+    }
+
     static func main() {
         checkParse()
         checkMatch()
         checkAnswerBody()
         checkOutcome()
-        print("SessionQuestionCardChecks: parse, match, answer body and outcome PASS")
+        checkPendingWords()
+        print("SessionQuestionCardChecks: parse, match, answer body, outcome and pending words PASS")
     }
 }

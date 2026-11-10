@@ -14140,6 +14140,20 @@ enum TodayHome {
         default: return .failed(answerUnconfirmed)
         }
     }
+    /// What the pending block shows under its line: the card (held, at the Mac with words, or just answered), the words
+    /// the session row carries (the server's first 80 characters, on by default from Miles 11/09 22:10), or, with neither,
+    /// a plain line that COS has no words to show (switch off, an older server, or a question asked before a restart).
+    enum PendingWords: Equatable {
+        case card(SessionQuestion)
+        case words(String)
+        case none
+    }
+    static func pendingWords(_ session: ClaudeSession, card: SessionQuestion?) -> PendingWords {
+        if let card, card.answerable || !card.questions.isEmpty || card.state == .answered { return .card(card) }
+        if let text = questionText(session) { return .words(text) }
+        return .none
+    }
+    static let wordsUnavailableLine = "COS cannot read this question's words. They are on the session's own prompt."
     static let heldLine = "Answer here or at your Mac. The first answer counts."
     static let composerWaitsLine = "A message here waits until this question is answered."
     static let answeredLine = "Answered."

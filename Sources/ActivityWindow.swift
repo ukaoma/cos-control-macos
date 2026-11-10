@@ -6566,13 +6566,18 @@ struct ClaudeSessionDetailPane: View {
                             .font(COSType.body(12.5, weight: .medium))
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    if let card, card.answerable || !card.questions.isEmpty || card.state == .answered {
-                        SessionQuestionCard(model: model, question: card)
-                    } else if let quote = TodayHome.questionText(live) {
+                    switch TodayHome.pendingWords(live, card: card) {
+                    case .card(let shown):
+                        SessionQuestionCard(model: model, question: shown)
+                    case .words(let quote):
                         Text("\u{201C}" + quote + "\u{201D}")
                             .font(COSType.body(12.5))
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    case .none:
+                        Text(TodayHome.wordsUnavailableLine)
+                            .font(COSType.body(12)).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     if card?.answerable == true {
