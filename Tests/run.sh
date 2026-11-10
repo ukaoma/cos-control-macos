@@ -1642,6 +1642,11 @@ PY
 "$ROOT/Tests/run-today-summary-subagents.sh"
 "$ROOT/Tests/run-held-groups-read-queue.sh"
 /usr/bin/python3 "$ROOT/Tests/activity-today-pins.py" "$ROOT"
+# 0.5.387 lane D4: duplicate ids never trap, the usage summary reads its covering index, a failed index build never breaks
+# Usage, and the view pins (Tests/run-stability-d4.sh). Then the Work handoff store's own tests (Tests/run-work-handoff.sh,
+# WorkHandoffTests incl. "an unchanged poll must not rewrite the handoff journal"), which no runner here admitted before.
+zsh "$ROOT/Tests/run-stability-d4.sh"
+zsh "$ROOT/Tests/run-work-handoff.sh"
 # 0.5.379: the Today summary's wiring (view, store, helper); its rules execute in ActivityTodayChecks above.
 /usr/bin/python3 "$ROOT/Tests/today-summary-pins.py" "$ROOT"
 # QA 0.5.379: the numbers Control copies from server/lib/today-brief.ts, read from both repos (fails if the server file is absent).

@@ -217,7 +217,8 @@ need('"sessions": sessions.map { $0.filter { $0.key != "waitingQuestion" && $0.k
      "[disk] the session cache never holds a question's words")
 
 # Settings (both open questions as settings).
-for key, label in (("TodayHome.enabledKey", "Today home"), ("TodayHome.quietHoursKey", "Quiet hours"), ("TodayHome.workRunsKey", "Work runs from Today")):
+# 0.5.387 (lane D2): the evening fold's switch is "Fold evenings and weekends", so only COS reaching out's setting is called Quiet hours.
+for key, label in (("TodayHome.enabledKey", "Today home"), ("TodayHome.quietHoursKey", "Fold evenings and weekends"), ("TodayHome.workRunsKey", "Work runs from Today")):
     need(key in views and f'Toggle("{label}"' in views, f"[settings] {label}")
 
 # 0.5.361 wording (Miles, 2026-10-31: ⌘K said "Nothing is waiting on you" where Today said "Six things need you"): the headline and ⌘K read the
