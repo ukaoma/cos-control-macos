@@ -48,7 +48,12 @@ final class SessionUsageStore: ObservableObject {
         do {
             let result = try await helper.run(arguments, timeout: 45, quality: .utility)
             guard result.ok else { throw HelperClientError.commandFailed(result.message) }
-            report = try JSONDecoder().decode(SessionUsageReport.self, from: JSONEncoder().encode(result.details))
+            var decoded = try JSONDecoder().decode(SessionUsageReport.self, from: JSONEncoder().encode(result.details))
+            // U1: days the recorder could not price get a view-time price, a family estimate marked est., or Local.
+            let table = UsagePriceFeed.activeTable()
+            UsagePriceViewTable.shared.current = table
+            decoded.buckets = UsagePriceFill.apply(decoded.buckets, table: table)
+            report = decoded
             error = nil
         } catch is CancellationError {
             // The page was closed during a read. That is not a failure, and says nothing in red.
@@ -265,6 +270,7 @@ struct SessionUsageView: View {
         var pricedEvents: Int = 1
         var events: Int = 1
         var key: String = ""
+        var estimated = false
         var id: String { String(date.timeIntervalSince1970) + series }
     }
 
@@ -300,7 +306,7 @@ struct SessionUsageView: View {
                 let events = group.reduce(0) { $0 + $1.events }, pricedEvents = group.reduce(0) { $0 + $1.pricedEvents }
                 for category in P.tokenMix(groupCounts, excludingCacheReads: excludeCacheReads, rows: group)
                 where measure == .cost || !category.excludedFromTokens {
-                    result.append(Point(date: date, series: P.categoryTitle(category.id), tokens: category.count, usd: category.estimatedUSD, pricedEvents: pricedEvents, events: events, key: key))
+                    result.append(Point(date: date, series: P.categoryTitle(category.id), tokens: category.count, usd: category.estimatedUSD, pricedEvents: pricedEvents, events: events, key: key, estimated: group.contains { $0.estimated > 0 }))
                 }
             }
         } else {
@@ -313,7 +319,8 @@ struct SessionUsageView: View {
                 for (series, members) in bySeries {
                     result.append(Point(date: date, series: series, tokens: members.reduce(Int64(0)) { $0 + measured($1.counts) },
                         usd: members.reduce(0.0) { $0 + $1.estimatedUSD },
-                        pricedEvents: members.reduce(0) { $0 + $1.pricedEvents }, events: members.reduce(0) { $0 + $1.events }, key: key))
+                        pricedEvents: members.reduce(0) { $0 + $1.pricedEvents }, events: members.reduce(0) { $0 + $1.events }, key: key,
+                        estimated: members.contains { $0.estimated > 0 }))
                 }
             }
         }
@@ -566,7 +573,7 @@ struct SessionUsageView: View {
                         Text("Calendar dates in \(reportingZone.identifier). Days without logs are missing, not zero. Weeks run Monday to Sunday, and the first and last week or month of a period can be partial.")
                     }
                     Text("New tokens are input, output and cache writes. Output includes reasoning. Cache reads are repeated context, not cache savings.")
-                    Text("API value is the standard API rate, checked October 25, 2026 and applied to all dates. It leaves out discounts, speed tiers, tools and taxes, and it is not your subscription bill. Cursor's value is the per-request cost Cursor reports.")
+                    Text(P.priceListNote(UsagePriceViewTable.shared.current))
                     Text(P.allowanceNote)
                     HStack(spacing: 14) {
                         Link("Anthropic pricing", destination: URL(string: SessionUsagePricing.sources[0])!)
@@ -726,7 +733,7 @@ struct SessionUsageView: View {
                    help: "Average across days with a price. Days without logs or a price are left out, not counted as zero.")
         ]
         if let pace, pace.hasPrice {
-            list.append(Figure(title: "\(pace.month) so far", value: P.dollars(pace.usd) + (pace.complete ? "" : "+"),
+            list.append(Figure(title: "\(pace.month) so far", value: P.dollars(pace.usd) + (pace.complete ? "" : "+") + (pace.estimated ? " est." : ""),
                 note: pace.projectedUSD.map { "About \(P.dollars($0)) by \(pace.lastDay)" },
                 help: "This calendar month for the tool and model in view, whatever period is selected. " + (store.enabled ? "The estimate is a straight line from the days so far." : "There is no estimate while tracking is paused, because paused days are not a real pace.")))
         }
@@ -876,8 +883,14 @@ struct SessionUsageView: View {
 
     private func modelCost(_ row: SessionUsageBucket) -> some View {
         let partial = row.pricedEvents > 0 && row.pricedEvents < row.events
-        return Text(P.costCell([row]))
-            .help(row.pricedEvents == 0 ? "No verified price; sorts last on API value." : partial ? "Partially priced: \(row.pricedEvents) of \(row.events) records have a verified price." : "All \(row.events) records priced.")
+        let table = UsagePriceViewTable.shared.current
+        let help: String
+        if row.local > 0 && row.local == row.events { help = "Runs on this Mac. There is no API bill for it." }
+        else if row.pricedEvents == 0 { help = P.modelCostCell(row, table: table) == "No public price" ? "The provider publishes no API price for this model. Sorts last on API value." : "No verified price; sorts last on API value." }
+        else if let note = UsagePriceFill.estimateNote(row, table: table) { help = note + (partial ? " \(row.pricedEvents) of \(row.events) records priced." : "") }
+        else if row.floor > 0 { help = "Priced after it was recorded. Cache writes are counted at the short-retention rate and long prompts at the standard rate, so the value may be higher." }
+        else { help = partial ? "Partially priced: \(row.pricedEvents) of \(row.events) records have a verified price." : "All \(row.events) records priced." }
+        return Text(P.modelCostCell(row, table: table)).help(help)
     }
 
     /// The Share column follows the chart: a share of value beside value, a share of tokens beside tokens.
@@ -1307,7 +1320,7 @@ struct SessionUsageChart: View {
         return orderedSeries.compactMap { name in
             guard let point = members.first(where: { $0.series == name }) else { return nil }
             switch measure {
-            case .cost: return (name, point.pricedEvents > 0 ? P.dollars(point.usd) : "No price")
+            case .cost: return (name, point.pricedEvents > 0 ? P.dollars(point.usd) + (point.estimated ? " est." : "") : "No price")
             case .records: return (name, point.events.formatted())
             case .tokens: return (name, P.shortTokens(point.tokens))
             }
@@ -1463,7 +1476,7 @@ struct SessionUsageInspector: View {
     }
     /// A trailing + marks a figure that leaves out unpriced records.
     private func cost(_ summary: P.Summary) -> String {
-        summary.pricedEvents == 0 ? "No price" : P.dollars(summary.estimatedUSD) + (summary.pricedEvents < summary.events ? "+" : "")
+        summary.pricedEvents == 0 ? "No price" : P.dollars(summary.estimatedUSD) + summary.marks
     }
     private func dollars(_ value: Double) -> String { P.dollars(value) }
     /// The figure beside the busiest day, in the chart's measure.
@@ -1553,7 +1566,7 @@ struct SessionUsageInspector: View {
                 heading("Models")
                 ForEach(Array(models.prefix(modelLimit))) { model in
                     row(modelColors[P.modelName(model.model)], P.modelName(model.model),
-                        P.shortTokens(measured(model.counts)), model.pricedEvents == 0 ? "No price" : dollars(model.estimatedUSD) + (model.pricedEvents < model.events ? "+" : ""), help: model.model)
+                        P.shortTokens(measured(model.counts)), P.modelCostCell(model), help: model.model)
                 }
                 if models.count > modelLimit {
                     Text("\(models.count - modelLimit) more not listed here").font(COSType.body(11)).foregroundStyle(COSPalette.subtle).padding(.top, 3)
@@ -1566,6 +1579,10 @@ struct SessionUsageInspector: View {
                 row(SessionUsageChart.seriesColor(category.id), P.categoryTitle(category.id),
                     category.excludedFromTokens ? "Not counted" : P.shortTokens(category.count),
                     split.splitUSD > 0 ? dollars(category.estimatedUSD) : "")
+            }
+            if split.estimated && split.splitUSD > 0 {
+                Text("Some values by type are estimates for models with no list price yet.")
+                    .font(COSType.body(11)).foregroundStyle(COSPalette.subtle).padding(.top, 3).fixedSize(horizontal: false, vertical: true)
             }
             if !split.isComplete && split.splitUSD > 0 {
                 Text("Values by type cover \(dollars(split.splitUSD)) of \(dollars(split.pricedUSD)). \(rows.contains { $0.provider == "Cursor" } ? "Cursor and partly priced records are" : "Partly priced records are") not split.")
@@ -1592,7 +1609,7 @@ struct SessionUsageInspector: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if comparison.hasPriorBaseline, !comparison.partialPriorHistory, let prior = comparison.priorRange {
-                    Text("Compared with \(P.dateRangeTitle(prior)): tokens \(comparison.tokenDeltaLabel), API value \(comparison.costDeltaLabel)\(comparison.costDeltaPartial ? " (priced records only)" : "").")
+                    Text("Compared with \(P.dateRangeTitle(prior)): tokens \(comparison.tokenDeltaLabel), API value \(comparison.costDeltaLabel)\(P.comparisonNote(partial: comparison.costDeltaPartial, estimated: comparison.costDeltaEstimated)).")
                         .font(COSType.body(12)).foregroundStyle(COSPalette.subtle).monospacedDigit().padding(.top, 8)
                         .fixedSize(horizontal: false, vertical: true)
                 }
