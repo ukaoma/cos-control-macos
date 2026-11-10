@@ -145,7 +145,8 @@ glasses = body(panel, "@ViewBuilder var hubGlasses: some View {")
 need(panel.count("PhoneSignInBlock(") == 1 and glasses.count("PhoneSignInBlock(") == 1 and "PhoneSignInRow(" not in panel, "mounted once",
      "the row is drawn once, on Glasses and iPhone, through its block")
 # 0.5.387 (lane D2, Miles's approved preview): the row has its own card, Phone and web, first on the page, out from under Devices.
-phone_card = glasses[glasses.index('hubCard("glasses.phone") {'):glasses.index('hubCard("glasses.devices"')]
+# Only the card's own rows: anything after its "} advanced: {" is Advanced, so it is cut before the checks.
+phone_card = glasses[glasses.index('hubCard("glasses.phone"'):glasses.index('hubCard("glasses.devices"')].split("} advanced: {", 1)[0]
 devices = glasses[glasses.index('hubCard("glasses.devices"'):].split("} advanced: {", 1)[0]
 need("PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)" in phone_card, "mounted once",
      "in Phone and web, not Advanced, and told when the glasses rows show")
@@ -164,8 +165,8 @@ need("Text(line)" in body(views_file, "struct PhoneSignInRow: View {") and "Phon
 need('.settingsHubAnchor("UT-29")' in phone_card, "search lands", "search lands on the row")
 # 0.5.368: the Camera's QR comes first: the phone row right after the device choice, above the glasses rows, in the card and in
 # the offscreen render that stands for it.
-need(glasses.index("PhoneSignInBlock(") < glasses.index("if voiceGuide.devicePath == .glasses {") < glasses.index("GlassesSetupRows("),
-     "qr order", "Open COS on your phone sits above the glasses rows")
+need(glasses.index("PhoneSignInBlock(") < glasses.index("SetupDeviceChoice(") < glasses.index("if voiceGuide.devicePath == .glasses {") < glasses.index("GlassesSetupRows("),
+     "qr order", "Open COS on your phone sits above the device choice and the glasses rows")
 render = body(code("Tests/PhoneSignInRender.swift"), "struct DevicesCard: View {")
 need(render.index("PhoneSignInBlock(") < render.index("SetupDeviceChoice(") < render.index("GlassesSetupRows("), "qr order", "the render draws the page's order")
 item = re.search(r'\.init\("UT-29", "Open COS on your phone", "Point your iPhone Camera here\. Safari opens COS already signed in\.", old: "", group: "glasses\.phone",\s*advanced: false, mount: \.group, keywords: \[([^\]]*)\]\)', catalog)

@@ -299,7 +299,8 @@ import Foundation
             check(SettingsHubView.resolved(stored: "all", newInstall: cohort) == .all && SettingsHubView.resolved(stored: "basic", newInstall: cohort) == .basic,
                   "an explicit choice wins for every cohort")
         }
-        check(SettingsHubCatalog.isBasic("UT-29") && SettingsHubCatalog.isBasic("PK-01"), "Open COS on your phone and Phone approvals are in Basic")
+        check(SettingsHubCatalog.isBasic("UT-29") && SettingsHubCatalog.isBasic("PK-01") && SettingsHubCatalog.hasBasicRows("glasses.phone"),
+              "Open COS on your phone and Phone approvals are in Basic, so the Phone and web card draws there")
         // drawn: every row in All, the basic ones in Basic, and a line the catalog does not know never hidden.
         check(SettingsHubCatalog.drawn("UT-25", view: .all) && !SettingsHubCatalog.drawn("UT-25", view: .basic) && SettingsHubCatalog.drawn("G-01", view: .basic)
               && SettingsHubCatalog.drawn("", view: .basic) && SettingsHubCatalog.drawn("not-a-row", view: .basic), "Basic hides only catalog rows outside the basic set")

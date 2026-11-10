@@ -82,6 +82,9 @@ mutants = [
   '        hubCard("glasses.phone") { if voiceGuide.devicePath == .glasses {\n', PINS, "[every path]"),
  ("V7 the row under Advanced (pins)", K, 'group: "glasses.phone",\n              advanced: false, mount: .group, keywords: ["phone"', 'group: "glasses.phone",\n              advanced: true, mount: .group, keywords: ["phone"', PINS, "[catalog row]"),
  ("V8 the row under Advanced (hub checks)", K, 'group: "glasses.phone",\n              advanced: false, mount: .group, keywords: ["phone"', 'group: "glasses.phone",\n              advanced: true, mount: .group, keywords: ["phone"', HUB, "Open COS on your phone is a Phone and web row, not Advanced"),
+ ("V10 the row under the phone card's Advanced (pins)", P,
+  '        hubCard("glasses.phone") {\n',
+  '        hubCard("glasses.phone", advanced: 1) { EmptyView() } advanced: {\n', PINS, "[mounted once]"),
  ("V9 search misses Control Web", K, '"qr", "control web", "safari"', '"qr", "safari"', HUB, "search finds Open COS on your phone by Control Web"),
 # 0.5.368: the Camera's QR first, and both QRs say where they work (Miles 2026-11-04, 09:05).
  ("Q1 the glasses rows come before the phone row", P,

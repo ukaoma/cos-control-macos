@@ -53,6 +53,8 @@ MUTANTS = [
      '        .init(id: "glasses.phone", category: .glasses, title: "Phone and web", blurb: "COS in your phone\'s browser, and approvals from your phone."),\n        .init(id: "glasses.devices", category: .glasses, title: "Devices", blurb: "Tailscale, pairing and the glasses app."),\n',
      '        .init(id: "glasses.devices", category: .glasses, title: "Devices", blurb: "Tailscale, pairing and the glasses app."),\n        .init(id: "glasses.phone", category: .glasses, title: "Phone and web", blurb: "COS in your phone\'s browser, and approvals from your phone."),\n',
      "Camera's QR"),
+    ("d2: Phone approvals leaves Basic", C, '        "SG-02", "SG-11", "SG-13", "UT-29", "PK-01",\n', '        "SG-02", "SG-11", "SG-13", "UT-29",\n',
+     "Phone approvals sits beside it, never Advanced, in Basic too"),
     ("d2: two Quiet hours again", C, '.init("WK-07", "Fold evenings and weekends",', '.init("WK-07", "Quiet hours",', "one Quiet hours"),
     # View wiring (pins)
     ("d2: the page ignores its view", V, "                                hubCategoryContent(hubCategory)\n                                    .environment(\\.settingsHubView, hubView)\n",

@@ -200,9 +200,12 @@ need('"web_key_anchor.json"' not in core.replace("operations/scripts/web_key_anc
 
 # 10. Release and catalog.
 need('"$ROOT/Sources/WebKeyCore.swift" "$ROOT/Sources/WebKeyViews.swift"' in release, "source lists", "the release build has both files")
-need(re.search(r'\.init\("PK-01", "Phone approvals", [^\n]*group: "glasses\.phone"', catalog) is not None
+need(re.search(r'\.init\("PK-01", "Phone approvals", [^\n]*group: "glasses\.phone",\s*advanced: false, mount: \.group', catalog) is not None
      and catalog.index('.init("PK-01"') > catalog.index("static let extras: [SettingsHubItem] = [")
-     and catalog.index('.init("PK-01"') < catalog.index("static let items: [SettingsHubItem] = ["), "catalog row", "a Phone and web hub row, outside the inventory")
+     and catalog.index('.init("PK-01"') < catalog.index("static let items: [SettingsHubItem] = ["), "catalog row", "a Phone and web hub row, outside the inventory, not Advanced")
+# 0.5.387 (lane D2): Phone approvals and Open COS on your phone are in Basic, so the Phone and web card draws there too.
+basic_block = catalog[catalog.index("static let basicIDs: Set<String> = ["):catalog.index("static let basicRange")]
+need('"UT-29"' in basic_block and '"PK-01"' in basic_block, "basic", "Open COS on your phone and Phone approvals are in the Basic set")
 need('"$ROOT/Tests/run-web-key.sh"' in suite, "suite lane", "Tests/run.sh runs this lane")
 
 # Immutable audit and lifetime wiring complement the behavioral fixtures; neither a writable manifest nor HTTP can pin trust.
