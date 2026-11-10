@@ -286,8 +286,8 @@ pin(release.count('"$ROOT/Sources/SettingsHubCatalog.swift"') == 1 and release.c
 suite = read("Tests/run.sh")
 pin(suite.count('zsh "$ROOT/Tests/run-settings-hub.sh"') == 1 and suite.count('/usr/bin/python3 "$ROOT/Tests/settings-hub-pins.py" "$ROOT"') == 1,
     "the full suite runs the hub's checks and these pins once")
-pin('"$ROOT/Sources/SettingsHubCatalog.swift" "$ROOT/Tests/SettingsHubChecks.swift"' in read("Tests/run-settings-hub.sh"),
-    "the checks compile the catalog alone")
+pin('"$ROOT/Sources/SettingsHubCatalog.swift" "$ROOT/Sources/InstallCohort.swift" "$ROOT/Tests/SettingsHubChecks.swift"' in read("Tests/run-settings-hub.sh"),
+    "the checks compile the catalog alone, with D1's install cohort for the default view's table (0.5.387)")
 
 # 7b. QA fixes on b785daa (2026-10-28), each pinned where it lives.
 pin('if hub != nil {' in panel and 'Button("Use new Settings") { useClassicSettings = false }' in panel,
@@ -315,7 +315,11 @@ pin("if SettingsHubCatalog.drawn(id, view: hubView), SettingsHubCatalog.inlineSh
     and "if hosted, SettingsHubCatalog.drawn(id, view: hubView) { content.id(\"item.\" + id) } else if !hosted { content }" in shell,
     "a hub row and a hosted anchor leave themselves out in Basic")
 pin("guard hubView == .all || inBasic else { return 0 }" in views and views.count("inBasic: legacy") == 1, "Basic draws no Advanced, but a legacy server's next step")
-pin("if !SettingsHubCatalog.drawn(item.id, view: hubView) { hubSetView(.all) }" in views, "a result Basic leaves out switches to All settings")
+pin("if !SettingsHubCatalog.drawn(item.id, view: hubView) { hubShowAll() }" in views, "a result Basic leaves out switches to All settings")
+# Lead, 2026-11-09: cos.settings.view is written only by the switch; a result or a link shows All for the visit only.
+pin(views.count("hubViewChoice = ") == 2 and views.count("hubViewChoice = view.rawValue") == 1 and "func hubSetView(_ view: SettingsHubView) { hubShowAllForNow = false; hubViewChoice = view.rawValue }" in views
+    and views.count("hubSetView(") == 1 and views.count("hubSetView") == 2 and "SettingsHubViewSwitch(view: hubView, set: hubSetView)" in views,
+    "only the switch stores a view; nothing writes the default")
 # 0.5.387: the menu-bar panel. One clear door to every setting near its top; Reset message count only on the glasses path.
 main_panel = body(views, "    private var mainPanel: some View {", "    private var allSettingsRow: some View {")
 pin("if !hostedInActivity { allSettingsRow }" in main_panel and main_panel.index("if !hostedInActivity { allSettingsRow }") < main_panel.index("statusCard"),

@@ -8,5 +8,5 @@ ROOT="${0:A:h:h}"
 BIN="$(mktemp /tmp/cos-settings-hub.XXXXXX)"
 trap 'rm -f "$BIN"' EXIT
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
-  "$ROOT/Sources/SettingsHubCatalog.swift" "$ROOT/Tests/SettingsHubChecks.swift" -o "$BIN"
+  "$ROOT/Sources/SettingsHubCatalog.swift" "$ROOT/Sources/InstallCohort.swift" "$ROOT/Tests/SettingsHubChecks.swift" -o "$BIN"
 "$BIN"

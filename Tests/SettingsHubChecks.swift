@@ -281,6 +281,20 @@ import Foundation
         check(SettingsHubView.resolved(stored: "basic", newInstall: false) == .basic, "an existing install that chose Basic gets Basic")
         check(SettingsHubView.resolved(stored: "nonsense", newInstall: false) == .all && SettingsHubView.resolved(stored: "nonsense", newInstall: true) == .basic,
               "an unknown stored value falls back to the cohort")
+        // Lead, 2026-11-09: the cohort table behind the default (D1's InstallCohort). Undecided or existing gives All; new gives
+        // Basic; an explicit choice wins in all three. A Mac carrying cos.keyLanes.install = new from an older build is existing.
+        let undecided = false  // InstallCohort.isNewInstall while undecided, and outside the shipped app
+        let existing = InstallCohort.decide(InstallCohort.Evidence(runningBuild: 441, keyLanesInstall: "new")) == .new
+        let fresh = InstallCohort.decide(InstallCohort.Evidence(runningBuild: 441)) == .new
+        check(!existing && fresh, "the cohort table: a Mac with cos.keyLanes.install = new is existing, a clean Mac is new")
+        check(SettingsHubView.resolved(stored: nil, newInstall: undecided) == .all, "undecided cohort gives All")
+        check(SettingsHubView.resolved(stored: nil, newInstall: existing) == .all, "existing cohort gives All")
+        check(SettingsHubView.resolved(stored: nil, newInstall: fresh) == .basic, "new cohort with no stored choice gives Basic")
+        for cohort in [undecided, existing, fresh] {
+            check(SettingsHubView.resolved(stored: "all", newInstall: cohort) == .all && SettingsHubView.resolved(stored: "basic", newInstall: cohort) == .basic,
+                  "an explicit choice wins for every cohort")
+        }
+        check(SettingsHubCatalog.isBasic("UT-29") && SettingsHubCatalog.isBasic("PK-01"), "Open COS on your phone and Phone approvals are in Basic")
         // drawn: every row in All, the basic ones in Basic, and a line the catalog does not know never hidden.
         check(SettingsHubCatalog.drawn("UT-25", view: .all) && !SettingsHubCatalog.drawn("UT-25", view: .basic) && SettingsHubCatalog.drawn("G-01", view: .basic)
               && SettingsHubCatalog.drawn("", view: .basic) && SettingsHubCatalog.drawn("not-a-row", view: .basic), "Basic hides only catalog rows outside the basic set")

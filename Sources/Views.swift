@@ -544,8 +544,11 @@ struct ControlPanel: View {
     var hub: SettingsHubHost?
     /// General, Advanced: Use classic Settings. On, Activity draws mainPanel again (the rollback without a reinstall).
     @AppStorage(SettingsHub.classicKey) private var useClassicSettings = false
-    /// 0.5.387: Basic or All settings. Empty until the person picks; then the pick wins (SettingsHubView.resolved).
+    /// 0.5.387: Basic or All settings. Empty until the person uses the switch; then the pick wins (SettingsHubView.resolved).
+    /// Written only by the switch (lead, 2026-11-09), so the cohort default is read lazily on every draw.
     @AppStorage(SettingsHubView.key) private var hubViewChoice = ""
+    /// 0.5.387: All settings for this visit only, after a search result or a link to a row Basic leaves out. Never stored.
+    @State private var hubShowAllForNow = false
     @State private var hubCategory: SettingsHubCategory = SettingsHub.lastCategory()
     @State private var hubQuery = ""
     @FocusState private var hubSearchFocused: Bool
@@ -3820,9 +3823,12 @@ private extension ControlPanel {
     var hubSearching: Bool { !hubQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     /// 0.5.387: Basic for a new install, All for everyone else, until the person picks with the switch on each page.
     var hubView: SettingsHubView {
-        SettingsHubView.resolved(stored: hubViewChoice.isEmpty ? nil : hubViewChoice, newInstall: InstallCohort.isNewInstall)
+        hubShowAllForNow ? .all : SettingsHubView.resolved(stored: hubViewChoice.isEmpty ? nil : hubViewChoice, newInstall: InstallCohort.isNewInstall)
     }
-    func hubSetView(_ view: SettingsHubView) { hubViewChoice = view.rawValue }
+    /// The switch: the person's choice, stored.
+    func hubSetView(_ view: SettingsHubView) { hubShowAllForNow = false; hubViewChoice = view.rawValue }
+    /// A search result or a link to a row Basic leaves out: All settings now, without storing a choice.
+    func hubShowAll() { if hubView == .basic { hubShowAllForNow = true } }
 
     func settingsHub(_ host: SettingsHubHost) -> some View {
         hubLoaders(
@@ -4013,7 +4019,7 @@ private extension ControlPanel {
             // 0.5.387: a link to a group or row Basic leaves out opens All settings, so it never lands on nothing.
             if hubView == .basic, !SettingsHubCatalog.hasBasicRows(destination.group) || destination.opensAdvanced
                 || SettingsHubCatalog.item(target).map({ !SettingsHubCatalog.isBasic($0.id) }) == true {
-                hubSetView(.all)
+                hubShowAll()
             }
         }
         // After the page for the new category has drawn.
@@ -4031,7 +4037,7 @@ private extension ControlPanel {
         hubCategory = destination.category
         if destination.opensAdvanced { hubAdvanced.insert(destination.group) }
         // 0.5.387: a row Basic leaves out switches to All settings, then scrolls to it.
-        if !SettingsHubCatalog.drawn(item.id, view: hubView) { hubSetView(.all) }
+        if !SettingsHubCatalog.drawn(item.id, view: hubView) { hubShowAll() }
         // A row that is not drawn (its switch is off) opens the row that holds the switch (Settings Release A). A row in a group
         // that is hidden (dictation off, the pet off, Drop it off) opens the row that turns the group on.
         let landing = hubGroupShown(destination.group)
