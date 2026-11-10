@@ -137,8 +137,9 @@ def check(src, fixture):
     # 8. A-W0d: one round trip less, and the stopped server keeps its Retry.
     dictate = body(helper, "    private func dictate(_ audio: Data) throws -> DictationBridge.Answer {")
     pin("speakerReviewToken" not in dictate and "/api/health" not in dictate and "try readToken()" in dictate
-        and 'guard let status else { return Answer(ok: false, message: "Server stopped", details: ["action": "retry", "retryable": true]) }' in code(src["pcore"]),
-        "one round trip less", "dictate() reads the token itself; no answer is Server stopped with Retry")
+        and 'return Answer(ok: false, message: noAnswerMessage, details: ["action": "retry", "retryable": true, "reason": "server_no_answer"])' in code(src["pcore"])
+        and 'static let noAnswerMessage = "The COS server did not answer in time. Try again."' in code(src["pcore"]),
+        "one round trip less", "dictate() reads the token itself; no answer keeps Retry and says the server did not answer in time (0.5.387, D1 item 7)")
 
     # 9. The options the picker reads, and the reload on a server change.
     pin('meaningGuard: response.details["meaningGuard"]?.bool, stylePairs: pairs, available: true)' in d

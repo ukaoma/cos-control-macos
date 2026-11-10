@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Lane D1 (0.5.387) mutation gate: every new guard has a check that fails when the guard is broken.
 
-    python3 Tests/mutate-d1-first-run.py [lane ...]      lanes: cohort connect permission gap (default: all)
+    python3 Tests/mutate-d1-first-run.py [lane ...]      lanes: cohort connect permission gap dictcore (default: all)
 
 Works on a scratch copy of the checkout (Sources, Tests, HelperSources, scripts, Resources), never the checkout itself.
 First runs every chosen lane UNMUTATED and refuses to go on unless each is green (a red baseline would kill every mutant).
@@ -30,11 +30,15 @@ def lane_command(lane, copy, out):
         return ["/bin/zsh", "-c", " ".join(f"'{a}'" for a in build) + f' && CFFIXED_USER_HOME="{home}" HOME="{home}" "{out}/connect"']
     if lane == "permission":
         return ["/bin/zsh", str(copy / "Tests/run-permission-guide.sh")]
+    if lane == "dictcore":
+        build = kit + [str(copy / "HelperSources/ProviderStatusCore.swift"), str(copy / "Tests/DictationEveryoneChecks.swift"), "-o", str(out / "dictcore")]
+        return ["/bin/zsh", "-c", " ".join(f"'{a}'" for a in build) + f' && "{out}/dictcore" "{copy}/Resources/VoiceBenchmark/speech-30s.txt"']
     if lane == "gap":
         return ["/bin/zsh", str(copy / "Tests/run-dictation-shortcut-gap.sh")]
     raise SystemExit(f"unknown lane {lane}")
 
 
+PS = "HelperSources/ProviderStatusCore.swift"
 IC, PC, PG, MD, MO = ("Sources/InstallCohort.swift", "Sources/ProviderConnectModel.swift", "Sources/PermissionGuideModel.swift",
                       "Sources/MacDictation.swift", "Sources/Models.swift")
 MUTANTS = [
@@ -65,6 +69,15 @@ MUTANTS = [
     ("install: no Installing row", "connect", PC,
      "            if installing {\n                return ProviderRowModel(provider: provider, status: \"Installing…\",",
      "            if false {\n                return ProviderRowModel(provider: provider, status: \"Installing…\","),
+    ("dictation: a capabilities timeout has no reason", "dictcore", PS,
+     'details: ["action": "retry", "retryable": true, "reason": "server_no_answer"])\n        }\n        if status == 401',
+     'details: ["action": "retry", "retryable": true])\n        }\n        if status == 401'),
+    ("dictation: the timeout card says Server stopped again", "dictcore", PS,
+     'static let noAnswerMessage = "The COS server did not answer in time. Try again."', 'static let noAnswerMessage = "Server stopped"'),
+    ("dictation: an HTTP refusal has no reason", "dictcore", PS,
+     '"retryable": passing,\n                                "reason": "http_\\(status)"])', '"retryable": passing])'),
+    ("dictation: every 200 without text is empty_text", "dictcore", PS,
+     '        return "engine_refused"\n', '        return "empty_text"\n'),
     ("gap: Start and stop alone does not count", "gap", MD,
      "enabled && !hold && !toggle }", "enabled && !hold }"),
     ("permission: a Microphone no is always Needs you", "permission", PG,
@@ -89,7 +102,7 @@ def run(lane, copy, out):
 
 
 def main():
-    lanes = sys.argv[1:] or ["cohort", "connect", "permission", "gap"]
+    lanes = sys.argv[1:] or ["cohort", "connect", "permission", "gap", "dictcore"]
     scratch = pathlib.Path(tempfile.mkdtemp(prefix="cos-d1-mutants-", dir="/tmp"))
     copy, out = scratch / "repo", scratch / "out"
     out.mkdir()
