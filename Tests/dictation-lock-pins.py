@@ -158,7 +158,10 @@ pin("} else if section == .dictation, model.dictationSettingsRouteActive {\n    
 pin("if openDictationSettings, section == .dictation { model.openDictationSettings() }" in window
     and "activityOpenDictationSettings = true\n        openActivity?(.dictation)" in model, "settings route",
     "opening the settings from anywhere opens Activity on Dictation, then the settings")
-pin('Button("Settings…") { model.openDictationSettingsInActivity() }' in app, "settings route", "the Dictation menu's Settings opens them in the tab")
+# 0.5.387 (lane D2): the Dictation menu's Settings… opens the hub's Dictation page; with classic Settings on, the tab pane as before.
+pin('Button("Settings…") { model.openDictationSettingsFromMenu() }' in app
+    and "if let target = SettingsHub.dictationMenuTarget(classic: UserDefaults.standard.bool(forKey: SettingsHub.classicKey)),\n           let open = showSettingsAt {\n            open(target)\n        } else {\n            openDictationSettingsInActivity()\n        }" in model,
+    "settings route", "the Dictation menu's Settings opens the hub's Dictation page, or the tab pane under classic Settings")
 # The menu-bar panel's Dictation chip opens the Dictation tab, which shows the pane: opener tied to render condition.
 pin("+ [.dictation]" in window and "static var allCases: [ActivitySection] { visibleSections(environment: ProcessInfo.processInfo.environment) }" in window,
     "dictation chip", "Dictation is one of the sections the panel's chips come from")

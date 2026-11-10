@@ -522,7 +522,8 @@ struct ControlPanel: View {
     /// 0.5.278: Settings, "Show live meeting transcript". Off: no Live now row, no live dots, no live-transcript helper.
     @AppStorage(LiveTranscript.enabledKey) private var showLiveTranscript = true
     /// Activity Today home (plan v2): the opt-in candidate switch, quiet hours and Work runs from Today.
-    @AppStorage(TodayHome.enabledKey) private var todayHomeEnabled = false
+    // 0.5.387 (lane D1's request): Today home's default follows the install cohort, read lazily, never written.
+    @CohortDefault(TodayHome.enabledKey, newInstall: true) private var todayHomeEnabled
     @AppStorage(TodayHome.quietHoursKey) private var todayQuietHours = true
     @AppStorage(TodayHome.workRunsKey) private var todayWorkRuns = true
     /// 0.5.362: what was chosen for ⌘K's search by meaning, per decision model. Empty is ask, which sends nothing.
@@ -544,6 +545,13 @@ struct ControlPanel: View {
     var hub: SettingsHubHost?
     /// General, Advanced: Use classic Settings. On, Activity draws mainPanel again (the rollback without a reinstall).
     @AppStorage(SettingsHub.classicKey) private var useClassicSettings = false
+    /// 0.5.387: Basic or All settings. Empty until the person uses the switch; then the pick wins (SettingsHubView.resolved).
+    /// Written only by the switch (lead, 2026-11-09), so the cohort default is read lazily on every draw.
+    @AppStorage(SettingsHubView.key) private var hubViewChoice = ""
+    /// The install cohort's kept answer (InstallCohort.key), observed so a Mac kept as new mid-launch redraws in Basic.
+    @AppStorage(InstallCohort.key) private var hubCohort: String?
+    /// 0.5.387: All settings for this visit only, after a search result or a link to a row Basic leaves out. Never stored.
+    @State private var hubShowAllForNow = false
     @State private var hubCategory: SettingsHubCategory = SettingsHub.lastCategory()
     @State private var hubQuery = ""
     @FocusState private var hubSearchFocused: Bool
@@ -1457,10 +1465,14 @@ struct ControlPanel: View {
             }
             Spacer()
             if model.busy { ProgressView().controlSize(.small) }
-            Button { confirmResetMessageCount = true } label: { Image(systemName: "archivebox") }
-                .buttonStyle(COSIconButtonStyle(size: 24))
-                .disabled(model.busy)
-                .help("Reset message count")
+            // 0.5.387 (audit D2): a glasses action, so only on the glasses path. Everyone keeps it in Settings, Glasses, phone
+            // and web, Devices, Advanced.
+            if voiceGuide.devicePath == .glasses {
+                Button { confirmResetMessageCount = true } label: { Image(systemName: "archivebox") }
+                    .buttonStyle(COSIconButtonStyle(size: 24))
+                    .disabled(model.busy)
+                    .help("Reset message count")
+            }
             refreshAndCheckButton
         }
     }
@@ -1537,7 +1549,17 @@ struct ControlPanel: View {
 
     /// Server, ownership and recovery (ST-01 to ST-03).
     @ViewBuilder private var statusServerRows: some View {
+        statusServerStateRow
+        statusServerInternalsRows
+    }
+
+    /// ST-01.
+    private var statusServerStateRow: some View {
         statusRow("Server", value: runtimeLabel, good: model.status.runtimeState == "managedHealthy")
+    }
+
+    /// ST-02 and ST-03: in the hub, System's Advanced (0.5.387).
+    @ViewBuilder private var statusServerInternalsRows: some View {
         statusRow("Ownership", value: ownershipLabel, good: model.status.ownershipVerified)
         statusRow("Recovery", value: model.status.recoveryLoaded ? "Scheduled" : "Needs repair", good: model.status.recoveryInstalled && model.status.recoveryLoaded)
     }
@@ -1697,10 +1719,17 @@ struct ControlPanel: View {
             )
             }
             if let vocabularyTerms = model.status.transcriptionVocabularyTerms, vocabularyTerms == 0 {
-                Text("Add names and terms in the setup wizard for better accuracy.")
-                    .font(.caption2)
-                    .foregroundStyle(COSPalette.amber)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+                // 0.5.387 (audit C5): the server's vocabulary is the Dictionary in Activity's Dictation tab (the transcription
+                // glossary). No screen is called the setup wizard.
+                HStack(spacing: 6) {
+                    Spacer(minLength: 0)
+                    Text("Add names and terms to your Dictionary for better accuracy.")
+                        .font(.caption2)
+                        .foregroundStyle(COSPalette.amber)
+                    Button("Open Dictionary") { model.openDictionaryInActivity() }
+                        .buttonStyle(COSTextButtonStyle())
+                        .font(.caption2)
+                }
             }
         }
     }
@@ -2252,6 +2281,9 @@ struct ControlPanel: View {
                         refreshAndCheckButton
                     }
                 } else { header }
+                // 0.5.387 (audit A1): the menu-bar panel's clear door to every setting. The panel and the Settings window only;
+                // Activity's Settings is the hub already. With classic Settings on, it opens the classic route as before.
+                if !hostedInActivity { allSettingsRow }
                 // Activity's classic Settings: the way back to the hub, since its switch (General, Advanced) is not on
                 // this page (QA 2026-10-28). The menu-bar panel and the Settings window have no host and never show it.
                 if hub != nil {
@@ -2321,6 +2353,24 @@ struct ControlPanel: View {
         }
     }
 
+    /// 0.5.387: one row near the top of the menu-bar panel that opens Settings (the hub in Activity).
+    private var allSettingsRow: some View {
+        Button { model.showSettings?() } label: {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("All settings").font(COSType.display(13, weight: .semibold))
+                    Text("Every setting, with search").font(COSType.body(10.5)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Label("Open", systemImage: "gearshape")
+                    .font(.system(size: 10.5, weight: .medium))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("panel-all-settings")
+    }
+
     /// H-10: a live recording, with View live transcript and, for one live glasses meeting, Stop and save. Above every
     /// page in both layouts.
     private var recordingCard: some View {
@@ -2347,8 +2397,12 @@ struct ControlPanel: View {
                     Text(line).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             } else {
-                Text("Turn on Live transcript in Settings to view this recording.")
-                    .font(COSType.body(12)).foregroundStyle(.secondary)
+                // 0.5.387 (audit C8): the line names the switch and the button turns it on here.
+                HStack(spacing: 8) {
+                    Text("Live transcript is off.").font(COSType.body(12)).foregroundStyle(.secondary)
+                    Button("Turn on Live transcript") { showLiveTranscript = true; model.liveTranscriptSettingChanged() }
+                        .buttonStyle(COSQuietButtonStyle())
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -3770,6 +3824,16 @@ private extension ControlPanel {
     static let hubSpace = "settings-hub-page"
 
     var hubSearching: Bool { !hubQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// 0.5.387: Basic for a new install, All for everyone else, until the person picks with the switch on each page.
+    var hubView: SettingsHubView {
+        hubShowAllForNow ? .all : SettingsHubView.resolved(stored: hubViewChoice.isEmpty ? nil : hubViewChoice,
+                                                           newInstall: hubCohort == InstallCohort.Cohort.new.rawValue)
+    }
+    /// The switch: the person's choice, stored.
+    func hubSetView(_ view: SettingsHubView) { hubShowAllForNow = false; hubViewChoice = view.rawValue }
+    /// A search result or a link to a row Basic leaves out: All settings now, without storing a choice.
+    func hubShowAll() { if hubView == .basic { hubShowAllForNow = true } }
+    var hubGlassesPath: Bool { voiceGuide.devicePath == .glasses }
 
     func settingsHub(_ host: SettingsHubHost) -> some View {
         hubLoaders(
@@ -3897,12 +3961,15 @@ private extension ControlPanel {
                         VStack(alignment: .leading, spacing: 26) {
                             hubTopStrip(reader)
                             if hubSearching {
-                                SettingsHubSearchResults(query: hubQuery, sections: SettingsHubSearch.results(hubQuery, shown: hubGroupShown, itemShown: { ($0 != "JV-13" || meaningSearchShown) && ($0 != "DROP-01" || model.status.dropIt.supported) }),
-                                                         open: { hubOpen($0, reader) },
-                                                         gateLine: { SettingsHubCatalog.gateLine($0.id, hidden: hubOptionHidden) })
+                                SettingsHubSearchResults(query: hubQuery, sections: SettingsHubSearch.results(hubQuery),
+                                                         open: { hubOpen($0, reader) }, note: hubSearchNote,
+                                                         placedAdvanced: { SettingsHubCatalog.placedAdvanced($0.id, glassesPath: hubGlassesPath) })
                             } else {
                                 SettingsHubPageHeader(title: hubCategory.title, line: hubCategory.blurb, busy: model.busy)
+                                SettingsHubViewSwitch(view: hubView, set: hubSetView)
                                 hubCategoryContent(hubCategory)
+                                    .environment(\.settingsHubView, hubView)
+                                    .environment(\.settingsHubGlassesPath, hubGlassesPath)
                             }
                         }
                         .padding(EdgeInsets(top: 40, leading: pad, bottom: 72, trailing: pad))
@@ -3956,6 +4023,11 @@ private extension ControlPanel {
             hubQuery = ""
             hubCategory = destination.category
             if destination.opensAdvanced { hubAdvanced.insert(destination.group) }
+            // 0.5.387: a link to a group or row Basic leaves out opens All settings, so it never lands on nothing.
+            if hubView == .basic, !SettingsHubCatalog.hasBasicRows(destination.group) || destination.opensAdvanced
+                || SettingsHubCatalog.item(target).map({ !SettingsHubCatalog.isBasic($0.id) }) == true {
+                hubShowAll()
+            }
         }
         // After the page for the new category has drawn.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
@@ -3971,13 +4043,39 @@ private extension ControlPanel {
         hubSearchFocused = false
         hubCategory = destination.category
         if destination.opensAdvanced { hubAdvanced.insert(destination.group) }
-        // A row that is not drawn (its switch is off) opens the row that holds the switch (Settings Release A).
-        let landing = SettingsHubCatalog.landing(item.id, hidden: hubOptionHidden)
+        // 0.5.387: a row Basic leaves out switches to All settings, then scrolls to it.
+        if !SettingsHubCatalog.drawn(item.id, view: hubView, glassesPath: hubGlassesPath) { hubShowAll() }
+        // A row that is not drawn (its switch is off) opens the row that holds the switch (Settings Release A). A row in a group
+        // that is hidden (dictation off, the pet off, Drop it off) opens the row that turns the group on.
+        let landing = hubGroupShown(destination.group)
+            ? SettingsHubCatalog.landing(item.id, hidden: hubOptionHidden)
+            : (SettingsHubSearch.conditionLanding(group: destination.group) ?? item.id)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
             reader.scrollTo(destination.anchor, anchor: .top)
             reader.scrollTo("item." + landing, anchor: .center)
         }
     }
+
+    /// 0.5.387 (audit F2): the line under a search result whose row the page is not drawing now, and why.
+    func hubSearchNote(_ item: SettingsHubItem) -> String? {
+        SettingsHubSearch.note(item, groupShown: item.group.map(hubGroupShown) ?? true, rowShown: hubItemShown(item.id),
+                               conditions: hubConditions, gateLine: SettingsHubCatalog.gateLine(item.id, hidden: hubOptionHidden), view: hubView,
+                               glassesPath: hubGlassesPath)
+    }
+
+    /// A row inside a drawn group that the page still leaves out: Find sessions by meaning and Drop it.
+    func hubItemShown(_ id: String) -> Bool {
+        (id != "JV-13" || meaningSearchShown) && (id != "DROP-01" || model.status.dropIt.supported)
+    }
+
+    var hubConditions: SettingsHubConditions {
+        SettingsHubConditions(serverRunning: model.status.running, dropItOn: model.status.dropIt.enabled, todayHome: todayHomeEnabled)
+    }
+
+    /// 0.5.387 Basic: a group draws when the page would draw it and, in Basic, when it holds a basic row.
+    func hubDraws(_ id: String) -> Bool { hubGroupShown(id) && (hubView == .all || SettingsHubCatalog.hasBasicRows(id)) }
+    /// A block the page draws without a row of the catalog's (a status list, a hosted view): drawn in Basic only for a basic row.
+    func hubRowDrawn(_ id: String) -> Bool { SettingsHubCatalog.drawn(id, view: hubView) }
 
     /// Rows the page leaves out while the switch above them is off (SettingsHubCatalog.gatedBy). One test, read by the page's
     /// search results and by the result that opens: they can never disagree about what is drawn.
@@ -4004,6 +4102,17 @@ private extension ControlPanel {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(TodayInk.panel))
                     .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(TodayInk.panelBorder, lineWidth: 1))
+            }
+            // 0.5.387 (audit F1): the server is not answering, so pages leave groups out. Say so once, with the way back.
+            if let line = SettingsHubServerNotice.line(checked: model.status.runtimeState != "unknown", running: model.status.running) {
+                let action = SettingsHubServerNotice.action(runtimeState: model.status.runtimeState, installed: model.status.installed)
+                SettingsHubServerNoticeLine(text: line, actionTitle: SettingsHubServerNotice.title(action), busy: model.busy) {
+                    switch action {
+                    case .start: model.perform("start")
+                    case .install: model.installCurrentRelease()
+                    case .repair: serverConfirm = .repair
+                    }
+                }
             }
             if model.recordingCount > 0 { recordingCard }
             DockNoticeLine(model: model)
@@ -4034,7 +4143,7 @@ private extension ControlPanel {
     func hubRow<Control: View>(_ id: String, label: String? = nil, detail: String? = nil, @ViewBuilder _ control: () -> Control) -> some View {
         let item = SettingsHubCatalog.item(id)
         return SettingsHubRow(label: label ?? item?.label ?? id, detail: detail ?? item?.detail ?? "",
-                              advanced: item?.advanced ?? false, anchor: "item." + id, control: control)
+                              advanced: SettingsHubCatalog.placedAdvanced(id, glassesPath: hubGlassesPath), anchor: "item." + id, control: control)
     }
 
     func hubSwitch(_ id: String, isOn: Binding<Bool>, detail: String? = nil) -> some View {
@@ -4049,13 +4158,15 @@ private extension ControlPanel {
         hubRow(id, detail: detail) { Button(title, action: action).buttonStyle(TodayButtonStyle(small: true)) }
     }
 
-    func hubCard<Content: View, Advanced: View>(_ id: String, advanced count: Int, forceOpen: Bool = false,
+    /// `inline`: the card's Advanced rows sit among its others and draw in place once Advanced opens (COS reaching out).
+    func hubCard<Content: View, Advanced: View>(_ id: String, advanced count: Int, forceOpen: Bool = false, inline: Bool = false,
                                                  @ViewBuilder _ content: () -> Content,
                                                  @ViewBuilder advanced: () -> Advanced) -> some View {
         SettingsHubCard(group: SettingsHubCatalog.group(id) ?? SettingsHubGroup(id: id, category: hubCategory, title: id), advancedCount: count,
                         advancedOpen: Binding(get: { forceOpen || hubAdvanced.contains(id) },
                                               set: { open in if open { hubAdvanced.insert(id) } else { hubAdvanced.remove(id) } }),
-                        content: content, advanced: advanced)
+                        content: { content().environment(\.settingsHubInlineAdvancedOpen, inline ? (forceOpen || hubAdvanced.contains(id)) : nil) },
+                        advanced: advanced)
             .settingsHubSpyTop(id, space: Self.hubSpace, spy: hubSpy)
     }
 
@@ -4070,7 +4181,7 @@ private extension ControlPanel {
     /// The groups a category draws now (a card on an older server, or with nothing to show, is left out), for On this
     /// page. The same tests gate each card in hubCategoryContent.
     func hubVisibleGroups(_ category: SettingsHubCategory) -> [SettingsHubGroup] {
-        SettingsHubCatalog.groups(in: category).filter { hubGroupShown($0.id) }
+        SettingsHubCatalog.groups(in: category).filter { hubDraws($0.id) }
     }
 
     func hubGroupShown(_ id: String) -> Bool { Self.hubGroupShown(id, model: model) }
@@ -4138,9 +4249,10 @@ private extension ControlPanel {
         hubCard("ai.apps") {
             // SG-03: the same rows as the guide's Your AI, polling only while this card is on screen.
             SettingsHubBlock { ProviderConnectList(guide: model.providerGuide, includeOllama: false).providerPolling(model.providerGuide) }
-            SettingsHubBlock { statusAgentRows; statusCursorRow }
+            if hubRowDrawn("ST-24") { SettingsHubBlock { statusAgentRows; statusCursorRow } }
             hubButton("UT-20", "Open Cursor") { model.openCursor() }.disabled(model.busy)
         }
+        if hubDraws("ai.local") {
         hubCard("ai.local") {
             SettingsHubBlock { SettingsHubSetupRow(model: model, provider: model.providerGuide, guide: model.setupGuide, id: .ollama) }
             if model.status.ollamaReady == true, let name = model.status.ollamaModel, !name.isEmpty {
@@ -4148,23 +4260,28 @@ private extension ControlPanel {
             }
             toolOllamaModel(hub: true).disabled(model.busy)
         }
+        }
+        if hubDraws("ai.decision") {
         hubCard("ai.decision", advanced: hubAdvancedCount("ai.decision")) {
             // Decision models came from Tools, which is off while busy.
             Group {
-                hubRow("JV-01", label: "Provider in use") { SettingsHubValue(text: model.decisionSettings?.provider.title ?? "Checking…") }
+                hubRow("JV-01") { SettingsHubValue(text: model.decisionSettings?.provider.title ?? "Checking…") }
                 SettingsHubBlock { decisionDefaultControls }
-                SettingsHubBlock { jevKeyControls }
-                SettingsHubBlock { subQKeyControls; decisionMessageLine }
+                // 0.5.387: the Jev and SubQ key fields moved under Advanced (the panel anchor that asks for a key opens it).
+                if model.decisionMessage != nil { SettingsHubBlock { decisionMessageLine } }
                 if meaningSearchShown { SettingsHubBlock { meaningSearchControls } }
             }
             .disabled(model.busy)
         } advanced: {
             Group {
+                SettingsHubBlock(advanced: true) { jevKeyControls }
+                SettingsHubBlock(advanced: true) { subQKeyControls }
                 if model.decisionSettings != nil { SettingsHubBlock(advanced: true) { decisionWorkflowControls } }
                 SettingsHubBlock(advanced: true) { decisionRefreshButton }
                 SettingsHubBlock(advanced: true) { subQRetentionNote }
             }
             .disabled(model.busy)
+        }
         }
         // Your own key and Search are cards of their own (SettingsHubViews.swift), so the panel's file keeps its one
         // own-key hook and no token-spending search switch.
@@ -4172,37 +4289,43 @@ private extension ControlPanel {
         hubCard("ai.search") { SettingsHubSemanticSearchRow(model: model) }
     }
 
-    // MARK: Glasses and iPhone
+    // MARK: Glasses, phone and web
 
     @ViewBuilder var hubGlasses: some View {
-        hubCard("glasses.devices", advanced: hubAdvancedCount("glasses.devices")) {
-            SettingsHubBlock { SetupDeviceChoice(guide: model.setupGuide) }
-            // UT-29 (0.5.367, server 6.99.3): Open COS on your phone, for every device path. The web page's sign-in error
-            // names this row. It is the phone's browser. 0.5.368: it comes right after the device choice, ABOVE the glasses
-            // rows, so the QR the iPhone Camera can read is the first one; Connect your glasses below is the COS Glasses app's.
-            // 0.5.368: on a server before 6.99.3 the whole block hides (PhoneSignInBlock), its glasses note with it.
+        // 0.5.387 (Miles's approved preview): Phone and web, out from under Devices, for every device path, and first on
+        // the page so the QR the iPhone Camera reads is the first one (Miles 2026-11-04). Control Web is a
+        // full surface now, not a glasses accessory.
+        hubCard("glasses.phone") {
+            // UT-29 (0.5.367, server 6.99.3): Open COS on your phone. The web page's sign-in error names this row. On a server
+            // before 6.99.3 the whole block hides (PhoneSignInBlock), its glasses note with it.
             PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)
                 .settingsHubAnchor("UT-29")
+            // PK-01 (server 6.99.31, COS_WEB_KEY_AUTHORITY): Phone approvals, beside the phone sign-in, in Basic and All, never
+            // under Advanced. Zero height unless the server says the flag is on.
+            WebKeySettingsBlock(state: model.webKey)
+                .settingsHubAnchor("PK-01")
+            // WB-01 (Miles 2026-11-09): Sign out every browser, the server's revoke-all route through the helper.
+            SettingsHubWebRevokeRow(model: model, phone: model.phoneSignIn)
+        }
+        hubCard("glasses.devices", advanced: hubAdvancedCount("glasses.devices")) {
+            SettingsHubBlock { SetupDeviceChoice(guide: model.setupGuide) }
             if voiceGuide.devicePath == .glasses {
                 SettingsHubBlock {
                     GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ = model.providerGuide.openURL($0) })
                 }
                 hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }
+                // 0.5.387 (recovery rows, lead 2026-11-09): the glasses app tells people to press Copy pairing token, so on the
+                // glasses path it is on the card, in Basic and All. The Mac-only path keeps it under Advanced, as in 0.5.385.
+                pairingTokenRow
             }
-            // PK-01 (server 6.99.31, COS_WEB_KEY_AUTHORITY): Phone approvals. Zero height unless the server says the flag is on.
-            WebKeySettingsBlock(state: model.webKey)
-                .settingsHubAnchor("PK-01")
         } advanced: {
-            hubRow("UT-21") {
-                Button("Copy token") { model.perform("token") }.buttonStyle(TodayButtonStyle(small: true)).disabled(pairingTokenBlocked)
-            }
-            .disabled(model.busy)
+            if !hubGlassesPath { pairingTokenRow }
             // O-10: Reset live message count, which the panel keeps in its header, reachable in every host.
             hubRow("H-04") {
                 Button("Reset count…") { confirmResetMessageCount = true }.buttonStyle(TodayButtonStyle(small: true)).disabled(model.busy)
             }
         }
-        if hubGroupShown("glasses.video") {
+        if hubDraws("glasses.video") {
             hubCard("glasses.video", advanced: hubAdvancedCount("glasses.video")) {
                 if model.status.videoUploadV2Enabled != nil { SettingsHubBlock { statusVideoRows(clearButton: false) } }
                 // A stuck upload blocks Repair, so its warning and Clear stay on the card, not under Advanced (QA S6).
@@ -4235,8 +4358,14 @@ private extension ControlPanel {
         hubCard("meetings.assistant") {
             MeetingAskSettings(store: model.meetingAsk, model: model, part: .assistant)
         }
-        hubCard("meetings.cues") {
-            MeetingAskSettings(store: model.meetingAsk, model: model, part: .liveCues)
+        if hubDraws("meetings.cues") {
+            // 0.5.387: the cue limits, the general cue limits and their usage lines are Live cues' Advanced.
+            hubCard("meetings.cues", advanced: hubAdvancedCount("meetings.cues")) {
+                MeetingAskSettings(store: model.meetingAsk, model: model, part: .liveCues)
+            } advanced: {
+                MeetingAskSettings(store: model.meetingAsk, model: model, part: .liveCuesLimits)
+                    .background(TodayInk.hubAdvancedBg)
+            }
         }
         hubCard("meetings.library", advanced: hubAdvancedCount("meetings.library")) {
             hubRow("UT-16", detail: hubFolderDetail("UT-16")) {
@@ -4246,8 +4375,8 @@ private extension ControlPanel {
                     .help(folderHelp(Self.meetingsLibraryHelp))
             }
             .disabled(model.busy)
-            SettingsHubBlock { statusLibraryRows }
-            SettingsHubBlock { statusMeetingSyncRows }
+            if hubRowDrawn("ST-29") { SettingsHubBlock { statusLibraryRows } }
+            if hubRowDrawn("ST-16") { SettingsHubBlock { statusMeetingSyncRows } }
             if model.status.meetingFinalizationPending > 0 || model.status.meetingFinalizationMalformed > 0 {
                 SettingsHubBlock { statusFinalizationRows }
             }
@@ -4274,7 +4403,7 @@ private extension ControlPanel {
                 }
             }
             hubButton("OUT-02", "Import…") { hubOpenImport() }
-            hubButton("OUT-03", "Open") { hubOpenImport() }
+            hubButton("OUT-03", "Open Import") { hubOpenImport() }
         }
     }
 
@@ -4296,7 +4425,8 @@ private extension ControlPanel {
         }
         SettingsHubObserving(model.dictation) { dictation in
             if dictation.enabled {
-                ForEach([DictationSettingsSection.microphone, .shortcuts, .sounds, .text, .polish], id: \.self) { section in
+                // 0.5.387: Basic leaves out Sounds and audio, and Text.
+                ForEach([DictationSettingsSection.microphone, .shortcuts, .sounds, .text, .polish].filter { hubDraws("dictation." + $0.rawValue) }, id: \.self) { section in
                     hubCard("dictation." + section.rawValue) { dictationSection(section) }
                 }
             }
@@ -4304,6 +4434,7 @@ private extension ControlPanel {
         hubCard("dictation.history") {
             dictationSection(.history)
             // DI-35: the Dictation tab keeps the dictionary and the history (and these settings, behind its Settings).
+            if hubRowDrawn("DI-35") {
             HStack(spacing: 6) {
                 Text(hubDetail("DI-35")).font(COSType.body(13)).foregroundStyle(TodayInk.sub)
                 Button("Open Dictation") { openActivity(.dictation) }.buttonStyle(TodayLinkStyle(size: 13))
@@ -4312,6 +4443,7 @@ private extension ControlPanel {
             .padding(EdgeInsets(top: 12, leading: 20, bottom: 14, trailing: 20))
             .overlay(alignment: .top) { SettingsHubHairline() }
             .id("item.DI-35")
+            }
         }
     }
 
@@ -4331,7 +4463,7 @@ private extension ControlPanel {
         hubCard("voice.setup", advanced: hubAdvancedCount("voice.setup")) {
             SettingsHubBlock { SettingsHubSetupRow(model: model, provider: model.providerGuide, guide: model.setupGuide, id: .voice) }
             toolTranscriptionTier(hub: true).disabled(model.busy)
-            SettingsHubBlock { statusVoiceRows; statusWhisperErrorLine }
+            if hubRowDrawn("ST-04") { SettingsHubBlock { statusVoiceRows; statusWhisperErrorLine } }
             if repairWhisperOffered {
                 hubButton("UT-14", "Repair Whisper") { model.perform("restart-whisper") }.disabled(model.busy)
             }
@@ -4348,7 +4480,7 @@ private extension ControlPanel {
                 }
             }
         }
-        if hubGroupShown("voice.performance") {
+        if hubDraws("voice.performance") {
             // The two switches and their status lines are the card; only the server-set HQ prefill line is Advanced,
             // so the card never opens on an empty body with everything folded away.
             hubCard("voice.performance", advanced: hubAdvancedCount("voice.performance")) {
@@ -4374,13 +4506,31 @@ private extension ControlPanel {
     /// The count beside a card's Advanced: the catalog's Advanced rows in that group the page draws now (QA 2026-10-28
     /// N3), never a typed number. hubAdvancedShown answers for the rows drawn only sometimes, by the same tests the
     /// cards use; every other Advanced row always draws.
-    func hubAdvancedCount(_ group: String) -> Int {
-        SettingsHubCatalog.items(inGroup: group).filter { $0.advanced && hubAdvancedShown($0.id) }.count
+    func hubAdvancedCount(_ group: String, inBasic: Bool = false) -> Int {
+        // 0.5.387: Basic draws no Advanced, unless the card's next step is there (a legacy server).
+        guard hubView == .all || inBasic else { return 0 }
+        return SettingsHubCatalog.items(inGroup: group).filter { $0.advanced && hubAdvancedShown($0.id) }.count
+    }
+
+    /// UT-21, drawn once on whichever side the device path puts it.
+    var pairingTokenRow: some View {
+        hubRow("UT-21") {
+            Button("Copy token") { model.perform("token") }.buttonStyle(TodayButtonStyle(small: true)).disabled(pairingTokenBlocked)
+        }
+        .disabled(model.busy)
     }
 
     func hubAdvancedShown(_ id: String) -> Bool {
         switch id {
+        // Copy pairing token sits under Devices' Advanced only on the Mac-only path.
+        case "UT-21": return !hubGlassesPath
         case "JV-03", "JV-04", "JV-05": return model.decisionSettings != nil
+        // 0.5.387: Live cues' Advanced, as LiveCuesSettingsRow draws them: the limits from a server that reports them, and the
+        // general cue limits only while the mode searches the web.
+        case "MA-08", "MA-09", "MA-10", "MA-11", "MA-12": return model.meetingAsk.liveCues.settings?.limits != nil
+        case "HUB-GB", "HUB-GI", "HUB-GA", "HUB-GM", "HUB-GT", "HUB-GW", "HUB-GU":
+            guard let v3 = model.meetingAsk.liveCues.settings?.v3, model.meetingAsk.liveCues.settings?.limits != nil else { return false }
+            return LiveCues.searchesWeb(v3.mode.value)
         case "UT-05": return model.status.meetingPreviewSupported
         case "ST-08": return model.status.meetingPreviewSupported && model.status.meetingPreviewEnabled != nil
         case "ST-13": return hubModelRowsShown
@@ -4410,7 +4560,7 @@ private extension ControlPanel {
                 toolThreadAttach(hub: true)
             }
             .disabled(model.busy)
-            if model.status.threadAttachSupported, model.status.threadAttachEnabled != nil {
+            if model.status.threadAttachSupported, model.status.threadAttachEnabled != nil, hubRowDrawn("ST-09") {
                 SettingsHubBlock { statusContinueRow }
             }
             Group {
@@ -4453,9 +4603,12 @@ private extension ControlPanel {
         }
         // 0.5.372 (server Drop it P2): COS reaching out, only while Drop it is on and the server has its P2 settings.
         if hubGroupShown("work.reach") {
-            hubCard("work.reach") { DropItReachRows(store: model.dropItP2) }
+            // 0.5.387: Pings and Quiet hours stay on the card; the other 15 rows draw in place once its Advanced opens.
+            hubCard("work.reach", advanced: hubAdvancedCount("work.reach"), inline: true) {
+                DropItReachRows(store: model.dropItP2)
+            } advanced: { EmptyView() }
         }
-        if hubGroupShown("work.background") {
+        if hubDraws("work.background") {
             hubCard("work.background") {
                 toolBackgroundJobs(hub: true).disabled(model.busy)
                 if model.status.backgroundJobsEnabled != nil { SettingsHubBlock { statusBackgroundRow } }
@@ -4467,7 +4620,7 @@ private extension ControlPanel {
                     Button("Choose…") { model.selectWorkFolder() }
                         .buttonStyle(TodayButtonStyle(small: true)).disabled(folderPickBlocked).help(folderHelp(workFolderHelp))
                 }
-                SettingsHubBlock { statusWorkFolderRows }
+                if hubRowDrawn("ST-28") { SettingsHubBlock { statusWorkFolderRows } }
                 hubRow("UT-17", detail: hubFolderDetail("UT-17")) {
                     Button("Choose…") { model.selectContextFolder() }
                         .buttonStyle(TodayButtonStyle(small: true)).disabled(folderPickBlocked).help(folderHelp(Self.cosDataHelp))
@@ -4480,7 +4633,7 @@ private extension ControlPanel {
                 }
             }
             .disabled(model.busy)
-            if model.status.contextBrowserSupported { SettingsHubBlock { statusContextRows } }
+            if model.status.contextBrowserSupported, hubRowDrawn("ST-06") { SettingsHubBlock { statusContextRows } }
         } advanced: {
             if model.status.contextScriptsDirectory != nil || model.status.contextFilesDirectory != nil {
                 SettingsHubBlock(advanced: true) { notesSourceLine }
@@ -4491,10 +4644,10 @@ private extension ControlPanel {
         if hubGroupShown("work.brief") {
             hubCard("work.brief") { SettingsHubBlock { morningBriefContent } }
         }
-        if hubGroupShown("work.domains") {
+        if hubDraws("work.domains") {
             hubCard("work.domains") { SettingsHubBlock { domainsContent } }
         }
-        if hubGroupShown("work.fences") {
+        if hubDraws("work.fences") {
             // Only while a thread is paused, and then it needs you: not under Advanced.
             hubCard("work.fences") { SettingsHubBlock { fencesContent } }
         }
@@ -4504,7 +4657,7 @@ private extension ControlPanel {
 
     @ViewBuilder var hubPrivacy: some View {
         hubCard("privacy.permissions", advanced: hubAdvancedCount("privacy.permissions")) {
-            hubRow("PM-01", label: "Status") { SettingsHubPermissionsSummary(guide: model.permissionGuide) }
+            hubRow("PM-01") { SettingsHubPermissionsSummary(guide: model.permissionGuide) }
             SettingsHubBlock { PermissionGuideList(guide: model.permissionGuide) }
         } advanced: {
             SettingsHubBlock(advanced: true) { StaleBuildsSection(guide: model.permissionGuide) }
@@ -4517,10 +4670,19 @@ private extension ControlPanel {
         // The pet's settings came from Tools, which is off while busy.
         hubCard("pet.pet", advanced: hubAdvancedCount("pet.pet")) {
             hubSwitch("PT-01", isOn: Binding(get: { model.petEnabled }, set: { model.setPetEnabled($0) }))
-            if model.petIntroVisible { SettingsHubBlock { PetIntroLine(model: model) } }
+            if model.petIntroVisible, hubRowDrawn("PT-14") { SettingsHubBlock { PetIntroLine(model: model) } }
             if model.petEnabled {
-                if !model.petJumpTrusted { SettingsHubBlock { petJumpWarning } }
-                SettingsHubBlock { PetSizeControls(model: model) }
+                if !model.petJumpTrusted, hubRowDrawn("PT-02") { SettingsHubBlock { petJumpWarning } }
+                if hubView == .all {
+                    SettingsHubBlock { PetSizeControls(model: model) }
+                } else {
+                    // 0.5.387 Basic: Motion alone (PT-07). All settings draws it inside the size block, as before.
+                    hubRow("PT-07") {
+                        COSDropdown(hubLabel("PT-07"), selection: Binding(get: { model.petMotion }, set: { model.setPetMotion($0) }),
+                                    options: PetMotion.allCases.map { COSDropdownOption($0, $0.shortTitle) }, showsLabel: false)
+                            .frame(width: 160)
+                    }
+                }
                 hubRow("PT-10") { petCloudPuffButton.buttonStyle(TodayButtonStyle(small: true)) }
             }
         } advanced: {
@@ -4528,7 +4690,7 @@ private extension ControlPanel {
             SettingsHubBlock(advanced: true) { petSpriteButtons }
         }
         .disabled(model.busy)
-        if hubGroupShown("pet.characters") {
+        if hubDraws("pet.characters") {
             hubCard("pet.characters") { SettingsHubBlock { petGalleryCard } }
                 .disabled(model.busy)
         }
@@ -4539,24 +4701,25 @@ private extension ControlPanel {
     @ViewBuilder var hubSystem: some View {
         let legacy = ["legacyStopped", "legacyService"].contains(model.status.runtimeState)
         // A legacy server's next step is under Advanced, so Advanced opens on its own then.
-        hubCard("system.server", advanced: hubAdvancedCount("system.server"), forceOpen: legacy) {
-            SettingsHubBlock { statusServerRows; statusVersionRow }
+        // 0.5.387: Ownership and Recovery are Advanced; Basic draws no Advanced unless a legacy server's next step is there.
+        hubCard("system.server", advanced: hubAdvancedCount("system.server", inBasic: legacy), forceOpen: legacy) {
+            SettingsHubBlock {
+                statusServerStateRow
+                if hubRowDrawn("ST-27") { statusVersionRow }
+            }
             if (model.status.activeJobs ?? 0) + (model.status.activeTranscriptionSessions ?? 0) > 0 || model.status.transactionPending {
                 SettingsHubBlock { statusActiveWorkLine; statusTransactionLine }
             }
-            hubRow("C-01", label: "Restart and update", detail: "Restart, stop or start the server, or install the newest one. Restart and Stop are off while work is running.") {
-                serverControlButtons
-            }
+            hubRow("C-01") { serverControlButtons }
             if model.status.runtimeState == "legacyForeground" || model.notice != nil {
                 SettingsHubBlock { serverForegroundWarning; serverNoticeLine }
             }
         } advanced: {
+            SettingsHubBlock(advanced: true) { statusServerInternalsRows }
             if legacy {
                 SettingsHubBlock(advanced: true) { serverLegacyControls }
             } else {
-                hubRow("C-06", label: "Older server", detail: "Adopt, manage in place, or replace a server COS Control did not install.") {
-                    SettingsHubValue(text: "Not needed")
-                }
+                hubRow("C-06") { SettingsHubValue(text: "Not needed") }
             }
             Group {
                 hubButton("UT-24", "Open") { model.openHealth() }

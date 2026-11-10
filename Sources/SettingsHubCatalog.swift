@@ -21,6 +21,28 @@ enum SettingsHub {
     static func lastCategory(_ defaults: UserDefaults = .standard) -> SettingsHubCategory {
         defaults.string(forKey: lastCategoryKey).flatMap(SettingsHubCategory.init(rawValue:)) ?? .general
     }
+    /// 0.5.387 (Miles, 2026-11-09): the Dictation menu's Settings… lands on the hub's Dictation page, the same place a search
+    /// for dictation lands. Nil with classic Settings on: the menu keeps its old route, Activity's Dictation tab pane.
+    static let dictationMenuAnchor = "hub.dictation.dictation"
+    static func dictationMenuTarget(classic: Bool) -> String? { opensHub(classic: classic) ? dictationMenuAnchor : nil }
+}
+
+/// 0.5.387 (Miles, 2026-11-09, "Basic view plus refile"): Basic shows the rows most people change; All settings shows every
+/// row as before. One switch on every page moves between them. A new install starts in Basic, an existing one in All, and a
+/// choice the person made always wins. Search covers every row in both.
+enum SettingsHubView: String, CaseIterable, Sendable {
+    case basic, all
+    static let key = "cos.settings.view"
+    /// `stored`: the person's choice, or nil when they never made one. `newInstall`: InstallCohort.isNewInstall.
+    static func resolved(stored: String?, newInstall: Bool) -> SettingsHubView {
+        stored.flatMap(SettingsHubView.init(rawValue:)) ?? (newInstall ? .basic : .all)
+    }
+    /// The switch on each page. Plain words, one control.
+    static let switchLabel = "Show all settings"
+    static let basicLine = "Basic view: the settings most people change."
+    static let allLine = "Every setting is shown."
+    /// Beside a search result for a row Basic leaves out. Opening it switches to All settings.
+    static let hiddenByBasic = "In All settings"
 }
 
 enum SettingsHubCategory: String, CaseIterable, Identifiable, Sendable {
@@ -30,7 +52,7 @@ enum SettingsHubCategory: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .general: "General"
         case .ai: "AI and accounts"
-        case .glasses: "Glasses and iPhone"
+        case .glasses: "Glasses, phone and web"
         case .meetings: "Meetings"
         case .dictation: "Dictation"
         case .voice: "Transcription and voice"
@@ -60,7 +82,7 @@ enum SettingsHubCategory: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .general: "How COS Control opens, its shortcut, Today and the setup guide."
         case .ai: "The AI apps COS works through, your keys and the models behind Work."
-        case .glasses: "Pair your glasses and phone, and how videos reach this Mac."
+        case .glasses: "Pair your glasses, open COS on your phone, and how videos reach this Mac."
         case .meetings: "Recording, the meeting assistant, live cues and your meeting library."
         case .dictation: "Type by voice into any Mac app: shortcuts, sounds, text and AI polish."
         case .voice: "The engines and models that turn speech into text on this Mac."
@@ -113,6 +135,8 @@ enum SettingsHubCatalog {
         .init(id: "ai.decision", category: .ai, title: "Decision models", blurb: "Jev or SubQ, for Work suggestions, done checks, Work search and ⌘K."),
         .init(id: "ai.keys", category: .ai, title: "Your own key", blurb: "Answer on your own API key, under a daily cap."),
         .init(id: "ai.search", category: .ai, title: "Search", blurb: "Find messages by meaning."),
+        // 0.5.387: Phone and web first, so the QR the iPhone Camera reads is still the first on the page (Miles 2026-11-04).
+        .init(id: "glasses.phone", category: .glasses, title: "Phone and web", blurb: "COS in your phone's browser, and approvals from your phone."),
         .init(id: "glasses.devices", category: .glasses, title: "Devices", blurb: "Tailscale, pairing and the glasses app."),
         .init(id: "glasses.video", category: .glasses, title: "Video uploads", blurb: "Videos sent from the phone to this Mac."),
         .init(id: "meetings.recording", category: .meetings, title: "Recording", blurb: "Live transcript, record suggestions and the recording notice."),
@@ -169,11 +193,15 @@ enum SettingsHubCatalog {
               keywords: ["meaning", "command k", "sessions", "consent", "jev", "subq"]),
         // 0.5.367 (server 6.99.3): Open COS on your phone, the QR and code that sign the phone's browser in to Control Web. The
         // web page's sign-in error names it. A hub row, not an inventory row.
-        .init("UT-29", "Open COS on your phone", "Point your iPhone Camera here. Safari opens COS already signed in.", old: "", group: "glasses.devices",
+        .init("UT-29", "Open COS on your phone", "Point your iPhone Camera here. Safari opens COS already signed in.", old: "", group: "glasses.phone",
               advanced: false, mount: .group, keywords: ["phone", "browser", "sign in", "web", "qr", "control web", "safari", "sign-in code", "login"]),
         // Server 6.99.31 (COS_WEB_KEY_AUTHORITY, default off): Phone approvals, the Touch ID key that enrolls a phone for web
         // approvals. Drawn only while the server says the flag is on (Sources/WebKeyViews.swift). A hub row, not an inventory row.
-        .init("PK-01", "Phone approvals", "Approve agent actions from your iPhone with its passkey and Face ID. Touch ID on this Mac enrolls the phone.", old: "", group: "glasses.devices",
+        // 0.5.387 (Miles 2026-11-09, lane D2): Sign out every browser, the server's POST /api/web-session/revoke-all through the
+        // helper's web-revoke-all. Under Open COS on your phone, in Basic and All, hidden with the phone sign-in on a server without it.
+        .init("WB-01", "Sign out every browser", "Ends every Control Web sign-in on phones and browsers. You can sign in again from here.", old: "", group: "glasses.phone",
+              advanced: false, mount: .group, keywords: ["sign out", "browser", "phone", "revoke", "log out", "control web", "sessions", "everywhere"]),
+        .init("PK-01", "Phone approvals", "Approve agent actions from your iPhone with its passkey and Face ID. Touch ID on this Mac enrolls the phone.", old: "", group: "glasses.phone",
               advanced: false, mount: .group, keywords: ["phone key", "approvals", "approve", "touch id", "enroll", "revoke", "web key", "passkey"]),
         // 0.5.371 (server Drop it P1): the one Drop it switch, off by default, shown only for a server that has Drop it. A hub row, not
         // an inventory row. Its words are DropIt.settingLabel and settingDetail (Sources/DropIt.swift).
@@ -183,37 +211,37 @@ enum SettingsHubCatalog {
         // and the server answers GET /api/drops/settings/p2 (Sources/DropItP2Views.swift draws them). Hub rows, not inventory rows.
         .init("REACH-01", "Pings", "Turn off to keep COS from posting on its own. Reminders and follow-ups on your drops still come.", old: "", group: "work.reach", advanced: false, mount: .group,
               keywords: ["ping", "pings", "interrupt", "cos reaching out", "proactive"]),
-        .init("REACH-02", "Interruptions a day", "On a weekday. Reminders do not count.", old: "", group: "work.reach", advanced: false, mount: .group,
+        .init("REACH-02", "Interruptions a day", "On a weekday. Reminders do not count.", old: "", group: "work.reach", advanced: true, mount: .group,
               keywords: ["ping", "interrupt", "limit", "cap", "per day"]),
-        .init("REACH-03", "From one kind a day", "Interruptions from one kind a day.", old: "", group: "work.reach", advanced: false, mount: .group,
+        .init("REACH-03", "From one kind a day", "Interruptions from one kind a day.", old: "", group: "work.reach", advanced: true, mount: .group,
               keywords: ["ping", "interrupt", "limit", "per kind"]),
-        .init("REACH-04", "Minutes between", "The shortest gap between two interruptions.", old: "", group: "work.reach", advanced: false, mount: .group,
+        .init("REACH-04", "Minutes between", "The shortest gap between two interruptions.", old: "", group: "work.reach", advanced: true, mount: .group,
               keywords: ["ping", "interrupt", "gap", "spacing"]),
         .init("REACH-05", "Quiet hours", "No interruption and no new work ping from the first time. What waited posts as one item after the second.", old: "", group: "work.reach", advanced: false, mount: .group,
               keywords: ["quiet hours", "do not disturb", "evening", "night"]),
-        .init("REACH-06", "Weekends are quiet", "No interruptions on Saturday and Sunday.", old: "", group: "work.reach", advanced: false, mount: .group,
+        .init("REACH-06", "Weekends are quiet", "No interruptions on Saturday and Sunday.", old: "", group: "work.reach", advanced: true, mount: .group,
               keywords: ["quiet hours", "weekend", "do not disturb"]),
-        .init("REACH-07", "First interruption", "The earliest a weekday interruption comes.", old: "", group: "work.reach", advanced: false, mount: .group,
+        .init("REACH-07", "First interruption", "The earliest a weekday interruption comes.", old: "", group: "work.reach", advanced: true, mount: .group,
               keywords: ["morning", "first ping", "earliest"]),
-        .init("REACH-08", "What COS pings about", "Each lands in the COS chat.", old: "", group: "work.reach", advanced: false, mount: .group,
+        .init("REACH-08", "What COS pings about", "Each lands in the COS chat.", old: "", group: "work.reach", advanced: true, mount: .group,
               keywords: ["ping", "meeting prep", "agents", "follow-ups", "stale threads", "signals"]),
-        .init("REACH-09", "Ping me about", "A ping that mentions one of these may interrupt you, even when its kind stays in the chat. Words, matched whole.", old: "", group: "work.reach", advanced: false, mount: .group,
+        .init("REACH-09", "Ping me about", "A ping that mentions one of these may interrupt you, even when its kind stays in the chat. Words, matched whole.", old: "", group: "work.reach", advanced: true, mount: .group,
               keywords: ["steer", "keywords", "topics", "ping me about"]),
-        .init("REACH-10", "Leave alone", "A ping that mentions one of these is not posted. Your reminders and follow-ups always are.", old: "", group: "work.reach", advanced: false, mount: .group,
+        .init("REACH-10", "Leave alone", "A ping that mentions one of these is not posted. Your reminders and follow-ups always are.", old: "", group: "work.reach", advanced: true, mount: .group,
               keywords: ["steer", "mute", "leave alone", "ignore"]),
-        .init("REACH-11", "Follow-ups on your drops", "One line under the drop when what it became resolves.", old: "", group: "work.reach", advanced: false, mount: .group,
+        .init("REACH-11", "Follow-ups on your drops", "One line under the drop when what it became resolves.", old: "", group: "work.reach", advanced: true, mount: .group,
               keywords: ["follow-ups", "resolved", "card done", "handoff", "session replied"]),
-        .init("REACH-12", "Weekly check-in", "COS asks what you do not want to forget this week. Your reply becomes a reminder.", old: "", group: "work.reach", advanced: false, mount: .group,
+        .init("REACH-12", "Weekly check-in", "COS asks what you do not want to forget this week. Your reply becomes a reminder.", old: "", group: "work.reach", advanced: true, mount: .group,
               keywords: ["check-in", "weekly", "monday"]),
-        .init("REACH-13", "Default reminder time", "What a day alone means, and the time for Tomorrow and Monday.", old: "", group: "work.reach", advanced: false, mount: .group,
+        .init("REACH-13", "Default reminder time", "What a day alone means, and the time for Tomorrow and Monday.", old: "", group: "work.reach", advanced: true, mount: .group,
               keywords: ["reminder", "default time", "remind me"]),
-        .init("REACH-14", "Snooze for", "How long Snooze waits.", old: "", group: "work.reach", advanced: false, mount: .group,
+        .init("REACH-14", "Snooze for", "How long Snooze waits.", old: "", group: "work.reach", advanced: true, mount: .group,
               keywords: ["reminder", "snooze"]),
-        .init("REACH-15", "Notify me about reminders", "A reminder notifies you at any hour. Off, it only lands in the COS chat.", old: "", group: "work.reach", advanced: false, mount: .group,
+        .init("REACH-15", "Notify me about reminders", "A reminder notifies you at any hour. Off, it only lands in the COS chat.", old: "", group: "work.reach", advanced: true, mount: .group,
               keywords: ["reminder", "notification", "notifications", "banner"]),
-        .init("REACH-16", "Show reminders on the glasses", "For the glasses build that shows COS on the lens.", old: "", group: "work.reach", advanced: false, mount: .group,
+        .init("REACH-16", "Show reminders on the glasses", "For the glasses build that shows COS on the lens.", old: "", group: "work.reach", advanced: true, mount: .group,
               keywords: ["reminder", "glasses", "lens", "g2"]),
-        .init("REACH-17", "Which may interrupt", "The rest land in the COS chat without a notification.", old: "", group: "work.reach", advanced: false, mount: .group,
+        .init("REACH-17", "Which may interrupt", "The rest land in the COS chat without a notification.", old: "", group: "work.reach", advanced: true, mount: .group,
               keywords: ["notification", "notifications", "banner", "interrupt"]),
         .init("HUB-CL", "Use classic Settings", "Show the earlier one-page Settings in Activity.", old: "", group: "general.app", advanced: true, mount: .group,
               keywords: ["classic", "old settings", "rollback", "one page"]),
@@ -224,19 +252,19 @@ enum SettingsHubCatalog {
         .init("HUB-CG", "Grounded cues", "Check each cue against your past meetings, notes and files, and cite what it used.", old: "", group: "meetings.cues",
               advanced: false, mount: .group, keywords: ["grounding", "sources", "classic"]),
         .init("HUB-GB", "General bar", "Lower gives more general cues. Higher gives fewer.", old: "", group: "meetings.cues",
-              advanced: false, mount: .group, keywords: ["general cues", "trigger"]),
+              advanced: true, mount: .group, keywords: ["general cues", "trigger"]),
         .init("HUB-GI", "General check gap", "The shortest time between two checks for something worth a general cue.", old: "", group: "meetings.cues",
-              advanced: false, mount: .group, keywords: ["general cues", "interval"]),
+              advanced: true, mount: .group, keywords: ["general cues", "interval"]),
         .init("HUB-GA", "Topic checks per meeting", "The most topic checks one meeting can get.", old: "", group: "meetings.cues",
-              advanced: false, mount: .group, keywords: ["general cues", "attempts"]),
+              advanced: true, mount: .group, keywords: ["general cues", "attempts"]),
         .init("HUB-GM", "General cues per meeting", "The most general cues one meeting can get.", old: "", group: "meetings.cues",
-              advanced: false, mount: .group, keywords: ["insight", "maximum"]),
+              advanced: true, mount: .group, keywords: ["insight", "maximum"]),
         .init("HUB-GT", "Daily topic checks", "The most topic checks general cues can run in one day.", old: "", group: "meetings.cues",
-              advanced: false, mount: .group, keywords: ["general cues", "daily cap"]),
+              advanced: true, mount: .group, keywords: ["general cues", "daily cap"]),
         .init("HUB-GW", "Daily web searches", "The most web searches general cues can run in one day.", old: "", group: "meetings.cues",
-              advanced: false, mount: .group, keywords: ["general cues", "daily cap", "search"]),
+              advanced: true, mount: .group, keywords: ["general cues", "daily cap", "search"]),
         .init("HUB-GU", "General cue usage", "Today's topic checks and web searches, and when general cues start again after a pause.", old: "", group: "meetings.cues",
-              advanced: false, mount: .group, keywords: ["general cues", "breaker"]),
+              advanced: true, mount: .group, keywords: ["general cues", "breaker"]),
     ]
 
     /// Every inventory row, in the inventory's order (section 3). Labels and descriptions are the inventory's new copy.
@@ -248,7 +276,7 @@ enum SettingsHubCatalog {
         .init("UT-25", "Time format", "How times show in Meetings and Speakers.", old: "Advanced · Clock (12-hour / 24-hour)", group: "general.app", advanced: false, mount: .group, keywords: ["clock", "12-hour", "24-hour"]),
         .init("H-09", "Get started", "Opens first-time setup. Shows until COS is set up.", old: "Get started with COS", group: "general.app", advanced: false, mount: .topStrip),
         .init("WK-06", "Today home", "Activity opens on Today: what needs you, what is running and what is next.", old: "New Today home", group: "general.home", advanced: false, mount: .group, keywords: ["today home"]),
-        .init("WK-07", "Quiet hours", "From 6 PM to 6 AM and on weekends, Today folds what can wait under For tomorrow.", old: "Quiet hours on Today", group: "general.home", advanced: false, mount: .group),
+        .init("WK-07", "Fold evenings and weekends", "From 6 PM to 6 AM and on weekends, Today folds what can wait under For tomorrow.", old: "Quiet hours on Today", group: "general.home", advanced: false, mount: .group, keywords: ["quiet hours", "evening", "weekend", "for tomorrow"]),
         .init("WK-08", "Work runs from Today", "Prep me and Ask start Work runs, up to 20 a day. Off: Ask files to the Work inbox.", old: "Start Work runs from Today", group: "general.home", advanced: false, mount: .group),
         .init("SG-01", "Setup guide", "Step-by-step setup for your AI, voice, glasses and permissions.", old: "Setup guide · {summary} row; card header \"Setup guide\" + Done", group: "general.guide", advanced: false, mount: .group, keywords: ["onboarding", "wizard", "welcome"]),
         .init("SG-15", "Finish setup card", "A progress card at the top until every step is done or skipped.", old: "Finish setup · N of M, progress bar, Next line, Continue setup, Hide", group: "general.guide", advanced: false, mount: .topStrip),
@@ -264,13 +292,13 @@ enum SettingsHubCatalog {
         .init("SG-04", "Ollama", "Get or open Ollama to run a model on this Mac.", old: "Ollama row: Get Ollama / open Ollama, Skip for now", group: "ai.local", advanced: false, mount: .group, keywords: ["ollama", "local llm"]),
         .init("ST-26", "Ollama", "Shows the local model in use.", old: "Ollama {model}", group: "ai.local", advanced: false, mount: .group),
         .init("UT-08", "Local model", "Newest changes when you pull a model. Pick one to keep it.", old: "Local model + Apply (Automatic (newest pull) / pulled tags / pin \"not pulled\")", group: "ai.local", advanced: false, mount: .group, keywords: ["ollama", "pin model"]),
-        .init("JV-01", "Decision models", "Session suggestions, completion checks and Work search. Errors never switch the provider.", old: "Decision models (provider summary)", group: "ai.decision", advanced: false, mount: .group),
+        .init("JV-01", "Provider in use", "Session suggestions, completion checks and Work search. Errors never switch the provider.", old: "Decision models (provider summary)", group: "ai.decision", advanced: false, mount: .group),
         .init("JV-02", "Default provider", "The provider every Work decision uses unless you pick another.", old: "Default (Server default / Jev / SubQ)", group: "ai.decision", advanced: false, mount: .group),
-        .init("JV-08", "SubQ key", "COS checks the key with SubQ, then saves it on the server. Saving does not turn SubQ on.", old: "SubQ key status, field (SubQ API key / Replace SubQ key), Save key, note", group: "ai.decision", advanced: false, mount: .group, keywords: ["subq", "api key"]),
-        .init("JV-09", "Remove SubQ key", "Delete the saved SubQ key from the server.", old: "Remove saved SubQ key", group: "ai.decision", advanced: false, mount: .group),
-        .init("JV-10", "Jev key status", "Shows whether the Jev key works, and any pause after errors.", old: "Jev key status, problem, \"Paused after repeated errors until …\"", group: "ai.decision", advanced: false, mount: .group),
-        .init("JV-11", "Jev key", "Get a key at typesafe.ai. Meeting intake always uses Jev, whatever you pick above.", old: "Jev key field (TypeSafe API key / Replace key) + Save, typesafe.ai note", group: "ai.decision", advanced: false, mount: .group, keywords: ["typesafe", "api key", "jev"]),
-        .init("JV-12", "Remove Jev key", "Delete the saved Jev key from the server.", old: "Remove saved key", group: "ai.decision", advanced: false, mount: .group),
+        .init("JV-08", "SubQ key", "COS checks the key with SubQ, then saves it on the server. Saving does not turn SubQ on.", old: "SubQ key status, field (SubQ API key / Replace SubQ key), Save key, note", group: "ai.decision", advanced: true, mount: .group, keywords: ["subq", "api key"]),
+        .init("JV-09", "Remove SubQ key", "Delete the saved SubQ key from the server.", old: "Remove saved SubQ key", group: "ai.decision", advanced: true, mount: .group),
+        .init("JV-10", "Jev key status", "Shows whether the Jev key works, and any pause after errors.", old: "Jev key status, problem, \"Paused after repeated errors until …\"", group: "ai.decision", advanced: true, mount: .group),
+        .init("JV-11", "Jev key", "Get a key at typesafe.ai. Meeting intake always uses Jev, whatever you pick above.", old: "Jev key field (TypeSafe API key / Replace key) + Save, typesafe.ai note", group: "ai.decision", advanced: true, mount: .group, keywords: ["typesafe", "api key", "jev"]),
+        .init("JV-12", "Remove Jev key", "Delete the saved Jev key from the server.", old: "Remove saved key", group: "ai.decision", advanced: true, mount: .group),
         .init("JV-03", "Session suggestions", "The provider that suggests Continue, Fork or New.", old: "Session suggestions (Use default / Jev / SubQ) + effective line + needs-key line", group: "ai.decision", advanced: true, mount: .group),
         .init("JV-04", "Completion checks", "The provider that checks whether a reply finished the task.", old: "Completion checks", group: "ai.decision", advanced: true, mount: .group),
         .init("JV-05", "Work and ⌘K search", "The provider that searches Work by meaning, and finds sessions by meaning in ⌘K.", old: "Work search", group: "ai.decision", advanced: true, mount: .group),
@@ -293,7 +321,7 @@ enum SettingsHubCatalog {
         .init("KL-02", "Remove keys to downgrade", "An older server cannot use saved keys. Remove them to install it.", old: "Downgrade line + Remove saved keys and continue (confirm)", group: "ai.keys", advanced: true, mount: .group),
         .init("OUT-07", "Search by meaning", "Find messages by meaning. Each search uses model tokens.", old: "Meaning (search messages by meaning; also \"Turn it on\")", group: "ai.search", advanced: false, mount: .group, keywords: ["semantic", "meaning"]),
         .init("SG-02", "Your devices", "Choose Just my Mac, or My Mac and glasses.", old: "Your devices: Just my Mac / My Mac and glasses", group: "glasses.devices", advanced: false, mount: .group),
-        .init("SG-11", "Connect glasses", "Set up Tailscale on both devices, then pair with a code.", old: "Glasses: Tailscale on this Mac (Get Tailscale / Open Tailscale), Tailscale on your iPhone (QR), Connect your glasses (pairing QR, code, Show a new code, Try…", group: "glasses.devices", advanced: false, mount: .group, keywords: ["tailscale", "pair", "qr code", "iphone"]),
+        .init("SG-11", "Connect glasses", "Set up Tailscale on both devices, then pair with a code.", old: "Glasses: Tailscale on this Mac (Get Tailscale / Open Tailscale), Tailscale on your iPhone (QR), Connect your glasses (pairing QR, code, Show a new code, Try…", group: "glasses.devices", advanced: false, mount: .group, keywords: ["tailscale", "pair", "qr code", "iphone", "scan code", "scan", "pairing code"]),
         .init("SG-12", "Pair on home Wi-Fi", "Let a phone on this Wi-Fi pair for 10 minutes. Use it at home only.", old: "Allow pairing on this Wi-Fi (home only)", group: "glasses.devices", advanced: false, mount: .group),
         .init("SG-13", "Glasses app", "Get the COS app for your glasses.", old: "The COS app for your glasses", group: "glasses.devices", advanced: false, mount: .group),
         .init("UT-21", "Copy pairing token", "Copies the pairing token. Anyone with it can reach COS on this Mac.", old: "Copy Pairing Token", group: "glasses.devices", advanced: true, mount: .group, keywords: ["token", "pairing token", "clipboard"]),
@@ -317,11 +345,11 @@ enum SettingsHubCatalog {
         .init("MA-06", "Live cues", "Short prompts during a meeting. Needs a Jev or SubQ key.", old: "Live cues switch, state line, note", group: "meetings.cues", advanced: false, mount: .group, keywords: ["cues", "jev", "subq"]),
         .init("MA-07", "Cue key", "Live cues need a Jev or SubQ key, under AI and accounts.", old: "Add a Jev or SubQ key / Check again", group: "meetings.cues", advanced: false, mount: .group),
         .init("MA-13", "Glasses switch", "Cues also need Live Cues on in the glasses app.", old: "\"Cues also need Live Cues on in the glasses app.\"", group: "meetings.cues", advanced: false, mount: .group),
-        .init("MA-08", "Cue bar", "Lower gives more cues. Higher gives fewer.", old: "Bar slider (More cues / Fewer cues)", group: "meetings.cues", advanced: false, mount: .group),
-        .init("MA-09", "Cues per meeting", "The most cues one meeting can get.", old: "Max cues per meeting", group: "meetings.cues", advanced: false, mount: .group),
-        .init("MA-10", "Gap between cues", "The shortest time between two cues.", old: "Minimum gap between cues", group: "meetings.cues", advanced: false, mount: .group),
-        .init("MA-11", "Daily writer calls", "The most cue writer calls in one day.", old: "Daily writer limit", group: "meetings.cues", advanced: false, mount: .group),
-        .init("MA-12", "Cue usage", "Today's cue use and save progress.", old: "Saving… line, limits note, today's usage line", group: "meetings.cues", advanced: false, mount: .group),
+        .init("MA-08", "Cue bar", "Lower gives more cues. Higher gives fewer.", old: "Bar slider (More cues / Fewer cues)", group: "meetings.cues", advanced: true, mount: .group),
+        .init("MA-09", "Cues per meeting", "The most cues one meeting can get.", old: "Max cues per meeting", group: "meetings.cues", advanced: true, mount: .group),
+        .init("MA-10", "Gap between cues", "The shortest time between two cues.", old: "Minimum gap between cues", group: "meetings.cues", advanced: true, mount: .group),
+        .init("MA-11", "Daily writer calls", "The most cue writer calls in one day.", old: "Daily writer limit", group: "meetings.cues", advanced: true, mount: .group),
+        .init("MA-12", "Cue usage", "Today's cue use and save progress.", old: "Saving… line, limits note, today's usage line", group: "meetings.cues", advanced: true, mount: .group),
         .init("UT-16", "Meetings folder", "Choose your meetings folder, or one that holds several.", old: "Meetings Library; guidance confirm \"Meetings Library\" Choose Again / View Examples / Skip for Now", group: "meetings.library", advanced: false, mount: .group, keywords: ["meetings library", "operations folder"]),
         .init("ST-29", "Library status", "Where your meetings are and how many COS found.", old: "Meetings library path, layout and count; library warning", group: "meetings.library", advanced: false, mount: .group),
         .init("ST-16", "Meeting sync", "Where each meeting is in sync right now.", old: "Meeting sync, up to 4 meeting rows, \"+N more\", meeting-work caption", group: "meetings.library", advanced: false, mount: .group),
@@ -381,10 +409,10 @@ enum SettingsHubCatalog {
         .init("UT-14", "Repair Whisper", "Restart Whisper when it stops working.", old: "Repair Whisper", group: "voice.setup", advanced: false, mount: .group, keywords: ["whisper", "restart"]),
         .init("UT-02", "Guided setup", "Run voice setup in Terminal, Balanced or Max.", old: "Guided Setup; confirm \"Choose transcription setup\" Balanced (Recommended) / Max", group: "voice.setup", advanced: true, mount: .group),
         .init("ST-13", "Model status", "The tier and the models for preview, live and save.", old: "Transcription tier; Preview, while dictating; Commit, live meeting; Polish, on save; degraded reason; \"Add names and specialist terms in the setup wizard to…", group: "voice.setup", advanced: true, mount: .group),
-        .init("TR-02", "Preview model", "The model for the fast live preview.", old: "Preview model, plus its line", group: "voice.models", advanced: false, mount: .group),
-        .init("TR-03", "Saved meetings", "The model for the saved meeting transcript.", old: "HQ model, plus its line", group: "voice.models", advanced: false, mount: .group, keywords: ["hq model", "final model", "high quality"]),
-        .init("TR-04", "Second opinion", "A second model that checks the first.", old: "Second opinion, plus its line", group: "voice.models", advanced: false, mount: .group),
-        .init("TR-06", "Refine with second opinion", "Let the second opinion correct the transcript.", old: "Refine with second opinion, plus inactive line", group: "voice.models", advanced: false, mount: .group),
+        .init("TR-02", "Preview model", "The model for the fast live preview.", old: "Preview model, plus its line", group: "voice.models", advanced: true, mount: .group),
+        .init("TR-03", "Saved meetings", "The model for the saved meeting transcript.", old: "HQ model, plus its line", group: "voice.models", advanced: true, mount: .group, keywords: ["hq model", "final model", "high quality"]),
+        .init("TR-04", "Second opinion", "A second model that checks the first.", old: "Second opinion, plus its line", group: "voice.models", advanced: true, mount: .group),
+        .init("TR-06", "Refine with second opinion", "Let the second opinion correct the transcript.", old: "Refine with second opinion, plus inactive line", group: "voice.models", advanced: true, mount: .group),
         .init("TR-05", "When changes apply", "When a model change takes effect.", old: "When-it-applies line; server refusal", group: "voice.models", advanced: false, mount: .group),
         .init("TR-08", "Front end", "How audio is prepared before transcription.", old: "Advanced · Front end", group: "voice.models", advanced: true, mount: .group),
         .init("TR-09", "Quiet detection", "How COS skips silence.", old: "Advanced · Quiet detection", group: "voice.models", advanced: true, mount: .group),
@@ -426,7 +454,7 @@ enum SettingsHubCatalog {
         .init("DM-03", "Save task folders", "Add, save or reset the list.", old: "Add, Save, Reset", group: "work.domains", advanced: false, mount: .group, keywords: ["save domains"]),
         .init("FN-01", "Paused threads", "Threads COS stopped writing to after a reply went missing.", old: "Fenced threads · N, explanation, degraded warning, Refresh", group: "work.fences", advanced: false, mount: .group),
         .init("FN-02", "Release thread", "Let COS write to this thread again. Check the thread first.", old: "Release (per fence); confirm \"Release this fence?\" / Release", group: "work.fences", advanced: false, mount: .group),
-        .init("PM-01", "Permissions", "What COS can use on this Mac, with one click to allow each.", old: "Permissions · {summary}; card \"Each one switches on a feature. COS works without any of them.\" + Done", group: "privacy.permissions", advanced: false, mount: .group),
+        .init("PM-01", "Permission status", "What COS can use on this Mac, with one click to allow each.", old: "Permissions · {summary}; card \"Each one switches on a feature. COS works without any of them.\" + Done", group: "privacy.permissions", advanced: false, mount: .group),
         .init("PM-02", "Accessibility", "Lets COS type for you, jump to sessions and see Meet tabs.", old: "Accessibility (action, \"Already on? Reset and add again\")", group: "privacy.permissions", advanced: false, mount: .group, keywords: ["accessibility", "tcc"]),
         .init("PM-03", "Notifications", "Lets COS send meeting and Work alerts.", old: "Notifications (Allow)", group: "privacy.permissions", advanced: false, mount: .group, keywords: ["notifications", "alerts"]),
         .init("PM-04", "Open at login", "Login item status. The switch lives in General.", old: "Open at login (Turn on / open Login Items)", group: "privacy.permissions", advanced: false, mount: .group),
@@ -449,18 +477,18 @@ enum SettingsHubCatalog {
         .init("PT-12", "Choose sprite", "Use one image for every state.", old: "Choose sprite / Replace sprite", group: "pet.pet", advanced: true, mount: .group),
         .init("PT-13", "Use COS figure", "Remove your own sprites.", old: "Use COS figure", group: "pet.pet", advanced: true, mount: .group),
         .init("ST-01", "Server status", "Whether the COS server is running and healthy.", old: "Server", group: "system.server", advanced: false, mount: .group),
-        .init("ST-02", "Ownership", "Whether COS Control manages this server.", old: "Ownership", group: "system.server", advanced: false, mount: .group),
-        .init("ST-03", "Recovery", "Whether automatic recovery is set up.", old: "Recovery (Scheduled / Needs repair)", group: "system.server", advanced: false, mount: .group),
+        .init("ST-02", "Ownership", "Whether COS Control manages this server.", old: "Ownership", group: "system.server", advanced: true, mount: .group),
+        .init("ST-03", "Recovery", "Whether automatic recovery is set up.", old: "Recovery (Scheduled / Needs repair)", group: "system.server", advanced: true, mount: .group),
         .init("ST-27", "Server version", "The COS server version.", old: "Version (server)", group: "system.server", advanced: false, mount: .group),
         .init("ST-30", "Work in progress", "Active jobs and recordings. Restart waits for them.", old: "\"{n} job(s), {m} recording(s) active. Restart is locked.\"", group: "system.server", advanced: false, mount: .group),
         .init("ST-31", "Pending change", "A server change in progress, or one that needs Repair.", old: "\"Server change in progress · recovery is armed\" / \"An interrupted server change needs Repair.\"", group: "system.server", advanced: false, mount: .group),
         .init("C-09", "Server messages", "Warnings and progress for server changes.", old: "Foreground-server warning, ownership conflict, operation progress, green notice", group: "system.server", advanced: false, mount: .group),
-        .init("C-01", "Restart", "Restart the server. Off while work is running.", old: "Restart; confirm \"Restart this self-managed server?\" / Restart now", group: "system.server", advanced: false, mount: .group),
+        .init("C-01", "Restart and update", "Restart, stop or start the server, or install the newest one. Restart and Stop are off while work is running.", old: "Restart; confirm \"Restart this self-managed server?\" / Restart now", group: "system.server", advanced: false, mount: .group),
         .init("C-02", "Stop", "Stop the server.", old: "Stop", group: "system.server", advanced: false, mount: .group),
         .init("C-03", "Start", "Start the server.", old: "Start", group: "system.server", advanced: false, mount: .group),
         .init("C-04", "Update server", "Install the newest server and restart it.", old: "Update Server", group: "system.server", advanced: false, mount: .group, keywords: ["update server", "npm"]),
         .init("C-05", "Install server", "Install the COS server.", old: "Install Server", group: "system.server", advanced: false, mount: .group),
-        .init("C-06", "Adopt server", "Replace a stopped older server with the latest COS server.", old: "Adopt Safely", group: "system.server", advanced: true, mount: .group),
+        .init("C-06", "Older server", "Adopt, manage in place, or replace a server COS Control did not install.", old: "Adopt Safely", group: "system.server", advanced: true, mount: .group),
         .init("C-07", "Manage in place", "Manage your running server without replacing it.", old: "Manage in place", group: "system.server", advanced: true, mount: .group),
         .init("C-08", "Replace server", "Stop the older server and install the latest COS server.", old: "Install managed server; confirm \"Install the latest managed server?\" / Stop legacy and install", group: "system.server", advanced: true, mount: .group),
         .init("H-01", "App version", "The COS Control version.", old: "v{version} stamp", group: "system.updates", advanced: false, mount: .group),
@@ -506,6 +534,9 @@ enum SettingsHubCatalog {
         "UT-25": "Clock",
         "WK-06": "New Today home",
         "WK-07": "Quiet hours on Today",
+        "JV-01": "Decision models",
+        "PM-01": "Permissions",
+        "C-01": "Restart",
         "WK-08": "Start Work runs from Today",
         "ST-24": "Agent CLIs",
         "ST-25": "Cursor CLI",
@@ -595,6 +626,88 @@ enum SettingsHubCatalog {
         return first?.line
     }
 
+    /// 0.5.387 Basic view (Miles's approved preview, 2026-11-09): about 45 rows on the ten pages. The audit's Option 2 list,
+    /// with these changes, each for a reason:
+    /// - PK-01 Phone approvals: beside Open COS on your phone in Phone and web; it draws only while the server's phone-key flag
+    ///   is on, so it costs nothing when off (peer request from the phone-key acceptance session).
+    /// - DI-08 Allow typing in apps: dictation cannot type into another app without it.
+    /// - SG-13 Glasses app: drawn only on the glasses path, where getting the app is the next step.
+    /// - REACH-01 Pings and REACH-05 Quiet hours: the brief keeps these two of COS reaching out's 17 rows visible.
+    /// - PM-05 to PM-07: the permission list is one block (PermissionGuideList), so Basic draws every row in it.
+    /// - DR-01 Check results: the answer to Run checks, which is in Basic.
+    /// - WB-01 Sign out every browser: Miles, 2026-11-09 ("Renew while in use, 30-day cap"), beside Open COS on your phone.
+    /// - Recovery rows (lead, 2026-11-09): every control another COS surface tells a person to press is in Basic, on its page
+    ///   (recoveryRows). So UT-14 Repair Whisper, UT-21 Copy pairing token (glasses path only, glassesPathBasic), and C-02 to C-05
+    ///   (Stop, Start, Update server, Install server: buttons inside C-01's row, marked so search never says "In All settings").
+    static let basicIDs: Set<String> = [
+        // General
+        "G-01", "G-02", "G-03", "WK-06", "CAL-01", "SG-01",
+        // AI and accounts
+        "SG-03", "KL-01", "OUT-07",
+        // Glasses, phone and web
+        "SG-02", "SG-11", "SG-13", "UT-29", "PK-01", "WB-01",
+        // Meetings
+        "MT-01", "MT-03", "MT-04", "MA-01", "UT-16", "OUT-01",
+        // Dictation
+        "DI-01", "DI-02", "DI-05", "DI-06", "DI-08", "TR-01", "DI-23", "DI-32",
+        // Transcription and voice
+        "SG-05", "TR-07", "UT-14",
+        // Work and agents
+        "UT-06", "UT-07", "WK-02", "WK-03", "WK-04", "UT-15", "MB-02", "DROP-01", "REACH-01", "REACH-05",
+        // Privacy and permissions
+        "PM-01", "PM-02", "PM-03", "PM-04", "PM-05", "PM-06", "PM-07",
+        // Pet
+        "PT-01", "PT-07", "PT-09",
+        // System and updates
+        "ST-01", "C-01", "C-02", "C-03", "C-04", "C-05", "H-02", "UT-01", "DR-01", "UT-22",
+    ]
+    /// Controls the glasses app, Control Web and the phone tell a person to press in COS Control, by the name they use. Each
+    /// must be in Basic and found by search under that name (G1's copy says "search Settings for <name>").
+    /// Copy pairing token (UT-21) counts as a recovery row on the glasses path only (glassesPathBasic): the Mac-only path has no
+    /// glasses app to send anyone there.
+    static let recoveryRows: [(name: String, id: String)] = [
+        ("Update server", "C-04"), ("Restart", "C-01"), ("Start", "C-03"), ("Install server", "C-05"),
+        ("Repair Whisper", "UT-14"), ("Voice setup", "SG-05"), ("Scan code", "SG-11"), ("Copy pairing token", "UT-21"),
+        ("Open COS on your phone", "UT-29"), ("Sign out every browser", "WB-01"), ("Setup guide", "SG-01"),
+    ]
+    /// The basic rows per page stay inside these bounds (Tests/SettingsHubChecks.swift). A change outside them is a decision.
+    static let basicRange: [SettingsHubCategory: ClosedRange<Int>] = [
+        .general: 5...7, .ai: 2...4, .glasses: 3...8, .meetings: 5...7, .dictation: 6...9, .voice: 1...4,
+        .work: 8...11, .privacy: 4...8, .pet: 2...4, .system: 4...11,
+    ]
+    static func isBasic(_ id: String) -> Bool { basicIDs.contains(id) }
+    /// A group Basic draws: one with at least one basic row in its card. The rest are left out of Basic.
+    static func hasBasicRows(_ group: String) -> Bool { items(inGroup: group).contains { isBasic($0.id) } }
+    static func basicCount(_ category: SettingsHubCategory) -> Int {
+        all.filter { $0.mount == .group && isBasic($0.id) && Self.category(of: $0) == category }.count
+    }
+    /// Whether a row draws in this view: every row in All, the basic ones in Basic. Rows the catalog does not know (a hosted
+    /// view's own line) are never hidden by Basic.
+    static func drawn(_ id: String, view: SettingsHubView, glassesPath: Bool = false) -> Bool {
+        view == .all || item(id) == nil || isBasic(id) || (glassesPath && glassesPathBasic.contains(id))
+    }
+    /// Rows placed by the device path (lead, 2026-11-09). On the glasses path they sit on their card, in Basic and All. On the
+    /// Mac-only path they stay where 0.5.385 had them: under Advanced, in All only (the catalog's own `advanced` flag).
+    static let glassesPathBasic: Set<String> = ["UT-21"]
+    /// Whether a row sits under its card's Advanced on this path.
+    static func placedAdvanced(_ id: String, glassesPath: Bool) -> Bool {
+        guard let row = item(id) else { return false }
+        return row.advanced && !(glassesPath && glassesPathBasic.contains(id))
+    }
+    /// In a card whose Advanced rows sit among its others (`open` is that Advanced's state; nil for every other card): an
+    /// Advanced row draws only while it is open. A row the catalog does not know always draws.
+    static func inlineShown(_ id: String, open: Bool?) -> Bool {
+        guard let open, let row = item(id) else { return true }
+        return open || !row.advanced
+    }
+    /// The row id inside a hub anchor: "item.REACH-12.when" is REACH-12. Nil for anything else.
+    static func rowID(anchor: String?) -> String? {
+        guard let anchor, anchor.hasPrefix("item.") else { return nil }
+        let rest = anchor.dropFirst(5)
+        let id = rest.split(separator: ".", maxSplits: 1).first.map(String.init) ?? ""
+        return id.isEmpty ? nil : id
+    }
+
     /// Built once: views look rows up by id on every render (QA 2026-10-28), so lookups are dictionary reads.
     static let all: [SettingsHubItem] = items + extras
     private static let itemsByID: [String: SettingsHubItem] = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -625,6 +738,8 @@ enum SettingsHubRoute {
     /// The classic panel's anchors (Views.swift mainPanel `.id(...)`, KeyLanesViews.swift `.id("key-lanes")`,
     /// LiveCues.decisionKeysAnchor) and the group each is in. "settings", the plain Settings… opener, is not one of
     /// them: it has no destination, so the hub stays on the category it opens on (the last one open, or General).
+    /// 0.5.387: the Jev and SubQ key fields sit behind Decision models' Advanced, so the anchor that asks for a key opens it.
+    static let panelAnchorsOpeningAdvanced: Set<String> = ["decision-models"]
     static let panelAnchors: [String: String] = [
         "transcription": "voice.models",
         "decision-models": "ai.decision",
@@ -633,7 +748,7 @@ enum SettingsHubRoute {
     ]
     /// A panel anchor, a hub anchor ("hub.<group>"), a group id or an inventory row id.
     static func destination(_ target: String) -> Destination? {
-        if let group = panelAnchors[target] { return destination(group: group, advanced: false) }
+        if let group = panelAnchors[target] { return destination(group: group, advanced: panelAnchorsOpeningAdvanced.contains(target)) }
         let bare = target.hasPrefix("hub.") ? String(target.dropFirst(4)) : target
         if SettingsHubCatalog.group(bare) != nil { return destination(group: bare, advanced: false) }
         // A row outside Settings has no group (SettingsHubChecks pins it), so it has no destination.
@@ -677,19 +792,120 @@ enum SettingsHubSearch {
         return 4
     }
     /// Grouped by category in the sidebar's order; best match first inside each, catalogue order on a tie.
-    /// `itemShown` is the page's test for one row inside a group that is drawn (Find sessions by meaning is hidden with Today home off and on an
-    /// older server, while its group, Decision models, is not): a row the page does not draw is never a result either.
-    /// `shown` is the page's own test for a group (a card hidden on an older server, or with nothing to show): a row in
-    /// a group the page does not draw is left out, so a result never opens on a card that is not there.
-    static func results(_ query: String, shown: (String) -> Bool = { _ in true }, itemShown: (String) -> Bool = { _ in true }) -> [Section] {
+    /// 0.5.387 (audit F2): every row the hub can draw is a result, whatever the page is drawing now. A row hidden by a
+    /// condition (the server is not answering, dictation is off) or by Basic is still found, and the page shows why beside it
+    /// (SettingsHubSearch.note). Search never says a setting does not exist when it is only hidden.
+    static func results(_ query: String) -> [Section] {
         let ranked = SettingsHubCatalog.searchable.enumerated().compactMap { index, item -> (SettingsHubItem, Int, Int)? in
-            guard let group = item.group, shown(group), itemShown(item.id) else { return nil }
+            guard item.group != nil else { return nil }
             return rank(item, query: query).map { (item, $0, index) }
         }
         return SettingsHubCategory.allCases.compactMap { category in
             let rows = ranked.filter { SettingsHubCatalog.category(of: $0.0) == category }
                 .sorted { $0.1 != $1.1 ? $0.1 < $1.1 : $0.2 < $1.2 }.map(\.0)
             return rows.isEmpty ? nil : Section(category: category, items: rows)
+        }
+    }
+}
+
+/// 0.5.387 (audit F1, F2): what the page knows about why a group or a row is not drawn. Only facts the model already holds.
+struct SettingsHubConditions: Equatable, Sendable {
+    var serverRunning = true
+    var dropItOn = true
+    var todayHome = true
+}
+
+extension SettingsHubSearch {
+    static let serverLine = "Shows when the server is running."
+    static let newerServerLine = "Needs a newer COS server."
+    /// Why a group the page is not drawing is hidden, in plain words. Never empty.
+    static func hiddenLine(group: String, _ c: SettingsHubConditions) -> String {
+        switch group {
+        case "dictation.microphone", "dictation.shortcuts", "dictation.sounds", "dictation.text", "dictation.polish":
+            return "Shows when dictation is on."
+        case "pet.characters": return "Shows when the session pet is on."
+        case "work.fences": return "Shows when COS has paused a thread."
+        case "work.reach":
+            if !c.serverRunning { return serverLine }
+            return c.dropItOn ? newerServerLine : "Shows when Drop it is on."
+        default:
+            return c.serverRunning ? newerServerLine : serverLine
+        }
+    }
+    /// Why a single row inside a drawn group is hidden (Find sessions by meaning, Drop it). Nil: no row-level condition.
+    static func hiddenRowLine(_ id: String, _ c: SettingsHubConditions) -> String? {
+        switch id {
+        case "JV-13":
+            if !c.serverRunning { return serverLine }
+            return c.todayHome ? newerServerLine : "Shows with Today home on."
+        case "DROP-01": return c.serverRunning ? newerServerLine : serverLine
+        default: return nil
+        }
+    }
+    /// The line under a search result, or nil when the row is drawn where the result opens. A hidden group comes first (it
+    /// says what to fix), then a hidden row, then a switch above it (gateLine), then Basic.
+    static func note(_ item: SettingsHubItem, groupShown: Bool, rowShown: Bool, conditions: SettingsHubConditions,
+                     gateLine: String?, view: SettingsHubView, glassesPath: Bool = false) -> String? {
+        if let group = item.group, !groupShown { return hiddenLine(group: group, conditions) }
+        if !rowShown { return hiddenRowLine(item.id, conditions) ?? (conditions.serverRunning ? newerServerLine : serverLine) }
+        if let gateLine { return gateLine }
+        if !SettingsHubCatalog.drawn(item.id, view: view, glassesPath: glassesPath) { return SettingsHubView.hiddenByBasic }
+        return nil
+    }
+    /// Where a result for a hidden group opens instead: the row that turns its group on. Nil: the page's top, where the
+    /// server notice is.
+    static func conditionLanding(group: String) -> String? {
+        switch group {
+        case "dictation.microphone", "dictation.shortcuts", "dictation.sounds", "dictation.text", "dictation.polish": return "DI-01"
+        case "pet.characters": return "PT-01"
+        case "work.reach": return "DROP-01"
+        default: return nil
+        }
+    }
+}
+
+/// 0.5.387 (audit F1): the one line at the top of every Settings page while the COS server is not answering, beside the action
+/// that brings it back. Nil while it answers or before the first status read.
+enum SettingsHubServerNotice {
+    enum Action: Equatable, Sendable { case start, install, repair }
+    static func line(checked: Bool, running: Bool) -> String? {
+        guard checked, !running else { return nil }
+        return "The COS server is not answering. Settings that need it are hidden until it runs."
+    }
+    /// `runtimeState` as the helper reports it.
+    static func action(runtimeState: String, installed: Bool) -> Action {
+        if !installed && runtimeState == "notInstalled" { return .install }
+        if runtimeState == "stopped" { return .start }
+        return .repair
+    }
+    static func title(_ action: Action) -> String {
+        switch action {
+        case .start: "Start server"
+        case .install: "Install server"
+        case .repair: "Repair server"
+        }
+    }
+}
+
+/// 0.5.387 (Miles 2026-11-09): Sign out every browser. The helper's `web-revoke-all` answer in words. Done only when the server
+/// said so; every other answer says what happened and what to do, never "Done".
+enum SettingsHubWebRevoke {
+    static let button = "Sign out…"
+    static let confirmLine = "Every phone and browser signed in to Control Web must sign in again. The glasses and the phone app stay connected."
+    static let confirmButton = "Sign out every browser"
+    /// The row draws where the phone sign-in does: hidden on a server without Control Web sign-in (PhoneSignInState's
+    /// serverTooOld, the same test as PhoneSignInBlock).
+    static func shown(phoneSignInTooOld: Bool) -> Bool { !phoneSignInTooOld }
+    static func result(transport: String?, httpStatus: Int?) -> (line: String, ok: Bool) {
+        switch transport {
+        case "answered": return ("Done. Every browser is signed out. Sign in again with Open COS on your phone.", true)
+        case "unsupported": return ("This COS server cannot sign browsers out yet. Update the server in System and updates.", false)
+        case "not_ready": return ("The COS server is not running or not verified yet. Start it, then try again.", false)
+        case "unavailable": return ("The COS server did not answer. Nothing was signed out. Try again in a moment.", false)
+        case "no_token": return ("COS Control could not read the server's pairing token. Nothing was signed out. Run checks in System and updates.", false)
+        default:
+            let status = httpStatus.map { " (\($0))" } ?? ""
+            return ("The server did not sign browsers out\(status). Nothing changed. Try again.", false)
         }
     }
 }

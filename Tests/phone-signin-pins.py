@@ -144,11 +144,13 @@ for banned in (".tracking(", ".kerning(", ".textCase(", "uppercased()"):
 glasses = body(panel, "@ViewBuilder var hubGlasses: some View {")
 need(panel.count("PhoneSignInBlock(") == 1 and glasses.count("PhoneSignInBlock(") == 1 and "PhoneSignInRow(" not in panel, "mounted once",
      "the row is drawn once, on Glasses and iPhone, through its block")
-devices = glasses.split("} advanced: {", 1)[0]
-need("PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)" in devices, "mounted once",
-     "in Devices, not Advanced, and told when the glasses rows show")
-cond = body(devices, "if voiceGuide.devicePath == .glasses {")
-need("PhoneSignInBlock(" not in cond, "every path", "the row is outside the glasses-only block")
+# 0.5.387 (lane D2, Miles's approved preview): the row has its own card, Phone and web, first on the page, out from under Devices.
+# Only the card's own rows: anything after its "} advanced: {" is Advanced, so it is cut before the checks.
+phone_card = glasses[glasses.index('hubCard("glasses.phone"'):glasses.index('hubCard("glasses.devices"')].split("} advanced: {", 1)[0]
+devices = glasses[glasses.index('hubCard("glasses.devices"'):].split("} advanced: {", 1)[0]
+need("PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)" in phone_card, "mounted once",
+     "in Phone and web, not Advanced, and told when the glasses rows show")
+need("devicePath == .glasses {" not in phone_card and "PhoneSignInBlock(" not in devices, "every path", "the row is outside the glasses-only block")
 # 0.5.368: on a server without the phone sign-in (before 6.99.3, or no route) the whole block hides, its glasses note with it.
 block = body(views_file, "struct PhoneSignInBlock: View {")
 need("let hidden = state.serverTooOld" in block
@@ -160,15 +162,15 @@ need(views_file.count("PhoneSignInRules.notGlasses") == 1 and "PhoneSignInRules.
      and "notGlasses" not in panel, "old server hides", "the glasses note lives only inside the row, so it hides with it")
 need("Text(line)" in body(views_file, "struct PhoneSignInRow: View {") and "PhoneSignInRules.needsUpdate" not in views_file + panel, "old server hides",
      "the update line is never drawn by name")
-need('.settingsHubAnchor("UT-29")' in devices, "search lands", "search lands on the row")
+need('.settingsHubAnchor("UT-29")' in phone_card, "search lands", "search lands on the row")
 # 0.5.368: the Camera's QR comes first: the phone row right after the device choice, above the glasses rows, in the card and in
 # the offscreen render that stands for it.
-need(devices.index("SetupDeviceChoice(") < devices.index("PhoneSignInBlock(") < devices.index("if voiceGuide.devicePath == .glasses {")
-     < devices.index("GlassesSetupRows("), "qr order", "Open COS on your phone sits above the glasses rows")
+need(glasses.index("PhoneSignInBlock(") < glasses.index("SetupDeviceChoice(") < glasses.index("if voiceGuide.devicePath == .glasses {") < glasses.index("GlassesSetupRows("),
+     "qr order", "Open COS on your phone sits above the device choice and the glasses rows")
 render = body(code("Tests/PhoneSignInRender.swift"), "struct DevicesCard: View {")
-need(render.index("SetupDeviceChoice(") < render.index("PhoneSignInBlock(") < render.index("GlassesSetupRows("), "qr order", "the render draws the card's order")
-item = re.search(r'\.init\("UT-29", "Open COS on your phone", "Point your iPhone Camera here\. Safari opens COS already signed in\.", old: "", group: "glasses\.devices",\s*advanced: false, mount: \.group, keywords: \[([^\]]*)\]\)', catalog)
-need(item is not None, "catalog row", "UT-29 in Devices, not Advanced, with the row's words")
+need(render.index("PhoneSignInBlock(") < render.index("SetupDeviceChoice(") < render.index("GlassesSetupRows("), "qr order", "the render draws the page's order")
+item = re.search(r'\.init\("UT-29", "Open COS on your phone", "Point your iPhone Camera here\. Safari opens COS already signed in\.", old: "", group: "glasses\.phone",\s*advanced: false, mount: \.group, keywords: \[([^\]]*)\]\)', catalog)
+need(item is not None, "catalog row", "UT-29 in Phone and web, not Advanced, with the row's words")
 keywords = set(re.findall(r'"([^"]+)"', item.group(1))) if item else set()
 need({"phone", "browser", "sign in", "web", "qr", "control web"} <= keywords, "catalog row", f"the keywords {sorted(keywords)}")
 need(catalog.index('.init("UT-29"') > catalog.index("static let extras: [SettingsHubItem] = [")

@@ -742,6 +742,7 @@ final class COSControlHelper {
         case "token": try copyPairingToken()
         case "web-handoff": try emitWebSignIn(handoff: true)
         case "web-device-code": try emitWebSignIn(handoff: false)
+        case "web-revoke-all": try emitWebRevokeAll()
         case "web-key": try emitWebKey(args: args)
         case "expire-clipboard": try expireClipboard(args: args)
         case "report": emit(ok: true, message: "Redacted report ready", details: ["report": redactedReport()])
@@ -9068,6 +9069,28 @@ final class COSControlHelper {
         let details = handoff ? WebSignInCore.handoffAnswer(status: response.status, body: response.body)
             : WebSignInCore.deviceCodeAnswer(status: response.status, body: response.body)
         emit(ok: true, message: handoff ? "Phone link answered (\(response.status))" : "Sign-in code answered (\(response.status))", details: details)
+    }
+
+    /// 0.5.387 (Miles 2026-11-09, lane D2): Sign out every browser. POST /api/web-session/revoke-all, the server's existing
+    /// route (it bumps the web-session epoch, so every Control Web cookie stops working; the pairing token, glasses and phone app
+    /// are untouched). Loopback, with the token, no body, after the same managed-server check as Copy token. Answers ok with
+    /// `transport`: answered (200 and ok), unsupported (404), failed (anything else), unavailable, no_token or not_ready, plus
+    /// `httpStatus`. Nothing from the body crosses.
+    private func emitWebRevokeAll() throws {
+        guard runtimeState(snapshot: ownershipSnapshot(), maintenance: maintenanceStatus(), health: request("/api/health", timeout: 12)?.body) == .managedHealthy else {
+            emit(ok: true, message: "The COS server is not verified yet", details: ["transport": "not_ready"])
+            return
+        }
+        guard let token = try? readToken() else {
+            emit(ok: true, message: "No pairing token", details: ["transport": "no_token"])
+            return
+        }
+        guard let response = request("/api/web-session/revoke-all", method: "POST", token: token, timeout: 8) else {
+            emit(ok: true, message: "COS server unreachable", details: ["transport": "unavailable"])
+            return
+        }
+        let transport = response.status == 200 && response.body?["ok"] as? Bool == true ? "answered" : response.status == 404 ? "unsupported" : "failed"
+        emit(ok: true, message: "Sign out every browser answered (\(response.status))", details: ["transport": transport, "httpStatus": response.status])
     }
 
     /// Reads immutable matched-server pins only from this helper's own sealed Developer ID app bundle.

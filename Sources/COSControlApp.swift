@@ -153,6 +153,10 @@ struct COSControlApp: App {
         model.showDecisionKeySettings = {
             SettingsOpener.open(model: model, window: settingsWindow, scroll: LiveCues.decisionKeysAnchor) { section in activityWindow.show(model: model, section: section) }
         }
+        // 0.5.387: Settings opened on an anchor (the Dictation menu's Settings… lands on the hub's Dictation page).
+        model.showSettingsAt = { anchor in
+            SettingsOpener.open(model: model, window: settingsWindow, scroll: anchor) { section in activityWindow.show(model: model, section: section) }
+        }
         // 0.5.317: a dictation card's "Open Transcription settings" lands on COS's Transcription card, never macOS Privacy.
         model.showTranscriptionSettings = {
             SettingsOpener.open(model: model, window: settingsWindow, scroll: "transcription") { section in activityWindow.show(model: model, section: section) }
@@ -255,7 +259,7 @@ struct COSControlApp: App {
                 Button("Cancel dictation") { model.dictation.cancel() }
                 Button("Dictionary…") { model.openDictionaryInActivity() }
                 Button("History…") { model.openDictationHistoryInActivity() }
-                Button("Settings…") { model.openDictationSettingsInActivity() }
+                Button("Settings…") { model.openDictationSettingsFromMenu() }
             }
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { model.showSettings?() }.keyboardShortcut(",")

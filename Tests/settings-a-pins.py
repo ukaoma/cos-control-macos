@@ -72,8 +72,8 @@ pin(".destructive(SettingsConfirmCopy.action(pending))" in actions and actions.c
 pin(views.count('model.perform("stop")') == 1 and views.count('model.perform("repair")') == 1, "Stop and Repair have one caller: the confirm")
 pin(views.count('model.perform("rollback")') == 2 and "Button(\"Roll back\") { confirmHubRollback = false; model.perform(\"rollback\") }" in views,
     "Roll back has two callers: the confirm, and the hub's own inline card that already asked")
-pin(views.count("serverConfirm = .stop") == 1 and views.count("serverConfirm = .repair") == 2 and views.count("serverConfirm = .rollback") == 1,
-    "the Stop button, both Repair buttons and the panel's Roll back open the confirm")
+pin(views.count("serverConfirm = .stop") == 1 and views.count("serverConfirm = .repair") == 3 and views.count("serverConfirm = .rollback") == 1,
+    "the Stop button, the three Repair buttons (0.5.387 adds the server notice's) and the panel's Roll back open the confirm")
 pin(views.count("AppQuit.request()") == 2 and views.count("requestQuit()") == 3, "both Quit buttons go through requestQuit; AppQuit.request has the confirm and the unconfirmed quit")
 pin("SettingsConfirmCopy.quitNeedsConfirm(macRecordingActive: model.macRecordingActive)" in views, "Quit asks while a Mac recording runs")
 pin("Stop is off until running work finishes. Stuck? Use Repair in Troubleshooting." in views, "Stop says how to get unstuck while it waits")
@@ -157,8 +157,8 @@ pin('"WK-07": Gate(parent: "WK-06"' in catalog and '"DI-25": Gate(parent: "DI-24
 hidden_fn = body(views, "    func hubOptionHidden(_ id: String) -> Bool {", "\n    }\n")
 pin('case "WK-07", "WK-08": return !todayHomeEnabled' in hidden_fn and 'case "DI-24":' in hidden_fn and 'case "DI-25":' in hidden_fn, "the page's test for a hidden option covers all four")
 pin("SettingsHubCatalog.landing(item.id, hidden: hubOptionHidden)" in views and 'reader.scrollTo("item." + landing, anchor: .center)' in views
-    and "SettingsHubCatalog.gateLine($0.id, hidden: hubOptionHidden)" in views, "a result for a hidden option opens its switch and says what to turn on")
-pin("gateLine(item)" in shell, "the result row shows that sentence")
+    and "gateLine: SettingsHubCatalog.gateLine(item.id, hidden: hubOptionHidden)" in views, "a result for a hidden option opens its switch and says what to turn on")
+pin("if let line = note(item) {" in shell, "the result row shows that sentence (0.5.387: the one line, SettingsHubSearch.note)")
 
 # 6. Renames: what the catalog says is what the page draws.
 pin('SettingsHubRow(label: "Saved meetings"' in ask and 'picker("Saved meetings", .hq' in ask and '"HQ model"' not in ask, "the page draws Saved meetings")
