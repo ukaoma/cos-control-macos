@@ -4173,8 +4173,9 @@ struct MacDictationSettings: View {
                 if let note = store.micNote { Text("Last time " + note).font(.caption2).foregroundStyle(COSPalette.amber).settingsHubBlock() }
                 }
                 if shows(.shortcuts) {
-                // While the warning shows, its own Push to talk recorder is the one on screen (never two at once).
-                if !store.needsShortcut {
+                // While the warning shows, its own Push to talk recorder is the one on screen (never two at once). Only when
+                // the Dictation section is drawn here too: the hub draws Shortcuts as its own card (Q1 D1 S1).
+                if !(store.needsShortcut && shows(.dictation)) {
                 DictationShortcutRow(store: store, slot: .hold, activityShortcut: activityShortcut).settingsHubBlock()
                 }
                 DictationShortcutRow(store: store, slot: .toggle, activityShortcut: activityShortcut).settingsHubBlock()

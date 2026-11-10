@@ -402,6 +402,7 @@ struct ProviderConnectChecks {
               "Terminal runs exactly the installer: \(effects.terminal)")
         check(g.installing == [.claude] && g.waiting[.claude] != nil && g.notice == nil, "install waits", "\(g.installing)")
         let installing = g.row(.claude)
+        check(g.pasting.isEmpty, "install paste row", "an install COS typed itself never waits on a paste")
         check(installing.status == "Installing…" && installing.waiting && installing.action == .install && installing.tone == .neutral
               && installing.detail == "Terminal is installing Claude Code. When it finishes, this row moves on to sign in.", "install row", "\(installing)")
         check(g.pollTargets.contains(.claude), "install polls", "the installing row is polled")
@@ -422,6 +423,15 @@ struct ProviderConnectChecks {
         check(d.notice == ProviderInstall.fallbackNotice(.claude, terminalOpened: true) && d.notice?.contains("Privacy & Security, Automation") == true
               && d.notice?.contains("press Return") == true, "install fallback", d.notice ?? "nil")
         check(d.installing == [.claude] && d.waiting[.claude] != nil, "install fallback", "the row waits for the pasted install")
+        // Q1 D1 M1: nothing runs until the paste, so the row says it waits on the person, never that Terminal is installing.
+        let pasteRow = d.row(.claude)
+        check(d.pasting == [.claude] && pasteRow.status == "Waiting for you…" && pasteRow.waiting && pasteRow.action == .install
+              && pasteRow.detail == "Waiting for you to paste the command in Terminal and press Return. When Claude Code is installed, this row moves on to sign in."
+              && pasteRow.detail?.contains("is installing") == false, "install paste row", "\(pasteRow)")
+        let purePaste = ProviderRules.row(.claude, missing.status(.claude), skipped: false, waiting: true, installing: true, pasting: true)
+        check(purePaste.status == "Waiting for you…" && purePaste.detail == ProviderInstall.pasteWaitDetail(.claude), "install paste row", "\(purePaste)")
+        d.stopWaiting(.claude)
+        check(d.pasting.isEmpty && d.installing.isEmpty, "install paste row", "Stop waiting ends the paste wait too")
         // Terminal would not open at all: the manual path, and nothing waits.
         let closed = Effects(); closed.terminalWorks = false
         let c = guide([missing], effects: closed)
