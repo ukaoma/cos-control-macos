@@ -80,6 +80,34 @@ struct DictationEveryoneChecks {
         check(!quiet.ok && quiet.details["noSpeech"] as? Bool == true && quiet.details["action"] as? String == "none", "no speech", "\(quiet.details)")
         let gone = DictationBridge.answer(status: nil, body: nil, local: true)
         check(!gone.ok && gone.details["action"] as? String == "retry" && gone.details["retryable"] as? Bool == true, "unreachable retries", "\(gone.details)")
+        // 0.5.387 (D1 item 7): every refusal carries a code-shaped reason, so Control never logs refused:unknown.
+        func reason(_ a: DictationBridge.Answer?) -> String? { a?.details["reason"] as? String }
+        let timeout = DictationBridge.capabilityRefusal(status: nil, body: nil)
+        check(reason(timeout) == "server_no_answer" && timeout?.message == "The COS server did not answer in time. Try again."
+              && timeout?.details["action"] as? String == "retry" && timeout?.details["retryable"] as? Bool == true, "reason: capabilities timeout", "\(String(describing: timeout?.details))")
+        check(reason(DictationBridge.capabilityRefusal(status: 401, body: nil)) == "unauthorized"
+              && reason(DictationBridge.capabilityRefusal(status: 403, body: nil)) == "unauthorized", "reason: unauthorized", "")
+        check(reason(DictationBridge.capabilityRefusal(status: 500, body: nil)) == "server_unmatched"
+              && reason(DictationBridge.capabilityRefusal(status: 200, body: ["desktopDictationVersion": 9])) == "server_unmatched"
+              && reason(DictationBridge.unmatched()) == "server_unmatched", "reason: unmatched server", "")
+        check(DictationBridge.capabilityRefusal(status: 200, body: v2) == nil, "reason: a usable capabilities answer refuses nothing", "")
+        check(reason(gone) == "server_no_answer", "reason: transcribe no answer", "\(gone.details)")
+        for (status, code) in [(409, "http_409"), (429, "http_429"), (500, "http_500"), (503, "http_503"), (400, "http_400"), (413, "http_413"), (401, "http_401")] {
+            check(reason(DictationBridge.answer(status: status, body: ["error": "x"], local: true)) == code, "reason: http", "\(status)")
+        }
+        check(reason(DictationBridge.answer(status: 503, body: ["reason": "no_local_engine", "action": "retry_when_warm"], local: true)) == "no_local_engine",
+              "reason: the server's own reason still wins", "")
+        check(reason(DictationBridge.answer(status: 200, body: ["engine": "whisper"], local: true)) == "empty_text"
+              && reason(DictationBridge.answer(status: 200, body: ["text": "", "engine": "whisper"], local: true)) == "empty_text"
+              && reason(DictationBridge.answer(status: 200, body: nil, local: true)) == "empty_text", "reason: 200 without text", "")
+        check(reason(DictationBridge.answer(status: 200, body: ["text": "x", "engine": "openai"], local: true)) == "engine_refused"
+              && reason(DictationBridge.answer(status: 200, body: ["text": "x", "engine": "whisper"], local: false)) == "engine_refused",
+              "reason: text from an engine COS does not accept", "")
+        check(reason(DictationBridge.answer(status: 503, body: nil, local: false)) == "http_503"
+              && reason(DictationBridge.answer(status: 200, body: nil, local: false)) == "empty_text", "reason: the old route too", "")
+        for code in ["server_no_answer", "unauthorized", "server_unmatched", "empty_text", "engine_refused", "http_503"] {
+            check(code.allSatisfy { $0.isLowercase || $0.isNumber || $0 == "_" }, "reason: code-shaped", code)
+        }
 
         // Word error rate on the pinned sample. Lowercase, punctuation stripped.
         check(VoiceAccuracy.words("And so, my fellow Americans!") == ["and", "so", "my", "fellow", "americans"], "wer words", "\(VoiceAccuracy.words("And so, my fellow Americans!"))")

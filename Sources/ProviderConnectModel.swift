@@ -146,7 +146,8 @@ struct ProviderRowModel: Identifiable, Sendable, Equatable {
 
 enum ProviderRules {
     /// The row a status draws. `nil` status = still checking.
-    static func row(_ provider: AIProvider, _ status: ProviderLocalStatus?, skipped: Bool, waiting: Bool, expired: Bool = false) -> ProviderRowModel {
+    static func row(_ provider: AIProvider, _ status: ProviderLocalStatus?, skipped: Bool, waiting: Bool, expired: Bool = false,
+                    installing: Bool = false) -> ProviderRowModel {
         guard let status else {
             return ProviderRowModel(provider: provider, status: "Checking…", detail: nil, tone: .neutral, action: .none,
                                     canSkip: false, waiting: false)
@@ -168,6 +169,12 @@ enum ProviderRules {
                                     tone: .optional, action: status.installed ? .none : .install, canSkip: false, waiting: false)
         }
         guard status.installed else {
+            // 0.5.387 (lane D1): Install in Terminal was clicked and the CLI is not there yet.
+            if installing {
+                return ProviderRowModel(provider: provider, status: "Installing…",
+                                        detail: "Terminal is installing \(provider.cliName). When it finishes, this row moves on to sign in.",
+                                        tone: .neutral, action: .install, canSkip: false, waiting: true)
+            }
             let detail = waiting
                 ? "Follow the steps in the AI app you passed this to. This row updates when \(provider.cliName) is installed and signed in."
                 : status.desktopOnly
@@ -265,6 +272,25 @@ enum ProviderLogin {
         let escaped = command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         return "tell application \"Terminal\"\nactivate\ndo script \"\(escaped)\"\nend tell"
     }
+}
+
+// MARK: - Install in Terminal (0.5.387, lane D1)
+
+/// The one-click install (Miles 2026-11-09, production hardening D1): the AI step said "No Terminal" while it needed
+/// Terminal, and Get started stays off until an AI command line exists. Claude Code only: its official user-local
+/// installer, the same constant the row shows and Copy copies, typed into a new Terminal window through the same
+/// AppleScript path Sign in uses. It runs only from the person's click on Install (ProviderGuide.install).
+enum ProviderInstall {
+    static func oneClick(_ provider: AIProvider) -> Bool { provider == .claude }
+    /// Exactly `installCommand`, nothing added. nil for a provider with no one-click install.
+    static func command(_ provider: AIProvider) -> String? { oneClick(provider) ? provider.installCommand : nil }
+    /// When macOS refuses the AppleScript (Automation off for Terminal) or Terminal would not open: the manual path.
+    static func fallbackNotice(_ provider: AIProvider, terminalOpened: Bool) -> String {
+        terminalOpened
+            ? "macOS did not let COS type into Terminal. The install command is on the clipboard. Paste it into the Terminal window that just opened and press Return. To let COS do this next time, allow COS Control to control Terminal in System Settings, Privacy & Security, Automation."
+            : "Terminal could not be opened. The install command is on the clipboard. Open Terminal, paste it and press Return."
+    }
+    static func installedNotice(_ provider: AIProvider) -> String { "\(provider.cliName) is installed. Sign in next." }
 }
 
 // MARK: - Pass to an AI app
@@ -519,6 +545,8 @@ final class ProviderGuide: ObservableObject {
     @Published private(set) var expired: Set<AIProvider> = []
     /// The pass in flight per provider (one at a time): provider -> tag.
     @Published private(set) var passes: [AIProvider: String] = [:]
+    /// Rows whose Install in Terminal the person started and whose CLI has not appeared yet (they also wait).
+    @Published private(set) var installing: Set<AIProvider> = []
     /// The ONE store of provider skips (the setup guide reads it too; QA 2026-10-08 W7).
     @Published private(set) var skipped: Set<AIProvider> = []
     @Published private(set) var installedApps: Set<AIProvider> = []
@@ -564,7 +592,8 @@ final class ProviderGuide: ObservableObject {
 
     func row(_ provider: AIProvider) -> ProviderRowModel {
         ProviderRules.row(provider, report?.status(provider), skipped: skipped.contains(provider),
-                          waiting: waiting[provider] != nil, expired: expired.contains(provider))
+                          waiting: waiting[provider] != nil, expired: expired.contains(provider),
+                          installing: installing.contains(provider) && waiting[provider] != nil)
     }
 
     func refreshApps() {
@@ -588,6 +617,13 @@ final class ProviderGuide: ObservableObject {
         } catch {
             self.error = "COS could not check your AI apps: \(error.localizedDescription)"
             log("provider-status failed args=\(arguments.dropFirst().joined(separator: " ")) error=\(error.localizedDescription)")
+        }
+        // 0.5.387: an install the person started is done once the CLI shows up. The row moves on to sign in.
+        for provider in Array(installing) where report?.status(provider)?.installed == true {
+            installing.remove(provider)
+            waiting[provider] = nil
+            notice = ProviderInstall.installedNotice(provider)
+            log("install done provider=\(provider.rawValue)")
         }
         for provider in Array(waiting.keys) where report?.status(provider)?.signedIn == true {
             waiting[provider] = nil
@@ -624,6 +660,7 @@ final class ProviderGuide: ObservableObject {
             for (provider, started) in waiting where at.timeIntervalSince(started) >= ProviderPollSchedule.limit {
                 waiting[provider] = nil
                 passes[provider] = nil
+                installing.remove(provider)
                 expired.insert(provider)
                 log("sign-in stopped checking provider=\(provider.rawValue) after=\(Int(at.timeIntervalSince(started)))s")
             }
@@ -666,10 +703,31 @@ final class ProviderGuide: ObservableObject {
         }
     }
 
+    /// Install in Terminal (0.5.387): only from the person's click on Install. Terminal opens on the official installer
+    /// and the row waits, moving on to Sign in when the CLI appears. When osascript fails (Automation denied, Terminal
+    /// missing), the command goes on the clipboard, Terminal is opened directly, and the notice gives the manual path.
+    func install(_ provider: AIProvider) async {
+        guard let command = ProviderInstall.command(provider) else { return }
+        expired.remove(provider)
+        if await runInTerminal(ProviderLogin.terminalScript(command)) {
+            installing.insert(provider)
+            waiting[provider] = Date()
+            notice = nil
+            log("install opened provider=\(provider.rawValue) via=script")
+        } else {
+            copy(command)
+            let opened = openTerminalApp()
+            notice = ProviderInstall.fallbackNotice(provider, terminalOpened: opened)
+            if opened { installing.insert(provider); waiting[provider] = Date() }
+            log("install fallback provider=\(provider.rawValue) script=failed terminalOpened=\(opened)")
+        }
+    }
+
     /// Stop waiting on a sign-in without skipping it: the row goes back to Sign in.
     func stopWaiting(_ provider: AIProvider) {
         waiting[provider] = nil
         passes[provider] = nil
+        installing.remove(provider)
     }
 
     func skip(_ provider: AIProvider) {
@@ -705,6 +763,7 @@ final class ProviderGuide: ObservableObject {
             return false
         }
         passes[provider] = tag
+        installing.remove(provider)
         waiting[provider] = Date()
         expired.remove(provider)
         unskip(provider)

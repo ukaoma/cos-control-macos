@@ -153,21 +153,47 @@ struct ProviderRowView: View {
     }
 
     @ViewBuilder private func installSteps(_ status: ProviderLocalStatus?) -> some View {
-        if let command = provider.installCommand {
-            Text("Install it in Terminal, no administrator password needed:")
-                .font(COSType.body(11)).foregroundStyle(.secondary)
-            ProviderCommandLine(command: command) { guide.copy(command) }
-        } else if provider == .codex {
-            Text("Codex comes with the ChatGPT app for Mac. Install or update the app, then come back.")
+        if let command = ProviderInstall.command(provider) {
+            claudeInstallSteps(command, installing: guide.installing.contains(provider) && guide.row(provider).waiting)
+        } else {
+            if let command = provider.installCommand {
+                Text("Install it in Terminal, no administrator password needed:")
+                    .font(COSType.body(11)).foregroundStyle(.secondary)
+                ProviderCommandLine(command: command) { guide.copy(command) }
+            } else if provider == .codex {
+                Text("Codex comes with the ChatGPT app for Mac. Install or update the app, then come back.")
+                    .font(COSType.body(11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 12) {
+                Button("Get \(provider == .claude ? "Claude Code" : provider.appName)") {
+                    _ = guide.openURL(provider == .claude ? URL(string: "https://claude.com/product/claude-code")! : provider.downloadURL)
+                }
+                .buttonStyle(COSQuietButtonStyle())
+                if provider != .ollama { passButton }
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    /// 0.5.387 (lane D1): Claude Code installs with one click. The exact command shows first and Copy stays as the manual
+    /// path; Install types it into Terminal only when the person clicks it.
+    @ViewBuilder private func claudeInstallSteps(_ command: String, installing: Bool) -> some View {
+        if !installing {
+            Text("COS can install \(provider.cliName) for you. Install opens Terminal and runs Claude's official installer, shown below. It installs into your home folder and needs no administrator password.")
                 .font(COSType.body(11)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+        ProviderCommandLine(command: command) { guide.copy(command) }
         HStack(spacing: 12) {
-            Button("Get \(provider == .claude ? "Claude Code" : provider.appName)") {
-                _ = guide.openURL(provider == .claude ? URL(string: "https://claude.com/product/claude-code")! : provider.downloadURL)
+            if installing {
+                Button("Run it again") { Task { await guide.install(provider) } }.buttonStyle(COSQuietButtonStyle())
+                Button("Stop waiting") { guide.stopWaiting(provider) }.buttonStyle(COSTextButtonStyle())
+            } else {
+                Button("Install \(provider.cliName)") { Task { await guide.install(provider) } }.buttonStyle(COSPrimaryButtonStyle())
+                passButton
             }
-            .buttonStyle(COSQuietButtonStyle())
-            if provider != .ollama { passButton }
             Spacer(minLength: 0)
         }
         .padding(.top, 2)
@@ -176,7 +202,7 @@ struct ProviderRowView: View {
     @ViewBuilder private func signInSteps(_ status: ProviderLocalStatus?, row: ProviderRowModel) -> some View {
         if let command = ProviderLogin.command(provider, binaryPath: status?.binaryPath) {
             if !row.waiting {
-                Text("Sign in so Sessions and Continue work. In Terminal, run:")
+                Text("Sign in so Sessions and Continue work. Sign in opens Terminal and runs this command for you:")
                     .font(COSType.body(11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -284,7 +310,7 @@ struct ConnectYourAIStep: View {
                 Text("Sign in to each AI you installed, or choose Skip for now.")
                     .font(COSType.body(12)).foregroundStyle(.secondary)
             } else {
-                Text("Get started downloads the COS components and starts them. No Terminal or separate server setup.")
+                Text("Get started downloads the COS components and starts them. You do not set up a server yourself.")
                     .font(COSType.body(12)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

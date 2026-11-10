@@ -110,6 +110,7 @@ struct ProviderConnectChecks {
         polling()
         await pollLoop()
         await signInFlow()
+        await installFlow()
         await passFlow()
         dock()
         petIntro()
@@ -377,6 +378,83 @@ struct ProviderConnectChecks {
         check(k2.skipped == [.codex], "skip", "a new guide reads it back")
         await k2.signIn(.codex)
         check(k2.skipped.isEmpty, "skip", "Sign in clears the skip")
+    }
+
+    /// 0.5.387 (lane D1): Install Claude Code in Terminal, its row, its manual path, and that nothing installs unasked.
+    static func installFlow() async {
+        let claudeCommand = "curl -fsSL https://claude.ai/install.sh | bash"
+        check(ProviderInstall.command(.claude) == claudeCommand && AIProvider.claude.installCommand == claudeCommand, "install command", "Claude's official installer, unchanged")
+        check(ProviderInstall.command(.codex) == nil && ProviderInstall.command(.cursor) == nil && ProviderInstall.command(.ollama) == nil,
+              "install command", "only Claude Code installs with one click")
+        let missing = report(status("claude", installed: false, signIn: "unknown", version: nil), status("cursor", installed: false, signIn: "unknown", version: nil))
+        let landed = report(status("claude", path: "/Users/x/.local/bin/claude", signIn: "signInRequired"), status("cursor", installed: false, signIn: "unknown", version: nil))
+        let effects = Effects()
+        let g = guide([missing, landed], effects: effects)
+        await g.refresh()
+        check(effects.terminal.isEmpty, "install unasked", "reading status runs nothing in Terminal")
+        let before = g.row(.claude)
+        check(before.status == "Not installed" && before.action == .install && !before.waiting, "install row", "\(before)")
+        await g.install(.cursor)
+        await g.install(.codex)
+        check(effects.terminal.isEmpty && g.installing.isEmpty, "install command", "Cursor and Codex have no one-click install")
+        await g.install(.claude)
+        check(effects.terminal == ["tell application \"Terminal\"\nactivate\ndo script \"\(claudeCommand)\"\nend tell"], "install terminal",
+              "Terminal runs exactly the installer: \(effects.terminal)")
+        check(g.installing == [.claude] && g.waiting[.claude] != nil && g.notice == nil, "install waits", "\(g.installing)")
+        let installing = g.row(.claude)
+        check(installing.status == "Installing…" && installing.waiting && installing.action == .install && installing.tone == .neutral
+              && installing.detail == "Terminal is installing Claude Code. When it finishes, this row moves on to sign in.", "install row", "\(installing)")
+        check(g.pollTargets.contains(.claude), "install polls", "the installing row is polled")
+        // The CLI appears: the row moves on to Sign in, and the wait ends.
+        await g.refresh(only: [.claude])
+        let after = g.row(.claude)
+        check(g.installing.isEmpty && g.waiting[.claude] == nil, "install done", "the wait ends when the CLI appears")
+        check(after.action == .signIn && after.status == "Installed, not signed in" && !after.waiting, "install done", "\(after)")
+        check(g.notice == "Claude Code is installed. Sign in next.", "install done", g.notice ?? "nil")
+        check(effects.terminal.count == 1, "install unasked", "detection runs nothing more in Terminal")
+        // Automation denied, Terminal opens: the manual path, on the clipboard, and the row waits for the paste.
+        let denied = Effects(); denied.terminalWorks = false
+        let d = guide([missing], effects: denied)
+        d.openTerminalApp = { true }
+        await d.refresh()
+        await d.install(.claude)
+        check(denied.copied == [claudeCommand], "install fallback", "the command is on the clipboard: \(denied.copied)")
+        check(d.notice == ProviderInstall.fallbackNotice(.claude, terminalOpened: true) && d.notice?.contains("Privacy & Security, Automation") == true
+              && d.notice?.contains("press Return") == true, "install fallback", d.notice ?? "nil")
+        check(d.installing == [.claude] && d.waiting[.claude] != nil, "install fallback", "the row waits for the pasted install")
+        // Terminal would not open at all: the manual path, and nothing waits.
+        let closed = Effects(); closed.terminalWorks = false
+        let c = guide([missing], effects: closed)
+        await c.refresh()
+        await c.install(.claude)
+        check(closed.copied == [claudeCommand] && c.installing.isEmpty && c.waiting.isEmpty
+              && c.notice == "Terminal could not be opened. The install command is on the clipboard. Open Terminal, paste it and press Return.",
+              "install fallback", c.notice ?? "nil")
+        // Stop waiting ends the install wait; the row offers Install again.
+        let s = guide([missing], effects: Effects())
+        await s.refresh()
+        await s.install(.claude)
+        s.stopWaiting(.claude)
+        check(s.installing.isEmpty && s.waiting.isEmpty && s.row(.claude).status == "Not installed", "install stop", "\(s.row(.claude))")
+        // A pass started after Install shows the pass, not the install.
+        let q = guide([missing], effects: Effects())
+        await q.refresh()
+        await q.install(.claude)
+        let passed = q.pass(.claude, to: .claude, tag: "abcdefgh12")
+        check(passed && !q.installing.contains(.claude) && q.row(.claude).status == "Waiting for setup…", "install then pass",
+              "\(passed) \(q.row(.claude))")
+        // The 15-minute limit ends an install wait like any other.
+        let e = guide([missing], effects: Effects())
+        await e.refresh()
+        await e.install(.claude)
+        let late = Date().addingTimeInterval(ProviderPollSchedule.limit + 1)
+        await e.poll(sleep: { _ in false }, now: { late })
+        check(e.installing.isEmpty && e.waiting.isEmpty, "install limit", "an install not finished in 15 minutes stops waiting")
+        // The row a status draws for installing, decided purely.
+        let pure = ProviderRules.row(.claude, missing.status(.claude), skipped: false, waiting: true, installing: true)
+        check(pure.status == "Installing…", "install row", "\(pure)")
+        let installedAnyway = ProviderRules.row(.claude, landed.status(.claude), skipped: false, waiting: true, installing: true)
+        check(installedAnyway.action == .signIn, "install row", "an installed CLI never reads as installing: \(installedAnyway)")
     }
 
     static func passFlow() async {

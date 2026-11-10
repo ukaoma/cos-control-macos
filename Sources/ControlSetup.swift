@@ -7,6 +7,12 @@ import AppKit
 final class SetupWindowPresenter: ObservableObject {
     private var controller: NSWindowController?
 
+    /// 0.5.387 (lane D1): COSControlApp makes this presenter at launch, before any window, status read or click, so the
+    /// install cohort is decided here once (Sources/InstallCohort.swift). Later launches only read the kept answer.
+    init() {
+        InstallCohort.decideAtLaunch()
+    }
+
     func show(model: ControllerModel) {
         if controller == nil {
             let host = NSHostingController(rootView: ControlSetupView(model: model))
@@ -104,6 +110,8 @@ struct ControlSetupView: View {
         .font(COSType.body(15))
         .background(COSPalette.panel)
         .background(KeyLanesInstallLatch(model: model))
+        // 0.5.387 (lane D1): the install cohort copies KeyLanes' new or existing the moment the latch above decides it.
+        .onReceive(KeyLanesStore.shared.$install) { InstallCohort.adoptKeyLanes($0?.rawValue) }
         .cosControlTheme()
     }
 
@@ -112,7 +120,7 @@ struct ControlSetupView: View {
         case .welcome:
             heading("Meet COS, your chief of staff.", detail: "Bring your AI conversations, work and meeting context together. Start with the devices you use.", symbol: "sparkles")
             SetupDeviceChoice(guide: guide)
-            Text("Next, connect your AI and choose what COS can access. COS prepares its own components; you do not need Homebrew or a separate server setup.")
+            Text("Next, connect your AI and choose what COS can access. COS downloads and runs its own components, so you do not set up a server yourself. If you need Claude Code, COS can install it for you.")
                 .foregroundStyle(.secondary)
             Button("Get started") { guide.beginJourney() }
                 .buttonStyle(COSPrimaryButtonStyle()).disabled(model.busy)

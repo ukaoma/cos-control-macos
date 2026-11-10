@@ -1,6 +1,8 @@
 import AppKit
 import ApplicationServices
+import AVFoundation
 import CoreServices
+import EventKit
 import ServiceManagement
 import UserNotifications
 
@@ -45,7 +47,17 @@ extension PermissionProbes {
             },
             kickstart: { label in
                 _ = await PermissionSystem.run("/bin/launchctl", ["kickstart", "gui/\(getuid())/\(label)"])
-            })
+            },
+            // 0.5.387 (lane D1): status reads only. None of these three calls shows a prompt.
+            microphone: { PermissionSystem.microphoneFact() },
+            systemAudio: { SystemAudioPermission.preflight.map { SystemAudioFact(preflight: $0) } },
+            calendars: { PermissionSystem.calendarsFact() },
+            microphoneWanted: { UserDefaults.standard.bool(forKey: "dictation.enabled") },
+            systemAudioWanted: {
+                UserDefaults.standard.bool(forKey: "dictation.enabled")
+                    && (UserDefaults.standard.string(forKey: "dictation.quiet") ?? "mute") == "mute"
+            },
+            calendarsWanted: { UserDefaults.standard.bool(forKey: "cos.calendar.connected") })
     }
 }
 
@@ -157,6 +169,30 @@ enum PermissionSystem {
         try? handle.seek(toOffset: size > 16_384 ? size - 16_384 : 0)
         let tail = String(decoding: handle.readDataToEndOfFile(), as: UTF8.self)
         return CalendarFetchLog.status(tail)
+    }
+
+    /// AVCaptureDevice.authorizationStatus: a read. requestAccess is the call that prompts, and nothing here makes it.
+    static func microphoneFact() -> MediaAccessFact {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized: .allowed
+        case .denied: .denied
+        case .restricted: .restricted
+        case .notDetermined: .notAsked
+        @unknown default: .unknown
+        }
+    }
+
+    /// EKEventStore.authorizationStatus: a read (the class method; no store, no request).
+    static func calendarsFact() -> CalendarsAccessFact {
+        let status = EKEventStore.authorizationStatus(for: .event)
+        switch status {
+        case .fullAccess: return .allowed
+        case .writeOnly: return .writeOnly
+        case .denied: return .denied
+        case .restricted: return .restricted
+        case .notDetermined: return .notAsked
+        @unknown default: return .unknown
+        }
     }
 
     static func agentPlist(_ label: String, home: String) -> [String: Any]? {

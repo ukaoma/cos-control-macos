@@ -19,7 +19,8 @@ print -r -- "$OUT"
 COUNT="${${OUT##*checks: }%% passed*}"
 # 578 at 0.5.368 (the phone row hides on a server without its route); 566 at 0.5.367 (Open COS on your phone: its rules and its
 # state); 194 before.
-(( COUNT >= 578 )) || { print -u2 "Connect your AI checks ran only $COUNT (expected at least 578)"; exit 1; }
+# 600 at 0.5.387 (D1: Install Claude Code in Terminal, 22 checks).
+(( COUNT >= 600 )) || { print -u2 "Connect your AI checks ran only $COUNT (expected at least 600)"; exit 1; }
 # The pet introduction after the REAL character-scale migration (Models.swift), on a scratch defaults suite.
 /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
   "$ROOT/Sources/Models.swift" "$ROOT/Sources/ProviderConnectModel.swift" "$ROOT/Tests/PetIntroMigrationCheck.swift" -o "$DIR/pet-intro-check"

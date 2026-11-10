@@ -630,15 +630,24 @@ enum DictationBridge {
     /// 0.5.345 (A-W0d, plan r3): what the capabilities request means before any audio is sent, now that dictate() asks no
     /// /api/health first. No transport answer: the server is stopped, and the dictation keeps its Retry. 401 or 403: the
     /// token is refused. Anything else that is not a usable 200 is an unmatched server (unmatched()). nil: go on.
+    /// 0.5.387 (lane D1 item 7, from S1's root cause): every refusal carries a code-shaped `reason`, so Control logs
+    /// refused:server_no_answer and the like instead of refused:unknown. No answer within the 5 s capabilities timeout
+    /// was shown as "Server stopped" while the server was running; the card now says it did not answer in time.
+    static let noAnswerMessage = "The COS server did not answer in time. Try again."
     static func capabilityRefusal(status: Int?, body: [String: Any]?) -> Answer? {
-        guard let status else { return Answer(ok: false, message: "Server stopped", details: ["action": "retry", "retryable": true]) }
-        if status == 401 || status == 403 { return Answer(ok: false, message: "Unauthorized", details: ["action": "none", "httpStatus": status]) }
+        guard let status else {
+            return Answer(ok: false, message: noAnswerMessage, details: ["action": "retry", "retryable": true, "reason": "server_no_answer"])
+        }
+        if status == 401 || status == 403 {
+            return Answer(ok: false, message: "Unauthorized", details: ["action": "none", "httpStatus": status, "reason": "unauthorized"])
+        }
         if status != 200 || route(body) == nil { return unmatched() }
         return nil
     }
 
     static func unmatched() -> Answer {
-        Answer(ok: false, message: "Update to the matched COS server before using Mac dictation. No audio was sent.", details: ["action": "none"])
+        Answer(ok: false, message: "Update to the matched COS server before using Mac dictation. No audio was sent.",
+               details: ["action": "none", "reason": "server_unmatched"])
     }
 
     static func id(_ value: Any?, _ allowed: Set<String>) -> String? { (value as? String).flatMap { allowed.contains($0) ? $0 : nil } }
@@ -662,11 +671,17 @@ enum DictationBridge {
         }
     }
 
+    /// A 200 COS cannot use: usable text from an engine it does not accept, or no usable text at all.
+    static func okWithoutText(_ body: [String: Any]?) -> String {
+        guard let text = body?["text"] as? String, !text.isEmpty, text.utf8.count <= 64_000 else { return "empty_text" }
+        return "engine_refused"
+    }
+
     /// What one transcribe answer means. `status` nil: the server did not answer.
     static func answer(status: Int?, body: [String: Any]?, local: Bool) -> Answer {
         guard let status else {
             return Answer(ok: false, message: "The local transcription server is unavailable. Try again when it is ready.",
-                          details: ["action": "retry", "retryable": true])
+                          details: ["action": "retry", "retryable": true, "reason": "server_no_answer"])
         }
         // noSpeech: the server heard nothing it could transcribe; COS Control offers no Retry of the same audio.
         if status == 204 { return Answer(ok: false, message: "No speech detected. Check your selected microphone and try again.", details: ["noSpeech": true, "action": "none"]) }
@@ -684,7 +699,8 @@ enum DictationBridge {
         guard local else {
             // 0.5.316's words and its Retry, unchanged, for a server without the local route.
             let message = status == 503 ? "Parakeet is not ready. Check Transcription settings and retry." : "Dictation needs the matched server with Parakeet support. No text was inserted."
-            return Answer(ok: false, message: message, details: ["httpStatus": status, "action": "retry", "retryable": true])
+            return Answer(ok: false, message: message, details: ["httpStatus": status, "action": "retry", "retryable": true,
+                                                                 "reason": status == 200 ? okWithoutText(body) : "http_\(status)"])
         }
         if status == 503, let body, let reason = id(body["reason"], reasons) {
             let raw = body["action"] as? String
@@ -699,12 +715,14 @@ enum DictationBridge {
             return Answer(ok: false, message: sentence(body["error"]) ?? refusalLine(reason: reason, action: action, detail: detail), details: details)
         }
         if status == 200 {
-            return Answer(ok: false, message: "The server answered without text COS can use. No text was inserted.", details: ["httpStatus": 200, "action": "retry", "retryable": true])
+            return Answer(ok: false, message: "The server answered without text COS can use. No text was inserted.",
+                          details: ["httpStatus": 200, "action": "retry", "retryable": true, "reason": okWithoutText(body)])
         }
         // A maintenance hold (409/503 with Retry-After) or a busy server can pass; a 4xx is this request's own fault.
         let passing = status == 409 || status == 503 || status == 429 || status >= 500
         return Answer(ok: false, message: passing ? "The transcription server is busy. Try again in a moment." : "The server could not transcribe this dictation (HTTP \(status)). No text was inserted.",
-                      details: ["httpStatus": status, "action": passing ? "retry" : "open_transcription_settings", "retryable": passing])
+                      details: ["httpStatus": status, "action": passing ? "retry" : "open_transcription_settings", "retryable": passing,
+                                "reason": "http_\(status)"])
     }
 }
 
