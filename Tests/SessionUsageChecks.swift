@@ -1440,7 +1440,7 @@ extension Checks {
         check((rows[.dictation]?.measuredUSD ?? 0) > 0 && rows[.dictation]?.unpricedMeasuredCalls == 0, "a Sol row inside the promotion is priced")
         let lateWindow = "2026-11-02"..."2026-12-01"
         var late = CosCostAccumulator(window: lateWindow, timeZone: chicago, gistRuns: [], runs: [], workStarts: [:], events: [])
-        promo.stamp = "2026-11-25T12:00:00Z"
+        promo.stamp = "2026-12-01T12:00:00Z" // U1: the page now says the promotion runs until November 30, 2026
         late.add(promo)
         let lateRows = Dictionary(uniqueKeysWithValues: late.finish(handoffsFound: true, workRuns: 0, workRunsWithoutLogs: 0).rows.map { ($0.category, $0) })
         check(lateRows[.dictation]?.measuredUSD == 0 && lateRows[.dictation]?.unpricedMeasuredCalls == 1, "a Sol row after the promotion has no price, and says so")
