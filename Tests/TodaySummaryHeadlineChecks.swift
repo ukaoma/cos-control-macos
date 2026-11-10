@@ -48,9 +48,10 @@ import SwiftUI
         check(h.reset(key: "d1|99", now: t0.addingTimeInterval(1600)) == 150.0, "Refresh: the block fits the text shown now")
         check(h.measured(height: 117.0, width: 700.4, key: "d1|99", now: t0.addingTimeInterval(1601)) == 117.0, "Refresh: the new text landing within 3 s may shrink it")
         check(h.measured(height: 80.0, width: 700.4, key: "d1|99", now: t0.addingTimeInterval(1602)) == 117.0, "Refresh: only the first text after it re-fits")
-        _ = h.reset(key: "d1|100", now: t0.addingTimeInterval(1700))
-        check(h.measured(height: 60.0, width: 700.4, key: "d1|100", now: t0.addingTimeInterval(1704)) == 117.0, "Refresh: a rewrite after the 3 s window is an ordinary one (no shrink)")
-        check(h.reset(key: "d1|100", now: t0.addingTimeInterval(1800)) == 117.0, "the same key again is not a reset")
+        // The last measured text was 80 pt (held at 117): a second Refresh re-fits to it, then only grows again.
+        check(h.reset(key: "d1|100", now: t0.addingTimeInterval(1700)) == 80.0, "a second Refresh re-fits to the text shown now")
+        check(h.measured(height: 60.0, width: 700.4, key: "d1|100", now: t0.addingTimeInterval(1704)) == 80.0, "Refresh: a rewrite after the 3 s window is an ordinary one (no shrink)")
+        check(h.reset(key: "d1|100", now: t0.addingTimeInterval(1800)) == 80.0, "the same key again is not a reset")
         check(h.measured(height: 80.0, width: 700.4, key: "d2|100", now: t0.addingTimeInterval(90_000)) == 80.0, "a new day re-fits")
     }
 
@@ -158,7 +159,7 @@ import SwiftUI
                         Text("Refresh").font(.system(size: 12.5))
                         Spacer(minLength: 0)
                     }
-                    if summary { RoundedRectangle(cornerRadius: 10).stroke(Color.gray).frame(minHeight: 34).frame(maxWidth: 620) }
+                    if summary { RoundedRectangle(cornerRadius: 10).stroke(Color.gray).frame(maxWidth: 620).frame(height: 34) }
                 }
                 Text("Needs you").font(.system(size: 15, weight: .semibold))
                     .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named("block")).minY } action: { report($0) }
