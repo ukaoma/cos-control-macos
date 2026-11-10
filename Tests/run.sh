@@ -154,6 +154,8 @@ zsh "$ROOT/Tests/run-mac-recording.sh"
 # 0.5.313: meeting detection and the record suggestion (text only; the rules run in MacRecordingChecks above).
 /usr/bin/python3 "$ROOT/Tests/meeting-detect-pins.py" "$ROOT"
 zsh "$ROOT/Tests/run-mac-dictation.sh"
+# 0.5.387 lane D1: dictation on with no start shortcut says so, with the recorder right there.
+zsh "$ROOT/Tests/run-dictation-shortcut-gap.sh"
 # 0.5.331 paste first, polish in place (Miles 2026-10-20 07:49). Call sites, code only (comments never count); the full
 # set with its mutants is Tests/dictation-swap-pins.py inside run-mac-dictation.sh above.
 SWAP_SRC="$(grep -v -E '^[[:space:]]*//' "$ROOT/Sources/MacDictation.swift")"

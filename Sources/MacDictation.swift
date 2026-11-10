@@ -2115,6 +2115,8 @@ enum DictationSpareBuild: Sendable {
     private let closeBeat = DictationMainHeartbeat()
     private var slowListenerAtClose = 0
     var busy: Bool { ["Listening", "Starting", "Transcribing"].contains(phase) }
+    /// 0.5.387 (lane D1): on, with no way to start it (no Push to talk and no Start and stop shortcut).
+    var needsShortcut: Bool { DictationShortcutGap.needsShortcut(enabled: enabled, hold: holdTrigger != nil, toggle: toggleTrigger != nil) }
     private init() {
         let d = UserDefaults.standard
         let on = d.bool(forKey: "dictation.enabled")
@@ -4150,6 +4152,10 @@ struct MacDictationSettings: View {
             Text(Self.enableNote)
                 .font(.caption2).foregroundStyle(.secondary)
             }
+            // 0.5.387 (lane D1): on with no shortcut says so here, with the Push to talk recorder right under it.
+            if store.needsShortcut {
+            DictationNoShortcutWarning(store: store, activityShortcut: activityShortcut).settingsHubBlock()
+            }
             }
             if store.enabled {
                 if shows(.microphone) {
@@ -4167,7 +4173,10 @@ struct MacDictationSettings: View {
                 if let note = store.micNote { Text("Last time " + note).font(.caption2).foregroundStyle(COSPalette.amber).settingsHubBlock() }
                 }
                 if shows(.shortcuts) {
+                // While the warning shows, its own Push to talk recorder is the one on screen (never two at once).
+                if !store.needsShortcut {
                 DictationShortcutRow(store: store, slot: .hold, activityShortcut: activityShortcut).settingsHubBlock()
+                }
                 DictationShortcutRow(store: store, slot: .toggle, activityShortcut: activityShortcut).settingsHubBlock()
                 DictationShortcutRow(store: store, slot: .fix, activityShortcut: activityShortcut).settingsHubBlock()
                 Button("Allow typing in apps…") { store.requestInsertionPermission() }.controlSize(.small).settingsHubLabeled("DI-08")
@@ -4342,6 +4351,34 @@ private struct DictationQuietSettings: View {
         Text("Never during a Mac recording. Music and video are muted, never paused.")
             .font(.caption2).foregroundStyle(.secondary)
             .onAppear { permitted = DictationQuietController.tapPermitted }
+    }
+}
+
+/// 0.5.387 (lane D1, production hardening): "Dictate into Mac apps" can be on with neither Push to talk nor Start and
+/// stop recorded, and neither has a default, so nothing can start a dictation. Pure; Tests/FirstRunD1Checks.swift runs it.
+enum DictationShortcutGap {
+    static let warning = "Dictation is on but has no shortcut yet. Record one to start."
+    /// Fix the last dictation does not start one, so it never counts.
+    static func needsShortcut(enabled: Bool, hold: Bool, toggle: Bool) -> Bool { enabled && !hold && !toggle }
+}
+
+/// The warning and the Push to talk recorder, together. Draws nothing unless dictation is on with no start shortcut.
+/// Mounted under the switch in MacDictationSettings (panel, Dictation tab and the Settings hub's Dictation card); any
+/// other page that shows the switch can mount the same view.
+struct DictationNoShortcutWarning: View {
+    @ObservedObject var store: MacDictationStore
+    let activityShortcut: HotKeyCombo?
+    @Environment(\.settingsHubHosted) private var hosted
+    var body: some View {
+        if store.needsShortcut {
+            VStack(alignment: .leading, spacing: hosted ? 8 : 4) {
+                Text(DictationShortcutGap.warning)
+                    .font(hosted ? COSType.body(13) : .caption2).foregroundStyle(COSPalette.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+                DictationShortcutRow(store: store, slot: .hold, activityShortcut: activityShortcut)
+            }
+            .accessibilityElement(children: .contain)
+        }
     }
 }
 
