@@ -30,8 +30,8 @@ pin(switch_at < warning_at < mic_at, "the warning sits right under the switch, b
 dictation_section = settings[settings.index("if shows(.dictation) {"):mic_at]
 pin("DictationNoShortcutWarning(" in dictation_section, "the warning is in the Dictation section (the hub's Dictation card draws it)")
 shortcuts = settings[settings.index("if shows(.shortcuts) {"):settings.index("if shows(.sounds) {")]
-pin(re.search(r"if !store\.needsShortcut \{\s*DictationShortcutRow\(store: store, slot: \.hold", shortcuts) is not None,
-    "while the warning shows, the Shortcuts list does not draw a second Push to talk recorder")
+pin(re.search(r"if !\(store\.needsShortcut && shows\(\.dictation\)\) \{\s*DictationShortcutRow\(store: store, slot: \.hold", shortcuts) is not None,
+    "while the warning shows beside it, the Shortcuts list does not draw a second Push to talk recorder; drawn alone (the hub card), it keeps it")
 view = src[src.index("struct DictationNoShortcutWarning: View {"):src.index("private struct DictationShortcutRow: View {")]
 pin("if store.needsShortcut {" in view and "Text(DictationShortcutGap.warning)" in view
     and "DictationShortcutRow(store: store, slot: .hold, activityShortcut: activityShortcut)" in view,

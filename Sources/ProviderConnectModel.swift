@@ -147,7 +147,7 @@ struct ProviderRowModel: Identifiable, Sendable, Equatable {
 enum ProviderRules {
     /// The row a status draws. `nil` status = still checking.
     static func row(_ provider: AIProvider, _ status: ProviderLocalStatus?, skipped: Bool, waiting: Bool, expired: Bool = false,
-                    installing: Bool = false) -> ProviderRowModel {
+                    installing: Bool = false, pasting: Bool = false) -> ProviderRowModel {
         guard let status else {
             return ProviderRowModel(provider: provider, status: "Checking…", detail: nil, tone: .neutral, action: .none,
                                     canSkip: false, waiting: false)
@@ -170,6 +170,13 @@ enum ProviderRules {
         }
         guard status.installed else {
             // 0.5.387 (lane D1): Install in Terminal was clicked and the CLI is not there yet.
+            // Q1 D1 M1: when COS could not type into Terminal, nothing runs until the person pastes the command, so the row
+            // says it waits on them, never that Terminal is installing.
+            if installing && pasting {
+                return ProviderRowModel(provider: provider, status: "Waiting for you…",
+                                        detail: ProviderInstall.pasteWaitDetail(provider),
+                                        tone: .neutral, action: .install, canSkip: false, waiting: true)
+            }
             if installing {
                 return ProviderRowModel(provider: provider, status: "Installing…",
                                         detail: "Terminal is installing \(provider.cliName). When it finishes, this row moves on to sign in.",
@@ -291,6 +298,10 @@ enum ProviderInstall {
             : "Terminal could not be opened. The install command is on the clipboard. Open Terminal, paste it and press Return."
     }
     static func installedNotice(_ provider: AIProvider) -> String { "\(provider.cliName) is installed. Sign in next." }
+    /// The row while COS waits for the person to paste the install command (Automation denied, Terminal opened).
+    static func pasteWaitDetail(_ provider: AIProvider) -> String {
+        "Waiting for you to paste the command in Terminal and press Return. When \(provider.cliName) is installed, this row moves on to sign in."
+    }
 }
 
 // MARK: - Pass to an AI app
@@ -546,7 +557,11 @@ final class ProviderGuide: ObservableObject {
     /// The pass in flight per provider (one at a time): provider -> tag.
     @Published private(set) var passes: [AIProvider: String] = [:]
     /// Rows whose Install in Terminal the person started and whose CLI has not appeared yet (they also wait).
-    @Published private(set) var installing: Set<AIProvider> = []
+    @Published private(set) var installing: Set<AIProvider> = [] {
+        didSet { if !pasting.isSubset(of: installing) { pasting.formIntersection(installing) } }
+    }
+    /// Q1 D1 M1: installs waiting on the person's paste (the script could not type into Terminal). Always within installing.
+    @Published private(set) var pasting: Set<AIProvider> = []
     /// The ONE store of provider skips (the setup guide reads it too; QA 2026-10-08 W7).
     @Published private(set) var skipped: Set<AIProvider> = []
     @Published private(set) var installedApps: Set<AIProvider> = []
@@ -593,7 +608,7 @@ final class ProviderGuide: ObservableObject {
     func row(_ provider: AIProvider) -> ProviderRowModel {
         ProviderRules.row(provider, report?.status(provider), skipped: skipped.contains(provider),
                           waiting: waiting[provider] != nil, expired: expired.contains(provider),
-                          installing: installing.contains(provider) && waiting[provider] != nil)
+                          installing: installing.contains(provider) && waiting[provider] != nil, pasting: pasting.contains(provider))
     }
 
     func refreshApps() {
@@ -711,6 +726,7 @@ final class ProviderGuide: ObservableObject {
         expired.remove(provider)
         if await runInTerminal(ProviderLogin.terminalScript(command)) {
             installing.insert(provider)
+            pasting.remove(provider)
             waiting[provider] = Date()
             notice = nil
             log("install opened provider=\(provider.rawValue) via=script")
@@ -718,7 +734,7 @@ final class ProviderGuide: ObservableObject {
             copy(command)
             let opened = openTerminalApp()
             notice = ProviderInstall.fallbackNotice(provider, terminalOpened: opened)
-            if opened { installing.insert(provider); waiting[provider] = Date() }
+            if opened { installing.insert(provider); pasting.insert(provider); waiting[provider] = Date() }
             log("install fallback provider=\(provider.rawValue) script=failed terminalOpened=\(opened)")
         }
     }
