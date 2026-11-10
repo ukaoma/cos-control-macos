@@ -223,7 +223,9 @@ import Foundation
         for query in ["phone", "browser", "sign in", "web", "QR", "Control Web", "open cos on your phone", "safari"] {
             check(ids(query).contains("UT-29"), "search finds Open COS on your phone by \(query)")
         }
-        check(SettingsHubCatalog.advancedCount("glasses.devices") == 2, "Devices' Advanced is still Copy token and Reset message count")
+        // 0.5.387 (recovery rows): Copy pairing token left Advanced; Reset message count stays.
+        check(SettingsHubCatalog.advancedCount("glasses.devices") == 1 && SettingsHubCatalog.item("H-04")?.advanced == true
+              && SettingsHubCatalog.item("UT-21")?.advanced == false, "Devices' Advanced is Reset message count; Copy pairing token is on the card")
         // 0.5.362: the cue mode and general limit rows are found by their names and their keywords.
         check(ids("cue mode").first == "HUB-CM" && ids("grounded").contains("HUB-CG") && ids("daily web searches").first == "HUB-GW", "search finds the cue mode, Grounded cues and the daily web searches")
         check(ids("general cues").contains("HUB-GB") && ids("general cues").contains("HUB-GI") && ids("insight").contains("HUB-GM") && ids("public topics").contains("HUB-CM"),
@@ -298,6 +300,14 @@ import Foundation
         for cohort in [undecided, existing, fresh] {
             check(SettingsHubView.resolved(stored: "all", newInstall: cohort) == .all && SettingsHubView.resolved(stored: "basic", newInstall: cohort) == .basic,
                   "an explicit choice wins for every cohort")
+        }
+        // Recovery rows (lead, 2026-11-09): every control another surface tells a person to press is Basic, not Advanced, and
+        // found by search under the name that surface uses.
+        check(SettingsHubCatalog.recoveryRows.count == 11, "eleven recovery rows")
+        for (name, id) in SettingsHubCatalog.recoveryRows {
+            let row = SettingsHubCatalog.item(id)
+            check(row?.mount == .group && row?.advanced == false && SettingsHubCatalog.isBasic(id), "recovery row \(name) (\(id)) is in Basic, not Advanced")
+            check(ids(name).contains(id), "search for \(name) finds \(id)")
         }
         // Sign out every browser (Miles 2026-11-09): under Open COS on your phone, Basic and All, never Advanced.
         let revoke = SettingsHubCatalog.item("WB-01")

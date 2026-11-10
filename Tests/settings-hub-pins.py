@@ -347,6 +347,13 @@ pin('case "web-revoke-all": try emitWebRevokeAll()' in helper and helper.count('
 fn = body(helper, "    private func emitWebRevokeAll() throws {", "\n    }\n")
 pin(all(k in fn for k in ("runtimeState(snapshot:", "readToken()", '"/api/web-session/revoke-all"'))
     and fn.index("runtimeState(snapshot:") < fn.index("readToken()") < fn.index('"/api/web-session/revoke-all"'), "Copy token's managed-server check runs first, then the token")
+# 0.5.387 recovery rows (lead, 2026-11-09): what the glasses app, Control Web and the phone tell a person to press in COS Control.
+recovery = dict((i, n) for n, i in re.findall(r'\("([^"]+)", "([A-Z]+-\d\d)"\)', body(catalog, "    static let recoveryRows: [(name: String, id: String)] = [", "\n    ]\n")))
+basic_ids = set(re.findall(r'"([A-Z]+-\d\d)"', body(catalog, "    static let basicIDs: Set<String> = [", "\n    ]\n")))
+pin(set(recovery) == {"C-01", "C-03", "C-04", "C-05", "UT-14", "SG-05", "SG-11", "UT-21", "UT-29", "WB-01", "SG-01"}, f"the recovery rows are the named eleven ({sorted(recovery)})")
+pin(set(recovery) <= basic_ids, f"every recovery row is in Basic (missing {sorted(set(recovery) - basic_ids)})")
+devices_card = body(views, 'hubCard("glasses.devices"', 'hubCard("glasses.video"').split("} advanced: {", 1)[0]
+pin('hubRow("UT-21")' in devices_card, "Copy pairing token is on the Devices card, not under its Advanced")
 # 0.5.387: the server notice sits in the top strip of every page, with its action.
 top = body(views, "    func hubTopStrip(_ reader: ScrollViewProxy) -> some View {", "    func hubLabel(_ id: String) -> String {")
 pin("SettingsHubServerNotice.line(checked: model.status.runtimeState != \"unknown\", running: model.status.running)" in top

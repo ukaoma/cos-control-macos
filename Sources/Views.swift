@@ -4311,11 +4311,13 @@ private extension ControlPanel {
                 }
                 hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }
             }
-        } advanced: {
+            // 0.5.387 (recovery rows): the glasses app and the phone tell people to press Copy pairing token, so it is on the
+            // card, in Basic and All, for every device path (it used to sit under Advanced).
             hubRow("UT-21") {
                 Button("Copy token") { model.perform("token") }.buttonStyle(TodayButtonStyle(small: true)).disabled(pairingTokenBlocked)
             }
             .disabled(model.busy)
+        } advanced: {
             // O-10: Reset live message count, which the panel keeps in its header, reachable in every host.
             hubRow("H-04") {
                 Button("Reset count…") { confirmResetMessageCount = true }.buttonStyle(TodayButtonStyle(small: true)).disabled(model.busy)

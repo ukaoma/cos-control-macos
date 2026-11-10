@@ -55,6 +55,7 @@ MUTANTS = [
      "Camera's QR"),
     ("d2: Phone approvals leaves Basic", C, '        "SG-02", "SG-11", "SG-13", "UT-29", "PK-01", "WB-01",\n', '        "SG-02", "SG-11", "SG-13", "UT-29", "WB-01",\n',
      "Phone approvals sits beside it, never Advanced, in Basic too"),
+    ("d2: a recovery row leaves Basic", C, '        "SG-05", "TR-07", "UT-14",\n', '        "SG-05", "TR-07",\n', "every recovery row is in Basic"),
     ("d2: sign out shown on an older server", C, "    static func shown(phoneSignInTooOld: Bool) -> Bool { !phoneSignInTooOld }\n",
      "    static func shown(phoneSignInTooOld: Bool) -> Bool { true }\n", "hides on a server without it"),
     ("d2: sign out runs on the first press", H, "                    Button(SettingsHubWebRevoke.button) { result = nil; confirming = true }\n",

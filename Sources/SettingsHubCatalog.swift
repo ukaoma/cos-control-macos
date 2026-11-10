@@ -321,10 +321,10 @@ enum SettingsHubCatalog {
         .init("KL-02", "Remove keys to downgrade", "An older server cannot use saved keys. Remove them to install it.", old: "Downgrade line + Remove saved keys and continue (confirm)", group: "ai.keys", advanced: true, mount: .group),
         .init("OUT-07", "Search by meaning", "Find messages by meaning. Each search uses model tokens.", old: "Meaning (search messages by meaning; also \"Turn it on\")", group: "ai.search", advanced: false, mount: .group, keywords: ["semantic", "meaning"]),
         .init("SG-02", "Your devices", "Choose Just my Mac, or My Mac and glasses.", old: "Your devices: Just my Mac / My Mac and glasses", group: "glasses.devices", advanced: false, mount: .group),
-        .init("SG-11", "Connect glasses", "Set up Tailscale on both devices, then pair with a code.", old: "Glasses: Tailscale on this Mac (Get Tailscale / Open Tailscale), Tailscale on your iPhone (QR), Connect your glasses (pairing QR, code, Show a new code, Try…", group: "glasses.devices", advanced: false, mount: .group, keywords: ["tailscale", "pair", "qr code", "iphone"]),
+        .init("SG-11", "Connect glasses", "Set up Tailscale on both devices, then pair with a code.", old: "Glasses: Tailscale on this Mac (Get Tailscale / Open Tailscale), Tailscale on your iPhone (QR), Connect your glasses (pairing QR, code, Show a new code, Try…", group: "glasses.devices", advanced: false, mount: .group, keywords: ["tailscale", "pair", "qr code", "iphone", "scan code", "scan", "pairing code"]),
         .init("SG-12", "Pair on home Wi-Fi", "Let a phone on this Wi-Fi pair for 10 minutes. Use it at home only.", old: "Allow pairing on this Wi-Fi (home only)", group: "glasses.devices", advanced: false, mount: .group),
         .init("SG-13", "Glasses app", "Get the COS app for your glasses.", old: "The COS app for your glasses", group: "glasses.devices", advanced: false, mount: .group),
-        .init("UT-21", "Copy pairing token", "Copies the pairing token. Anyone with it can reach COS on this Mac.", old: "Copy Pairing Token", group: "glasses.devices", advanced: true, mount: .group, keywords: ["token", "pairing token", "clipboard"]),
+        .init("UT-21", "Copy pairing token", "Copies the pairing token. Anyone with it can reach COS on this Mac.", old: "Copy Pairing Token", group: "glasses.devices", advanced: false, mount: .group, keywords: ["token", "pairing token", "clipboard"]),
         .init("H-04", "Reset message count", "Live messages start again at #1. History stays in Archive.", old: "\"Archive live messages and start numbering at #1\" (archivebox icon), confirm \"Reset live message count?\" / \"Reset count\"", group: "glasses.devices", advanced: true, mount: .group, keywords: ["archive", "message number", "era"]),
         .init("UT-09", "Reliable video uploads", "Beta. Sends videos in chunks that resume after a restart.", old: "Reliable video uploads (beta) + Apply", group: "glasses.video", advanced: true, mount: .group),
         .init("ST-10", "Video uploads", "Uploads in progress and finished uploads waiting for the phone.", old: "Video uploads; \"Sideload or a killed upload can sit here for 4 hours and block Repair.\"; completed receipts await acknowledgment", group: "glasses.video", advanced: false, mount: .group),
@@ -636,19 +636,22 @@ enum SettingsHubCatalog {
     /// - PM-05 to PM-07: the permission list is one block (PermissionGuideList), so Basic draws every row in it.
     /// - DR-01 Check results: the answer to Run checks, which is in Basic.
     /// - WB-01 Sign out every browser: Miles, 2026-11-09 ("Renew while in use, 30-day cap"), beside Open COS on your phone.
+    /// - Recovery rows (lead, 2026-11-09): every control another COS surface tells a person to press is in Basic, on its page
+    ///   (recoveryRows). So UT-14 Repair Whisper, UT-21 Copy pairing token (out of Advanced, for everyone), and C-02 to C-05
+    ///   (Stop, Start, Update server, Install server: buttons inside C-01's row, marked so search never says "In All settings").
     static let basicIDs: Set<String> = [
         // General
         "G-01", "G-02", "G-03", "WK-06", "CAL-01", "SG-01",
         // AI and accounts
         "SG-03", "KL-01", "OUT-07",
         // Glasses, phone and web
-        "SG-02", "SG-11", "SG-13", "UT-29", "PK-01", "WB-01",
+        "SG-02", "SG-11", "SG-13", "UT-21", "UT-29", "PK-01", "WB-01",
         // Meetings
         "MT-01", "MT-03", "MT-04", "MA-01", "UT-16", "OUT-01",
         // Dictation
         "DI-01", "DI-02", "DI-05", "DI-06", "DI-08", "TR-01", "DI-23", "DI-32",
         // Transcription and voice
-        "SG-05", "TR-07",
+        "SG-05", "TR-07", "UT-14",
         // Work and agents
         "UT-06", "UT-07", "WK-02", "WK-03", "WK-04", "UT-15", "MB-02", "DROP-01", "REACH-01", "REACH-05",
         // Privacy and permissions
@@ -656,12 +659,19 @@ enum SettingsHubCatalog {
         // Pet
         "PT-01", "PT-07", "PT-09",
         // System and updates
-        "ST-01", "C-01", "H-02", "UT-01", "DR-01", "UT-22",
+        "ST-01", "C-01", "C-02", "C-03", "C-04", "C-05", "H-02", "UT-01", "DR-01", "UT-22",
+    ]
+    /// Controls the glasses app, Control Web and the phone tell a person to press in COS Control, by the name they use. Each
+    /// must be in Basic and found by search under that name (G1's copy says "search Settings for <name>").
+    static let recoveryRows: [(name: String, id: String)] = [
+        ("Update server", "C-04"), ("Restart", "C-01"), ("Start", "C-03"), ("Install server", "C-05"),
+        ("Repair Whisper", "UT-14"), ("Voice setup", "SG-05"), ("Scan code", "SG-11"), ("Copy pairing token", "UT-21"),
+        ("Open COS on your phone", "UT-29"), ("Sign out every browser", "WB-01"), ("Setup guide", "SG-01"),
     ]
     /// The basic rows per page stay inside these bounds (Tests/SettingsHubChecks.swift). A change outside them is a decision.
     static let basicRange: [SettingsHubCategory: ClosedRange<Int>] = [
-        .general: 5...7, .ai: 2...4, .glasses: 3...6, .meetings: 5...7, .dictation: 6...9, .voice: 1...3,
-        .work: 8...11, .privacy: 4...8, .pet: 2...4, .system: 4...7,
+        .general: 5...7, .ai: 2...4, .glasses: 3...8, .meetings: 5...7, .dictation: 6...9, .voice: 1...4,
+        .work: 8...11, .privacy: 4...8, .pet: 2...4, .system: 4...11,
     ]
     static func isBasic(_ id: String) -> Bool { basicIDs.contains(id) }
     /// A group Basic draws: one with at least one basic row in its card. The rest are left out of Basic.
