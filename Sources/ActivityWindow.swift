@@ -8777,7 +8777,7 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
         defer { runBusy = false }
         if handoff.models.isEmpty { await handoff.refresh() }
         // Reply in the message reader (D4): the model the person chose while a Today run may use it, else the usual pick.
-        let choices = handoff.models.map { ($0.id, $0.provider, $0.available) }
+        let choices: [(id: String, provider: String, available: Bool)] = handoff.models.map { ($0.id, $0.provider, $0.available) }
         guard let index = modelID == nil ? TodayHome.pickRunModel(choices) : MessageReply.modelIndex(picked: modelID, models: choices) else {
             runNote = "No model is available for a Work run. Open Work to start one."
             return false
