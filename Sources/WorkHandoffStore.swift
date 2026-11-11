@@ -413,6 +413,9 @@ struct WorkRecommendationKey: Equatable {
     @Published private(set) var advice: [String: SessionAdvice] = [:]
     @Published private(set) var adviceUnavailable: [String: String] = [:]
     @Published var models: [WorkModelChoice] = []
+    /// Each agent's efforts, by provider ("claude", "codex", "ollama"), only when the server serves them; empty on an older
+    /// server, where no Effort is offered and none is sent.
+    @Published var efforts: [String: [WorkEffortChoice]] = [:]
     @Published var receipts: [WorkHandoffReceipt] = [] { didSet { receiptsEpoch &+= 1 } }
     private(set) var receiptsEpoch = 0
     @Published private(set) var drafts: [WorkHandoffDraft] = []
@@ -1287,6 +1290,7 @@ struct WorkRecommendationKey: Equatable {
             if Self.serverChanged(from: serverInstanceID, to: instance) { adviceUnavailable.removeAll() }
             serverInstanceID = instance
             models = try JSONDecoder().decode([WorkModelChoice].self, from: JSONEncoder().encode(catalog["models"] ?? .array([])))
+            efforts = (try? JSONDecoder().decode([String: [WorkEffortChoice]].self, from: JSONEncoder().encode(catalog["efforts"] ?? .object([:])))) ?? [:]
             await refreshActivity()
             if let activityError { throw failure(activityError) }
             // Preserve exact receipt-bound targets even if discovery has aged them out. 0.5.250: a listed session the live
@@ -1353,7 +1357,8 @@ struct WorkRecommendationKey: Equatable {
     /// `resendAllFiles` (0.5.254, "Send all N again"): a Continue or Fork carries every file on the card, not only new ones.
     func submit(source: WorkSource, mode: WorkHandoffMode, session: WorkSession?, model: WorkModelChoice?, prompt: String, attachmentIds: [String] = [],
                 journalPrompt: String? = nil, origin: WorkRequestOrigin? = nil, replacing: String? = nil, resendAllFiles: Bool = false, orchestrationRunID: String? = nil, intentID suppliedID: String? = nil, recovery: WorkIndependentRecovery? = nil,
-                contextFileIDs: Set<String>? = nil, sessionFence: Bool = false, threadSessionID: String? = nil, threadDigest: String? = nil) async {
+                contextFileIDs: Set<String>? = nil, sessionFence: Bool = false, threadSessionID: String? = nil, threadDigest: String? = nil,
+                effort: String? = nil) async {
         guard !busy else { return }
         if mode != .newSession, let line = KeyLanes.refusal(sessionID: session?.nativeID) { error = line; return }
         // 0.5.252: one send at a time. A send for the glasses does not take `busy` (the Agent workspace stays usable).
@@ -1504,6 +1509,8 @@ struct WorkRecommendationKey: Equatable {
                 if !attachmentIds.isEmpty { job["attachmentIds"] = Array(attachmentIds.prefix(5)) }
                 // 0.5.374: the COS thread's Ask continues the session its last Ask ran in (server 6.99.16 picks it).
                 if mode == .newSession, let threadSessionID { job["sessionId"] = threadSessionID }
+                // Reply in the message reader (D4): the chosen effort, only one the server served for this agent.
+                if mode == .newSession, let effort { job["effort"] = effort }
                 // A fresh thread Ask's carried summary goes as quoted reference data (server `reference`), so Messages shows
                 // only the question.
                 if mode == .newSession, let threadDigest { job["reference"] = ["query": DropItThreadCopy.referenceQuery, "response": threadDigest] }

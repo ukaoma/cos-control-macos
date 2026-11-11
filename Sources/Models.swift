@@ -13747,6 +13747,51 @@ struct TodayDismissals: Equatable {
 
 // MARK: - Activity Today home (plan v2, 2026-10-21)
 
+/// One of an agent's efforts as /api/models serves them (server step 2a), cleaned by the helper. Reply in the message reader.
+struct WorkEffortChoice: Codable, Equatable, Sendable {
+    let value: String
+    let label: String
+}
+
+/// Reply in the message reader (D4; Miles 2026-11-11 13:59, "We want parity there"): the Mac twin of Control Web's Reply
+/// block (server 6.99.12, web-control/panes/cos-chat.js replyHtml), in the web's own words. A reply is an Ask (the same
+/// Today Work run, POST /api/query-jobs) that continues the replied-to turn's conversation when it has one the server can
+/// take, and starts one when it does not; the answer lands in Messages with its own number.
+enum MessageReply {
+    static let title = "Reply"
+    static func label(no: Int?) -> String { no.map { "Reply to Message #\($0)" } ?? "Reply" }
+    static let continuesLine = "Continues this conversation. The answer lands in Messages with its own number."
+    static let startsLine = "Starts a conversation. The answer lands in Messages with its own number."
+    static func subline(sessionId: String) -> String { session(sessionId) == nil ? startsLine : continuesLine }
+    /// The turn's conversation, when it is one the helper will send (a server session id); otherwise the reply starts one.
+    static func session(_ sessionId: String) -> String? {
+        sessionId.range(of: "\\A[A-Za-z0-9-]{8,80}\\z", options: .regularExpression) != nil ? sessionId : nil
+    }
+    /// The Today Work run's target: one per reply, so two replies to one turn are two runs, and the guard counts each.
+    static func target(turnID: String, replyID: String) -> String { "cos:reply:" + String(turnID.prefix(80)) + ":" + replyID }
+    /// Per-Mac picks, under keys no older build reads.
+    static let modelKey = "cos.messageReply.model"
+    static let effortKey = "cos.messageReply.effort"
+    /// The server's efforts for this model's agent; empty when the server serves none (7.0.18), and then no Effort shows.
+    static func effortChoices(provider: String, efforts: [String: [WorkEffortChoice]]) -> [WorkEffortChoice] { efforts[provider] ?? [] }
+    /// Whether an effort may go with this model: only one the server served for that model's agent.
+    static func effortOffered(_ effort: String, provider: String, efforts: [String: [WorkEffortChoice]]) -> Bool {
+        effortChoices(provider: provider, efforts: efforts).contains { $0.value == effort }
+    }
+    /// Whether the reader offers Reply: a model Work can run exists (none is available while the server's durable query jobs
+    /// are off, which is when Control Web hides it too).
+    static func available(_ models: [(id: String, provider: String, available: Bool)]) -> Bool { TodayHome.pickRunModel(models) != nil }
+    /// The models a reply may run on: the ones a Today Work run may use (available, never Cursor, never Opus; the cost guard
+    /// in TodayHome.pickRunModel). Control Web's menu also lists Opus; the Mac keeps its Today runs' rule.
+    static func offered(_ models: [(id: String, provider: String, available: Bool)]) -> [Int] {
+        models.indices.filter { models[$0].available && models[$0].provider != "cursor" && !models[$0].id.lowercased().contains("opus") }
+    }
+    /// The model a reply runs on: the one picked while it is still offered, else the usual Work run pick.
+    static func modelIndex(picked: String?, models: [(id: String, provider: String, available: Bool)]) -> Int? {
+        picked.flatMap { id in offered(models).first { models[$0].id == id } } ?? TodayHome.pickRunModel(models)
+    }
+}
+
 /// The Activity window's Today home (PLAN_control_activity_home_v2_2026-10-21, direction A). Pure: every number the rail,
 /// the Needs you header, the brief, the cards and the tabs show comes from one function here, so Tests/ActivityTodayChecks
 /// executes each rule and pins that they agree. A source Control has not loaded is nil, never a made-up 0. Zero LLM: the

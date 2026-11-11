@@ -20837,7 +20837,8 @@ final class COSControlHelper {
         value.range(of: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", options: .regularExpression) != nil
     }
 
-    private func fetchWorkModels(token: String) throws -> (models: [[String: Any]], serverInstanceId: String?, maintenanceWorkflows: [String]) {
+    private func fetchWorkModels(token: String) throws -> (models: [[String: Any]], serverInstanceId: String?, maintenanceWorkflows: [String],
+                                                            efforts: [String: [[String: String]]]) {
         guard let health = request("/api/health", token: token, timeout: 15), health.status == 200,
               let healthBody = health.body,
               let catalog = request("/api/models", token: token, timeout: 20), catalog.status == 200,
@@ -20847,7 +20848,7 @@ final class COSControlHelper {
         let instance = catalogBody["serverInstanceId"] as? String
         return (Self.workModelCatalog(health: healthBody, catalog: catalogBody), instance.flatMap {
             $0.range(of: "^[A-Za-z0-9_-]{1,128}$", options: .regularExpression) != nil ? $0 : nil
-        }, Self.workMaintenanceWorkflows(catalogBody))
+        }, Self.workMaintenanceWorkflows(catalogBody), Self.workEfforts(catalogBody))
     }
 
     private func emitWorkModels() throws {
@@ -20855,6 +20856,8 @@ final class COSControlHelper {
         let catalog = try fetchWorkModels(token: readToken())
         var details: [String: Any] = ["models": catalog.models]
         if let instance = catalog.serverInstanceId { details["serverInstanceId"] = instance }
+        // Reply in the message reader (D4): each agent's efforts, only when the server serves them (7.0.27 and later).
+        if !catalog.efforts.isEmpty { details["efforts"] = catalog.efforts }
         emit(ok: true, message: "Configured models ready", details: details)
     }
 
@@ -20892,7 +20895,8 @@ final class COSControlHelper {
     }
 
     static func workNewPayload(clientJobId: String, query: String, model: String, messageEra: String,
-                               sessionName: String? = nil, maintenanceWorkflow: String? = nil, sessionId: String? = nil) -> [String: Any] {
+                               sessionName: String? = nil, maintenanceWorkflow: String? = nil, sessionId: String? = nil,
+                               effort: String? = nil) -> [String: Any] {
         // An unknown supplied session ID is NOT a request to create that ID.
         // The coordinator allocates and durably reuses the session for this
         // clientJobId/generation; inventing one causes session_identity_mismatch.
@@ -20906,7 +20910,37 @@ final class COSControlHelper {
         // always a session this server started, never an invented one; a stale one is refused by the server and the app retries
         // the Ask fresh.
         if let sessionId { payload["sessionId"] = sessionId }
+        // Reply in the message reader (D4): POST /api/query-jobs takes `effort` (EFFORT_OPTIONS); left out when none was chosen.
+        if let effort { payload["effort"] = effort }
         return payload
+    }
+
+    /// The efforts POST /api/query-jobs accepts (the server's EFFORT_OPTIONS). Anything else is refused here, never sent.
+    static let workEffortValues = ["high", "xhigh", "max", "ultracode"]
+    /// No key: none chosen (`.some(nil)`). A known value: that value. Anything else: nil, refused.
+    static func workEffort(_ value: Any?) -> String?? {
+        guard let value else { return .some(nil) }
+        guard let effort = value as? String, workEffortValues.contains(effort) else { return nil }
+        return .some(effort)
+    }
+    /// What /api/models says each agent's efforts are (server step 2a, `efforts.byAgent`), cleaned for the app: only the
+    /// four agents, only the values above, labels plain and short. An older server sends none, and the app shows no Effort.
+    static func workEfforts(_ catalog: [String: Any]) -> [String: [[String: String]]] {
+        guard let efforts = catalog["efforts"] as? [String: Any], let byAgent = efforts["byAgent"] as? [String: Any] else { return [:] }
+        var out: [String: [[String: String]]] = [:]
+        for agent in ["claude", "codex", "ollama", "cursor"] {
+            guard let rows = byAgent[agent] as? [[String: Any]] else { continue }
+            var seen = Set<String>()
+            let clean: [[String: String]] = rows.compactMap { row in
+                guard let value = row["value"] as? String, workEffortValues.contains(value), seen.insert(value).inserted else { return nil }
+                let raw = (row["label"] as? String) ?? value
+                let label = String(raw.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }.prefix(40).map(String.init).joined())
+                    .trimmingCharacters(in: .whitespaces)
+                return ["value": value, "label": label.isEmpty ? value : label]
+            }
+            if !clean.isEmpty { out[agent] = clean }
+        }
+        return out
     }
     /// 0.5.374: `{ query, response }`, a label of at most 200 characters and a summary of at most 6,000, both non-empty.
     static func workThreadReference(_ value: Any) -> [String: String]? {
@@ -21515,8 +21549,12 @@ final class COSControlHelper {
         guard let threadSession = Self.workThreadSessionID(body["sessionId"]), threadSession == nil || workflow == nil else {
             throw HelperError.message("sessionId must be a server session id")
         }
+        // Reply in the message reader (D4): the effort the person chose, only one of the server's own values.
+        guard let effort = Self.workEffort(body["effort"]), effort == nil || workflow == nil else {
+            throw HelperError.message("effort must be one of " + Self.workEffortValues.joined(separator: ", "))
+        }
         var payload = Self.workNewPayload(clientJobId: id, query: query, model: model, messageEra: era, sessionName: sessionName,
-                                          maintenanceWorkflow: workflow, sessionId: threadSession)
+                                          maintenanceWorkflow: workflow, sessionId: threadSession, effort: effort)
         // 0.5.374: a fresh COS thread Ask's carried summary, as the server's quoted reference data (never the words).
         if let raw = body["reference"] {
             guard workflow == nil, let reference = Self.workThreadReference(raw) else { throw HelperError.message("reference must be a short label and a summary") }
@@ -21709,6 +21747,24 @@ final class COSControlHelper {
               Self.workMessageEra(["era": "legacy"]) == "legacy",
               Self.workMessageEra(["era": "bad/era"]) == nil else {
             throw HelperError.message("Work model/admission contract self-test failed")
+        }
+        // Reply in the message reader (D4): effort only as one of the server's values, efforts passed through cleaned.
+        let withEffort = Self.workNewPayload(clientJobId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", query: "q", model: "sonnet",
+                                             messageEra: "era", sessionId: "s-turn-12345678", effort: "xhigh")
+        let served: [String: Any] = ["efforts": ["default": "high", "byAgent": [
+            "claude": [["value": "high", "label": "High", "runs": "high"], ["value": "xhigh", "label": "Extra High"],
+                       ["value": "turbo", "label": "Turbo"], ["value": "high", "label": "Again"]],
+            "codex": [["value": "max", "label": "Max\u{0007}"]], "cursor": [], "other": [["value": "high", "label": "x"]]]]]
+        let cleaned = Self.workEfforts(served)
+        guard withEffort["effort"] as? String == "xhigh", withEffort["sessionId"] as? String == "s-turn-12345678",
+              newPayload["effort"] == nil,
+              Self.workEffort(nil) == .some(nil), Self.workEffort("ultracode") == .some("ultracode"),
+              Self.workEffort("low") == nil, Self.workEffort("turbo") == nil, Self.workEffort(3) == nil,
+              cleaned["claude"]?.map { $0["value"] ?? "" } == ["high", "xhigh"],
+              cleaned["claude"]?.last?["label"] == "Extra High", cleaned["codex"]?.first?["label"] == "Max",
+              cleaned["cursor"] == nil, cleaned["other"] == nil, cleaned.count == 2,
+              Self.workEfforts([:]).isEmpty, Self.workEfforts(["efforts": ["byAgent": "x"]]).isEmpty else {
+            throw HelperError.message("Work effort contract self-test failed")
         }
         // 0.5.386: the orchestrator input's failure names the real cause and keeps the server's reason; never HTML or prose.
         guard Self.workOrchestratorInputFailure(status: 400, error: "invalid_snapshot", reason: "invalid_live_row")

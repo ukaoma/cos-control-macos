@@ -780,6 +780,8 @@ extension DropIt {
         var session: String?
         var threaded = false
         var recorded = false
+        /// Reply in the message reader (D4): the turn this Ask replies to, so the reader shows only its own replies.
+        var replyTo: String? = nil
         var finished: Bool { ["completed", "failed", "canceled", "refused"].contains(status) }
     }
     /// What the window reads back for an Ask (the Work receipt behind it).
@@ -1036,6 +1038,36 @@ final class DropItStore: ObservableObject {
             asks.append(made)
             // The files went with the words; their copies stay for the thumbnails under his bubble.
             if separateFiles == nil { attachments.removeAll { ids.contains($0.mediaId ?? "") } }
+            return true
+        case .refused(let reason):
+            line = reason
+            return false
+        }
+    }
+
+    /// Reply in the message reader (D4): an Ask with this store's files that continues `session` (the replied-to turn's
+    /// conversation) and never the COS thread. A session the server no longer takes: the same reply once more, fresh, so it is
+    /// never lost (as the chat's Ask does). True when it started.
+    @discardableResult
+    func reply(_ text: String, to turnID: String, session: String?) async -> Bool {
+        guard !asking, !sending else { return false }
+        if let block = DropIt.askBlock(text: text, files: attachments) { if !block.isEmpty { line = block }; return false }
+        guard let askJob else { line = DropIt.askHeldLine; return false }
+        asking = true
+        defer { asking = false }
+        line = nil
+        let words = text.replacingOccurrences(of: "\r\n", with: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let ids = DropIt.readyIDs(attachments)
+        let sent = attachments.filter { ids.contains($0.mediaId ?? "") }
+        let replyID = DropIt.newDropID()
+        var start = await askJob(MessageReply.target(turnID: turnID, replyID: replyID), words, ids, session, nil)
+        if case .refused = start, session != nil { start = await askJob(MessageReply.target(turnID: turnID, replyID: replyID + "-fresh"), words, ids, nil, nil) }
+        switch start {
+        case .started(let job):
+            var made = DropIt.Ask(id: job, words: words, files: sent.map { DropIt.Ask.File(name: $0.name, kind: $0.kind, thumb: $0.thumb) }, at: now())
+            made.replyTo = turnID
+            asks.append(made)
+            attachments.removeAll { ids.contains($0.mediaId ?? "") }
             return true
         case .refused(let reason):
             line = reason

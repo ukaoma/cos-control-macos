@@ -703,6 +703,17 @@ final class ControllerModel: ObservableObject {
         }
         return store
     }()
+    /// Reply in the message reader (D4): its own files and Asks, through the same helper and the same Today Work run as the COS
+    /// chat's Ask, so the chat's composer is never touched by a reply. Wired by the reader (wireMessageReply).
+    lazy var messageReply: DropItStore = {
+        let store = DropItStore()
+        store.stagingRoot = FileManager.default.temporaryDirectory.appendingPathComponent("cos-message-reply-attachments", isDirectory: true)
+        store.run = { [weak self] arguments, input in
+            guard let self else { throw HelperClientError.commandFailed("COS Control is closing.") }
+            return try await self.runHelper(arguments, timeout: 40, stdinData: input)
+        }
+        return store
+    }()
     /// 0.5.372 (server Drop it P2): COS reaching out. Banners from the server's outbox, the reminders' local backup and the
     /// P2 settings (DropItP2Store, Sources/DropItP2.swift). Runs only while `status.dropIt.available`.
     /// Wired in a method, not in the lazy initializer: its closures mix isolations, which Swift 6 refuses in an initializer.

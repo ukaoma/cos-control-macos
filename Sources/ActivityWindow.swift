@@ -662,6 +662,16 @@ struct ActivityWindow: View {
         return view
     }
 
+    /// Reply in the message reader (D4): one message open in Messages, on a fixture (Tests/MessageReplyRender.swift).
+    static func messageFixture(model: ControllerModel, handoff: WorkHandoffStore, turnID: String) -> ActivityWindow {
+        precondition(!model.backgroundWorkEnabled)
+        var view = ActivityWindow(model: model)
+        view._handoffStore = StateObject(wrappedValue: handoff)
+        view._section = State(initialValue: .messages)
+        view._selectedTurnID = State(initialValue: turnID)
+        return view
+    }
+
     /// Full Activity shell for the offscreen settings regression fixture.
     static func settingsFixture(model: ControllerModel) -> ActivityWindow {
         precondition(!model.backgroundWorkEnabled)
@@ -5909,6 +5919,9 @@ struct ActivityWindow: View {
                 messageBlock(label: "COS", text: turn.text, lensLists: true,
                              tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id)
                 attachmentStrip(attachments: turn.attachments.filter { !$0.isUserPhoto }, fallback: "From COS")
+                // Reply (D4; Miles 2026-11-11 13:59, parity with Control Web's reader): under the answer, inline, one per turn.
+                MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, onAppear: wireMessageReply)
+                    .id("reply:" + turn.id)
             }
             .padding(28)
             .frame(maxWidth: 820, alignment: .leading)
@@ -8744,7 +8757,7 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
     /// outlives this call by 20 seconds, so a caller that must know cannot read the note.
     @discardableResult
     func startRun(target: String, title: String, prompt: String, context: String, handoff: WorkHandoffStore, attachmentIds: [String] = [],
-                  threadSessionID: String? = nil, threadDigest: String? = nil) async -> Bool {
+                  threadSessionID: String? = nil, threadDigest: String? = nil, modelID: String? = nil, effort: String? = nil) async -> Bool {
         guard !runBusy else { return false }
         let guardrail = TodayRunGuard(defaults: .standard)
         let admission = guardrail.admission(target: target, inFlight: Self.inFlightTargets(handoff.receipts),
@@ -8763,14 +8776,18 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
         runBusy = true
         defer { runBusy = false }
         if handoff.models.isEmpty { await handoff.refresh() }
-        guard let index = TodayHome.pickRunModel(handoff.models.map { ($0.id, $0.provider, $0.available) }) else {
+        // Reply in the message reader (D4): the model the person chose while a Today run may use it, else the usual pick.
+        let choices = handoff.models.map { ($0.id, $0.provider, $0.available) }
+        guard let index = modelID == nil ? TodayHome.pickRunModel(choices) : MessageReply.modelIndex(picked: modelID, models: choices) else {
             runNote = "No model is available for a Work run. Open Work to start one."
             return false
         }
         let id = UUID().uuidString.lowercased()
         let source = WorkSource(id: target, title: title, revision: ActivityHome.dayKey(Date()), project: "today", context: context)
+        // An effort goes only with the model it was offered for (the server's efforts for that model's agent).
+        let sentEffort = effort.flatMap { e in MessageReply.effortOffered(e, provider: handoff.models[index].provider, efforts: handoff.efforts) ? e : nil }
         await handoff.submit(source: source, mode: .newSession, session: nil, model: handoff.models[index], prompt: prompt, attachmentIds: attachmentIds, intentID: id,
-                             threadSessionID: threadSessionID, threadDigest: threadDigest)
+                             threadSessionID: threadSessionID, threadDigest: threadDigest, effort: sentEffort)
         let receipt = handoff.receipts.first { $0.id == id }
         let outcome = TodayRunGuard.outcome(receiptStatus: receipt?.status, error: handoff.error)
         let before = guardrail.pausedUntil(now: Date())
@@ -11228,6 +11245,29 @@ extension ActivityWindow {
             }
             return out
         }
+    }
+
+    /// Reply in the message reader (D4): the same Today Work run as the COS chat's Ask, with the reply's model and effort as
+    /// picked in the block (read when it is sent), and the turn's session. A refusal is the run guard's own line.
+    var messageReplyAskJob: @MainActor (String, String, [String], String?, String?) async -> DropItStore.AskStart {
+        { [today, handoffStore] target, prompt, files, session, _ in
+            let defaults = UserDefaults.standard
+            let model = defaults.string(forKey: MessageReply.modelKey).flatMap { $0.isEmpty ? nil : $0 }
+            let effort = defaults.string(forKey: MessageReply.effortKey).flatMap { $0.isEmpty ? nil : $0 }
+            let accepted = await today.startRun(target: target, title: String(prompt.prefix(60)), prompt: prompt,
+                                                context: "Replied in Messages on \(TodayHome.headerDate(Date())).", handoff: handoffStore,
+                                                attachmentIds: files, threadSessionID: session, modelID: model, effort: effort)
+            guard accepted, let id = today.lastStartedRunID else { return .refused(today.runNote ?? DropIt.askHeldLine) }
+            return .started(id)
+        }
+    }
+
+    /// The reply store's run, read-back and file rules, wired when the reader shows a turn (the COS chat's are its own).
+    func wireMessageReply() {
+        model.messageReply.askJob = messageReplyAskJob
+        model.messageReply.askState = dropItAskState
+        model.messageReply.dropTakes = model.status.dropIt.attachments
+        model.messageReply.isSecret = { WorkCardFiles.looksSecret(name: $0) }
     }
 
     /// Everything the composer needs from the window: the Ask run, its read-back, the server's drop file limit and the
