@@ -1173,7 +1173,8 @@ struct ActivityWindow: View {
             let recorded = ActivityBackPath.record(backPath, old: old, new: new, goingBack: backMoving, pick: backPick)
             backPath = recorded.path
             backPick = recorded.pick
-            if old.section != new.section { backMoving = false }
+            // Back's own move has landed (one change per move): the next change is a step again.
+            backMoving = false
         }
         // 0.5.385: the Prep composer took a Start prep's words and files; that meeting's Today draft goes.
         .onReceive(model.meetingPrep.$carriedLaunch) { launch in if let launch { todayPrep.carried(launch: launch) } }
@@ -1283,7 +1284,68 @@ struct ActivityWindow: View {
         .background(COSPalette.card.opacity(0.72))
     }
 
-    private var breadcrumb: some View {
+    /// Miles's pick B (2026-11-12, the trail row): while Back would go along the recorded path, the bar shows the way here, each
+    /// earlier place a link back to it and this page last; otherwise the location, as before.
+    @ViewBuilder private var breadcrumb: some View {
+        let trail = backStep == nil ? [] : ActivityBackPath.trail(backPath, current: currentPlace, hasDetail: hasDetail)
+        if trail.isEmpty { locationCrumb } else { trailRow(trail) }
+    }
+
+    private func trailRow(_ trail: [ActivityPlace]) -> some View {
+        HStack(spacing: 6) {
+            ForEach(Array(ActivityBackPath.shortened(trail.count).enumerated()), id: \.offset) { position, index in
+                if position > 0 {
+                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
+                }
+                if let index, index == trail.count - 1 {
+                    Text(trailWord(trail[index], current: true)).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                } else if let index {
+                    let word = trailWord(trail[index], current: false)
+                    Button(word) { goBackAlongPath(to: index) }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11))
+                        .underline()
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help("Back to " + word)
+                        .accessibilityLabel("Back to " + word)
+                } else {
+                    Text("…").font(.system(size: 11)).foregroundStyle(.tertiary).accessibilityHidden(true)
+                }
+            }
+        }
+        .lineLimit(1)
+        .padding(.horizontal, 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("How you got here")
+    }
+
+    /// A place's word in the trail: this page by its title; an earlier one by what it was (provisional until W1's strings).
+    private func trailWord(_ place: ActivityPlace, current: Bool) -> String {
+        let target = place.section.flatMap(ActivitySection.init(rawValue:))
+        guard let target else { return todayEnabled && !isolatedWorkPreview ? "Today" : "Home" }
+        if current { return detailTitle ?? target.title }
+        if let id = place.turnID { return model.recentMessages.first { $0.id == id }?.no.map { "Message #\($0)" } ?? "Message" }
+        if let day = place.archiveDate { return day }
+        if let name = place.voiceName { return name }
+        if place.speakerSessionID != nil { return "Naming voices" }
+        if place.libraryRecordID != nil { return "Meeting" }
+        if place.sessionID != nil { return "Session" }
+        return target.title
+    }
+
+    /// A link in the trail: back to that place, dropping the steps after it.
+    private func goBackAlongPath(to index: Int) {
+        guard backPath.indices.contains(index) else { return }
+        let place = backPath[index].from
+        let placeBefore = currentPlace
+        backMoving = true
+        backPath = Array(backPath.prefix(index))
+        returnTo(place)
+        if currentPlace == placeBefore { backMoving = false }
+    }
+
+    private var locationCrumb: some View {
         HStack(spacing: 6) {
             Text("COS Control")
                 .font(COSType.body(11, weight: .semibold))
@@ -1491,11 +1553,13 @@ struct ActivityWindow: View {
         // Back by path: Back's own moves are not steps, and a parent-chain move across sections (a linked session back to
         // Work) also drops the step it undid.
         let sectionBefore = section
+        let placeBefore = currentPlace
         var tookStep = false
         backMoving = true
         defer {
-            if section == sectionBefore { backMoving = false }
-            else if !tookStep { backPath = ActivityBackPath.settle(backPath, before: sectionBefore?.rawValue, after: section?.rawValue) }
+            // Nothing moved: no change will arrive to clear the flag, so clear it here.
+            if currentPlace == placeBefore { backMoving = false }
+            if section != sectionBefore, !tookStep { backPath = ActivityBackPath.settle(backPath, before: sectionBefore?.rawValue, after: section?.rawValue) }
         }
         if let step = backStep {
             tookStep = true

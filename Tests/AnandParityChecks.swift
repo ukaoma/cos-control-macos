@@ -71,6 +71,13 @@ import Foundation
         let linked = [ActivityBackStep(from: P(section: "work"), to: P(section: "sessions", sessionID: "x"))]
         check(B.settle(linked, before: "sessions", after: "work").isEmpty && B.settle(linked, before: "sessions", after: "meetings") == linked
               && B.settle(linked, before: "sessions", after: "sessions") == linked, "a parent-chain move across sections drops only the step it undid")
+        // Miles's pick B: the trail reads the same steps; one line, shortened from the middle.
+        let twoSteps = rec(rec([], home, message), message, fromMessage)
+        check(B.trail(twoSteps, current: fromMessage, hasDetail: true) == [home, message, fromMessage], "the trail is the way here, this page last")
+        check(B.trail(twoSteps, current: P(section: "meetings", libraryRecordID: "other"), hasDetail: true).isEmpty, "no trail where Back keeps the parent chain")
+        check(B.trail([], current: message, hasDetail: true).isEmpty, "no trail without a path")
+        check(B.shortened(3) == [0, 1, 2] && B.shortened(4) == [0, 1, 2, 3], "a short trail shows every place")
+        check(B.shortened(7) == [0, nil, 5, 6], "a long trail keeps the first and the last two, shortened in the middle")
         let titles: (String) -> String? = { $0 == "speakers" ? "Speakers" : nil }
         check(B.word(ActivityBackStep(from: review, to: meeting), titles: titles, home: "Today") == "Speakers"
               && B.word(ActivityBackStep(from: home, to: message), titles: titles, home: "Today") == "Today", "Back names where it goes")

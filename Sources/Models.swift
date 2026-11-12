@@ -13864,6 +13864,21 @@ enum ActivityBackPath {
         return (Array((path + [ActivityBackStep(from: old, to: new)]).suffix(limit)), pick)
     }
 
+    /// Miles's pick B (2026-11-12, "the trail row"): the places a trail shows, oldest first, ending with `current`; empty when
+    /// Back would not go along the path (then the bar keeps its location text). It reads the same steps as Back, never a
+    /// second record.
+    static func trail(_ path: [ActivityBackStep], current: ActivityPlace, hasDetail: Bool) -> [ActivityPlace] {
+        guard step(path, current: current, hasDetail: hasDetail) != nil else { return [] }
+        return path.map(\.from) + [current]
+    }
+
+    /// One line that never wraps: when a trail has more than `room` places it keeps the first and the last `room - 2`, with
+    /// nil where the middle was shortened. The indices are into the trail.
+    static func shortened(_ count: Int, room: Int = 4) -> [Int?] {
+        guard count > room, room >= 3 else { return Array(0..<count).map { Optional($0) } }
+        return [0, nil] + Array((count - (room - 2))..<count).map { Optional($0) }
+    }
+
     /// Back's word for where it goes: the section's title, or `home` for the Activity home. One place, so a later pick of the
     /// breadcrumb design changes it once.
     static func word(_ step: ActivityBackStep, titles: (String) -> String?, home: String) -> String {
