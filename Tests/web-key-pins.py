@@ -177,7 +177,9 @@ need("if !state.anchorRegisteredHere && !state.foreignAnchor {" in anchor_view a
      "confirmed replace", "replacing another key runs only from its confirmation")
 
 # 7. GOTCOS theme: no stock toggles; a field is plain plus cosField.
-need("Toggle(" not in views or "COSCheckStyle()" in views, "theme", "a toggle here uses COSCheckStyle")
+toggle_styles = re.findall(r"\.toggleStyle\(([^()]*(?:\(\))?)\)", views)
+need(views.count("Toggle(") == len(toggle_styles) and all(s in ("COSCheckStyle()", "COSSwitchStyle()") for s in toggle_styles), "theme",
+     f"every toggle here uses a COS style (COSCheckStyle or COSSwitchStyle), never a stock one: {toggle_styles}")
 need(".textFieldStyle(.plain)" in views and ".cosField()" in views, "theme", "the code field is the COS field")
 
 # 8. Secrets: the app never reads the token or .env; the helper does.
@@ -275,6 +277,37 @@ need(views.count("state.signerTLSStoredLine") == 1 and anchor_view.count("if sta
      and refresh_fn.count(stored_set) == 1 and 0 <= refresh_fn.find(stored_set) < refresh_fn.find("if served == .bootstrap {")
      and clear_fn.count("signerTLSStoredLine = nil") == 1,
      "signer stored refusal wiring", "drawn once in the anchor section with authority on, set before the bootstrap return, cleared with the rest")
+
+# Option A (lead 2026-11-11 21:31): the phone approvals switch, Settings PK-02.
+# Full Settings only: never a basic row, and the mount asks hubRowDrawn (false in Basic) and the server floor.
+basic_block = catalog[catalog.index("static let basicIDs: Set<String> = ["):catalog.index("static let basicRange")]
+pk02_at = catalog.find('.init("PK-02"')
+need('"PK-02"' not in basic_block and catalog.index("static let extras: [SettingsHubItem] = [") < pk02_at < catalog.index("static let items: [SettingsHubItem] = [")
+     and re.search(r'\.init\("PK-02", "Turn on phone approvals", [^\n]*group: "glasses\.phone",\s*advanced: false, mount: \.group', catalog) is not None
+     and phone.count('if hubRowDrawn("PK-02"), PhoneApprovalsSwitch.shown(serverVersion: model.status.version) {') == 1
+     and phone.count('.settingsHubAnchor("PK-02")') == 1 and main_views.count("PhoneApprovalsSwitchRow(") == 1,
+     "phone switch full settings only", "PK-02 is an extras row in Phone and web, not in Basic, drawn only where hubRowDrawn and the server floor allow")
+# Off by default: the toggle never applies anything; only the two confirmations call setPhoneApprovals, and nothing else in
+# the helper writes the flag (one allowlist entry, then PhoneApprovalsCore's own constants).
+switch_view = body_of(views, views.index("struct PhoneApprovalsSwitchRow: View"))
+toggle_at = switch_view.find("Toggle(PhoneApprovalsSwitch.label")
+toggle_end = switch_view.find(".labelsHidden()", toggle_at)
+need(views.count("model.setPhoneApprovals(") == 2 and switch_view.count(".cosConfirm(") == 2 and 0 <= toggle_at < toggle_end
+     and "setPhoneApprovals" not in switch_view[toggle_at:toggle_end]
+     and helper.count('"COS_WEB_KEY_AUTHORITY"') == 1 and helper.count('"COS_WEB_KEY_DEVICES"') == 1
+     and pairing.count('static let authorityKey = "COS_WEB_KEY_AUTHORITY"') == 1,
+     "phone switch off by default", "the switch only opens a step; the confirmations apply it; no default writes the flag")
+# Off WRITES COS_WEB_KEY_AUTHORITY=0, and the helper applies exactly what PhoneApprovalsCore.environment says, on both paths.
+set_fn = body_of(helper, helper.index("private func setPhoneApprovals(_ arguments: [String]) throws"))
+need(pairing.count('case .off: return ([authorityKey: "0"], [devicesKey])') == 1
+     and set_fn.count("environment.set, removingKeys: environment.remove") == 2,
+     "phone switch off writes 0", "off sets the flag to 0 and removes only the phone list, through both apply paths")
+# The helper wiring: one verb under the mutation lock, the server floor, the proof after every apply path.
+need(helper.count('case "set-phone-approvals": try withMutationLock { try setPhoneApprovals(Array(args.dropFirst())) }') == 1
+     and set_fn.count("versionAtLeast($0, PhoneApprovalsCore.minimumServer)") == 1
+     and set_fn.count("versionAtLeast($0.version, PhoneApprovalsCore.minimumServer)") == 1 and set_fn.count("PhoneApprovalsCore.change(arguments)") == 1
+     and helper.count("PhoneApprovalsCore.change(fromEnvironment: values)") == 3 and helper.count("try requirePhoneApprovals(phoneApprovals)") == 3,
+     "phone switch wiring", "set-phone-approvals parses with PhoneApprovalsCore, checks the server floor, and proves the change on every apply path")
 # 0.5.390: the server's not-trusted reason codes live in ONE Swift list, WebKeySignerTLS.sentences (copied from the server's
 # SignerTlsReason; file and line in PK-C_report.md). No second table, the checks read the list, unknown codes fall back.
 sent_at = core.find("static let sentences: [String: String] = [")

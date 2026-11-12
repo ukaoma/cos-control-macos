@@ -152,6 +152,7 @@ struct WebKeyChecks {
         signerTLSTrust(fixtures: URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent("tls", isDirectory: true))
         signerTLSLine()
         reasonParity(g)
+        phoneApprovalsSwitch()
         await cancellation()
         await flow(pending: pending, anchorG: anchorG, anchorDER: anchorDER, anchorRaw: anchorRaw, selfDns: selfDns)
         await recoveryFlow(anchorRaw: anchorRaw, selfDns: selfDns)
@@ -519,6 +520,70 @@ struct WebKeyChecks {
         try? FileManager.default.createSymbolicLink(at: resource, withDestinationURL: elsewhere)
         check(WebKeyAssetsCore.bundleResource(executable: executable) == nil, "own bundle resource", "a resource symlink cannot escape the sealed bundle")
         try? FileManager.default.removeItem(at: dir)
+    }
+
+    /// Option A (lead 2026-11-11 21:31): the phone approvals switch, Settings PK-02. The helper's rules (PhoneApprovalsCore,
+    /// HelperSources/PairingCore.swift) and the app's (PhoneApprovalsSwitch, Sources/WebKeyCore.swift).
+    static func phoneApprovalsSwitch() {
+        let phone = "100.101.102.103"
+        // The helper's arguments: on with a tailnet IPv4, or off, and nothing else.
+        check(PhoneApprovalsCore.change(["on", phone]) == .on(device: phone) && PhoneApprovalsCore.change(["off"]) == .off,
+              "phone switch args", "on with this phone's tailnet address, or off")
+        for bad in [["on"], ["on", "192.168.1.20"], ["on", "100.128.0.1"], ["on", "100.64.0.1,100.64.0.2"], ["on", phone, "x"], ["off", phone], ["yes"], []] {
+            check(PhoneApprovalsCore.change(bad) == nil, "phone switch args", "refused: \(bad)")
+        }
+        // Off WRITES COS_WEB_KEY_AUTHORITY=0 (a removed key would let a .env line turn it back on); on sets both keys.
+        let on = PhoneApprovalsCore.environment(.on(device: phone)), off = PhoneApprovalsCore.environment(.off)
+        check(on.set == ["COS_WEB_KEY_AUTHORITY": "1", "COS_WEB_KEY_DEVICES": phone] && on.remove.isEmpty, "phone switch on", "on sets the flag and the one phone")
+        check(off.set == ["COS_WEB_KEY_AUTHORITY": "0"] && off.remove == ["COS_WEB_KEY_DEVICES"] && !off.remove.contains("COS_WEB_KEY_AUTHORITY"),
+              "phone switch off writes 0", "off writes the flag as 0 and removes only the phone list")
+        check(PhoneApprovalsCore.change(fromEnvironment: on.set) == .on(device: phone) && PhoneApprovalsCore.change(fromEnvironment: off.set) == .off
+              && PhoneApprovalsCore.change(fromEnvironment: ["COS_VIDEO_UPLOAD_V2": "1"]) == nil, "phone switch proof",
+              "both apply paths prove a phone approvals write, and only that")
+        // The restarted server's own status proves the change.
+        check(PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: ["enabled": true])
+              && PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: ["enabled": true, "mode": "authority"]), "phone switch proof", "on: 200 and enabled")
+        check(!PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: ["enabled": false, "mode": "bootstrap"])
+              && !PhoneApprovalsCore.proven(.on(device: phone), status: 404, body: nil)
+              && !PhoneApprovalsCore.proven(.on(device: phone), status: nil, body: nil)
+              && !PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: ["enabled": true, "mode": "bootstrap"]), "phone switch proof",
+              "on is not proven by bootstrap, a 404, no answer, or a contradiction")
+        check(PhoneApprovalsCore.proven(.off, status: 404, body: nil) && PhoneApprovalsCore.proven(.off, status: 200, body: ["enabled": false, "mode": "bootstrap"])
+              && !PhoneApprovalsCore.proven(.off, status: 200, body: ["enabled": true]), "phone switch proof", "off: anything but an enabled server")
+        // The app: only this account's iPhones with a tailnet address, by name.
+        let peers: [PhoneApprovalsSwitch.Peer] = [
+            .init(os: "iOS", dns: "zed-iphone.tail00000a.ts.net", ipv4: "100.64.0.12", sameUser: true),
+            .init(os: "iOS", dns: "amy-iphone.tail00000a.ts.net", ipv4: "100.64.0.11", sameUser: true),
+            .init(os: "iOS", dns: "guest-iphone.tail00000a.ts.net", ipv4: "100.64.0.13", sameUser: false),
+            .init(os: "macOS", dns: "example-mac.tail00000a.ts.net", ipv4: "100.64.0.10", sameUser: true),
+            .init(os: "iOS", dns: "no-v4.tail00000a.ts.net", ipv4: nil, sameUser: true),
+            .init(os: "iOS", dns: "odd.tail00000a.ts.net", ipv4: "192.168.1.9", sameUser: true),
+        ]
+        check(PhoneApprovalsSwitch.phones(peers) == [.init(name: "amy-iphone", ipv4: "100.64.0.11"), .init(name: "zed-iphone", ipv4: "100.64.0.12")],
+              "phone switch phones", "this account's iPhones with a tailnet IPv4, by name; never a guest's phone, a Mac or an odd address")
+        // Shown only for a server with the reopened phone approvals; the app and the helper agree on that server.
+        check(PhoneApprovalsSwitch.minimumServer == PhoneApprovalsCore.minimumServer, "phone switch server floor", "the app and the helper name the same server")
+        check(PhoneApprovalsSwitch.shown(serverVersion: PhoneApprovalsSwitch.minimumServer) && PhoneApprovalsSwitch.shown(serverVersion: "8.0.0")
+              && !PhoneApprovalsSwitch.shown(serverVersion: "7.0.28") && !PhoneApprovalsSwitch.shown(serverVersion: nil)
+              && !PhoneApprovalsSwitch.shown(serverVersion: "7.0") && !PhoneApprovalsSwitch.shown(serverVersion: "7.0.29-rc1"),
+              "phone switch server floor", "at or above the floor only; unknown or malformed versions hide the row")
+        // On is the server's own answer; bootstrap (registration only) and off read as off.
+        check(PhoneApprovalsSwitch.isOn(.authority) && !PhoneApprovalsSwitch.isOn(.bootstrap) && !PhoneApprovalsSwitch.isOn(.off),
+              "phone switch on reads the server", "only authority mode is on")
+        let amy = PhoneApprovalsSwitch.Phone(name: "amy-iphone", ipv4: "100.64.0.11")
+        check(PhoneApprovalsSwitch.arguments(on: true, phone: amy) == ["on", "100.64.0.11"] && PhoneApprovalsSwitch.arguments(on: false, phone: amy) == ["off"]
+              && PhoneApprovalsSwitch.arguments(on: true, phone: nil) == nil
+              && PhoneApprovalsSwitch.arguments(on: true, phone: .init(name: "x", ipv4: "192.168.1.9")) == nil,
+              "phone switch args", "on needs a phone on the tailnet; off takes nothing")
+        // The confirmation names the phone and says plainly that the Mac's name becomes public in certificate logs.
+        let message = PhoneApprovalsSwitch.confirmOnMessage(amy, macName: "example-mac.tail00000a.ts.net")
+        check(PhoneApprovalsSwitch.confirmOnTitle(amy).contains("amy-iphone") && message.contains("amy-iphone")
+              && message.contains("example-mac.tail00000a.ts.net") && message.contains("becomes public in certificate logs")
+              && message.contains("restarts the server"), "phone switch confirm", "the phone, the Mac's name, public certificate logs, the restart")
+        let copy = [PhoneApprovalsSwitch.confirmOnTitle(amy), message, PhoneApprovalsSwitch.confirmOnMessage(amy, macName: nil), PhoneApprovalsSwitch.confirmOffTitle,
+                    PhoneApprovalsSwitch.confirmOffMessage, PhoneApprovalsSwitch.label, PhoneApprovalsSwitch.detail, PhoneApprovalsSwitch.noPhone]
+        check(copy.allSatisfy { !$0.isEmpty && !$0.contains("—") && !$0.contains("COS_") }, "phone switch confirm", "plain copy: no em dash, no variable names")
+        check(PhoneApprovalsSwitch.detail.hasPrefix("Off unless you turn it on."), "phone switch off by default", "the row says it is off by default")
     }
 
     /// SR-11 (2026-11-11): golden.json's signerTlsReasons, written by gen_control_golden.mts from the SERVER's own

@@ -79,6 +79,80 @@ private struct WebKeyLine: View {
     }
 }
 
+/// Option A (lead 2026-11-11 21:31): Settings PK-02, "Turn on phone approvals", in full Settings only (never Basic; the
+/// mount checks hubRowDrawn and PK-02 is not a basic row). Off by default: the toggle itself never applies anything.
+/// Turning it on shows this account's iPhones (Tailscale) and a confirmation that names the phone and says the Mac's name
+/// becomes public in certificate logs; turning it off asks too. Either way the helper restarts the server through the
+/// managed path, and the Phone approvals block below shows the amber certificate line until the certificate is ready.
+struct PhoneApprovalsSwitchRow: View {
+    @ObservedObject var model: ControllerModel
+    @ObservedObject var state: WebKeyState
+    @ObservedObject var pairing: GlassesPairingState
+    @State private var choosing = false
+    @State private var picked: PhoneApprovalsSwitch.Phone?
+    @State private var confirmOn = false
+    @State private var confirmOff = false
+
+    private var on: Bool { PhoneApprovalsSwitch.isOn(state.mode) }
+    private var phones: [PhoneApprovalsSwitch.Phone] {
+        PhoneApprovalsSwitch.phones((pairing.tailscale?.peers ?? []).map {
+            PhoneApprovalsSwitch.Peer(os: $0.os, dns: $0.dns, ipv4: $0.ipv4, sameUser: $0.sameUser)
+        })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(PhoneApprovalsSwitch.label).font(COSType.body(13.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
+                    Text(PhoneApprovalsSwitch.detail).font(COSType.body(12)).foregroundStyle(TodayInk.sub).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                // The switch only opens a step: on asks for a phone, off asks to confirm. It never applies by itself.
+                Toggle(PhoneApprovalsSwitch.label, isOn: Binding(get: { on || choosing }, set: { wanted in
+                    if wanted, !on {
+                        choosing = true
+                        Task { await pairing.refreshTailscale() }
+                    } else if !wanted, on {
+                        confirmOff = true
+                    } else if !wanted {
+                        choosing = false; picked = nil
+                    }
+                }))
+                .labelsHidden().toggleStyle(COSSwitchStyle()).disabled(model.busy)
+            }
+            if choosing && !on {
+                if phones.isEmpty {
+                    Text(PhoneApprovalsSwitch.noPhone).font(COSType.body(12)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Picker("Phone", selection: $picked) {
+                        Text("Choose a phone").tag(PhoneApprovalsSwitch.Phone?.none)
+                        ForEach(phones, id: \.self) { phone in Text(phone.name).tag(Optional(phone)) }
+                    }
+                    .frame(maxWidth: 280, alignment: .leading)
+                    Button(PhoneApprovalsSwitch.confirmOn) { confirmOn = true }
+                        .buttonStyle(TodayButtonStyle(small: true)).disabled(picked == nil || model.busy)
+                }
+            }
+            if model.busy, let progress = model.operationProgress {
+                Text(progress).font(COSType.body(12)).foregroundStyle(TodayInk.sub).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cosConfirm(picked.map(PhoneApprovalsSwitch.confirmOnTitle) ?? PhoneApprovalsSwitch.label, isPresented: $confirmOn,
+            message: picked.map { PhoneApprovalsSwitch.confirmOnMessage($0, macName: pairing.tailscale?.selfDNS) } ?? "",
+            actions: [.normal(PhoneApprovalsSwitch.confirmOn) { model.setPhoneApprovals(on: true, phone: picked) }, .cancel()])
+        .cosConfirm(PhoneApprovalsSwitch.confirmOffTitle, isPresented: $confirmOff, message: PhoneApprovalsSwitch.confirmOffMessage,
+            actions: [.destructive(PhoneApprovalsSwitch.confirmOff) { model.setPhoneApprovals(on: false, phone: nil) }, .cancel()])
+        // After the helper's restart (or any other operation): read the server again, so On and the amber line follow it.
+        .onChange(of: model.busy) { _, busy in
+            guard !busy else { return }
+            choosing = false; picked = nil
+            Task { await state.refresh() }
+        }
+    }
+}
+
 private struct WebKeyAnchorSection: View {
     @ObservedObject var state: WebKeyState
     @State private var confirmReset = false

@@ -569,3 +569,67 @@ enum SignerTLSCore {
         return (accepted, accepted ? "ok" : "SecTrust: " + (error.map { CFErrorCopyDescription($0) as String } ?? "no error"))
     }
 }
+
+// MARK: - The phone approvals switch (option A, lead 2026-11-11 21:31)
+
+/// `cos-control-helper set-phone-approvals on <tailnet IPv4> | off`: the Settings switch (PK-02) turns phone approvals on
+/// for one named phone, or off, through the managed provider environment (allowlist, drain lease, restart, proof,
+/// rollback), never by a session editing ~/.cos-glasses/.env. Pure rules here; HelperSources/main.swift runs them.
+///
+/// Off WRITES COS_WEB_KEY_AUTHORITY=0. The server loads ~/.cos-glasses/.env only for keys the LaunchAgent did not set
+/// (server/env.ts), so removing the key would let a hand-written .env line turn phone approvals back on.
+enum PhoneApprovalsCore {
+    static let authorityKey = "COS_WEB_KEY_AUTHORITY"
+    static let devicesKey = "COS_WEB_KEY_DEVICES"
+    /// The first server with the reopened phone approvals (SR-01 to SR-12). The integrator sets it to the integrated
+    /// server's version; PhoneApprovalsSwitch.minimumServer (Sources/WebKeyCore.swift) must equal it (a check holds both).
+    static let minimumServer = "7.0.29"
+
+    enum Change: Equatable, Sendable {
+        case on(device: String)
+        case off
+    }
+
+    /// `on <IPv4 in 100.64.0.0/10>` or `off`, and nothing else: no list, no name, no other address.
+    static func change(_ arguments: [String]) -> Change? {
+        switch arguments.count {
+        case 1 where arguments[0] == "off": return .off
+        case 2 where arguments[0] == "on":
+            let device = arguments[1]
+            return TailscaleCore.isTailnet(device) ? .on(device: device) : nil
+        default: return nil
+        }
+    }
+
+    /// The provider environment to set and the keys to remove. Off writes "0" and only removes the devices list.
+    static func environment(_ change: Change) -> (set: [String: String], remove: Set<String>) {
+        switch change {
+        case .on(let device): return ([authorityKey: "1", devicesKey: device], [])
+        case .off: return ([authorityKey: "0"], [devicesKey])
+        }
+    }
+
+    /// The restarted server proves the change through GET /api/web-key/status. On: 200, enabled true, authority mode
+    /// (mode absent or "authority"). The origin is not required: a boot-time miss of the tailnet name is refreshed later
+    /// (S1), and the Phone approvals line says so. Off: anything but an enabled authority answer (no route is a 404).
+    static func proven(_ change: Change, status: Int?, body: [String: Any]?) -> Bool {
+        let enabled = status == 200 && body?["enabled"] as? Bool == true
+        let mode = body?["mode"]
+        let authority = enabled && (mode == nil || mode as? String == "authority")
+        switch change {
+        case .on: return authority
+        case .off: return !enabled
+        }
+    }
+
+    /// The change a provider-environment write makes, so both apply paths run requirePhoneApprovals after the restart.
+    static func change(fromEnvironment values: [String: String]) -> Change? {
+        switch values[authorityKey] {
+        case "1"?: return values[devicesKey].map { .on(device: $0) }
+        case "0"?: return .off
+        default: return nil
+        }
+    }
+
+    static let usage = "Use set-phone-approvals on <this phone's Tailscale IPv4 address>, or set-phone-approvals off."
+}

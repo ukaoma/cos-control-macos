@@ -437,6 +437,88 @@ enum WebKeySignerTLS {
     }
 }
 
+// MARK: - The phone approvals switch (option A, lead 2026-11-11 21:31)
+
+/// Settings PK-02, in full Settings only (never Basic): off by default; turning it on picks one of this account's iPhones
+/// from Tailscale and asks for a confirmation that names the phone and says the Mac's name becomes public in certificate
+/// logs. The helper verb `set-phone-approvals` applies it through the managed provider environment (PhoneApprovalsCore,
+/// HelperSources/PairingCore.swift). Whether it is on is read from the server's own status (WebKeyServerMode).
+enum PhoneApprovalsSwitch {
+    /// The first server with the reopened phone approvals; PhoneApprovalsCore.minimumServer must equal it (a check).
+    static let minimumServer = "7.0.29"
+
+    struct Peer: Equatable, Sendable {
+        var os: String
+        var dns: String
+        var ipv4: String?
+        var sameUser: Bool
+    }
+
+    struct Phone: Hashable, Sendable {
+        let name: String
+        let ipv4: String
+    }
+
+    /// This account's iPhones with a Tailscale IPv4, by name. Another account's phone, an iPad or a Mac is never offered.
+    static func phones(_ peers: [Peer]) -> [Phone] {
+        peers.compactMap { peer -> Phone? in
+            guard peer.os == "iOS", peer.sameUser, let ipv4 = peer.ipv4, isTailnetIPv4(ipv4) else { return nil }
+            let name = String(peer.dns.split(separator: ".").first ?? Substring(peer.dns))
+            return name.isEmpty ? nil : Phone(name: name, ipv4: ipv4)
+        }
+        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// 100.64.0.0/10, written plainly (the app does not compile the helper's TailscaleCore).
+    static func isTailnetIPv4(_ value: String) -> Bool {
+        let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return false }
+        let octets = parts.compactMap { part -> Int? in
+            guard !part.isEmpty, part.count <= 3, part.allSatisfy({ $0.isASCII && $0.isNumber }), !(part.count > 1 && part.first == "0") else { return nil }
+            return Int(part).flatMap { $0 <= 255 ? $0 : nil }
+        }
+        return octets.count == 4 && octets[0] == 100 && (64...127).contains(octets[1])
+    }
+
+    /// The row draws only for a server new enough to have the reopened phone approvals.
+    static func shown(serverVersion: String?) -> Bool {
+        guard let version = serverVersion.flatMap(numbers), let floor = numbers(minimumServer) else { return false }
+        return version.lexicographicallyPrecedes(floor) == false
+    }
+
+    private static func numbers(_ version: String) -> [Int]? {
+        let parts = version.split(separator: ".").map { Int($0) }
+        guard parts.count == 3, parts.allSatisfy({ $0 != nil }) else { return nil }
+        return parts.compactMap { $0 }
+    }
+
+    /// On means the server serves phone approvals now. Bootstrap (registration only) and off read as off.
+    static func isOn(_ mode: WebKeyServerMode) -> Bool { mode == .authority }
+
+    /// The helper's arguments: on needs a phone; off takes none.
+    static func arguments(on: Bool, phone: Phone?) -> [String]? {
+        if !on { return ["off"] }
+        guard let phone, isTailnetIPv4(phone.ipv4) else { return nil }
+        return ["on", phone.ipv4]
+    }
+
+    // Copy. Plain sentences, no em dashes (Tests/web-key-pins.py).
+    static func confirmOnTitle(_ phone: Phone) -> String { "Turn on phone approvals for \(phone.name)?" }
+    static func confirmOnMessage(_ phone: Phone, macName: String?) -> String {
+        let mac = macName.map { "Your Mac's Tailscale name, \($0)," } ?? "Your Mac's Tailscale name"
+        return "\(phone.name) can then approve agent actions with its passkey and Face ID, after you enroll it here with Touch ID. "
+            + "\(mac) becomes public in certificate logs when its first certificate is issued, and stays public. "
+            + "COS restarts the server to turn this on."
+    }
+    static let confirmOn = "Turn on and restart"
+    static let confirmOffTitle = "Turn off phone approvals?"
+    static let confirmOffMessage = "COS restarts the server with phone approvals off. Enrolled phones stay listed until you revoke them, and none can approve while this is off."
+    static let confirmOff = "Turn off and restart"
+    static let label = "Turn on phone approvals"
+    static let detail = "Off unless you turn it on. Lets one of your iPhones approve agent actions. Restarts the server."
+    static let noPhone = "No iPhone on your Tailscale account yet. Sign in to Tailscale on the phone, then check again."
+}
+
 // MARK: - The listener audit (review W9)
 
 /// Whether the server Control talks to also owns the signer ports, on every address: one PID, under the COS LaunchAgent,

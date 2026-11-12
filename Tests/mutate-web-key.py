@@ -15,6 +15,7 @@ LANE = "zsh Tests/run-web-key.sh"
 C, V, P = "Sources/WebKeyCore.swift", "Sources/WebKeyViews.swift", "HelperSources/PairingCore.swift"
 H, T = "HelperSources/main.swift", "Tests/WebKeyChecks.swift"
 G = "Tests/fixtures/web-key/golden.json"
+K = "Sources/SettingsHubCatalog.swift"
 
 
 def sh(cmd):
@@ -223,6 +224,34 @@ mutants = [
      'let code = tls["storedRefusal"] as? String, !code.isEmpty else { return nil }', "[signer stored refusal]"),
     ("TLS-45 the view draws it without authority (pins)", V, "if state.authority, let stored = state.signerTLSStoredLine {", "if let stored = state.signerTLSStoredLine {",
      "[signer stored refusal wiring]"),
+    # Option A (lead 2026-11-11 21:31): the phone approvals switch, Settings PK-02. One per guard.
+    ("PA-1 a non-tailnet address turns it on", P, "return TailscaleCore.isTailnet(device) ? .on(device: device) : nil", "return .on(device: device)", "[phone switch args]"),
+    ("PA-2 off removes the flag instead of writing 0", P, 'case .off: return ([authorityKey: "0"], [devicesKey])', "case .off: return ([:], [authorityKey, devicesKey])",
+     "[phone switch off writes 0]"),
+    ("PA-3 on is proven by a server that is not on", P, "        case .on: return authority\n", "        case .on: return true\n", "[phone switch proof]"),
+    ("PA-4 off is proven by a server that is still on", P, "        case .off: return !enabled\n", "        case .off: return true\n", "[phone switch proof]"),
+    ("PA-5 the app sends on with an address off the tailnet", C, "guard let phone, isTailnetIPv4(phone.ipv4) else { return nil }", "guard let phone else { return nil }",
+     "[phone switch args]"),
+    ("PA-6 the server floor is ignored", C, "return version.lexicographicallyPrecedes(floor) == false", "return true", "[phone switch server floor]"),
+    ("PA-7 another account's phone is offered", C, 'guard peer.os == "iOS", peer.sameUser, let ipv4 = peer.ipv4,', 'guard peer.os == "iOS", let ipv4 = peer.ipv4,',
+     "[phone switch phones]"),
+    ("PA-8 registration-only reads as on", C, "static func isOn(_ mode: WebKeyServerMode) -> Bool { mode == .authority }",
+     "static func isOn(_ mode: WebKeyServerMode) -> Bool { mode != .off }", "[phone switch on reads the server]"),
+    ("PA-9 the switch in Basic (pins)", K, '"SG-02", "SG-11", "SG-12", "SG-13", "UT-29", "PK-01", "WB-01", "UT-10",',
+     '"SG-02", "SG-11", "SG-12", "SG-13", "UT-29", "PK-01", "PK-02", "WB-01", "UT-10",', "[phone switch full settings only]"),
+    ("PA-10 the toggle applies by itself (pins)", V, "                    if wanted, !on {\n                        choosing = true\n",
+     "                    if wanted, !on {\n                        model.setPhoneApprovals(on: true, phone: phones.first)\n                        choosing = true\n",
+     "[phone switch off by default]"),
+    ("PA-11 the helper skips the server floor (pins)", H,
+     "guard runningVersion.map({ versionAtLeast($0, PhoneApprovalsCore.minimumServer) }) == true || stoppedCompatibleManagedServer else {",
+     "guard true || stoppedCompatibleManagedServer else {", "[phone switch wiring]"),
+    ("PA-12 no proof after an in-place restart (pins)", H,
+     "            if let phoneApprovals = PhoneApprovalsCore.change(fromEnvironment: values) {\n                try requirePhoneApprovals(phoneApprovals)\n            }\n", "",
+     "[phone switch wiring]"),
+    ("PA-13 the app and the helper name different servers", C, 'static let minimumServer = "7.0.29"\n\n    struct Peer', 'static let minimumServer = "7.0.28"\n\n    struct Peer',
+     "[phone switch server floor]"),
+    ("PA-14 the confirm drops the certificate-log sentence", C,
+     '+ "\\(mac) becomes public in certificate logs when its first certificate is issued, and stays public. "', '+ ""', "[phone switch confirm]"),
 ]
 
 only = [part for part in os.environ.get("MUTATE_ONLY", "").split("|") if part]
@@ -246,7 +275,7 @@ if code != 0 or "web key pins: all passed" not in out:
     print(f"BASELINE RED:\n{out[-3000:]}")
     sys.exit(1)
 print("baseline: green (" + [l for l in out.splitlines() if "web key checks:" in l][-1] + ", pins all passed)", flush=True)
-files = (C, V, P, H, T, G)
+files = (C, V, P, H, T, G, K)
 before = {f: (root / f).read_text() for f in files}
 results = []
 for name, path, old, new, expect in mutants:
