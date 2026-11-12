@@ -9,6 +9,9 @@ const reg = await import(join(root, 'server/lib/web-key-registry.ts'))
 const kit = await import(join(root, 'server/lib/__fixtures__/web-key-kit.ts'))
 const env = await import(join(root, 'server/lib/web-key-envelope.ts'))
 const shared = await import(join(root, 'shared/web-turn-envelope.ts'))
+// SR-11 (2026-11-11): the server's signer-certificate reason list, so Control's sentences cannot drift from it.
+const signerTls = await import(join(root, 'server/lib/web-key-signer-tls.ts'))
+if (!Array.isArray(signerTls.SIGNER_TLS_REASONS) || signerTls.SIGNER_TLS_REASONS.length === 0) throw new Error('server has no SIGNER_TLS_REASONS array')
 const { WebKeyRegistry, WebKeyEnrollments, audOf, sasOf } = reg
 const { p256, signB64, signJcs, SELF_DNS, ORIGIN, passkeyOf, credentialIdOf, passkeyAssertion, coseOf, anchorRegistrationBody, anchoredEntry, seedRegistry } = kit
 const dir = mkdtempSync(join(tmpdir(), 'ctl-golden-'))
@@ -47,8 +50,9 @@ const registry2 = new WebKeyRegistry(file2, join(dir, 'audit2.jsonl'), () => clo
 clock += 1000; registry2.revoke(k2.kid, 'lost', 'token')
 clock += 1000; registry2.revoke(k1.kid, 'lost', 'web')
 const out = {
-  generatedBy: 'gen_control_golden.mts (cos-glasses-server 6.99.31 worktree code)',
+  generatedBy: `gen_control_golden.mts (cos-glasses-server code at ${process.env.COS_GOLDEN_SERVER_COMMIT ?? 'an unrecorded commit'})`,
   selfDns: SELF_DNS,
+  signerTlsReasons: [...signerTls.SIGNER_TLS_REASONS],
   anchor: { spki: anchor.spki, d: anchorD, spkiSha256: env.sha256Hex(anchor.der), fingerprint: env.fingerprintOfSpki(anchor.der), kid: env.kidOfSpki(anchor.der),
             aud: audOf(anchor.der, SELF_DNS), statement: body.statement, createdAt: 1_786_000_000_000, registered: registered.ok },
   pending: view,

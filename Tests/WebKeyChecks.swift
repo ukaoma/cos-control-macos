@@ -151,6 +151,7 @@ struct WebKeyChecks {
         assets()
         signerTLSTrust(fixtures: URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent("tls", isDirectory: true))
         signerTLSLine()
+        reasonParity(g)
         await cancellation()
         await flow(pending: pending, anchorG: anchorG, anchorDER: anchorDER, anchorRaw: anchorRaw, selfDns: selfDns)
         await recoveryFlow(anchorRaw: anchorRaw, selfDns: selfDns)
@@ -518,6 +519,15 @@ struct WebKeyChecks {
         try? FileManager.default.createSymbolicLink(at: resource, withDestinationURL: elsewhere)
         check(WebKeyAssetsCore.bundleResource(executable: executable) == nil, "own bundle resource", "a resource symlink cannot escape the sealed bundle")
         try? FileManager.default.removeItem(at: dir)
+    }
+
+    /// SR-11 (2026-11-11): golden.json's signerTlsReasons, written by gen_control_golden.mts from the SERVER's own
+    /// SIGNER_TLS_REASONS, equal Control's sentence keys plus "ok" (which never gets a sentence: it means trusted).
+    static func reasonParity(_ g: [String: Any]) {
+        let server = g["signerTlsReasons"] as? [String] ?? []
+        let control = Set(WebKeySignerTLS.sentences.keys).union(["ok"])
+        check(!server.isEmpty && server.count == Set(server).count && Set(server) == control, "signer reasons match the server",
+              "the server's list \(server.sorted()) equals Control's sentences plus ok \(control.sorted())")
     }
 
     /// 0.5.390: the server's `signerTls` (server 7.0.20, web-key-signer-tls.ts SignerTlsStatus) drives one plain line.

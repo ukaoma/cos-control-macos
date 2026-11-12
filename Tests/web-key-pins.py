@@ -288,6 +288,11 @@ need("sentences[$0]" in line_fn and line_fn.count("?? fallback") == 1 and "switc
 checks_src = code("Tests/WebKeyChecks.swift")
 need(checks_src.count("let reasons = Array(WebKeySignerTLS.sentences.keys)") == 1 and 'line("made_up_reason_7020") == WebKeySignerTLS.fallback' in checks_src,
      "signer reasons one list", "the checks read the codes from the list, never a copy, and try a made-up code")
+# SR-11 (2026-11-11): golden.json carries the SERVER's reason list, written by the generator from the server module.
+gen = (root / "Tests/fixtures/web-key/gen_control_golden.mts").read_text(encoding="utf-8")
+need(checks_src.count("        reasonParity(g)\n") == 1 and "signerTlsReasons: [...signerTls.SIGNER_TLS_REASONS]," in gen
+     and "server/lib/web-key-signer-tls.ts" in gen,
+     "signer reasons match the server", "the generator writes the server's SIGNER_TLS_REASONS into golden.json and the checks compare it")
 need("tail38457f" not in checks_src and "ukaoma" not in checks_src.lower(),
      "no private names in tests", "this repo is public: no real tailnet or Mac name in the checks")
 # SR-12 (reopen): the same for every text fixture of this lane, golden.json included.
