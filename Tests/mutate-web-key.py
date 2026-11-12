@@ -303,6 +303,9 @@ mutants = [
      "[revoke needs no anchor]"),
     ("PA-30 the page drops PK-02's confirm (pins)", MV, "    var body: some View {\n        panelWithPhoneConfirm\n", "    var body: some View {\n        panelWithServerConfirm\n",
      "[phone confirm at the page]"),
+    # S1's finding 5: the server's new reason stored_readable has its own plain sentence (parity with golden.json).
+    ("SR-13 stored_readable has no sentence", C, '        "stored_readable": "COS did not use the certificate files in its folder: other users can read the key.",\n', "",
+     "[signer reasons match the server]"),
     ("PA-29 a phone's Revoke waits for work (pins)", V, "Button(WebKeyCopy.revoke) { Task { await state.revoke(row.kid) } }",
      "Button(WebKeyCopy.revoke) { if PhoneApprovalsSwitch.applyAllowed(locked: false, workActive: false) { Task { await state.revoke(row.kid) } } }",
      "[devices revoke is live]"),

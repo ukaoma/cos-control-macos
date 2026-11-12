@@ -424,6 +424,8 @@ enum WebKeySignerTLS {
         "stored_owner": "COS did not use the certificate files in its folder: they belong to another user.",
         "stored_writable": "COS did not use the certificate files in its folder: other users can change them.",
         "stored_too_large": "COS did not use the certificate files in its folder: one of them is too large.",
+        // S1's finding 5 (76f50e1): the stored key or its folder can be read by other users.
+        "stored_readable": "COS did not use the certificate files in its folder: other users can read the key.",
     ]
     static let fallback = "Your phone's secure connection to this Mac is not ready yet."
 
