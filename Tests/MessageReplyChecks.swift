@@ -5,7 +5,7 @@ import Foundation
 /// replyHtml), the session rule, the model pick, the effort gate, and the reply store's run (DropItStore.reply) against a
 /// stand-in Ask job. Compiled with Sources/DropIt.swift and Sources/Models.swift alone (Tests/run-message-reply.sh).
 @main struct MessageReplyChecks {
-    static var failures = 0
+    nonisolated(unsafe) static var failures = 0
     static func check(_ ok: Bool, _ label: String) { if !ok { failures += 1; print("FAIL: \(label)") } }
 
     static func checkWords() {
