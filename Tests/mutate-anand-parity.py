@@ -38,7 +38,7 @@ MUTANTS = [
     ("never-shortened", "words", M, "        guard count > room, room >= 3 else {", "        guard true else {",
      "check failed [a short trail shows every place]"),
     ("middle-kept", "words", M, "        return [0, nil] + Array((count - (room - 2))..<count).map { Optional($0) }", "        return Array(0..<count).map { Optional($0) }",
-     "check failed [a long trail keeps the first and the last two]"),
+     "check failed [a long trail keeps the first and the last two, shortened in the middle]"),
     ("trail-hidden", "pins", W, "        if trail.isEmpty { locationCrumb } else { trailRow(trail) }", "        locationCrumb",
      "[trail] the trail shows only while Back goes along the path"),
     ("trail-link-dead", "pins", W, "Button(word) { goBackAlongPath(to: index) }", "Button(word) { }", "[trail] earlier places are links"),
