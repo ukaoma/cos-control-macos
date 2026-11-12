@@ -16,6 +16,9 @@ C, V, P = "Sources/WebKeyCore.swift", "Sources/WebKeyViews.swift", "HelperSource
 H, T = "HelperSources/main.swift", "Tests/WebKeyChecks.swift"
 G = "Tests/fixtures/web-key/golden.json"
 K = "Sources/SettingsHubCatalog.swift"
+R = "Tests/fixtures/web-key/tls/README.md"
+MV = "Sources/Views.swift"
+RN = "Tests/PhoneApprovalsRender.swift"
 
 
 def sh(cmd):
@@ -224,6 +227,9 @@ mutants = [
      'let code = tls["storedRefusal"] as? String, !code.isEmpty else { return nil }', "[signer stored refusal]"),
     ("TLS-45 the view draws it without authority (pins)", V, "if state.authority, let stored = state.signerTLSStoredLine {", "if let stored = state.signerTLSStoredLine {",
      "[signer stored refusal wiring]"),
+    # SR-12: a real-looking tailnet name in a fixture the checks never read, so only the pin can see it. The name is made up.
+    ("TLS-46 a tailnet name in a fixture (pins)", R, "# Signer audit TLS fixtures (0.5.390)\n", "# Signer audit TLS fixtures (0.5.390), from cos-mac.tail1b2c3d.ts.net\n",
+     "[no private names in tests]"),
     # Option A (lead 2026-11-11 21:31): the phone approvals switch, Settings PK-02. One per guard.
     ("PA-1 a non-tailnet address turns it on", P, "return TailscaleCore.isTailnet(device) ? .on(device: device) : nil", "return .on(device: device)", "[phone switch args]"),
     ("PA-2 off removes the flag instead of writing 0", P, 'case .off: return ([authorityKey: "0"], [devicesKey])', "case .off: return ([:], [authorityKey, devicesKey])",
@@ -252,6 +258,20 @@ mutants = [
      "[phone switch server floor]"),
     ("PA-14 the confirm drops the certificate-log sentence", C,
      '+ "\\(mac) becomes public in certificate logs when its first certificate is issued, and stays public. "', '+ ""', "[phone switch confirm]"),
+    # Like the nine restart rows: never live while work runs.
+    ("PA-15 the switch applies while work runs", C, "static func applyAllowed(locked: Bool, workActive: Bool) -> Bool { !locked && !workActive }",
+     "static func applyAllowed(locked: Bool, workActive: Bool) -> Bool { !locked }", "[phone switch waits for work]"),
+    ("PA-16 the turn-on confirm skips the work check (pins)", V,
+     "if PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active) { model.setPhoneApprovals(on: true, phone: picked) } else { held = true }",
+     "model.setPhoneApprovals(on: true, phone: picked)", "[phone switch waits for work]"),
+    ("PA-17 the mount hands the row no work (pins)", MV, "work: restartWork, locked: serverSettingsLocked) }", "work: .init(), locked: false) }",
+     "[phone switch waits for work]"),
+    ("PA-18 the render seed runs with background work on (pins)", V,
+     "        precondition(!model.backgroundWorkEnabled)\n        var row = PhoneApprovalsSwitchRow(", "        var row = PhoneApprovalsSwitchRow(",
+     "[phone switch render seed]"),
+    ("PA-19 the render draws the switch below the approvals block (pins)", RN,
+     "                SettingsHubBlock { row }\n                WebKeySettingsBlock(state: model.webKey, refreshes: false)\n",
+     "                WebKeySettingsBlock(state: model.webKey, refreshes: false)\n                SettingsHubBlock { row }\n", "[phone switch render order]"),
 ]
 
 only = [part for part in os.environ.get("MUTATE_ONLY", "").split("|") if part]
@@ -275,7 +295,7 @@ if code != 0 or "web key pins: all passed" not in out:
     print(f"BASELINE RED:\n{out[-3000:]}")
     sys.exit(1)
 print("baseline: green (" + [l for l in out.splitlines() if "web key checks:" in l][-1] + ", pins all passed)", flush=True)
-files = (C, V, P, H, T, G, K)
+files = (C, V, P, H, T, G, K, R, MV, RN)
 before = {f: (root / f).read_text() for f in files}
 results = []
 for name, path, old, new, expect in mutants:

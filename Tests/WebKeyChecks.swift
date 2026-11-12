@@ -584,6 +584,10 @@ struct WebKeyChecks {
                     PhoneApprovalsSwitch.confirmOffMessage, PhoneApprovalsSwitch.label, PhoneApprovalsSwitch.detail, PhoneApprovalsSwitch.noPhone]
         check(copy.allSatisfy { !$0.isEmpty && !$0.contains("—") && !$0.contains("COS_") }, "phone switch confirm", "plain copy: no em dash, no variable names")
         check(PhoneApprovalsSwitch.detail.hasPrefix("Off unless you turn it on."), "phone switch off by default", "the row says it is off by default")
+        // Like the nine restart rows: never live while work runs or another change is in progress.
+        check(PhoneApprovalsSwitch.applyAllowed(locked: false, workActive: false) && !PhoneApprovalsSwitch.applyAllowed(locked: true, workActive: false)
+              && !PhoneApprovalsSwitch.applyAllowed(locked: false, workActive: true) && !PhoneApprovalsSwitch.applyAllowed(locked: true, workActive: true),
+              "phone switch waits for work", "an apply is live only with nothing in progress and no running work")
     }
 
     /// SR-11 (2026-11-11): golden.json's signerTlsReasons, written by gen_control_golden.mts from the SERVER's own

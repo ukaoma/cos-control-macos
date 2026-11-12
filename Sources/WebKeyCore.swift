@@ -459,7 +459,8 @@ enum PhoneApprovalsSwitch {
         let ipv4: String
     }
 
-    /// This account's iPhones with a Tailscale IPv4, by name. Another account's phone, an iPad or a Mac is never offered.
+    /// This account's iOS devices with a Tailscale IPv4, by name. Another account's device or a Mac is never offered. Tailscale
+    /// reports an iPad as iOS too, so an iPad on this account is listed by its name; the person picks the phone.
     static func phones(_ peers: [Peer]) -> [Phone] {
         peers.compactMap { peer -> Phone? in
             guard peer.os == "iOS", peer.sameUser, let ipv4 = peer.ipv4, isTailnetIPv4(ipv4) else { return nil }
@@ -491,6 +492,10 @@ enum PhoneApprovalsSwitch {
         guard parts.count == 3, parts.allSatisfy({ $0 != nil }) else { return nil }
         return parts.compactMap { $0 }
     }
+
+    /// Like the nine restart rows (RestartApply.applyEnabled, Settings Release A): an apply is live only with no other change
+    /// in progress and no running work, so turning this on or off never interrupts a meeting or leaves the drain gate closed.
+    static func applyAllowed(locked: Bool, workActive: Bool) -> Bool { !locked && !workActive }
 
     /// On means the server serves phone approvals now. Bootstrap (registration only) and off read as off.
     static func isOn(_ mode: WebKeyServerMode) -> Bool { mode == .authority }

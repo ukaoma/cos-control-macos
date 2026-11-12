@@ -84,14 +84,21 @@ private struct WebKeyLine: View {
 /// Turning it on shows this account's iPhones (Tailscale) and a confirmation that names the phone and says the Mac's name
 /// becomes public in certificate logs; turning it off asks too. Either way the helper restarts the server through the
 /// managed path, and the Phone approvals block below shows the amber certificate line until the certificate is ready.
+/// Like the nine restart rows (RestartApply, Settings Release A), nothing applies while work runs or another change is in
+/// progress: the row says it waits instead (PhoneApprovalsSwitch.applyAllowed).
 struct PhoneApprovalsSwitchRow: View {
     @ObservedObject var model: ControllerModel
     @ObservedObject var state: WebKeyState
     @ObservedObject var pairing: GlassesPairingState
+    /// The panel's restartWork and serverSettingsLocked, the same two the nine restart rows read.
+    let work: RestartApply.Work
+    let locked: Bool
     @State private var choosing = false
     @State private var picked: PhoneApprovalsSwitch.Phone?
     @State private var confirmOn = false
     @State private var confirmOff = false
+    /// A turn-off (or an apply) found running work: the row says it waits.
+    @State private var held = false
 
     private var on: Bool { PhoneApprovalsSwitch.isOn(state.mode) }
     private var phones: [PhoneApprovalsSwitch.Phone] {
@@ -114,12 +121,12 @@ struct PhoneApprovalsSwitchRow: View {
                         choosing = true
                         Task { await pairing.refreshTailscale() }
                     } else if !wanted, on {
-                        confirmOff = true
+                        if PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active) { confirmOff = true } else { held = true }
                     } else if !wanted {
-                        choosing = false; picked = nil
+                        choosing = false; picked = nil; held = false
                     }
                 }))
-                .labelsHidden().toggleStyle(COSSwitchStyle()).disabled(model.busy)
+                .labelsHidden().toggleStyle(COSSwitchStyle()).disabled(locked)
             }
             if choosing && !on {
                 if phones.isEmpty {
@@ -131,8 +138,13 @@ struct PhoneApprovalsSwitchRow: View {
                     }
                     .frame(maxWidth: 280, alignment: .leading)
                     Button(PhoneApprovalsSwitch.confirmOn) { confirmOn = true }
-                        .buttonStyle(TodayButtonStyle(small: true)).disabled(picked == nil || model.busy)
+                        .buttonStyle(TodayButtonStyle(small: true))
+                        .disabled(picked == nil || !PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active))
                 }
+            }
+            if work.active && (choosing || held) {
+                Text(RestartApply.waitsForWork + (work.uploads > 0 ? " " + RestartApply.uploadOpen : ""))
+                    .font(COSType.body(12)).foregroundStyle(TodayInk.sub).fixedSize(horizontal: false, vertical: true)
             }
             if model.busy, let progress = model.operationProgress {
                 Text(progress).font(COSType.body(12)).foregroundStyle(TodayInk.sub).fixedSize(horizontal: false, vertical: true)
@@ -141,15 +153,38 @@ struct PhoneApprovalsSwitchRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .cosConfirm(picked.map(PhoneApprovalsSwitch.confirmOnTitle) ?? PhoneApprovalsSwitch.label, isPresented: $confirmOn,
             message: picked.map { PhoneApprovalsSwitch.confirmOnMessage($0, macName: pairing.tailscale?.selfDNS) } ?? "",
-            actions: [.normal(PhoneApprovalsSwitch.confirmOn) { model.setPhoneApprovals(on: true, phone: picked) }, .cancel()])
+            actions: [.normal(PhoneApprovalsSwitch.confirmOn) {
+                if PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active) { model.setPhoneApprovals(on: true, phone: picked) } else { held = true }
+            }, .cancel()])
         .cosConfirm(PhoneApprovalsSwitch.confirmOffTitle, isPresented: $confirmOff, message: PhoneApprovalsSwitch.confirmOffMessage,
-            actions: [.destructive(PhoneApprovalsSwitch.confirmOff) { model.setPhoneApprovals(on: false, phone: nil) }, .cancel()])
+            actions: [.destructive(PhoneApprovalsSwitch.confirmOff) {
+                if PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active) { model.setPhoneApprovals(on: false, phone: nil) } else { held = true }
+            }, .cancel()])
         // After the helper's restart (or any other operation): read the server again, so On and the amber line follow it.
         .onChange(of: model.busy) { _, busy in
             guard !busy else { return }
             choosing = false; picked = nil
             Task { await state.refresh() }
         }
+        .onChange(of: work.active) { _, active in if !active { held = false } }
+    }
+
+    /// Offscreen renders only (Tests/PhoneApprovalsRender.swift): the row opened on one step, as a click would leave it, with
+    /// the model's background work off. Nothing here applies anything; the confirm's buttons are drawn, never pressed.
+    enum FixtureStep { case choosing(PhoneApprovalsSwitch.Phone?), confirmOn(PhoneApprovalsSwitch.Phone), confirmOff }
+    static func renderFixture(model: ControllerModel, state: WebKeyState, pairing: GlassesPairingState, work: RestartApply.Work = .init(),
+                              step: FixtureStep) -> PhoneApprovalsSwitchRow {
+        precondition(!model.backgroundWorkEnabled)
+        var row = PhoneApprovalsSwitchRow(model: model, state: state, pairing: pairing, work: work, locked: false)
+        switch step {
+        case .choosing(let phone):
+            row._choosing = State(initialValue: true); row._picked = State(initialValue: phone)
+        case .confirmOn(let phone):
+            row._choosing = State(initialValue: true); row._picked = State(initialValue: phone); row._confirmOn = State(initialValue: true)
+        case .confirmOff:
+            row._confirmOff = State(initialValue: true)
+        }
+        return row
     }
 }
 

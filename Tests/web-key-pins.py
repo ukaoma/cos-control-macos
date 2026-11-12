@@ -308,6 +308,26 @@ need(helper.count('case "set-phone-approvals": try withMutationLock { try setPho
      and set_fn.count("versionAtLeast($0.version, PhoneApprovalsCore.minimumServer)") == 1 and set_fn.count("PhoneApprovalsCore.change(arguments)") == 1
      and helper.count("PhoneApprovalsCore.change(fromEnvironment: values)") == 3 and helper.count("try requirePhoneApprovals(phoneApprovals)") == 3,
      "phone switch wiring", "set-phone-approvals parses with PhoneApprovalsCore, checks the server floor, and proves the change on every apply path")
+# Like the nine restart rows (Settings Release A): the toggle-off, the Turn on button and both confirm actions ask
+# applyAllowed with the panel's own restartWork and serverSettingsLocked, so nothing applies while work runs.
+guard = "PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active)"
+apply_lines = [l for l in switch_view.splitlines() if "model.setPhoneApprovals(" in l]
+need(switch_view.count(guard) == 4 and len(apply_lines) == 2 and all(l.strip().startswith("if " + guard + " { model.setPhoneApprovals(") for l in apply_lines)
+     and ".labelsHidden().toggleStyle(COSSwitchStyle()).disabled(locked)" in switch_view
+     and phone.count("work: restartWork, locked: serverSettingsLocked) }") == 1,
+     "phone switch waits for work", "the toggle, the button and both confirms wait for running work, with the panel's restartWork")
+# The render seed (Tests/PhoneApprovalsRender.swift) is fixture-only: background work off, and nothing in Sources calls it.
+seed_fn = body_of(views, views.index("    static func renderFixture(model: ControllerModel, state: WebKeyState"))
+sources_all = "".join(p.read_text(encoding="utf-8") for p in sorted((root / "Sources").glob("*.swift")))
+need(seed_fn.count("precondition(!model.backgroundWorkEnabled)") == 1 and sources_all.count("renderFixture(model: ControllerModel, state: WebKeyState") == 1
+     and sources_all.count("PhoneApprovalsSwitchRow.renderFixture(") == 0 and "setPhoneApprovals" not in seed_fn,
+     "phone switch render seed", "the render seed needs background work off, applies nothing, and nothing in the app calls it")
+# The renders Miles reviews draw the Phone and web card in the app's order: UT-29, PK-02, PK-01, WB-01.
+render_card = body_of(code("Tests/PhoneApprovalsRender.swift"), code("Tests/PhoneApprovalsRender.swift").index("struct PhoneCard: View {"))
+render_order = [render_card.find(s) for s in ("PhoneSignInBlock(", "SettingsHubBlock { row }", "WebKeySettingsBlock(", "SettingsHubWebRevokeRow(")]
+app_order = [phone.find(s) for s in ('.settingsHubAnchor("UT-29")', '.settingsHubAnchor("PK-02")', '.settingsHubAnchor("PK-01")', "SettingsHubWebRevokeRow(")]
+need(all(i >= 0 for i in render_order + app_order) and render_order == sorted(render_order) and app_order == sorted(app_order),
+     "phone switch render order", "the render's Phone and web card and the app's both run UT-29, PK-02, PK-01, WB-01")
 # 0.5.390: the server's not-trusted reason codes live in ONE Swift list, WebKeySignerTLS.sentences (copied from the server's
 # SignerTlsReason; file and line in PK-C_report.md). No second table, the checks read the list, unknown codes fall back.
 sent_at = core.find("static let sentences: [String: String] = [")
@@ -332,11 +352,13 @@ gen = (root / "Tests/fixtures/web-key/gen_control_golden.mts").read_text(encodin
 need(checks_src.count("        reasonParity(g)\n") == 1 and "signerTlsReasons: [...signerTls.SIGNER_TLS_REASONS]," in gen
      and "server/lib/web-key-signer-tls.ts" in gen,
      "signer reasons match the server", "the generator writes the server's SIGNER_TLS_REASONS into golden.json and the checks compare it")
-need("tail38457f" not in checks_src and "ukaoma" not in checks_src.lower(),
+# Any tailnet name other than the neutral tail00000a is treated as real; the pin never spells a real one out.
+private_name = re.compile(r"\btail(?!00000a\b)[0-9a-z]{6}\b|ukaoma", re.I)
+need(private_name.search(checks_src) is None,
      "no private names in tests", "this repo is public: no real tailnet or Mac name in the checks")
 # SR-12 (reopen): the same for every text fixture of this lane, golden.json included.
 fixture_files = sorted(p for p in (root / "Tests/fixtures/web-key").rglob("*") if p.is_file() and p.suffix in {".json", ".txt", ".pem", ".mts", ".md"})
-named = [str(p.relative_to(root)) for p in fixture_files if re.search(r"tail38457f|ukaoma", p.read_text(encoding="utf-8", errors="replace"), re.I)]
+named = [str(p.relative_to(root)) for p in fixture_files if private_name.search(p.read_text(encoding="utf-8", errors="replace"))]
 need(fixture_files and not named, "no private names in tests", f"no real tailnet or Mac name in Tests/fixtures/web-key (found in: {named})")
 need('.onDisappear { state.cancelActions() }' in block and 'state.startApproval()' in card_view,
      "approval lifetime wiring", "disappearing Settings cancels the tracked action")

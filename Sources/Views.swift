@@ -4315,7 +4315,8 @@ private extension ControlPanel {
             // PK-02 (option A, lead 2026-11-11 21:31): Turn on phone approvals. Full Settings only (not a basic row, so
             // hubRowDrawn is false in Basic), off by default, and only for a server with the reopened phone approvals.
             if hubRowDrawn("PK-02"), PhoneApprovalsSwitch.shown(serverVersion: model.status.version) {
-                SettingsHubBlock { PhoneApprovalsSwitchRow(model: model, state: model.webKey, pairing: model.glassesPairing) }
+                SettingsHubBlock { PhoneApprovalsSwitchRow(model: model, state: model.webKey, pairing: model.glassesPairing,
+                                                           work: restartWork, locked: serverSettingsLocked) }
                     .settingsHubAnchor("PK-02")
             }
             // PK-01 (server 6.99.31, COS_WEB_KEY_AUTHORITY): Phone approvals, beside the phone sign-in, in Basic and All, never

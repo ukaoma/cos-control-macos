@@ -1,0 +1,20 @@
+#!/bin/zsh
+# Render option A's phone approvals switch (Settings PK-02, Tests/PhoneApprovalsRender.swift) offscreen, light and dark,
+# from fixture JSON and a software anchor: no window is shown, no helper runs, no certificate is requested, nothing opens
+# Terminal, an app or a link. By hand only (never a gate). The one full app compile goes through the guard.
+set -euo pipefail
+ROOT="${0:A:h:h}"
+OUT="${1:?usage: run-phone-approvals-render.sh <folder for the PNGs>}"
+OUT="${OUT:A}"
+DIR="$(mktemp -d /tmp/cos-home-render.XXXXXX)"
+trap 'rm -rf "$DIR"' EXIT
+SOURCES=("$ROOT"/Sources/*.swift)
+SOURCES=("${(@)SOURCES:#*/COSControlApp.swift}")
+/usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" swiftc -target arm64-apple-macosx14.0 -swift-version 6 -strict-concurrency=complete -parse-as-library \
+  "${SOURCES[@]}" "$ROOT/Tests/PhoneApprovalsRender.swift" \
+  -framework SwiftUI -framework AppKit -framework ServiceManagement -framework WebKit -o "$DIR/phone-approvals-render"
+HOME_DIR="$DIR/cos-home-render home.ü"
+mkdir -p "$DIR/Fonts" "$HOME_DIR"
+cp "$ROOT/Resources/Fonts/"*.ttf "$DIR/Fonts/"
+cp "$ROOT/Resources/"*.svg "$DIR/"   # the lockup and the provider marks, found beside the binary as in the app bundle
+CFFIXED_USER_HOME="$HOME_DIR" HOME="$HOME_DIR" COS_CONTROL_TEST_HOME="$HOME_DIR" "$DIR/phone-approvals-render" "$OUT" 2>"$DIR/stderr.log" || { cat "$DIR/stderr.log" >&2; exit 1; }
