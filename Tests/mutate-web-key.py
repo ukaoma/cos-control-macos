@@ -306,6 +306,8 @@ mutants = [
     # S1's finding 5: the server's new reason stored_readable has its own plain sentence (parity with golden.json).
     ("SR-13 stored_readable has no sentence", C, '        "stored_readable": "COS did not use the certificate files in its folder: other users can read the key.",\n', "",
      "[signer reasons match the server]"),
+    ("PA-31 the switch draws its label twice again (pins)", V, "                Toggle(isOn: Binding(get: { (on && pendingOff == nil) || choosing }",
+     "                Toggle(PhoneApprovalsSwitch.label, isOn: Binding(get: { (on && pendingOff == nil) || choosing }", "[phone switch label once]"),
     ("PA-29 a phone's Revoke waits for work (pins)", V, "Button(WebKeyCopy.revoke) { Task { await state.revoke(row.kid) } }",
      "Button(WebKeyCopy.revoke) { if PhoneApprovalsSwitch.applyAllowed(locked: false, workActive: false) { Task { await state.revoke(row.kid) } } }",
      "[devices revoke is live]"),

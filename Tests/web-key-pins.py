@@ -290,8 +290,11 @@ need('"PK-02"' not in basic_block and catalog.index("static let extras: [Setting
 # Off by default: the toggle never applies anything; only the two confirmations call setPhoneApprovals, and nothing else in
 # the helper writes the flag (one allowlist entry, then PhoneApprovalsCore's own constants).
 switch_view = body_of(views, views.index("struct PhoneApprovalsSwitchRow: View"))
-toggle_at = switch_view.find("Toggle(PhoneApprovalsSwitch.label")
-toggle_end = switch_view.find(".labelsHidden()", toggle_at)
+toggle_at = switch_view.find("Toggle(isOn: Binding(get: { (on && pendingOff == nil) || choosing }")
+toggle_end = switch_view.find(".accessibilityLabel(PhoneApprovalsSwitch.label)", toggle_at)
+# The switch draws no second label (COSSwitchStyle ignores .labelsHidden()); VoiceOver keeps the name.
+need(0 <= toggle_at and switch_view.count("Toggle(") == 1 and "})) { EmptyView() }\n                .accessibilityLabel(PhoneApprovalsSwitch.label)" in switch_view,
+     "phone switch label once", "the switch has no visible label of its own; the row's title says it, and VoiceOver keeps the name")
 need(views.count("model.setPhoneApprovals(") == 2 and switch_view.count("PhoneApprovalsConfirm.Request(") == 2 and 0 <= toggle_at < toggle_end
      and "setPhoneApprovals" not in switch_view[toggle_at:toggle_end]
      and helper.count('"COS_WEB_KEY_AUTHORITY"') == 1 and helper.count('"COS_WEB_KEY_DEVICES"') == 1
@@ -314,7 +317,7 @@ need(helper.count('case "set-phone-approvals": try withMutationLock { try setPho
 guard = "PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active)"
 on_lines = [l for l in switch_view.splitlines() if "model.setPhoneApprovals(on: true" in l]
 need(switch_view.count(guard) == 3 and len(on_lines) == 1 and on_lines[0].strip().startswith("if " + guard + " { model.setPhoneApprovals(on: true")
-     and ".labelsHidden().toggleStyle(COSSwitchStyle()).disabled(locked || pendingOff != nil)" in switch_view
+     and ".accessibilityLabel(PhoneApprovalsSwitch.label).toggleStyle(COSSwitchStyle()).disabled(locked || pendingOff != nil)" in switch_view
      and phone.count("work: restartWork, locked: serverSettingsLocked, confirm: phoneConfirm) }") == 1,
      "phone switch waits for work", "turning on waits for running work, with the panel's restartWork")
 # Option A (lead ruling 2026-11-12 10:32): Off never asks applyAllowed. The toggle opens the confirm, the confirm runs

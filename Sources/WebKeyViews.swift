@@ -135,7 +135,9 @@ struct PhoneApprovalsSwitchRow: View {
                 // The switch only opens a step: on asks for a phone, off asks to confirm. It never applies by itself.
                 // Off never waits for running work (option A): its confirm removes every phone at once, and only the =0
                 // restart after it waits. While that restart waits, the switch reads off and stays put.
-                Toggle(PhoneApprovalsSwitch.label, isOn: Binding(get: { (on && pendingOff == nil) || choosing }, set: { wanted in
+                // No visible label: COSSwitchStyle draws its label and ignores .labelsHidden(), and the row's own title
+                // already says it (renders at 5122a8f, card-7 and card-8, showed it twice). VoiceOver keeps the name.
+                Toggle(isOn: Binding(get: { (on && pendingOff == nil) || choosing }, set: { wanted in
                     if wanted, !on {
                         choosing = true
                         Task { await pairing.refreshTailscale() }
@@ -144,8 +146,8 @@ struct PhoneApprovalsSwitchRow: View {
                     } else if !wanted {
                         choosing = false; picked = nil; held = false
                     }
-                }))
-                .labelsHidden().toggleStyle(COSSwitchStyle()).disabled(locked || pendingOff != nil)
+                })) { EmptyView() }
+                .accessibilityLabel(PhoneApprovalsSwitch.label).toggleStyle(COSSwitchStyle()).disabled(locked || pendingOff != nil)
             }
             if choosing && !on {
                 if phones.isEmpty {
