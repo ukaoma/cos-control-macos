@@ -638,6 +638,8 @@ struct PhoneSignInRow: View {
                 Text(PhoneSignInRules.title).font(COSType.body(14.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
                 Text(PhoneSignInRules.subtitle).font(COSType.body(13)).foregroundStyle(TodayInk.sub)
                     .lineSpacing(2).fixedSize(horizontal: false, vertical: true)
+                Text(PhoneSignInRules.bothDevices).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
                 if besideGlasses {
                     Text(PhoneSignInRules.notGlasses).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                         .fixedSize(horizontal: false, vertical: true)
@@ -684,8 +686,9 @@ struct PhoneSignInRow: View {
 }
 
 /// 0.5.368: the row in its Settings block, as Devices mounts it. On a server without the phone sign-in (before 6.99.3, or no
-/// route at all) the whole block hides, the note about the glasses QR with it: no height, nothing drawn, no clicks, nothing
-/// for VoiceOver. It stays mounted, so the row's task still knows when it is on screen and asks once per appearance.
+/// route at all) the row hides: no height, nothing drawn, no clicks, nothing for VoiceOver. It stays mounted, so the row's
+/// task still knows when it is on screen and asks once per appearance. Anand fix b (2026-11-12): in its place the block says
+/// the server needs an update, with the panel's own Update Server, and asks again once the server changes.
 struct PhoneSignInBlock: View {
     @ObservedObject var model: ControllerModel
     @ObservedObject var state: PhoneSignInState
@@ -695,12 +698,35 @@ struct PhoneSignInBlock: View {
 
     var body: some View {
         let hidden = state.serverTooOld
-        SettingsHubBlock { PhoneSignInRow(model: model, state: state, besideGlasses: besideGlasses, polls: polls) }
-            .frame(height: hidden ? 0 : nil, alignment: .top)
-            .clipped()
-            .opacity(hidden ? 0 : 1)
-            .allowsHitTesting(!hidden)
-            .accessibilityHidden(hidden)
+        VStack(alignment: .leading, spacing: 0) {
+            if hidden { SettingsHubBlock { PhoneSignInOldServer(model: model) } }
+            SettingsHubBlock { PhoneSignInRow(model: model, state: state, besideGlasses: besideGlasses, polls: polls) }
+                .frame(height: hidden ? 0 : nil, alignment: .top)
+                .clipped()
+                .opacity(hidden ? 0 : 1)
+                .allowsHitTesting(!hidden)
+                .accessibilityHidden(hidden)
+        }
+        .onChange(of: model.status.version) { _, _ in state.recheckAfterServerChange() }
+    }
+}
+
+/// Anand fix b (2026-11-12): the phone row on a server before 6.99.3. Its title, the line, and Update Server (the panel's own
+/// update with its gates, as Setup's server row runs it).
+struct PhoneSignInOldServer: View {
+    @ObservedObject var model: ControllerModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(PhoneSignInRules.title).font(COSType.body(14.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
+            Text(PhoneSignInRules.needsUpdate).font(COSType.body(12)).foregroundStyle(COSPalette.amber)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Update Server") { model.perform("update") }
+                .buttonStyle(COSTextButtonStyle())
+                .disabled(model.busy)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
     }
 }
 
