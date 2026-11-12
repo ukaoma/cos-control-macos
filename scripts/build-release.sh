@@ -27,6 +27,9 @@ trap 'rm -rf "$BUILD_DIR"' EXIT
 # drives the UI or touches the desktop (Tests/desktop-safety-check.py, with its self-test), checked before anything is built.
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT"
 /usr/bin/python3 "$ROOT/Tests/desktop-safety-check.py" "$ROOT" --selftest
+# D4, 2026-11-12 (0.5.391 held on a Sources file in no compile list): every swiftc list here and in the tests compiles every
+# Sources type its files use, checked before anything is built.
+/usr/bin/python3 "$ROOT/Tests/compile-list-pins.py" "$ROOT"
 # 0.5.254: a build whose Work board rebuilds itself on a resize is not released (Tests/run-work-board-perf.sh; counts,
 # never milliseconds).
 "$ROOT/Tests/run-work-board-perf.sh" --gate
@@ -49,7 +52,7 @@ mkdir -p "$BUILD_DIR" "$APP/Contents/MacOS" "$APP/Contents/Resources" "$DIST_DIR
   "$ROOT/Sources/COSMotion.swift" \
   "$ROOT/Sources/COSConfirm.swift" \
   "$ROOT/Sources/Views.swift" \
-  "$ROOT/Sources/ActivityWindow.swift" \
+  "$ROOT/Sources/ActivityWindow.swift" "$ROOT/Sources/MessageReplyView.swift" \
   "$ROOT/Sources/ActivityMeetings.swift" "$ROOT/Sources/MeetingSpeakerPolicy.swift" "$ROOT/Sources/MeetingAskCore.swift" "$ROOT/Sources/MeetingAsk.swift" \
   "$ROOT/Sources/COSMarkdownParser.swift" "$ROOT/Sources/COSMarkdown.swift" \
   "$ROOT/Sources/SessionLiveFeed.swift" "$ROOT/Sources/SessionPreviews.swift" "$ROOT/Sources/TodaySummaryHeadline.swift" "$ROOT/Sources/LensAnswerStructure.swift" "$ROOT/Sources/SessionReplyLinks.swift" "$ROOT/Sources/LiveTranscript.swift" "$ROOT/Sources/DropIt.swift" "$ROOT/Sources/DropItViews.swift" "$ROOT/Sources/DropItP2.swift" "$ROOT/Sources/DropItP2Views.swift" "$ROOT/Sources/CalendarSource.swift" "$ROOT/Sources/CalendarSnapshotCore.swift" "$ROOT/Sources/WebKeyCore.swift" "$ROOT/Sources/WebKeyViews.swift" \
