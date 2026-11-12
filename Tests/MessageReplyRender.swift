@@ -61,9 +61,14 @@ import SwiftUI
                    text: "Finance asked whether the quarterly report should export as CSV or XLSX. It is still open.")
         model.recentMessages = [shown, turn(no: 485, session: "", query: "Summarise the release notes.", text: "Three fixes and one new setting.")]
         let handoff = WorkHandoffStore(isolated: true)
+        // The helper's catalog, as work-models answers it: Haiku is in it but not on the web's menu; Cursor is not ready.
         handoff.models = [WorkModelChoice(id: "sonnet", provider: "claude", title: "Claude Sonnet", available: true, reason: nil),
                           WorkModelChoice(id: "opus", provider: "claude", title: "Claude Opus", available: true, reason: nil),
-                          WorkModelChoice(id: "codex-frontier", provider: "codex", title: "Codex", available: true, reason: nil)]
+                          WorkModelChoice(id: "fable", provider: "claude", title: "Claude Fable", available: true, reason: nil),
+                          WorkModelChoice(id: "haiku", provider: "claude", title: "Claude Haiku", available: true, reason: nil),
+                          WorkModelChoice(id: "codex-frontier", provider: "codex", title: "OpenAI via Codex · Frontier · gpt-5.5-codex", available: true,
+                                          reason: nil, resolvedModel: "gpt-5.5-codex"),
+                          WorkModelChoice(id: "cursor-grok", provider: "cursor", title: "Grok via Cursor", available: false, reason: "Provider runtime is unavailable")]
         if state == "efforts" {
             handoff.efforts = ["claude": [WorkEffortChoice(value: "high", label: "High"), WorkEffortChoice(value: "xhigh", label: "Extra High"),
                                           WorkEffortChoice(value: "max", label: "Max"), WorkEffortChoice(value: "ultracode", label: "Ultracode")]]

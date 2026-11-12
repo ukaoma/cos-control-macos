@@ -158,11 +158,12 @@ need("-> Bool {" in start and start.count("return false") == 4 and "return accep
 need("TodayHome.pickRunModel(" in start, "[cost guards] runs from Today use the picked non-Opus model")
 # 0.5.376: Prep me now opens a draft; its explicit Send uses the dedicated durable Prep route.
 # Only command Ask/troubleshoot, a drop question, the chat composer and (D4, 2026-11-11) a Reply in the message reader enter
-# Today Work runs. The reply's own model pick is held to the same rule (MessageReply.offered: never Opus, never Cursor).
+# Today Work runs. Reply is the one where a person chooses the model, from the web's menu (Miles 2026-11-11 20:31, "Yes, match
+# the web"), so it passes modelID; every run COS starts by itself passes none and keeps TodayHome.pickRunModel (never Opus).
 need(today.count("today.startRun(") == 4 and today.count('today.startRun(target: "drop:ask:" + dropId,') == 1
      and today.count('let accepted = await today.startRun(target: target, title: String(prompt.prefix(60)), prompt: prompt,') == 2
      and today.count('context: "Replied in Messages on \\(TodayHome.headerDate(Date())).", handoff: handoffStore,') == 1,
-     "[cost guards] only command Ask/troubleshoot, a drop question, the COS chat Ask and a message Reply start Today Work runs")
+     "[cost guards] only command Ask/troubleshoot, a drop question, the COS chat Ask and a message Reply (where a person chooses) start Today Work runs")
 prep_button = body(today, "    func todayPrepButtons(", "\n    @ViewBuilder\n    func todayMeetingsPanel(")
 need('openMeetingPrep(title: event.title, startsAt:' in prep_button and "startRun(" not in prep_button,
      "[cost guards] Prep me opens a draft without spending a question")

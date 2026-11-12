@@ -29,7 +29,7 @@ struct MessageReplyBlock: View {
     /// when durable query jobs are off), as Control Web shows it only while Ask is on (askOn).
     var body: some View {
         Group {
-            if MessageReply.available(handoff.models.map { ($0.id, $0.provider, $0.available) }) { block }
+            if MessageReply.available(handoff.models.map { ($0.id, $0.available, $0.resolvedModel) }) { block }
         }
         .onAppear {
             onAppear()
@@ -130,11 +130,11 @@ struct MessageReplyBlock: View {
     private func composer(label: String) -> some View {
         let askReady = DropIt.askBlock(text: draft, files: store.attachments) == nil && !store.asking && !store.sending
             && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let models = MessageReply.offered(handoff.models.map { ($0.id, $0.provider, $0.available) }).map { handoff.models[$0] }
-        let index = MessageReply.modelIndex(picked: pickedModel.isEmpty ? nil : pickedModel,
-                                            models: handoff.models.map { ($0.id, $0.provider, $0.available) })
-        let model = index.map { handoff.models[$0] }
-        let efforts = model.map { MessageReply.effortChoices(provider: $0.provider, efforts: handoff.efforts) } ?? []
+        // The web's menu (MessageReply.menu): Claude Opus, Fable and Sonnet, then Codex, Cursor and Ollama while they can run.
+        let menu = MessageReply.menu(handoff.models.map { ($0.id, $0.available, $0.resolvedModel) })
+        let selected = MessageReply.model(picked: pickedModel.isEmpty ? nil : pickedModel, menu: menu)
+        let provider = selected.flatMap { id in handoff.models.first { $0.id == id }?.provider }
+        let efforts = provider.map { MessageReply.effortChoices(provider: $0, efforts: handoff.efforts) } ?? []
         return VStack(alignment: .leading, spacing: 6) {
             VStack(alignment: .leading, spacing: 8) {
                 if !store.attachments.isEmpty || dropTargeted {
@@ -175,17 +175,17 @@ struct MessageReplyBlock: View {
                 HStack(spacing: 10) {
                     fileButtons
                     Spacer(minLength: 8)
-                    pickers(models: models, model: model, efforts: efforts)
+                    pickers(menu: menu, selected: selected, efforts: efforts)
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 10) { fileButtons; Spacer(minLength: 0) }
-                    HStack(spacing: 10) { pickers(models: models, model: model, efforts: efforts); Spacer(minLength: 0) }
+                    HStack(spacing: 10) { pickers(menu: menu, selected: selected, efforts: efforts); Spacer(minLength: 0) }
                 }
             }
             Text(Self.footReturn)
                 .font(COSType.body(11)).foregroundStyle(TodayInk.grey).padding(.horizontal, 4)
         }
-        .onChange(of: model?.provider) { _, _ in
+        .onChange(of: provider) { _, _ in
             // An effort the new model's agent does not offer is not kept.
             if !pickedEffort.isEmpty, !efforts.contains(where: { $0.value == pickedEffort }) { pickedEffort = "" }
         }
@@ -204,12 +204,12 @@ struct MessageReplyBlock: View {
         .lineLimit(1)
     }
 
-    /// Model, always (the models Work can run); Effort only when the server serves efforts for the chosen model's agent.
+    /// Model, always (the web's menu); Effort only when the server serves efforts for the chosen model's agent.
     @ViewBuilder
-    private func pickers(models: [WorkModelChoice], model: WorkModelChoice?, efforts: [WorkEffortChoice]) -> some View {
-        if let model, !models.isEmpty {
-            COSDropdown("Model", selection: Binding(get: { model.id }, set: { pickedModel = $0 }),
-                        options: models.map { COSDropdownOption($0.id, $0.title) })
+    private func pickers(menu: [MessageReply.Choice], selected: String?, efforts: [WorkEffortChoice]) -> some View {
+        if let selected, !menu.isEmpty {
+            COSDropdown("Model", selection: Binding(get: { selected }, set: { pickedModel = $0 }),
+                        options: menu.map { COSDropdownOption($0.id, $0.label) })
             .fixedSize()
             .accessibilityLabel("Model for Ask")
         }

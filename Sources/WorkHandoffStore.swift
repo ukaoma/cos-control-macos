@@ -190,6 +190,9 @@ struct WorkModelChoice: Identifiable, Codable, Equatable, Sendable {
     let title: String
     let available: Bool
     let reason: String?
+    /// The concrete model the server runs for this slot (the helper's `resolvedModel`), when it names one. Reply's menu
+    /// names Codex, Cursor and Ollama by it, as Control Web does.
+    var resolvedModel: String? = nil
 }
 struct WorkHandoffDraft: Codable, Equatable, Sendable {
     let sourceID: String

@@ -8776,10 +8776,11 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
         runBusy = true
         defer { runBusy = false }
         if handoff.models.isEmpty { await handoff.refresh() }
-        // Reply in the message reader (D4): the model the person chose while a Today run may use it, else the usual pick.
-        let choices: [(id: String, provider: String, available: Bool)] = handoff.models.map { ($0.id, $0.provider, $0.available) }
-        guard let index = modelID == nil ? TodayHome.pickRunModel(choices) : MessageReply.modelIndex(picked: modelID, models: choices) else {
-            runNote = "No model is available for a Work run. Open Work to start one."
+        // Reply in the message reader (D4): the model the person chose from the reply's menu (the web's), only while Work can
+        // run it; never a substitute. A run COS starts by itself keeps the usual pick.
+        let picked = modelID.flatMap { id in handoff.models.firstIndex { $0.id == id && $0.available } }
+        guard let index = modelID == nil ? TodayHome.pickRunModel(handoff.models.map { ($0.id, $0.provider, $0.available) }) : picked else {
+            runNote = modelID == nil ? "No model is available for a Work run. Open Work to start one." : MessageReply.modelGoneLine
             return false
         }
         let id = UUID().uuidString.lowercased()
@@ -11252,7 +11253,10 @@ extension ActivityWindow {
     var messageReplyAskJob: @MainActor (String, String, [String], String?, String?) async -> DropItStore.AskStart {
         { [today, handoffStore] target, prompt, files, session, _ in
             let defaults = UserDefaults.standard
-            let model = defaults.string(forKey: MessageReply.modelKey).flatMap { $0.isEmpty ? nil : $0 }
+            if handoffStore.models.isEmpty { await handoffStore.refresh() }
+            // The model the block shows: the pick while it is on the web's menu, else Sonnet (MessageReply.model).
+            let menu = MessageReply.menu(handoffStore.models.map { ($0.id, $0.available, $0.resolvedModel) })
+            let model = MessageReply.model(picked: defaults.string(forKey: MessageReply.modelKey).flatMap { $0.isEmpty ? nil : $0 }, menu: menu)
             let effort = defaults.string(forKey: MessageReply.effortKey).flatMap { $0.isEmpty ? nil : $0 }
             let accepted = await today.startRun(target: target, title: String(prompt.prefix(60)), prompt: prompt,
                                                 context: "Replied in Messages on \(TodayHome.headerDate(Date())).", handoff: handoffStore,

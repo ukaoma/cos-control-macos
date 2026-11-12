@@ -29,13 +29,25 @@ import Foundation
     }
 
     static func checkModelAndEffort() {
-        let models: [(id: String, provider: String, available: Bool)] = [("opus", "claude", true), ("sonnet", "claude", true), ("codex-frontier", "codex", true), ("haiku", "claude", false)]
-        check(MessageReply.modelIndex(picked: nil, models: models) == 1, "[model] nothing picked: the usual Work run pick (Sonnet)")
-        check(MessageReply.modelIndex(picked: "codex-frontier", models: models) == 2, "[model] a picked model that is available is used")
-        check(MessageReply.modelIndex(picked: "haiku", models: models) == 1 && MessageReply.modelIndex(picked: "gone", models: models) == 1,
-              "[model] a pick that is unavailable or gone falls back to the usual pick")
-        check(MessageReply.available(models) && !MessageReply.available([("sonnet", "claude", false)]) && !MessageReply.available([]),
-              "[shown] Reply shows only where Work has a model to run it")
+        // The web's menu (cos-chat.js modelsFrom): Claude Opus, Fable, Sonnet, then the engines by the model each runs; no Haiku.
+        let catalog: [(id: String, available: Bool, resolved: String?)] = [
+            ("sonnet", true, nil), ("opus", true, nil), ("fable", true, nil), ("haiku", true, nil),
+            ("codex-frontier", true, "gpt-5.5-codex"), ("codex-balanced", true, nil), ("cursor-grok", false, "grok-4"),
+            ("cursor-composer", false, nil), ("ollama", true, "  ")]
+        let menu = MessageReply.menu(catalog)
+        check(menu.map(\.id) == ["opus", "fable", "sonnet", "codex-frontier", "codex-balanced", "ollama"], "[menu] the web's order; Haiku is not on it; Cursor only when ready")
+        check(menu.map(\.label) == ["Claude Opus", "Claude Fable", "Claude Sonnet", "Codex gpt-5.5-codex", "Codex Balanced", "Ollama"],
+              "[menu] the web's names: a Claude tier by name, an engine by the model it runs, else the web's fallback word")
+        check(MessageReply.menu([("opus", false, nil), ("sonnet", true, nil)]).map(\.id) == ["sonnet"], "[menu] a model this Mac cannot run is not offered")
+        check(MessageReply.menu([("codex-frontier", true, String(repeating: "m", count: 80))]).first?.label.count == 48, "[menu] a label is at most 48 characters, as on the web")
+        check(MessageReply.model(picked: nil, menu: menu) == "sonnet", "[model] nothing picked: Sonnet, as on the web")
+        check(MessageReply.model(picked: "opus", menu: menu) == "opus", "[model] a pick on the menu is used, Opus included")
+        check(MessageReply.model(picked: "haiku", menu: menu) == "sonnet" && MessageReply.model(picked: "gone", menu: menu) == "sonnet",
+              "[model] a pick that is off the menu falls back to Sonnet")
+        check(MessageReply.model(picked: nil, menu: [MessageReply.Choice(id: "codex-frontier", label: "Codex")]) == "codex-frontier", "[model] no Sonnet: the menu's first")
+        check(MessageReply.available(catalog) && !MessageReply.available([("sonnet", false, nil), ("haiku", true, nil)]) && !MessageReply.available([]),
+              "[shown] Reply shows only where the menu has a model to run it")
+        check(MessageReply.modelGoneLine.hasPrefix("The model you picked is not available"), "[model] a pick that went away refuses with a line, never a substitute")
         let served: [String: [WorkEffortChoice]] = ["claude": [WorkEffortChoice(value: "high", label: "High"), WorkEffortChoice(value: "xhigh", label: "Extra High")]]
         check(MessageReply.effortChoices(provider: "claude", efforts: served).map(\.value) == ["high", "xhigh"], "[effort] the server's efforts for the model's agent")
         check(MessageReply.effortChoices(provider: "codex", efforts: served).isEmpty && MessageReply.effortChoices(provider: "claude", efforts: [:]).isEmpty,

@@ -13778,17 +13778,37 @@ enum MessageReply {
     static func effortOffered(_ effort: String, provider: String, efforts: [String: [WorkEffortChoice]]) -> Bool {
         effortChoices(provider: provider, efforts: efforts).contains { $0.value == effort }
     }
-    /// Whether the reader offers Reply: a model Work can run exists (none is available while the server's durable query jobs
-    /// are off, which is when Control Web hides it too).
-    static func available(_ models: [(id: String, provider: String, available: Bool)]) -> Bool { TodayHome.pickRunModel(models) != nil }
-    /// The models a reply may run on: the ones a Today Work run may use (available, never Cursor, never Opus; the cost guard
-    /// in TodayHome.pickRunModel). Control Web's menu also lists Opus; the Mac keeps its Today runs' rule.
-    static func offered(_ models: [(id: String, provider: String, available: Bool)]) -> [Int] {
-        models.indices.filter { models[$0].available && models[$0].provider != "cursor" && !models[$0].id.lowercased().contains("opus") }
+    /// Control Web's model menu, in its order and words (server cos-chat.js CLAUDE_MENU, ENGINE and FALLBACK; decided
+    /// 2026-11-11 20:31, match the web): the three Claude tiers, then Codex, Cursor and Ollama by the model each runs. Haiku is not on
+    /// it. Tests/message-reply-pins.py fails if this and the web's file drift apart.
+    static let claudeMenu: [(id: String, label: String)] = [("opus", "Claude Opus"), ("fable", "Claude Fable"), ("sonnet", "Claude Sonnet")]
+    static let engines: [(id: String, engine: String, fallback: String)] = [
+        ("codex-frontier", "Codex", "Frontier"), ("codex-balanced", "Codex", "Balanced"),
+        ("cursor-grok", "Cursor", "Grok"), ("cursor-composer", "Cursor", "Composer"), ("ollama", "Ollama", ""),
+    ]
+    static let modelGoneLine = "The model you picked is not available on this Mac right now. Pick another and Ask again."
+    /// The default until the person picks (then the pick is kept): Sonnet, as on the web.
+    static let defaultModel = "sonnet"
+    struct Choice: Equatable, Sendable { let id: String; let label: String }
+    /// The reply's menu: the web's list, each entry only while this Mac's Work catalog says it can run (the helper refuses an
+    /// unavailable model, and marks Cursor and Ollama unavailable until they are ready, as the web hides them).
+    static func menu(_ models: [(id: String, available: Bool, resolved: String?)]) -> [Choice] {
+        func runs(_ id: String) -> (available: Bool, resolved: String?)? { models.first { $0.id == id }.map { ($0.available, $0.resolved) } }
+        let claude = claudeMenu.compactMap { c in runs(c.id)?.available == true ? Choice(id: c.id, label: c.label) : nil }
+        let others = engines.compactMap { e -> Choice? in
+            guard let row = runs(e.id), row.available else { return nil }
+            let name = (row.resolved?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 } ?? e.fallback
+            return Choice(id: e.id, label: String((e.engine + (name.isEmpty ? "" : " " + name)).prefix(48)))
+        }
+        return claude + others
     }
-    /// The model a reply runs on: the one picked while it is still offered, else the usual Work run pick.
-    static func modelIndex(picked: String?, models: [(id: String, provider: String, available: Bool)]) -> Int? {
-        picked.flatMap { id in offered(models).first { models[$0].id == id } } ?? TodayHome.pickRunModel(models)
+    /// Whether the reader offers Reply: the menu has a model to run it (none while the server's durable query jobs are off,
+    /// which is when Control Web hides it too).
+    static func available(_ models: [(id: String, available: Bool, resolved: String?)]) -> Bool { !menu(models).isEmpty }
+    /// The model a reply runs on: the pick while it is on the menu, else Sonnet, else the menu's first.
+    static func model(picked: String?, menu: [Choice]) -> String? {
+        if let picked, menu.contains(where: { $0.id == picked }) { return picked }
+        return menu.contains { $0.id == defaultModel } ? defaultModel : menu.first?.id
     }
 }
 
