@@ -6075,15 +6075,17 @@ struct ActivityWindow: View {
                 }
                 .controlSize(.small)
 
+                // Miles's pick A (2026-11-12, "sides"): his words right in the chat's bubble, COS left by its mark.
                 messageBlock(label: "You", text: turn.query,
-                             tint: ActivitySection.messages.tint, highlight: recentQuery)
+                             tint: ActivitySection.messages.tint, highlight: recentQuery,
+                             side: .you, caption: MessageSides.youCaption(time: turn.timeLabel))
                 attachmentStrip(attachments: turn.attachments.filter(\.isUserPhoto), fallback: "Your attachments")
                 // 0.5.380 (server 7.0.5 parity): a COS answer is written for the lens as plain text, so its inline numbered
                 // lists go on their own lines before Markdown draws them (Sources/LensAnswerStructure.swift, the web's
                 // structureLensAnswer). Only whitespace changes, and only in the card's Markdown view: Copy turn and
                 // Copy answer read the stored text (final QA W1).
                 messageBlock(label: "COS", text: turn.text, lensLists: true,
-                             tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id)
+                             tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id, side: .cos)
                 attachmentStrip(attachments: turn.attachments.filter { !$0.isUserPhoto }, fallback: "From COS")
                 // Reply (D4; asked for 2026-11-11 13:59, parity with Control Web's reader): this Mac's replies, under the answer.
                 MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, part: .replies)
@@ -6185,9 +6187,11 @@ struct ActivityWindow: View {
     /// nil shows it as typed (what you said). `lensLists` draws a lens answer's inline lists on
     /// their own lines (LensAnswerStructure) in the Markdown view only. See ActivityMessageCard.
     private func messageBlock(
-        label: String, text: String, lensLists: Bool = false, tint: Color, highlight: String = "", markdownID: String? = nil
+        label: String, text: String, lensLists: Bool = false, tint: Color, highlight: String = "", markdownID: String? = nil,
+        side: ActivityMessageCard.Side = .card, caption: String? = nil
     ) -> some View {
-        ActivityMessageCard(label: label, text: text, tint: tint, highlight: highlight, markdownID: markdownID, lensLists: lensLists)
+        ActivityMessageCard(label: label, text: text, tint: tint, highlight: highlight, markdownID: markdownID, lensLists: lensLists,
+                            side: side, caption: caption)
     }
 
     /// Titles itself from what it holds, because a turn can now carry a video
@@ -6466,9 +6470,67 @@ struct ActivityMessageCard: View {
     /// 0.5.380 (final QA W1): a COS answer's inline numbered lists go on their own lines in the Markdown view only.
     /// `text` stays the stored answer, so Copy answer copies it byte for byte.
     var lensLists = false
+    /// Miles's pick A (2026-11-12, "sides"): .you is his words in the COS chat's own bubble on the right, captioned below;
+    /// .cos is the answer on the left by COS's mark. .card is the labelled card, as before, for every other caller.
+    enum Side { case card, you, cos }
+    var side: Side = .card
+    /// Under .you's bubble ("You, <time>").
+    var caption: String? = nil
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        switch side {
+        case .card: card
+        case .you: youBubble
+        case .cos: cosSide
+        }
+    }
+
+    /// His words, right, in the chat's bubble (DropInk, the same fill, edge and ink as the COS chat).
+    private var youBubble: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            Text(highlighted(text.isEmpty ? "(empty)" : text, query: highlight))
+                .font(COSType.body(14)).foregroundStyle(DropInk.youInk)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .background(UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18, bottomTrailingRadius: 6, topTrailingRadius: 18, style: .continuous).fill(DropInk.youBg))
+                .overlay(UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18, bottomTrailingRadius: 6, topTrailingRadius: 18, style: .continuous).stroke(DropInk.youBorder, lineWidth: 1))
+            if let caption {
+                Text(caption).font(COSType.body(11.5)).foregroundStyle(DropInk.tertiary).padding(.trailing, 4)
+            }
+        }
+        .frame(maxWidth: 560, alignment: .trailing)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel((label.isEmpty ? "" : label + ": ") + text)
+    }
+
+    /// The answer, left, by COS's mark; no card around it.
+    private var cosSide: some View {
+        HStack(alignment: .top, spacing: 10) {
+            DropItAvatar(size: 26).accessibilityHidden(true)
+            Group {
+                if text.isEmpty {
+                    Text("(empty)").font(.system(size: 13)).foregroundStyle(.secondary)
+                } else if let markdownID {
+                    COSMarkdownView(text: markdownText, cacheID: markdownID, bodySize: 13)
+                        .environment(\.cosMarkdownHighlight, highlight)
+                } else {
+                    Text(highlighted(text, query: highlight)).font(.system(size: 13)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(label)
+        .modifier(ActivityCopyMenu(label: "Copy answer", text: markdownID == nil ? nil : text))
+    }
+
+    /// The Markdown view's text: lens lists on their own lines (0.5.380), for the card and the COS side alike.
+    private var markdownText: String { lensLists ? LensAnswerStructure.structure(text) : text }
+
+    private var card: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(label.uppercased())
                 .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
@@ -6479,7 +6541,7 @@ struct ActivityMessageCard: View {
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             } else if let markdownID {
-                COSMarkdownView(text: lensLists ? LensAnswerStructure.structure(text) : text, cacheID: markdownID, bodySize: 13)
+                COSMarkdownView(text: markdownText, cacheID: markdownID, bodySize: 13)
                     .environment(\.cosMarkdownHighlight, highlight)
             } else {
                 // Marks every occurrence of the query inside the text. A tinted ROW says

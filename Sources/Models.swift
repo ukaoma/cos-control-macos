@@ -13899,6 +13899,11 @@ enum ActivityBackPath {
     }
 }
 
+/// Miles's pick A (2026-11-12, "sides"): the message reader's words. Provisional until W1 posts the web's strings.
+enum MessageSides {
+    static func youCaption(time: String) -> String { "You, " + time }
+}
+
 /// Anand parity item 3 (2026-11-12): the Speakers review's copy buttons, in Control Web 7.0.30's words (speakers.js): "Copy
 /// summary", "Copy full (N KB)", and "Copied" on the tapped one for 2.5 s.
 enum MeetingCopyWords {

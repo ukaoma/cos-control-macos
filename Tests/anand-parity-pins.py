@@ -70,6 +70,15 @@ ret = body(win, "    private func returnTo(_ place: ActivityPlace) {", "\n    }\
 need("model.openSpeakerReview(sessionId: id)" in ret and "model.openLibraryMeeting(row)" in ret and "model.openClaudeSession(row)" in ret
      and "selectedTurnID = id" in ret and "Task { await load(target) }" in ret, "[back] the item that was open comes back")
 
+# Miles's pick A: sides in the message reader.
+detail = body(win, "    private func messageDetail(_ turn: GlassesTurn) -> some View {", "\n    /// Offered on its own when the keyword answer")
+need("side: .you, caption: MessageSides.youCaption(time: turn.timeLabel))" in detail and 'markdownID: "turn:" + turn.id, side: .cos)' in detail,
+     "[sides] his words right, COS left, in the reader")
+card = body(win, "struct ActivityMessageCard: View {", "\n    private var card: some View {")
+need(".fill(DropInk.youBg)" in card and ".stroke(DropInk.youBorder, lineWidth: 1)" in card and "DropInk.youInk" in card
+     and ".frame(maxWidth: .infinity, alignment: .trailing)" in card, "[sides] his words in the COS chat's own bubble, on the right")
+need("DropItAvatar(size: 26)" in card and 'ActivityCopyMenu(label: "Copy answer"' in card, "[sides] COS by its mark, Copy answer kept")
+need("var side: Side = .card" in card, "[sides] every other caller keeps the card")
 if fails:
     print("\n".join("anand parity pin FAILED " + f for f in fails)); sys.exit(1)
 print("anand parity pins: passed")
