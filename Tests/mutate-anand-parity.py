@@ -56,7 +56,7 @@ MUTANTS = [
     ("trail-by-title", "pins", W, "        guard let target else { return todayEnabled && !isolatedWorkPreview ? \"Today\" : \"Home\" }\n        if let id = place.turnID",
      "        guard let target else { return todayEnabled && !isolatedWorkPreview ? \"Today\" : \"Home\" }\n        if let title = detailTitle { return title }\n        if let id = place.turnID",
      "[trail] steps named by kind"),
-    ("trail-never-narrows", "pins", W, "                trailRow(trail, room: 5)\n                trailRow(trail, room: 4)\n", "", "[trail] one line: steps leave from the middle"),
+    ("trail-never-narrows", "pins", W, "                trailRow(trail, room: 5)\n                trailRow(trail, room: 4)\n", "", "[trail] one step leaves at a time"),
     ("trail-silent", "pins", W, "        .accessibilityValue(trail.map(trailWord).joined(separator: \", \"))\n", "", "[trail] left-out steps stay readable"),
     ("detail-unmarked", "pins", W, "        place.detail = hasDetail && place.item == nil\n", "", "[back] an untracked detail marks the place"),
     ("parent-unnamed", "pins", W, '        if hasDetail, let section { return "Back to " + section.title }\n', "", "[back] Back names its parent without a jump"),
