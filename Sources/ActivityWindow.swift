@@ -5934,6 +5934,8 @@ struct ActivityWindow: View {
         // The Reply card, pinned: one per turn.
         MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, onAppear: wireMessageReply, part: .composer)
             .id("reply:" + turn.id)
+            // Its own full height, always: the scroll above gives way (renders 2026-11-12 showed the card cut at the window's foot).
+            .fixedSize(horizontal: false, vertical: true)
             .padding(.horizontal, 28).padding(.vertical, 12)
             .frame(maxWidth: 820, alignment: .leading)
             .frame(maxWidth: .infinity)

@@ -16,6 +16,9 @@ detail = body(win, "    private func messageDetail(_ turn: GlassesTurn) -> some 
 # Anand parity (lead 2026-11-12, as the web's reader): the Reply card is pinned under the scroll; this Mac's replies read in the
 # scroll under the answer.
 mount = 'MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, onAppear: wireMessageReply, part: .composer)\n            .id("reply:" + turn.id)'
+need(".id(\"reply:\" + turn.id)\n            // Its own full height, always: the scroll above gives way" in detail
+     and ".fixedSize(horizontal: false, vertical: true)\n            .padding(.horizontal, 28).padding(.vertical, 12)" in detail,
+     "[reader] the pinned card keeps its full height; the scroll gives way")
 replies_mount = 'MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, part: .replies)\n                    .id("replies:" + turn.id)'
 need(win.count("MessageReplyBlock(") == 2 and mount in detail and detail.count("onAppear: wireMessageReply") == 1,
      "[reader] Reply mounts once, in the single-message reader, one block per turn")
