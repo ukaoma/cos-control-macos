@@ -1147,10 +1147,11 @@ struct MeetingImportPane: View {
                 .font(COSType.body(11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Button("Update Server") { model.perform("update") }
+            Button("Update Server") { model.updateServer(from: ServerUpdateCaller.meetingImports) }
                 .buttonStyle(COSQuietButtonStyle())
                 .controlSize(.small)
                 .disabled(model.busy)
+            ServerUpdateResultLine(model: model, caller: ServerUpdateCaller.meetingImports)
         }
         .mergeCard()
     }
@@ -1692,8 +1693,9 @@ struct MeetingSuggestionsPane: View {
             emptyState(
                 "Update the COS server to 6.47.0",
                 detail: "This Mac's COS server does not look for meetings that are the same meeting yet.",
-                button: ("Update Server", { model.perform("update") })
+                button: ("Update Server", { model.updateServer(from: ServerUpdateCaller.meetingSuggestions) })
             )
+            ServerUpdateResultLine(model: model, caller: ServerUpdateCaller.meetingSuggestions)
         } else if let error = model.meetingSuggestionsError {
             emptyState(error, detail: "", button: ("Retry", { Task { await model.loadMeetingSuggestions() } }))
         } else if model.meetingSuggestionsState == nil && model.meetingSuggestionsLoading {

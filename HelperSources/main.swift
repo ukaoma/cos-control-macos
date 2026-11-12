@@ -520,7 +520,7 @@ final class COSControlHelper {
             let work = option("--workdir", in: args)
             try install(requestedVersion: requested, workDirectory: work)
         }
-        case "update": try withMutationLock { try install(requestedVersion: "latest", workDirectory: loadManifest()?.workDirectory) }
+        case "update": try withMutationLock { try install(requestedVersion: "latest", workDirectory: loadManifest()?.workDirectory, update: true) }
         case "adopt": try withMutationLock {
             let requested = option("--version", in: args) ?? "latest"
             try adoptLegacy(requestedVersion: requested)
@@ -1512,7 +1512,9 @@ final class COSControlHelper {
         )
     }
 
-    private func install(requestedVersion: String, workDirectory: String?) throws {
+    /// `update` (Update Server, Anand fix c, 2026-11-12): a healthy server already on the newest release is not reinstalled, and
+    /// an update where no installed AI is signed in stops before anything changes (the proof below would only roll it back).
+    private func install(requestedVersion: String, workDirectory: String?, update: Bool = false) throws {
         try ensureDirectories()
         // Capture a legacy/in-place selection before removing its ownership
         // marker or replacing the plist during adoption.
@@ -1534,6 +1536,19 @@ final class COSControlHelper {
         progress("Resolving npm release…")
         let release = try resolveVersion(requestedVersion)
         try requireLatestMovesForward(requested: requestedVersion, resolved: release.version)
+        if update, let current = loadManifest()?.version, current == release.version,
+           runtimeState(snapshot: ownership, maintenance: maintenanceStatus(), health: request("/api/health", timeout: 12)?.body) == .managedHealthy {
+            var details = statusDetails()
+            details["upToDate"] = true
+            emit(ok: true, message: Self.upToDateMessage(current), details: details)
+            return
+        }
+        if update {
+            progress("Checking that an AI is signed in…")
+            if let refusal = Self.signInRefusal(updateSignIns(), otherProvider: resolveAgentBinary() != nil) {
+                throw HelperError.message(refusal)
+            }
+        }
         try requireVideoUploadDowngradeSafe(targetVersion: release.version)
         try requireKeyLanesDowngradeSafe(targetVersion: release.version)
         let generation = try stageGeneration(version: release.version, integrity: release.integrity)
@@ -9297,13 +9312,47 @@ final class COSControlHelper {
         guard let path = findExecutable(name) else { return ("warning", "Not installed") }
         let version = (try? execute(path, ["--version"], timeout: 5)).flatMap { $0.code == 0 ? $0.output.split(separator: "\n").first.map(String.init) : nil } ?? "version unavailable"
         var auth = "auth status unavailable"
-        if name == "codex", let result = try? execute(path, ["login", "status"], timeout: 6) {
-            auth = result.output.lowercased().contains("logged in") && !result.output.lowercased().contains("not logged in") ? "signed in" : "sign-in required"
-        } else if name == "claude", let result = try? execute(path, ["auth", "status", "--json"], timeout: 6) {
-            auth = Self.claudeAuthLabel(code: result.code, output: result.output)
-        }
+        if let label = cliAuthLabel(name, path: path) { auth = label }
         let detail = redacted ? "\(version) · \(auth)" : "\(version) · \(auth) · \(redactPath(path))"
         return (Self.authWarns(auth) ? "warning" : "ok", detail)
+    }
+
+    /// A CLI's sign-in label (Run checks and Update Server's pre-check), or nil when the CLI has no status call or did not answer.
+    private func cliAuthLabel(_ name: String, path: String) -> String? {
+        if name == "codex", let result = try? execute(path, ["login", "status"], timeout: 6) {
+            return result.output.lowercased().contains("logged in") && !result.output.lowercased().contains("not logged in") ? "signed in" : Self.authSignedOut
+        }
+        if name == "claude", let result = try? execute(path, ["auth", "status", "--json"], timeout: 6) {
+            return Self.claudeAuthLabel(code: result.code, output: result.output)
+        }
+        return nil
+    }
+
+    /// Update Server's pre-check: each installed Claude and Codex with its sign-in label ("auth status unavailable" when it did
+    /// not answer, which never refuses).
+    private func updateSignIns() -> [String: String] {
+        var labels: [String: String] = [:]
+        for name in detectedManagedProviders() {
+            guard let path = findExecutable(name) else { continue }
+            labels[name] = cliAuthLabel(name, path: path) ?? "auth status unavailable"
+        }
+        return labels
+    }
+
+    /// Anand fix c (2026-11-12): nothing newer exists.
+    static func upToDateMessage(_ version: String) -> String {
+        "Server \(version) is up to date. It is the newest published release, so nothing was installed."
+    }
+
+    /// Anand fix c (2026-11-12): stop before the switch only when every installed AI says it is signed out or expired. A CLI that
+    /// did not answer, or any other AI (Cursor), can still prove the new server, so it never refuses. The rule that one AI must
+    /// answer a real test question before a new server is kept does not change.
+    static func signInRefusal(_ labels: [String: String], otherProvider: Bool) -> String? {
+        guard !otherProvider, !labels.isEmpty, labels.values.allSatisfy(authWarns) else { return nil }
+        let names = labels.keys.sorted().map { $0.capitalized }
+        let who = names.count == 1 ? names[0] : names.dropLast().joined(separator: ", ") + " or " + names[names.count - 1]
+        return "No AI on this Mac is signed in, so nothing was changed. COS keeps a new server only after one AI answers a test question. "
+            + "Sign in to \(who), then press Update Server again."
     }
 
     /// Run checks' labels for a CLI's sign-in. Only these two warn; "sign-in check required" (no answer we can read) stays ok,
@@ -28315,6 +28364,19 @@ final class COSControlHelper {
             try expect(label(0, "Usage: claude [options]") == "sign-in check required" && label(2, "{\"loggedIn\":true}") == "sign-in check required"
                        && label(0, "{\"loggedIn\":\"yes\"}") == "sign-in check required" && !Self.authWarns("sign-in check required"),
                        "claude auth: unreadable output or another exit stays a quiet check")
+            // Update Server (Anand fix c): stop before the switch only when every installed AI is signed out or expired.
+            try expect(Self.signInRefusal(["claude": Self.authSignedOut, "codex": Self.authSignedOut], otherProvider: false)
+                       == "No AI on this Mac is signed in, so nothing was changed. COS keeps a new server only after one AI answers a test question. Sign in to Claude or Codex, then press Update Server again."
+                       && Self.signInRefusal(["claude": Self.authExpired], otherProvider: false)?.hasSuffix("Sign in to Claude, then press Update Server again.") == true,
+                       "update sign-in: every installed AI signed out or expired stops before the switch, naming them")
+            try expect(Self.signInRefusal(["claude": Self.authSignedOut, "codex": "signed in"], otherProvider: false) == nil
+                       && Self.signInRefusal(["claude": Self.authSignedOut, "codex": "auth status unavailable"], otherProvider: false) == nil
+                       && Self.signInRefusal(["claude": "sign-in check required"], otherProvider: false) == nil,
+                       "update sign-in: one AI signed in, or one that did not answer, lets the update run")
+            try expect(Self.signInRefusal(["claude": Self.authSignedOut], otherProvider: true) == nil && Self.signInRefusal([:], otherProvider: false) == nil,
+                       "update sign-in: Cursor, or no Claude or Codex at all, never stops it here")
+            try expect(Self.upToDateMessage("7.0.29") == "Server 7.0.29 is up to date. It is the newest published release, so nothing was installed.",
+                       "update: nothing newer says so")
         }
 
         emit(ok: true, message: "\(passed) deterministic helper tests passed", details: ["tests": passed])

@@ -484,6 +484,10 @@ final class ControllerModel: ObservableObject {
         )
     }
     @Published var openReview: SpeakerReview?
+    /// Anand fix c (2026-11-12): Update Server's result, shown beside the button it was started from (ServerUpdateResultLine).
+    @Published private(set) var serverUpdateResult: ServerUpdateResult?
+    /// The button an update is running from, while it runs: its progress shows there.
+    @Published private(set) var serverUpdateCaller: String?
     /// The readable meeting beside the speaker rows. nil when the server is
     /// older than 6.21.28 or the fetch failed — the review still renders.
     @Published var openContent: MeetingContent?
@@ -2129,6 +2133,11 @@ final class ControllerModel: ObservableObject {
                     Task { @MainActor in self?.operationProgress = message }
                 }
                 notice = response.message
+                if command == "update" {
+                    // The result shows where the update was started, not as a second line in Settings.
+                    notice = nil
+                    finishServerUpdate(message: response.message, error: nil)
+                }
                 if command == "doctor" {
                     doctorChecks = Self.parseChecks(response.details["checks"])
                 }
@@ -2149,6 +2158,10 @@ final class ControllerModel: ObservableObject {
             } catch {
                 if command == "set-operations-dir" {
                     self.meetingLibraryGuidance = error.localizedDescription
+                } else if command == "update" {
+                    // Anand fix c: the alert says it in plain words; the helper's own text stays under the button.
+                    finishServerUpdate(message: nil, error: error.localizedDescription)
+                    self.error = serverUpdateResult?.line
                 } else {
                     self.error = error.localizedDescription
                 }
@@ -2164,6 +2177,23 @@ final class ControllerModel: ObservableObject {
 
     func installCurrentRelease() {
         perform("install", arguments: ["--version", Self.managedServerInstallVersion])
+    }
+
+    /// Update Server from one place (ServerUpdateCaller): the result shows there, in plain words, and is announced.
+    func updateServer(from caller: String) {
+        guard !busy else { return }
+        serverUpdateCaller = caller
+        serverUpdateResult = nil
+        perform("update")
+    }
+
+    private func finishServerUpdate(message: String?, error: String?) {
+        let caller = serverUpdateCaller ?? ServerUpdateCaller.settings
+        serverUpdateCaller = nil
+        let result = error.map { ServerUpdateWords.failure($0, caller: caller) } ?? ServerUpdateWords.success(message ?? "", caller: caller)
+        serverUpdateResult = result
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: result.line, .priority: NSAccessibilityPriorityLevel.high.rawValue])
     }
 
     /// Stop recognized legacy (if needed) and install the current npm latest managed server.

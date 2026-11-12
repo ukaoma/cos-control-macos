@@ -536,10 +536,11 @@ struct GlassesSetupRows: View {
         case .updateServer:
             // The panel's own server update, with its gates (Views.swift, Update Server).
             if model.status.installed && model.status.managedContract && model.status.ownershipVerified {
-                Button("Update Server") { model.perform("update") }
+                Button("Update Server") { model.updateServer(from: ServerUpdateCaller.glassesPairing) }
                     .buttonStyle(COSPrimaryButtonStyle())
                     .disabled(model.status.meetingWorkBlockingRestart || model.busy)
                     .help(model.status.meetingWorkBlockingRestart ? model.status.meetingWorkBlockReason : "")
+                ServerUpdateResultLine(model: model, caller: ServerUpdateCaller.glassesPairing)
             }
         case .madeElsewhere:
             Button("Show a new code") { Task { await pairing.showNewCode() } }.buttonStyle(COSPrimaryButtonStyle())
@@ -721,9 +722,10 @@ struct PhoneSignInOldServer: View {
             Text(PhoneSignInRules.title).font(COSType.body(14.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
             Text(PhoneSignInRules.needsUpdate).font(COSType.body(12)).foregroundStyle(COSPalette.amber)
                 .fixedSize(horizontal: false, vertical: true)
-            Button("Update Server") { model.perform("update") }
+            Button("Update Server") { model.updateServer(from: ServerUpdateCaller.phoneSignIn) }
                 .buttonStyle(COSTextButtonStyle())
                 .disabled(model.busy)
+            ServerUpdateResultLine(model: model, caller: ServerUpdateCaller.phoneSignIn)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
@@ -1440,6 +1442,32 @@ struct SetupDeviceChoice: View {
                 .accessibilityLabel(path.title + ". " + path.detail)
                 .accessibilityAddTraits(guide.devicePath == path ? .isSelected : [])
             }
+        }
+    }
+}
+
+/// Anand fix c (2026-11-12): Update Server's progress and result beside the button it was pressed from. Nothing when the update
+/// ran from somewhere else.
+struct ServerUpdateResultLine: View {
+    @ObservedObject var model: ControllerModel
+    let caller: String
+
+    var body: some View {
+        // Settings already shows an operation's progress in its top strip.
+        if model.serverUpdateCaller == caller, caller != ServerUpdateCaller.settings, let progress = model.operationProgress {
+            Text(progress).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        } else if let result = model.serverUpdateResult, result.caller == caller {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(result.line).font(COSType.body(11.5))
+                    .foregroundStyle(result.failed ? COSPalette.amber : COSPalette.green)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let detail = result.detail {
+                    Text(detail).font(COSType.body(10.5)).foregroundStyle(.secondary).textSelection(.enabled)
+                        .lineLimit(4).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
         }
     }
 }

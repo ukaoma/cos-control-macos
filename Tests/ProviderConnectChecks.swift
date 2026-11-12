@@ -521,6 +521,25 @@ struct ProviderConnectChecks {
         let three = "no AI provider proved a real query (Claude skipped: a; Codex skipped: b; Cursor skipped: c)"
         check(SetupFailureWords.plain(three)?.hasSuffix("Check Claude Code, Codex or Cursor Agent, then press Try again.") == true, "C1 failure words", SetupFailureWords.plain(three) ?? "nil")
         check(SetupFailureWords.plain("no AI provider proved a real query (no provider could be proved)")?.hasSuffix("Check your AI, then press Try again.") == true, "C1 failure words", "none named")
+        // Anand fix c (2026-11-12): Update Server's result in plain words, at the button it was pressed from.
+        let upd = ServerUpdateWords.failure(helper, caller: ServerUpdateCaller.glassesPairing)
+        check(upd.failed && upd.caller == "glasses-pairing" && upd.detail == helper
+              && upd.line == "The update did not finish: none of your AIs answered a test request. Sign in to Claude Code, then press Update Server again.",
+              "update words", upd.line)
+        check(ServerUpdateWords.failure(mixed, caller: "settings").line.hasSuffix("Check Claude Code or Codex, then press Update Server again."), "update words", "a mixed proof failure says Check")
+        let refusal = "No AI on this Mac is signed in, so nothing was changed. COS keeps a new server only after one AI answers a test question. Sign in to Claude, then press Update Server again."
+        let pre = ServerUpdateWords.failure(refusal, caller: "settings")
+        check(pre.line == refusal && pre.detail == nil && pre.failed, "update words", "the helper's sign-in stop is shown as it is")
+        let backward = "This Mac runs server 7.0.30, which is newer than 7.0.29, the latest published release. COS will not move it backward, so nothing changed."
+        check(ServerUpdateWords.failure(backward, caller: "settings").line == backward, "update words", "the won't-move-backward refusal as it is")
+        let raw = "Update failed. Control restored the previous version. Original error: npm ERR! code ETIMEDOUT"
+        let other = ServerUpdateWords.failure(raw, caller: "phone-sign-in")
+        check(other.line == "The update did not finish. What COS did is below." && other.detail == raw, "update words", "any other failure: plain line, helper text below")
+        let ok = ServerUpdateWords.success("Server 7.0.29 is up to date. It is the newest published release, so nothing was installed.", caller: "session-hooks")
+        check(!ok.failed && ok.caller == "session-hooks" && ok.line.hasPrefix("Server 7.0.29 is up to date.") && ok.detail == nil, "update words", "up to date says so")
+        check(ServerUpdateWords.success("", caller: "settings").line == "The server is updated.", "update words", "an empty helper message still says something")
+        let allUpdateWords = [upd.line, other.line, ServerUpdateWords.didNotFinish]
+        check(allUpdateWords.allSatisfy { !$0.contains("\u{2014}") && !$0.contains("\u{2192}") && !$0.contains("Miles") }, "update words", "no dash, arrow or name")
         let parsed = SetupFailureWords.skips(mixed)
         check(parsed.count == 2 && parsed[0].provider == .claude && parsed[0].reason == "not signed in" && parsed[1].provider == .codex && parsed[1].reason == "timed out",
               "C1 failure words", "the helper's reasons are read per AI")

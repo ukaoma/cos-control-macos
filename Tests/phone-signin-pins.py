@@ -166,7 +166,7 @@ old_server = body(views_file, "struct PhoneSignInOldServer: View {")
 need("Text(line)" in body(views_file, "struct PhoneSignInRow: View {") and views_file.count("PhoneSignInRules.needsUpdate") == 1
      and "PhoneSignInRules.needsUpdate" in old_server and "PhoneSignInRules.needsUpdate" not in panel, "old server says so",
      "the update line is drawn once, in the old-server note")
-need('Button("Update Server") { model.perform("update") }' in old_server and ".disabled(model.busy)" in old_server
+need('Button("Update Server") { model.updateServer(from: ServerUpdateCaller.phoneSignIn) }' in old_server and ".disabled(model.busy)" in old_server
      and "if hidden { SettingsHubBlock { PhoneSignInOldServer(model: model) } }" in block, "old server says so",
      "the note shows only while the row is hidden, with the panel's own update")
 need(".onChange(of: model.status.version) { _, _ in state.recheckAfterServerChange() }" in block, "old server rechecks",

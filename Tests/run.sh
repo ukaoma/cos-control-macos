@@ -6815,7 +6815,7 @@ if "model.meetingImportRouteActive || model.meetingSuggestionsRouteActive" not i
 # 4. COPY. Each of these is the sentence the release plan specifies, verbatim.
 for needle, why in (
     ('"Update the COS server to 6.47.0"', "route_absent names the version"),
-    ('Button("Update Server") { model.perform("update") }', "route_absent carries the Update Server affordance"),
+    ('Button("Update Server") { model.updateServer(from: ServerUpdateCaller.meetingImports) }', "route_absent carries the Update Server affordance"),
     ('"Your COS pipeline already brings in Fireflies meetings."', "a pipeline Mac says why it does not import"),
     ('"Individual answers are saved in advise mode. Consolidate meetings runs a separate cleanup that can update your files."',
      "individual advise-mode answers and the separate file-changing cleanup must be distinguished"),
@@ -7550,7 +7550,7 @@ if "1 follow-up queued. It sends when this session is available." not in compose
 banner = body(window, "@ViewBuilder private var sessionHooksBanner: some View")
 if 'state == "missing" || state == "drift" || state == "script_outdated" || state == "route_absent"' not in banner:
     fail("the banner shows for missing, drift, script_outdated and route_absent only")
-if 'Button("Update Server") { model.perform("update") }' not in banner:
+if 'Button("Update Server") { model.updateServer(from: ServerUpdateCaller.sessionHooks) }' not in banner:
     fail("a pre-6.48.0 server offers Update Server, never Install")
 if "model.installSessionHooks()" not in banner or '.buttonStyle(COSQuietButtonStyle(tone: .featured))' not in banner:
     fail("Install hooks is the featured action")

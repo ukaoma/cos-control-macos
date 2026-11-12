@@ -2190,7 +2190,7 @@ struct ControlPanel: View {
             }
             Spacer()
             if model.status.installed && model.status.managedContract && model.status.ownershipVerified {
-                Button("Update Server") { model.perform("update") }
+                Button("Update Server") { model.updateServer(from: ServerUpdateCaller.settings) }
                     .disabled(model.status.meetingWorkBlockingRestart)
                     .help(model.status.meetingWorkBlockingRestart ? model.status.meetingWorkBlockReason : "Install the newest published server and restart it.")
             } else if !model.status.installed && model.status.runtimeState == "notInstalled" {
@@ -2238,6 +2238,7 @@ struct ControlPanel: View {
     @ViewBuilder private var serverMessages: some View {
         serverProgressMessages
         serverNoticeLine
+        ServerUpdateResultLine(model: model, caller: ServerUpdateCaller.settings)
     }
 
     /// The ownership conflict and an operation's progress: in the hub, on every page (top strip).
@@ -4724,6 +4725,10 @@ private extension ControlPanel {
                 SettingsHubBlock { statusActiveWorkLine; statusTransactionLine }
             }
             hubRow("C-01") { serverControlButtons }
+            // Anand fix c: Update Server's result, under its button.
+            if model.serverUpdateResult?.caller == ServerUpdateCaller.settings {
+                SettingsHubBlock { ServerUpdateResultLine(model: model, caller: ServerUpdateCaller.settings) }
+            }
             if model.status.runtimeState == "legacyForeground" || model.notice != nil {
                 SettingsHubBlock { serverForegroundWarning; serverNoticeLine }
             }
