@@ -5930,9 +5930,11 @@ struct ActivityWindow: View {
             .frame(maxWidth: 820, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
-        Divider()
+        // The divider only with the card (Q1 lower: it drew with no card when no model can run a reply).
+        if MessageReply.available(handoffStore.models.map { ($0.id, $0.available, $0.resolvedModel) }) { Divider() }
         // The Reply card, pinned: one per turn.
-        MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, onAppear: wireMessageReply, part: .composer)
+        MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, onAppear: wireMessageReply, part: .composer,
+                          runsOn: TodayHome.workRunsOn(.standard))
             .id("reply:" + turn.id)
             // Its own full height, always: the scroll above gives way (renders 2026-11-12 showed the card cut at the window's foot).
             .fixedSize(horizontal: false, vertical: true)
@@ -5940,6 +5942,8 @@ struct ActivityWindow: View {
             .frame(maxWidth: 820, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
+        // The models read sits on the reader, which always draws (Q1 lower: the card's own .task sat on an empty Group).
+        .task(id: turn.id) { if handoffStore.models.isEmpty { await handoffStore.refresh() } }
     }
 
     /// Offered on its own when the keyword answer comes back thin, because

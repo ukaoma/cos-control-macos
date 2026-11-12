@@ -13786,6 +13786,12 @@ enum MessageReply {
         ("codex-frontier", "Codex", "Frontier"), ("codex-balanced", "Codex", "Balanced"),
         ("cursor-grok", "Cursor", "Grok"), ("cursor-composer", "Cursor", "Composer"), ("ollama", "Ollama", ""),
     ]
+    /// Q1 F3 (2026-11-12): a reply is tried once more, fresh, only when the refusal is about the session (the helper's
+    /// "sessionId must be a server session id", the server's session reasons). Any other refusal (the run guard, a busy Work,
+    /// a gone model) is shown as it is, so one failed reply costs one run, never two.
+    static func isSessionRefusal(_ reason: String) -> Bool { reason.lowercased().contains("session") }
+    /// Shown in place of the box while Settings has "Work runs from Today" off: a reply is a Today Work run.
+    static let runsOffLine = "Reply runs as a Work run from Today, which is off in Settings."
     static let modelGoneLine = "The model you picked is not available on this Mac right now. Pick another and Ask again."
     /// The default until the person picks (then the pick is kept): Sonnet, as on the web.
     static let defaultModel = "sonnet"

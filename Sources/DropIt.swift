@@ -1061,7 +1061,9 @@ final class DropItStore: ObservableObject {
         let sent = attachments.filter { ids.contains($0.mediaId ?? "") }
         let replyID = DropIt.newDropID()
         var start = await askJob(MessageReply.target(turnID: turnID, replyID: replyID), words, ids, session, nil)
-        if case .refused = start, session != nil { start = await askJob(MessageReply.target(turnID: turnID, replyID: replyID + "-fresh"), words, ids, nil, nil) }
+        if case .refused(let why) = start, session != nil, MessageReply.isSessionRefusal(why) {
+            start = await askJob(MessageReply.target(turnID: turnID, replyID: replyID + "-fresh"), words, ids, nil, nil)
+        }
         switch start {
         case .started(let job):
             var made = DropIt.Ask(id: job, words: words, files: sent.map { DropIt.Ask.File(name: $0.name, kind: $0.kind, thumb: $0.thumb) }, at: now())

@@ -10,6 +10,7 @@ import SwiftUI
 /// Writes message-reply-<state>-<W>x<H>-<light|dark>.png for two states:
 ///   efforts    #486, a turn with a session, a server that serves efforts (7.0.27): Model and Effort, one reply answered
 ///   no-efforts #312, a turn with no session, a server that serves none (7.0.18): Model alone, "Starts a conversation."
+///   runs-off   #312 with Settings' "Work runs from Today" off: the card says why there is no box (Q1 F3)
 @main @MainActor struct MessageReplyRender {
     static func main() async throws {
         NSApplication.shared.setActivationPolicy(.prohibited)
@@ -28,7 +29,7 @@ import SwiftUI
         }
         UserDefaults.standard.set(true, forKey: TodayHome.enabledKey)
         var written = 0
-        for state in ["efforts", "no-efforts"] {
+        for state in ["efforts", "no-efforts", "runs-off"] {
             for size in sizes {
                 for appearance in [NSAppearance.Name.aqua, .darkAqua] {
                     try await render(state: state, size: size, appearance: appearance, out: out); written += 1
@@ -53,6 +54,7 @@ import SwiftUI
     }
 
     static func render(state: String, size: NSSize, appearance: NSAppearance.Name, out: URL) async throws {
+        UserDefaults.standard.set(state != "runs-off", forKey: TodayHome.workRunsKey)
         let model = ControllerModel(startBackgroundWork: false)
         let shown = state == "efforts"
             ? turn(no: 486, session: "a1b2c3d4-0000-4000-8000-123456789abc", query: "What changed in the onboarding deck since Monday?",

@@ -22,6 +22,8 @@ struct MessageReplyBlock: View {
     /// and this Mac's replies to the turn read in the scroll under the answer (.replies). .all is both in one card.
     enum Part { case all, replies, composer }
     var part: Part = .all
+    /// Settings' "Work runs from Today" (TodayHome.workRunsOn): off, the card says so in place of the box (Q1 F3).
+    var runsOn = true
     @AppStorage(MessageReply.modelKey) private var pickedModel = ""
     @AppStorage(MessageReply.effortKey) private var pickedEffort = ""
     @State private var draft = ""
@@ -76,7 +78,14 @@ struct MessageReplyBlock: View {
                     ForEach(replies) { reply in replyRow(reply) }
                 }
             }
-            composer(label: label)
+            if runsOn {
+                composer(label: label)
+            } else {
+                Text(MessageReply.runsOffLine)
+                    .font(COSType.body(12))
+                    .foregroundStyle(TodayInk.hot)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)

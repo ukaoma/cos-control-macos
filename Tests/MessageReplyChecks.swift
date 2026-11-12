@@ -35,7 +35,10 @@ import Foundation
             ("codex-frontier", true, "gpt-5.5-codex"), ("codex-balanced", true, nil), ("cursor-grok", false, "grok-4"),
             ("cursor-composer", false, nil), ("ollama", true, "  ")]
         let menu = MessageReply.menu(catalog)
-        check(menu.map(\.id) == ["opus", "fable", "sonnet", "codex-frontier", "codex-balanced", "ollama"], "[menu] the web's order; Haiku is not on it; Cursor only when ready")
+        // One label per rule, so each mutant is killed by the rule it breaks (Q1 lower).
+        check(!menu.contains { $0.id == "haiku" }, "[menu] Haiku is not on it")
+        check(!menu.contains { $0.id == "cursor-grok" }, "[menu] Cursor only when ready")
+        check(menu.map(\.id) == ["opus", "fable", "sonnet", "codex-frontier", "codex-balanced", "ollama"], "[menu] the web's order")
         check(menu.map(\.label) == ["Claude Opus", "Claude Fable", "Claude Sonnet", "Codex gpt-5.5-codex", "Codex Balanced", "Ollama"],
               "[menu] the web's names: a Claude tier by name, an engine by the model it runs, else the web's fallback word")
         check(MessageReply.menu([("opus", false, nil), ("sonnet", true, nil)]).map(\.id) == ["sonnet"], "[menu] a model this Mac cannot run is not offered")
@@ -68,11 +71,19 @@ import Foundation
         check(store.asks.count == 1 && store.asks[0].replyTo == "turn-486" && !store.asks[0].threaded, "[reply] it is kept as this turn's reply, never a COS thread Ask")
         // A session the server refuses: once more, fresh, so the reply is never lost.
         calls = []
-        var answers: [DropItStore.AskStart] = [.refused("That conversation has ended."), .started("2a1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b")]
+        var answers: [DropItStore.AskStart] = [.refused("sessionId must be a server session id"), .started("2a1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b")]
         store.askJob = { target, prompt, _, session, _ in calls.append((target, prompt, session)); return answers.removeFirst() }
         check(await store.reply("and the appendix?", to: "turn-486", session: session), "[retry] a refused session starts fresh")
         check(calls.count == 2 && calls[0].session == session && calls[1].session == nil && calls[0].target != calls[1].target,
               "[retry] the second try carries no session and its own target")
+        // Q1 F3: any other refusal, with a session, is shown and not retried, so one failed reply costs one run.
+        calls = []
+        store.askJob = { target, prompt, _, session, _ in calls.append((target, prompt, session)); return .refused("Work runs from Today is off in Settings.") }
+        check(await store.reply("and the deck?", to: "turn-486", session: session) == false && calls.count == 1
+              && store.line == "Work runs from Today is off in Settings.", "[retry] a refusal that is not about the session is shown, not retried")
+        check(MessageReply.isSessionRefusal("sessionId must be a server session id") && MessageReply.isSessionRefusal("invalid_session_id")
+              && !MessageReply.isSessionRefusal("Today runs are paused for 15 minutes.") && !MessageReply.isSessionRefusal(MessageReply.modelGoneLine),
+              "[retry] only a session refusal retries")
         // No session: no retry, and a refusal says why.
         calls = []
         store.askJob = { target, prompt, _, session, _ in calls.append((target, prompt, session)); return .refused("Work is busy. Try again in a minute.") }

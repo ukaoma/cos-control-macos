@@ -473,6 +473,8 @@ COS_DROP_IT_LANE=pins zsh "$ROOT/Tests/run-drop-it.sh"
 COS_DROP_IT_LANE=models zsh "$ROOT/Tests/run-drop-it.sh"
 COS_DROP_IT_LANE=p2 zsh "$ROOT/Tests/run-drop-it.sh"
 COS_DROP_IT_LANE=wiring zsh "$ROOT/Tests/run-drop-it.sh"
+# Reply in the message reader (D4, 2026-11-12; Q1 F2): its checks and wiring pins, in the release suite.
+zsh "$ROOT/Tests/run-message-reply.sh"
 # 0.5.336: the live meeting view (server 6.86.0). The wiring pins (capability gating, the audiogram in its own object,
 # Reduce Motion, the one-second clock, Command-Shift-R once, live cues only on the Mac start, no grey text in any log),
 # then the pure rules (counts, anchoring, the strip, the title, the audiogram ring, the preview rate cap, the grey line).

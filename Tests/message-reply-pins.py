@@ -15,16 +15,24 @@ def body(text, start, end):
 detail = body(win, "    private func messageDetail(_ turn: GlassesTurn) -> some View {", "\n    /// Offered on its own when the keyword answer")
 need("                        todayRail(mode: mode, frame: frame, now: timeline.date)\n                            .frame(maxHeight: geometry.size.height, alignment: .top)\n                            .clipped()" in win,
      "[window] the rail never makes the row taller than the window, so the pinned card stays on screen")
+# Q1 F3 and lower (2026-11-12): the divider only with the card; the models read on the reader, which always draws; the card
+# says so when Today runs are off; the store retries fresh only on a session refusal.
+need("        if MessageReply.available(handoffStore.models.map { ($0.id, $0.available, $0.resolvedModel) }) { Divider() }" in detail,
+     "[reader] the divider draws only with the card")
+need("        .task(id: turn.id) { if handoffStore.models.isEmpty { await handoffStore.refresh() } }" in detail, "[reader] the models are read by the reader")
+need("            if runsOn {\n                composer(label: label)\n            } else {\n                Text(MessageReply.runsOffLine)" in view
+     and 'static let runsOffLine = "Reply runs as a Work run from Today, which is off in Settings."' in models, "[runs off] the card says why there is no box")
+need("if case .refused(let why) = start, session != nil, MessageReply.isSessionRefusal(why) {" in drop, "[retry] only a session refusal retries")
 # Anand parity (lead 2026-11-12, as the web's reader): the Reply card is pinned under the scroll; this Mac's replies read in the
 # scroll under the answer.
-mount = 'MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, onAppear: wireMessageReply, part: .composer)\n            .id("reply:" + turn.id)'
+mount = 'MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, onAppear: wireMessageReply, part: .composer,\n                          runsOn: TodayHome.workRunsOn(.standard))\n            .id("reply:" + turn.id)'
 need(".id(\"reply:\" + turn.id)\n            // Its own full height, always: the scroll above gives way" in detail
      and ".fixedSize(horizontal: false, vertical: true)\n            .padding(.horizontal, 28).padding(.vertical, 12)" in detail,
      "[reader] the pinned card keeps its full height; the scroll gives way")
 replies_mount = 'MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, part: .replies)\n                    .id("replies:" + turn.id)'
 need(win.count("MessageReplyBlock(") == 2 and mount in detail and detail.count("onAppear: wireMessageReply") == 1,
      "[reader] Reply mounts once, in the single-message reader, one block per turn")
-scroll_end = detail.find("\n        }\n        Divider()\n")
+scroll_end = detail.find("\n        }\n        // The divider only with the card")
 need(detail.startswith("    private func messageDetail(_ turn: GlassesTurn) -> some View {") and "        VStack(spacing: 0) {\n        ScrollView {" in detail
      and scroll_end > 0 and detail.find(mount) > scroll_end, "[reader] the Reply card is pinned under the scroll, outside it")
 need(replies_mount in detail and 0 < detail.find('fallback: "From COS")') < detail.find(replies_mount) < scroll_end,
@@ -56,7 +64,7 @@ need("if mode == .newSession, let effort { job[\"effort\"] = effort }" in handof
      "[handoff] the effort rides only a new Work run; the served efforts are read with the models")
 reply = body(drop, "    func reply(_ text: String, to turnID: String, session: String?) async -> Bool {", "\n    /// Reads back the runs")
 need("var start = await askJob(MessageReply.target(turnID: turnID, replyID: replyID), words, ids, session, nil)" in reply
-     and "if case .refused = start, session != nil {" in reply and "made.replyTo = turnID" in reply and "threadOn()" not in reply,
+     and "if case .refused(let why) = start, session != nil, MessageReply.isSessionRefusal(why) {" in reply and "made.replyTo = turnID" in reply and "threadOn()" not in reply,
      "[store] a reply continues the turn's session, retries fresh once, is tagged to its turn and never uses the COS thread")
 need("    func ask(_ text: String, files separateFiles: [DropIt.Attachment]? = nil) async -> Bool {" in drop, "[chat] the COS chat's Ask is unchanged")
 need("if !efforts.isEmpty {" in view and 'COSDropdown("Effort", selection: $pickedEffort,' in view, "[effort] Effort shows only when the server serves efforts for the model's agent")
@@ -79,7 +87,8 @@ web_path = next((os.path.join(c, "server/web-control/panes/cos-chat.js") for c i
                  if c and os.path.exists(os.path.join(c, "server/web-control/panes/cos-chat.js"))),
                 os.path.join(candidates[1], "server/web-control/panes/cos-chat.js"))
 if not os.path.exists(web_path):
-    need(False, "[parity] the server's cos-chat.js was not found at " + web_path + " (set COS_SERVER_ROOT)")
+    # Q1 F2: the release suite runs on Macs without a server checkout; say so and skip, never fail there.
+    print("message reply pins: SKIPPED the web parity pin: no cos-glasses-server checkout found (set COS_SERVER_ROOT to run it)")
 else:
     web = open(web_path).read()
     def js_pairs(name):
