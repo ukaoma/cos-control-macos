@@ -292,7 +292,7 @@ need('"PK-02"' not in basic_block and catalog.index("static let extras: [Setting
 switch_view = body_of(views, views.index("struct PhoneApprovalsSwitchRow: View"))
 toggle_at = switch_view.find("Toggle(PhoneApprovalsSwitch.label")
 toggle_end = switch_view.find(".labelsHidden()", toggle_at)
-need(views.count("model.setPhoneApprovals(") == 2 and switch_view.count(".cosConfirm(") == 2 and 0 <= toggle_at < toggle_end
+need(views.count("model.setPhoneApprovals(") == 2 and switch_view.count("PhoneApprovalsConfirm.Request(") == 2 and 0 <= toggle_at < toggle_end
      and "setPhoneApprovals" not in switch_view[toggle_at:toggle_end]
      and helper.count('"COS_WEB_KEY_AUTHORITY"') == 1 and helper.count('"COS_WEB_KEY_DEVICES"') == 1
      and pairing.count('static let authorityKey = "COS_WEB_KEY_AUTHORITY"') == 1,
@@ -315,7 +315,7 @@ guard = "PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.acti
 on_lines = [l for l in switch_view.splitlines() if "model.setPhoneApprovals(on: true" in l]
 need(switch_view.count(guard) == 3 and len(on_lines) == 1 and on_lines[0].strip().startswith("if " + guard + " { model.setPhoneApprovals(on: true")
      and ".labelsHidden().toggleStyle(COSSwitchStyle()).disabled(locked || pendingOff != nil)" in switch_view
-     and phone.count("work: restartWork, locked: serverSettingsLocked) }") == 1,
+     and phone.count("work: restartWork, locked: serverSettingsLocked, confirm: phoneConfirm) }") == 1,
      "phone switch waits for work", "turning on waits for running work, with the panel's restartWork")
 # Option A (lead ruling 2026-11-12 10:32): Off never asks applyAllowed. The toggle opens the confirm, the confirm runs
 # PhoneApprovalsOff.run, and its Revoke all comes before the only applyAllowed in the Off code, the =0 restart's (resume).
@@ -339,6 +339,12 @@ need(all(fn.count("return false") == 1 and "if let anchor {" in fn and "guard le
          for fn in (revoke_fn, revoke_all_fn)) and "stay off" not in body_of(core, core.index("enum WebKeyRevokeOutcome {")).replace(
          'case (false, true): return "Revoked in Control. The server did not confirm, so phone approvals stay off until it does."', ""),
      "revoke needs no anchor", "revoke and revoke-all call the server in every case, and only a saved record may say approvals stay off")
+# PK-02's two confirms are drawn by the page (lead 10:47), like the server confirms: the row draws none, the panel one.
+phone_stage = body_of(main_views, main_views.index("private var panelWithPhoneConfirm: some View {"))
+need(".cosConfirm(" not in switch_view and "phoneConfirm.shown?.actions ?? [.cancel()]" in phone_stage and "panelWithServerConfirm" in phone_stage
+     and main_views.count("    var body: some View {\n        panelWithPhoneConfirm\n") == 1
+     and main_views.count("@StateObject private var phoneConfirm = PhoneApprovalsConfirm()") == 1,
+     "phone confirm at the page", "PK-02's confirms are drawn at the page, never inside the row")
 # Condition 4: Off touches nothing that enrolls or approves a phone, so enrolling keeps today's Touch ID and code.
 need(not any(t in off_section for t in ("approve(", "startApproval", "typedCode", ".card", "WebKeyApproveGate")),
      "phone off keeps enrollment gated", "Off never touches enrollment or approval; enrolling keeps its Touch ID and code")

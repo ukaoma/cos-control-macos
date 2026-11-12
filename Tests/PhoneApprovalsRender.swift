@@ -153,6 +153,8 @@ struct HubPage<Content: View>: View {
 struct PhoneCard: View {
     @ObservedObject var model: ControllerModel
     let row: PhoneApprovalsSwitchRow
+    /// The page's confirm, drawn over the whole card as ControlPanel.panelWithPhoneConfirm draws it over the page.
+    @ObservedObject var confirm: PhoneApprovalsConfirm
     var body: some View {
         HubPage {
             SettingsHubCard(group: SettingsHubCatalog.group("glasses.phone")!, advancedCount: 0, advancedOpen: .constant(false)) {
@@ -162,6 +164,12 @@ struct PhoneCard: View {
                 SettingsHubWebRevokeRow(model: model, phone: model.phoneSignIn)
             } advanced: { EmptyView() }
         }
+        .cosConfirm(
+            confirm.shown?.title ?? "Are you sure?",
+            isPresented: Binding(get: { confirm.shown != nil }, set: { if !$0 { confirm.shown = nil } }),
+            message: confirm.shown?.message ?? "",
+            actions: confirm.shown?.actions ?? [.cancel()]
+        )
     }
 }
 
@@ -211,12 +219,15 @@ struct PhoneCard: View {
             ("card-6-confirm-turn-off", pending, .confirmOff, .init()),
         ]
         for (name, model, step, work) in steps {
-            let row = PhoneApprovalsSwitchRow.renderFixture(model: model, state: model.webKey, pairing: model.glassesPairing, work: work, step: step)
-            count += try card(PhoneCard(model: model, row: row), width: cardWidth, name: name, out: out)
+            let confirm = PhoneApprovalsConfirm()
+            let row = PhoneApprovalsSwitchRow.renderFixture(model: model, state: model.webKey, pairing: model.glassesPairing, work: work,
+                                                            confirm: confirm, step: step)
+            count += try card(PhoneCard(model: model, row: row, confirm: confirm), width: cardWidth, name: name, out: out)
         }
         for (name, model) in [("card-7-on-https-certificates-off", certsOff), ("card-8-on-certificate-ready", ready)] {
-            let row = PhoneApprovalsSwitchRow(model: model, state: model.webKey, pairing: model.glassesPairing, work: .init(), locked: false)
-            count += try card(PhoneCard(model: model, row: row), width: cardWidth, name: name, out: out)
+            let confirm = PhoneApprovalsConfirm()
+            let row = PhoneApprovalsSwitchRow(model: model, state: model.webKey, pairing: model.glassesPairing, work: .init(), locked: false, confirm: confirm)
+            count += try card(PhoneCard(model: model, row: row, confirm: confirm), width: cardWidth, name: name, out: out)
         }
 
         // The picker's menu is a system menu, which an offscreen render cannot open; this is what it lists.

@@ -86,6 +86,18 @@ private struct WebKeyLine: View {
 /// managed path, and the Phone approvals block below shows the amber certificate line until the certificate is ready.
 /// Like the nine restart rows (RestartApply, Settings Release A), nothing applies while work runs or another change is in
 /// progress: the row says it waits instead (PhoneApprovalsSwitch.applyAllowed).
+/// PK-02's confirm, drawn by the Settings page (ControlPanel.panelWithPhoneConfirm) like the server confirms, never inside
+/// the row: a dialog taller than the row spilled over the blocks around it (renders at 5122a8f, card-3 and card-6).
+@MainActor final class PhoneApprovalsConfirm: ObservableObject {
+    struct Request {
+        let title: String
+        let message: String
+        let actions: [COSConfirmAction]
+    }
+    @Published var shown: Request?
+    init() {}
+}
+
 struct PhoneApprovalsSwitchRow: View {
     @ObservedObject var model: ControllerModel
     @ObservedObject var state: WebKeyState
@@ -93,10 +105,10 @@ struct PhoneApprovalsSwitchRow: View {
     /// The panel's restartWork and serverSettingsLocked, the same two the nine restart rows read.
     let work: RestartApply.Work
     let locked: Bool
+    /// The page's confirm: the row asks, the page draws it.
+    @ObservedObject var confirm: PhoneApprovalsConfirm
     @State private var choosing = false
     @State private var picked: PhoneApprovalsSwitch.Phone?
-    @State private var confirmOn = false
-    @State private var confirmOff = false
     /// A turn-on found running work: the row says it waits.
     @State private var held = false
     /// Option A: Off's saved wait (PhoneApprovalsOff), read from UserDefaults when the row appears.
@@ -128,7 +140,7 @@ struct PhoneApprovalsSwitchRow: View {
                         choosing = true
                         Task { await pairing.refreshTailscale() }
                     } else if !wanted, on, pendingOff == nil {
-                        confirmOff = true
+                        confirm.shown = offRequest()
                     } else if !wanted {
                         choosing = false; picked = nil; held = false
                     }
@@ -144,7 +156,7 @@ struct PhoneApprovalsSwitchRow: View {
                         ForEach(phones, id: \.self) { phone in Text(phone.name).tag(Optional(phone)) }
                     }
                     .frame(maxWidth: 280, alignment: .leading)
-                    Button(PhoneApprovalsSwitch.confirmOn) { confirmOn = true }
+                    Button(PhoneApprovalsSwitch.confirmOn) { if let picked { confirm.shown = onRequest(picked) } }
                         .buttonStyle(TodayButtonStyle(small: true))
                         .disabled(picked == nil || !PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active))
                 }
@@ -163,13 +175,6 @@ struct PhoneApprovalsSwitchRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .cosConfirm(picked.map(PhoneApprovalsSwitch.confirmOnTitle) ?? PhoneApprovalsSwitch.label, isPresented: $confirmOn,
-            message: picked.map { PhoneApprovalsSwitch.confirmOnMessage($0, macName: pairing.tailscale?.selfDNS) } ?? "",
-            actions: [.normal(PhoneApprovalsSwitch.confirmOn) {
-                if PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active) { model.setPhoneApprovals(on: true, phone: picked) } else { held = true }
-            }, .cancel()])
-        .cosConfirm(PhoneApprovalsSwitch.confirmOffTitle, isPresented: $confirmOff, message: PhoneApprovalsSwitch.confirmOffMessage,
-            actions: [.destructive(PhoneApprovalsSwitch.confirmOff) { turnOff() }, .cancel()])
         // After the helper's restart (or any other operation): read the server again, so On and the amber line follow it.
         .onChange(of: model.busy) { _, busy in
             guard !busy else { return }
@@ -183,6 +188,23 @@ struct PhoneApprovalsSwitchRow: View {
         }
         .onChange(of: work.active) { _, active in if !active { held = false; resumeOff() } }
         .onAppear { pendingOff = pendingStore.load(); resumeOff() }
+    }
+
+    /// Turn on for this phone: the page draws it. The apply still asks applyAllowed at the click.
+    func onRequest(_ phone: PhoneApprovalsSwitch.Phone) -> PhoneApprovalsConfirm.Request {
+        PhoneApprovalsConfirm.Request(
+            title: PhoneApprovalsSwitch.confirmOnTitle(phone),
+            message: PhoneApprovalsSwitch.confirmOnMessage(phone, macName: pairing.tailscale?.selfDNS),
+            actions: [.normal(PhoneApprovalsSwitch.confirmOn) {
+                if PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active) { model.setPhoneApprovals(on: true, phone: picked) } else { held = true }
+            }, .cancel()])
+    }
+
+    /// Turn off: the page draws it. Off never asks applyAllowed (option A).
+    func offRequest() -> PhoneApprovalsConfirm.Request {
+        PhoneApprovalsConfirm.Request(
+            title: PhoneApprovalsSwitch.confirmOffTitle, message: PhoneApprovalsSwitch.confirmOffMessage,
+            actions: [.destructive(PhoneApprovalsSwitch.confirmOff) { turnOff() }, .cancel()])
     }
 
     /// Option A: Revoke all now, whatever work runs, then the =0 restart, which waits for running work.
@@ -208,16 +230,17 @@ struct PhoneApprovalsSwitchRow: View {
     /// the model's background work off. Nothing here applies anything; the confirm's buttons are drawn, never pressed.
     enum FixtureStep { case choosing(PhoneApprovalsSwitch.Phone?), confirmOn(PhoneApprovalsSwitch.Phone), confirmOff }
     static func renderFixture(model: ControllerModel, state: WebKeyState, pairing: GlassesPairingState, work: RestartApply.Work = .init(),
-                              step: FixtureStep) -> PhoneApprovalsSwitchRow {
+                              confirm: PhoneApprovalsConfirm, step: FixtureStep) -> PhoneApprovalsSwitchRow {
         precondition(!model.backgroundWorkEnabled)
-        var row = PhoneApprovalsSwitchRow(model: model, state: state, pairing: pairing, work: work, locked: false)
+        var row = PhoneApprovalsSwitchRow(model: model, state: state, pairing: pairing, work: work, locked: false, confirm: confirm)
         switch step {
         case .choosing(let phone):
             row._choosing = State(initialValue: true); row._picked = State(initialValue: phone)
         case .confirmOn(let phone):
-            row._choosing = State(initialValue: true); row._picked = State(initialValue: phone); row._confirmOn = State(initialValue: true)
+            row._choosing = State(initialValue: true); row._picked = State(initialValue: phone)
+            confirm.shown = row.onRequest(phone)
         case .confirmOff:
-            row._confirmOff = State(initialValue: true)
+            confirm.shown = row.offRequest()
         }
         return row
     }

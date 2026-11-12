@@ -608,6 +608,8 @@ struct ControlPanel: View {
     @State private var petStateSpritesExpanded = false
     @State private var petCharactersExpanded = false
     @State private var confirmOpenPetsSprite = false
+    /// PK-02's two confirms (turn phone approvals on or off), drawn at the page like the server confirms.
+    @StateObject private var phoneConfirm = PhoneApprovalsConfirm()
     @State private var confirmBundledCharacter = false
     @State private var pendingOpenPetsRow: OpenPetsCatalogRow?
     @State private var pendingBundledCharacter: BundledPetCharacter?
@@ -908,8 +910,19 @@ struct ControlPanel: View {
         if SettingsConfirmCopy.quitNeedsConfirm(macRecordingActive: model.macRecordingActive) { serverConfirm = .quit } else { AppQuit.request() }
     }
 
-    var body: some View {
+    /// A fifth stage for the same reason as the fourth: PK-02's confirm at the page, so it never spills over its row.
+    private var panelWithPhoneConfirm: some View {
         panelWithServerConfirm
+        .cosConfirm(
+            phoneConfirm.shown?.title ?? "Are you sure?",
+            isPresented: Binding(get: { phoneConfirm.shown != nil }, set: { if !$0 { phoneConfirm.shown = nil } }),
+            message: phoneConfirm.shown?.message ?? "",
+            actions: phoneConfirm.shown?.actions ?? [.cancel()]
+        )
+    }
+
+    var body: some View {
+        panelWithPhoneConfirm
         .cosConfirm(
             pendingOpenPetsRow.map { "Use \($0.displayName) as the session pet figure?" }
                 ?? "Use this figure as the session pet figure?",
@@ -4316,7 +4329,7 @@ private extension ControlPanel {
             // hubRowDrawn is false in Basic), off by default, and only for a server with the reopened phone approvals.
             if hubRowDrawn("PK-02"), PhoneApprovalsSwitch.shown(serverVersion: model.status.version) {
                 SettingsHubBlock { PhoneApprovalsSwitchRow(model: model, state: model.webKey, pairing: model.glassesPairing,
-                                                           work: restartWork, locked: serverSettingsLocked) }
+                                                           work: restartWork, locked: serverSettingsLocked, confirm: phoneConfirm) }
                     .settingsHubAnchor("PK-02")
             }
             // PK-01 (server 6.99.31, COS_WEB_KEY_AUTHORITY): Phone approvals, beside the phone sign-in, in Basic and All, never
