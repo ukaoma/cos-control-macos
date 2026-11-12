@@ -694,7 +694,7 @@ enum SetupAssistant {
               source: "cos-starter control/docs/index.html:1192 (Accessibility is on, but dictation only copies the text); control/index.html:588 (Stuck during setup?); Sources/ControllerModel.swift:6211-6214 resetAccessibilityAndAddAgain()",
               groups: [Terms.accessibility], boosts: ["accessibility", "dictation", "stuck"]),
         Entry(id: "glasses", title: "The glasses will not connect",
-              answer: "The phone has to reach this Mac. Check that the Mac is awake and the COS server answers. Away from home, Tailscale must be on for both the Mac and the iPhone, and the server URL in the companion's COS settings, under System, Connection, must be the Mac's 100.x address. After a server restart, force-quit the Even app and reopen it.",
+              answer: "The phone has to reach this Mac. Check that the Mac is awake and the COS server answers. Away from home, Tailscale must be on for both the Mac and the phone, and the server URL in the companion's COS settings, under System, Connection, must be the Mac's 100.x address. After a server restart, force-quit the Even app and reopen it.",
               actions: [.startServer, .repairRuntime, .openTailscale, .openSetupGuide],
               source: "cos-starter docs/index.html:1984 (Query failed. Check COS server connection.), :2000 (Restarted the server?), :1037 (Same Wi-Fi or anywhere), :1940 (System, Connection: server URL)",
               groups: [Terms.glasses, Terms.connect + Terms.fail + Terms.pairing],

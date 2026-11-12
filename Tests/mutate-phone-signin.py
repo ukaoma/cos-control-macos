@@ -72,7 +72,7 @@ mutants = [
  ("H10 the glasses note drawn outside the row", P, '                .settingsHubAnchor("UT-29")\n            if voiceGuide.devicePath == .glasses {\n',
   '                .settingsHubAnchor("UT-29")\n            if voiceGuide.devicePath == .glasses {\n                Text(PhoneSignInRules.notGlasses)\n', PINS, "[old server hides]"),
  # The row, the QR image and the hub (pins and the hub's checks).
- ("V1 the phone QR is cached", V, 'label: "Sign-in QR for Safari on your iPhone", cached: false)', 'label: "Sign-in QR for Safari on your iPhone", cached: true)', PINS, "[qr not cached]"),
+ ("V1 the phone QR is cached", V, 'label: "Sign-in QR for your phone\'s browser", cached: false)', 'label: "Sign-in QR for your phone\'s browser", cached: true)', PINS, "[qr not cached]"),
  ("V2 the image cache ignores its switch", V, "        if cached, let hit = cache[text] { return hit }\n", "        if let hit = cache[text] { return hit }\n", PINS, "[qr not cached]"),
  ("V3 the image is stored when uncached", V, "        guard cached else { return result }\n", "", PINS, "[qr not cached]"),
  ("V4 the row asks while its window is hidden", V, "windowHolder.onScreen(panelVisible: model.panelVisible) })", "true })", PINS, "[visible only]"),
@@ -95,8 +95,8 @@ mutants = [
   '                PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: true, polls: false)\n                SettingsHubBlock { GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ in }, polls: false) }\n',
   '                SettingsHubBlock { GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ in }, polls: false) }\n                PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: true, polls: false)\n',
   PINS, "[qr order]"),
- ("Q3 the phone subtitle says scan again (pins)", M, '"Point your iPhone Camera here. Safari opens COS already signed in."', '"Scan with your iPhone camera. Safari opens COS already signed in."', PINS, "[copy]"),
- ("Q4 the phone subtitle says scan again (checks)", M, '"Point your iPhone Camera here. Safari opens COS already signed in."', '"Scan with your iPhone camera. Safari opens COS already signed in."', APP, "[phone copy]"),
+ ("Q3 the phone subtitle says scan again (pins)", M, '"Point your phone\'s camera here. Its browser opens COS already signed in."', '"Scan with your iPhone camera. Safari opens COS already signed in."', PINS, "[copy]"),
+ ("Q4 the phone subtitle says scan again (checks)", M, '"Point your phone\'s camera here. Its browser opens COS already signed in."', '"Scan with your iPhone camera. Safari opens COS already signed in."', APP, "[phone copy]"),
  ("Q5 the note still says the glasses QR is above", M, '"The QR below is for the COS Glasses app, not the Camera."', '"This QR is for Safari. The one in Connect your glasses is for the COS app."', PINS, "[copy]"),
  ("Q6 the pairing caption loses the app (pins)", M, 'static let pairCaption = "Open the COS Glasses app, then hold your phone so the code fills the screen."', 'static let pairCaption = "Hold your phone so the code fills the screen"', PINS, "[glasses QR labeled]"),
  ("Q7 the pairing caption loses the app (checks)", M, 'static let pairCaption = "Open the COS Glasses app, then hold your phone so the code fills the screen."', 'static let pairCaption = "Hold your phone so the code fills the screen"', APP, "[glasses qr copy]"),
@@ -108,7 +108,7 @@ mutants = [
             }
             lanToggle
 ''', "            lanToggle\n", PINS, "[glasses QR labeled]"),
- ("Q11 the catalog keeps the old subtitle", K, '"Point your iPhone Camera here. Safari opens COS already signed in.", old: ""', '"Scan with your iPhone camera. Safari opens COS already signed in.", old: ""', PINS, "[catalog row]"),
+ ("Q11 the catalog keeps the old subtitle", K, '"Point your phone\'s camera here. Its browser opens COS already signed in.", old: ""', '"Scan with your iPhone camera. Safari opens COS already signed in.", old: ""', PINS, "[catalog row]"),
 ]
 # V6 (0.5.368 order: the row above the glasses block) opens the glasses block before the row and drops its own opening line, so
 # the block encloses the row and still compiles.

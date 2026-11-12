@@ -968,7 +968,7 @@ extension ProviderConnectChecks {
               "phone retry", "a failure waits 10 s")
         check(R.left(299.2) == "5:00 left" && R.left(61) == "1:01 left" && R.left(0.2) == "0:01 left" && R.left(-3) == "0:00 left", "phone left", R.left(299.2))
         // The copy, as the web page and the brief name it.
-        check(R.title == "Open COS on your phone" && R.subtitle == "Point your iPhone Camera here. Safari opens COS already signed in."
+        check(R.title == "Open COS on your phone" && R.subtitle == "Point your phone's camera here. Its browser opens COS already signed in."
               && R.notGlasses == "The QR below is for the COS Glasses app, not the Camera."
               && R.qrNote == "Works once, for 2 minutes. Only on your tailnet." && R.codeNote == "Type this on the sign-in page. Works once, for 5 minutes."
               && R.showCode == "Show a sign-in code" && R.newQR == "Show a new QR" && R.noTailnet == "Turn on Tailscale on this Mac."
@@ -978,7 +978,7 @@ extension ProviderConnectChecks {
             check(!text.contains("—") && !text.contains("–") && !text.contains("→") && !text.contains("->"), "phone copy", "no dash or arrow: \(text)")
         }
         // 0.5.368: the glasses pairing QR says it is for the COS Glasses app; the row and the caption under the QR.
-        check(GlassesRules.pairSubtitle == "Scan this inside the COS Glasses app. The iPhone Camera can't read it."
+        check(GlassesRules.pairSubtitle == "Scan this inside the COS Glasses app. Your phone's camera can't read it."
               && GlassesRules.pairCaption == "Open the COS Glasses app, then hold your phone so the code fills the screen."
               && GlassesRules.connectRow(GlassesFacts()).unlocks == GlassesRules.pairSubtitle, "glasses qr copy", GlassesRules.connectRow(GlassesFacts()).unlocks)
         for text in [GlassesRules.pairSubtitle, GlassesRules.pairCaption] {
@@ -1143,9 +1143,9 @@ extension ProviderConnectChecks {
 
 /// `tailscale-status` details as the helper prints them (HelperSources/PairingCore.swift), from this Mac's real shape.
 func tailscaleDetails(installed: Bool = true, running: Bool = true, backend: String? = "Running", phoneOnline: Bool = true,
-                      phoneSameUser: Bool = true, error: String? = nil) -> String {
+                      phoneSameUser: Bool = true, phoneOS: String = "iOS", error: String? = nil) -> String {
     let peers = installed && backend != nil ? """
-    [{"os":"iOS","dns":"example-iphone.tail00000a.ts.net","ipv4":"100.64.0.11","online":\(phoneOnline),"sameUser":\(phoneSameUser)},
+    [{"os":"\(phoneOS)","dns":"example-iphone.tail00000a.ts.net","ipv4":"100.64.0.11","online":\(phoneOnline),"sameUser":\(phoneSameUser)},
      {"os":"macOS","dns":"example-laptop.tail00000a.ts.net","ipv4":"100.64.0.12","online":false,"sameUser":true}]
     """ : "[]"
     return """
@@ -1239,12 +1239,19 @@ extension ProviderConnectChecks {
         check(stopped.action == .openTailscale && stopped.detail?.contains("Open the Tailscale app") == true, "mac row unreadable", "\(stopped)")
         let on = GlassesRules.macRow(gfacts())
         check(on.done && on.status == "Running" && on.detail?.contains("100.64.0.10") == true && on.action == .none, "mac row running", "\(on)")
-        // Tailscale on your iPhone.
+        // Tailscale on your phone.
         let phone = GlassesRules.phoneRow(gfacts())
         check(phone.done && phone.detail == "example-iphone is on your tailnet" && phone.unlocks == "Sign in with the same account as this Mac", "phone row", "\(phone)")
         check(!GlassesRules.phoneRow(gfacts(tailscale: tailscaleDetails(phoneOnline: false))).done, "phone row", "offline phone")
         check(!GlassesRules.phoneRow(gfacts(tailscale: tailscaleDetails(phoneSameUser: false))).done, "phone row", "another user's phone")
-        check(GlassesRules.tailscaleAppStore == "https://apps.apple.com/app/tailscale/id1470499037", "phone row", "the App Store link")
+        check(GlassesRules.tailscalePhoneDownload == "https://tailscale.com/download", "phone row", "one download link for any phone")
+        // Anand fix a (2026-11-12): any phone, not only an iPhone, and the words say phone.
+        check(GlassesRules.phoneRow(gfacts(tailscale: tailscaleDetails(phoneOS: "android"))).done, "phone row any phone", "an Android phone counts")
+        check(!GlassesRules.phoneRow(gfacts(tailscale: tailscaleDetails(phoneOS: "linux"))).done, "phone row any phone", "a Linux machine is not a phone")
+        check(phone.title == "Tailscale on your phone", "phone row any phone", phone.title)
+        let unseen = GlassesRules.phoneRow(gfacts(tailscale: tailscaleDetails(phoneOnline: false)))
+        check(unseen.detail == "Get Tailscale from the App Store or Google Play and sign in. This turns green when your phone is online.", "phone row any phone", unseen.detail ?? "nil")
+        check(GlassesRules.tailscalePhoneCaption == "Point your phone's camera here to get Tailscale from the App Store or Google Play.", "phone row any phone", "the QR caption")
         // Connect your glasses: every stage.
         let now = pairingBase
         check(GlassesRules.stage(gfacts(running: false)) == .serverOff && GlassesRules.connectRow(gfacts(running: false)).afterSetup, "connect row", "server off")
