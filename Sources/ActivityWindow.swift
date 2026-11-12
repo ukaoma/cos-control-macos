@@ -514,6 +514,8 @@ struct ActivityWindow: View {
     /// Back by path (Anand parity item 1): the steps between sections, and whether the move in flight is Back's own.
     @State private var backPath: [ActivityBackStep] = []
     @State private var backMoving = false
+    /// A sidebar or Home pick in flight: where it goes. Arriving there clears the path instead of making a step.
+    @State private var backPick: ActivityPlace?
     /// 0.5.278: Settings, "Show live meeting transcript" (the Meetings tab's live dot reads it).
     @AppStorage(LiveTranscript.enabledKey) private var showLiveTranscript = true
     @State private var showingSettings = false
@@ -810,14 +812,27 @@ struct ActivityWindow: View {
     /// The step Back takes now, when it goes back along the path instead of the section's parent chain. Never in the isolated
     /// Work preview, nor for a meeting opened from Work or a speaker review (those return to it already).
     private var backStep: ActivityBackStep? {
-        guard !showingSettings, !isolatedWorkPreview, !meetingReturnToWork, meetingReturnSpeakerSessionID == nil else { return nil }
+        guard !showingSettings, !isolatedWorkPreview, !showingLinkedSession, !meetingReturnToWork, meetingReturnSpeakerSessionID == nil else { return nil }
         return ActivityBackPath.step(backPath, current: currentPlace, hasDetail: hasDetail)
     }
 
-    /// The Back button's help and VoiceOver label: where it goes, when that is another place.
-    private var backLabel: String {
-        guard let step = backStep else { return "Go back one step" }
-        return "Back to " + (step.from.section.flatMap(ActivitySection.init(rawValue:))?.title ?? "Activity home")
+    /// Back's visible word after a recorded jump: where it goes (the web's top-bar label); nil keeps "Back".
+    private var backWord: String? {
+        backStep.map { step in
+            ActivityBackPath.word(step, titles: { ActivitySection(rawValue: $0)?.title }, home: todayEnabled && !isolatedWorkPreview ? "Today" : "Home")
+        }
+    }
+
+    /// The Back button's help and VoiceOver label: "Back to <where>" after a recorded jump.
+    private var backLabel: String { backWord.map { "Back to " + $0 } ?? "Go back one step" }
+
+    /// A pick from the sidebar, the home's cards, Home or a number shortcut: a fresh path (lead 2026-11-12).
+    private func pickSection(_ item: ActivitySection?) {
+        backPath = []
+        // Already there: nothing will move, so no pick is left waiting to clear a later Back.
+        let target = ActivityPlace(section: item?.rawValue)
+        backPick = currentPlace == target ? nil : target
+        if let item { select(item) } else { goHome() }
     }
 
     /// Back along the path: the section it came from, and the item that was open there when it reopens by its ID.
@@ -1154,7 +1169,9 @@ struct ActivityWindow: View {
         .onExitCommand { if !handleActivityEscape() { goBack() } }
         // Back by path: every change of section is a step, unless Back made it.
         .onChange(of: currentPlace) { old, new in
-            backPath = ActivityBackPath.record(backPath, old: old, new: new, goingBack: backMoving)
+            let recorded = ActivityBackPath.record(backPath, old: old, new: new, goingBack: backMoving, pick: backPick)
+            backPath = recorded.path
+            backPick = recorded.pick
             if old.section != new.section { backMoving = false }
         }
         // 0.5.385: the Prep composer took a Start prep's words and files; that meeting's Today draft goes.
@@ -1224,7 +1241,7 @@ struct ActivityWindow: View {
                 // Adaptive, like the header lockup. COSPalette.ink is a fixed dark meant
                 // for the brand tile; on the toolbar it renders black on espresso.
                 .foregroundStyle(.primary)
-            Button { goHome() } label: {
+            Button { pickSection(nil) } label: {
                 Label("Home", systemImage: "house")
             }
             .buttonStyle(COSQuietButtonStyle())
@@ -1232,13 +1249,13 @@ struct ActivityWindow: View {
             .help("Activity home")
 
             Button { goBack() } label: {
-                Label("Back", systemImage: "chevron.left")
+                Label(backWord ?? "Back", systemImage: "chevron.left")
             }
             .buttonStyle(COSQuietButtonStyle())
             .disabled(!canGoBack)
             .keyboardShortcut(.leftArrow, modifiers: .command)
             .help(backLabel)
-            .accessibilityLabel(backStep == nil ? "Back" : backLabel)
+            .accessibilityLabel(backWord == nil ? "Back" : backLabel)
 
             if showingSettings {
                 Text("COS Control › Settings").font(COSType.body(12, weight: .semibold))
@@ -1347,8 +1364,8 @@ struct ActivityWindow: View {
         HStack(spacing: 6) {
             ForEach(Array(ActivitySection.allCases.enumerated()), id: \.element.id) { index, item in
                 Button {
-                    if reduceMotion { select(item) }
-                    else { withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) { select(item) } }
+                    if reduceMotion { pickSection(item) }
+                    else { withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) { pickSection(item) } }
                 } label: {
                     VStack(spacing: 7) {
                         HStack(spacing: 7) {
@@ -1892,11 +1909,11 @@ struct ActivityWindow: View {
                     ForEach(rows[row], id: \.element.id) { index, item in
                         activityHomeCard(item, index: index, body: homeCardBody(item, inputs),
                                          desks: item == .sessions ? desks : nil, now: now)
-                            .onTapGesture { select(item) }
+                            .onTapGesture { pickSection(item) }
                             .accessibilityElement(children: .contain)
                             .accessibilityAddTraits(.isButton)
                             .accessibilityLabel("Open \(item.title)")
-                            .accessibilityAction { select(item) }
+                            .accessibilityAction { pickSection(item) }
                             // The description the card used to print, now its help text.
                             .help(item.summary)
                             // Plain and explicit. The earlier one-liner also cleared state for
@@ -9231,12 +9248,12 @@ extension ActivityWindow {
     }
 
     @ViewBuilder private var settingsHubTodayKeys: some View {
-        Button("") { goHome() }.keyboardShortcut(KeyEquivalent("h"), modifiers: [.command, .shift])
+        Button("") { pickSection(nil) }.keyboardShortcut(KeyEquivalent("h"), modifiers: [.command, .shift])
             .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
-        Button("") { goHome() }.keyboardShortcut("0", modifiers: .command)
+        Button("") { pickSection(nil) }.keyboardShortcut("0", modifiers: .command)
             .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
         ForEach(Array(ActivitySection.allCases.prefix(9).enumerated()), id: \.offset) { index, item in
-            Button("") { select(item) }.keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
+            Button("") { pickSection(item) }.keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
                 .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
         }
     }
