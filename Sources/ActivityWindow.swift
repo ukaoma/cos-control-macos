@@ -2956,7 +2956,7 @@ struct ActivityWindow: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 if state == "route_absent" {
-                    Button("Update Server") { model.perform("update") }
+                    Button("Update Server") { model.updateServer(from: ServerUpdateCaller.sessionHooks) }
                         .buttonStyle(COSQuietButtonStyle())
                         .disabled(model.status.meetingWorkBlockingRestart)
                         .help(model.status.meetingWorkBlockingRestart ? model.status.meetingWorkBlockReason : "")
@@ -2978,6 +2978,8 @@ struct ActivityWindow: View {
                 .padding(.horizontal, 24)
                 .padding(.vertical, 6)
         }
+        ServerUpdateResultLine(model: model, caller: ServerUpdateCaller.sessionHooks)
+            .padding(.horizontal, 24)
     }
 
     private var sessionsStatus: String {

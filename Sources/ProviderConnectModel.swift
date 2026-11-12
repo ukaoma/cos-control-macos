@@ -300,6 +300,14 @@ enum SetupFailureWords {
     /// nil when `error` is not the proof failure. "Sign in to X" ONLY when every reason the helper gave is not signed in
     /// (Q1, final review); a usage limit, a timeout or a missing binary says "Check X". The helper's text stays below.
     static func plain(_ error: String) -> String? {
+        guard let verdict = verdict(error) else { return nil }
+        return "Setup stopped: none of your AIs answered a test request. "
+            + (verdict.allSignedOut ? "Sign in to \(verdict.who), then press Try again." : "Check \(verdict.who), then press Try again.")
+    }
+
+    /// The proof failure's who and whether every reason was not signed in; nil when `error` is not the proof failure. Setup and
+    /// Update Server (ServerUpdateWords) word it for their own button.
+    static func verdict(_ error: String) -> (who: String, allSignedOut: Bool)? {
         guard error.contains(marker) else { return nil }
         let found = skips(error)
         let names = found.map(\.provider.cliName)
@@ -309,9 +317,50 @@ enum SetupFailureWords {
         case 1: who = names[0]
         default: who = names.dropLast().joined(separator: ", ") + " or " + names.last!
         }
-        let allSignedOut = !found.isEmpty && found.allSatisfy { $0.reason == notSignedIn }
-        return "Setup stopped: none of your AIs answered a test request. "
-            + (allSignedOut ? "Sign in to \(who), then press Try again." : "Check \(who), then press Try again.")
+        return (who, !found.isEmpty && found.allSatisfy { $0.reason == notSignedIn })
+    }
+}
+
+/// Anand fix c (2026-11-12): the places Update Server is pressed. Each shows the result beside its own button.
+enum ServerUpdateCaller {
+    static let settings = "settings"
+    static let glassesPairing = "glasses-pairing"
+    static let phoneSignIn = "phone-sign-in"
+    static let sessionHooks = "session-hooks"
+    static let meetingImports = "meeting-imports"
+    static let meetingSuggestions = "meeting-suggestions"
+}
+
+struct ServerUpdateResult: Equatable, Sendable {
+    let caller: String
+    let line: String
+    /// The helper's own text, under the plain line, when the line is ours.
+    let detail: String?
+    let failed: Bool
+}
+
+/// Anand fix c (2026-11-12): Update Server's result in plain words. A success is the helper's own sentence ("installed and
+/// verified", or up to date). A failure says what happened; the helper's text stays below it. The rule that one AI must answer
+/// a test question before a new server is kept does not change.
+enum ServerUpdateWords {
+    static let didNotFinish = "The update did not finish. What COS did is below."
+
+    static func success(_ message: String, caller: String) -> ServerUpdateResult {
+        ServerUpdateResult(caller: caller, line: message.isEmpty ? "The server is updated." : message, detail: nil, failed: false)
+    }
+
+    static func failure(_ error: String, caller: String) -> ServerUpdateResult {
+        // The helper's sign-in pre-check and its won't-move-backward refusal are already plain, and nothing changed.
+        if error.hasPrefix("No AI on this Mac is signed in") || error.hasPrefix("This Mac runs server ") {
+            return ServerUpdateResult(caller: caller, line: error, detail: nil, failed: true)
+        }
+        if let verdict = SetupFailureWords.verdict(error) {
+            let line = "The update did not finish: none of your AIs answered a test request. "
+                + (verdict.allSignedOut ? "Sign in to \(verdict.who), then press Update Server again."
+                   : "Check \(verdict.who), then press Update Server again.")
+            return ServerUpdateResult(caller: caller, line: line, detail: error, failed: true)
+        }
+        return ServerUpdateResult(caller: caller, line: didNotFinish, detail: error, failed: true)
     }
 }
 
