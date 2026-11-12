@@ -1831,6 +1831,148 @@ struct GlassesFacts: Equatable, Sendable {
     var tailscaleUp: Bool { tailscale?.running == true && tailscale?.selfIPv4 != nil }
 }
 
+/// 0.5.390 line (lane O1, Miles 2026-11-12: "THe code should autopair on the network as well"; his pick: one code,
+/// letters and numbers, 14 characters). The pairing code the card shows carries this Mac's address, so the phone
+/// has one field and nobody types an IP.
+///
+///   characters 1 to 8    the server's pairing code (the secret, 40 bits), unchanged; the claim sends only these
+///   characters 9 to 13   this Mac's address as a 25-bit index into the four ranges a phone may pair with
+///   character 14         a check over the first 13 in GF(32): every single wrong character and every swap of two
+///                        neighbouring different characters is refused on the phone before anything is sent
+///
+/// Nothing here is secret but the first 8. The address part can only spell 100.64/10 or RFC1918. Port 3141 only.
+/// Control is the only writer (lead's ruling, 2026-11-12); the server does not know the long form exists. The phone
+/// decodes it in cos-glasses-app (src/lib/pair-code.ts). One fixture, Tests/fixtures/pairing/pair-long-code.vectors.json,
+/// is recomputed by this app's checks, by the phone's tests, and by the Python reference that wrote it; both apps pin
+/// its sha256.
+enum PairLongCode {
+    static let alphabet: [Character] = Array("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
+    static let codeLength = 8
+    static let longLength = 14
+    static let port = 3141
+    /// x^5 + x^2 + 1, primitive over GF(2).
+    static let checkPolynomial = 0x25
+
+    struct Block: Sendable { let first: Int; let second: ClosedRange<Int>?; let bits: Int }
+    /// Order is part of the format: never reorder. A block's base is the sum of the sizes before it.
+    static let blocks: [Block] = [
+        Block(first: 100, second: 64...127, bits: 22),   // Tailscale 100.64.0.0/10
+        Block(first: 10, second: nil, bits: 24),         // 10.0.0.0/8
+        Block(first: 172, second: 16...31, bits: 20),    // 172.16.0.0/12
+        Block(first: 192, second: 168...168, bits: 16),  // 192.168.0.0/16
+    ]
+    static var total: Int { blocks.reduce(0) { $0 + (1 << $1.bits) } }
+
+    static func gfMul(_ x: Int, _ y: Int) -> Int {
+        var a = x, b = y, r = 0
+        while b != 0 {
+            if b & 1 == 1 { r ^= a }
+            b >>= 1
+            a <<= 1
+            if a & 32 != 0 { a ^= checkPolynomial }
+        }
+        return r
+    }
+
+    /// XOR over i of alpha^(i+1) * value[i], alpha = 2.
+    static func checkValue(_ values: [Int]) -> Int {
+        var acc = 0, power = 1
+        for v in values {
+            power = gfMul(power, 2)
+            acc ^= gfMul(power, v)
+        }
+        return acc
+    }
+
+    /// Four plain decimal octets 0 to 255 with no leading zeros, or nil.
+    static func octets(_ host: String) -> [Int]? {
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return nil }
+        var out: [Int] = []
+        for part in parts {
+            guard !part.isEmpty, part.count <= 3, part.unicodeScalars.allSatisfy({ $0.value >= 48 && $0.value <= 57 }),
+                  !(part.count > 1 && part.first == "0"), let value = Int(part), value <= 255 else { return nil }
+            out.append(value)
+        }
+        return out
+    }
+
+    static func hostIndex(_ host: String) -> Int? {
+        guard let o = octets(host) else { return nil }
+        var base = 0
+        for block in blocks {
+            let inBlock = o[0] == block.first && (block.second.map { $0.contains(o[1]) } ?? true)
+            if inBlock {
+                let high = block.second.map { o[1] - $0.lowerBound } ?? o[1]
+                return base + high * 65536 + o[2] * 256 + o[3]
+            }
+            base += 1 << block.bits
+        }
+        return nil
+    }
+
+    static func indexHost(_ index: Int) -> String? {
+        var base = 0
+        for block in blocks {
+            let size = 1 << block.bits
+            if index >= base && index < base + size {
+                let r = index - base
+                let second = (block.second?.lowerBound ?? 0) + r / 65536
+                return "\(block.first).\(second).\((r / 256) % 256).\(r % 256)"
+            }
+            base += size
+        }
+        return nil
+    }
+
+    /// Uppercase, spaces and dashes removed, O read as 0 and I or L as 1 (the pairing code's own rules).
+    static func normalize(_ input: String) -> String {
+        var out = ""
+        for ch in input.uppercased() {
+            if ch == " " || ch == "-" || ch == "\u{2010}" || ch == "\u{2011}" || ch == "\u{2012}" || ch == "\u{2013}" || ch == "\u{2014}" || ch == "\u{2015}" || ch.isWhitespace { continue }
+            out.append(ch == "O" ? "0" : (ch == "I" || ch == "L") ? "1" : ch)
+        }
+        return out
+    }
+
+    static func digits(_ text: String) -> [Int]? {
+        var out: [Int] = []
+        for ch in text {
+            guard let v = alphabet.firstIndex(of: ch) else { return nil }
+            out.append(v)
+        }
+        return out
+    }
+
+    /// The 14 characters for a pairing code and an address, or nil when the code is not 8 valid characters or the
+    /// address is not one a phone may pair with.
+    static func encode(code: String, host: String) -> String? {
+        guard code.count == codeLength, var values = digits(code), let index = hostIndex(host) else { return nil }
+        for shift in stride(from: 20, through: 0, by: -5) { values.append((index >> shift) & 31) }
+        values.append(checkValue(values))
+        return String(values.map { alphabet[$0] })
+    }
+
+    enum Decoded: Equatable, Sendable { case ok(code: String, host: String), badCode, typo }
+
+    /// The phone's side of the format, kept here so the Mac's checks prove what it writes can be read.
+    static func decode(_ text: String) -> Decoded {
+        guard text.count == longLength, let values = digits(text) else { return .badCode }
+        guard checkValue(Array(values[0..<(longLength - 1)])) == values[longLength - 1] else { return .typo }
+        var index = 0
+        for v in values[codeLength..<(longLength - 1)] { index = index << 5 | v }
+        guard let host = indexHost(index) else { return .typo }
+        return .ok(code: String(text.prefix(codeLength)), host: host)
+    }
+
+    /// XXXX-XXXX-XXX-XXX. The first two groups are the server's own code, which an older phone app still takes.
+    static func display(_ long: String) -> String {
+        let c = Array(long)
+        guard c.count == longLength else { return long }
+        return "\(String(c[0..<4]))-\(String(c[4..<8]))-\(String(c[8..<11]))-\(String(c[11..<14]))"
+    }
+}
+
 enum GlassesRules {
     static let tailscaleDownload = URL(string: "https://tailscale.com/download/mac")!
     /// One QR for any phone (Anand fix a, 2026-11-12): Tailscale's download page sends each phone to its own store.
@@ -1843,9 +1985,78 @@ enum GlassesRules {
     /// Names from Tailscale are shown at most this long, with control characters removed.
     static let nameLimit = 40
     /// 0.5.368 (Miles 2026-11-04, 09:05): he pointed the iPhone Camera at this QR expecting a sign-in and got a web search.
-    /// The pairing QR is the COS Glasses app's code, so its row and caption say so; Open COS on your phone is the Camera's.
-    static let pairSubtitle = "Scan this inside the COS Glasses app. Your phone's camera can't read it."
-    static let pairCaption = "Open the COS Glasses app, then hold your phone so the code fills the screen."
+    /// 0.5.390 line (Miles 2026-11-12): the code is typed first now. On a fresh phone the photo routes found no code in
+    /// six tries and the address beside the code was small, grey and unlabelled. The row names the code; the QR is the
+    /// second way in and its caption says it is one photo taken inside the app, never a live scan and never the phone's
+    /// own camera.
+    static let pairSubtitle = "Type this code in the COS Glasses app on your phone."
+    static let pairCaption = "Or, in the COS Glasses app, choose Take a photo of the code. It takes one photo. Your phone's camera app can't read it."
+    static let pairCopy = "Copy"
+    static let pairCopied = "Copied"
+    static let pairCopiedNote = "Copied. On an iPhone signed in to the same Apple ID as this Mac, tap Paste in the COS Glasses app."
+    static let newCodeNote = "This is a new code. The last one stopped working."
+    /// How long the new-code line stays after the code on the card changes.
+    static let newCodeNoteFor: TimeInterval = 20
+    /// The server holds a claim this long for Allow (contract: PAIRING_PENDING_TTL_MS).
+    static let allowWindow: TimeInterval = 60
+
+    /// The 14 characters for this code and this Mac's first address, or nil when they cannot be written (no host, a
+    /// port other than 3141, or an address outside the ranges): the card then shows the 8 characters and the address.
+    static func longCode(_ code: PairingCode) -> String? {
+        guard let host = code.hosts.first, host.port == PairLongCode.port else { return nil }
+        return PairLongCode.encode(code: PairLongCode.normalize(code.display), host: host.host)
+    }
+
+    /// What the card shows large and what Copy copies: the 14 characters grouped, or the server's 8.
+    static func shownCode(_ code: PairingCode) -> String { longCode(code).map(PairLongCode.display) ?? code.display }
+
+    /// "Mac address 100.64.0.10" (with the port only when it is not the usual one), for the lines that still need it.
+    static func addressText(_ host: PairingHost) -> String { host.port == PairLongCode.port ? host.host : host.text }
+
+    /// Under the code. With the long code: one labelled line for a phone app from before it. Without: the address is
+    /// needed by every phone, and says so.
+    static func addressLine(_ code: PairingCode) -> String? {
+        guard let host = code.hosts.first else { return nil }
+        return longCode(code) != nil
+            ? "Older COS Glasses app? Type the first 8 characters and this Mac address: \(addressText(host))"
+            : "Type the code and this Mac address in the app: \(addressText(host))"
+    }
+
+    /// While Wi-Fi pairing is on and the main code names the Tailscale address: a second code for a phone on this
+    /// Wi-Fi without Tailscale. Same secret, the Wi-Fi address. Nil otherwise.
+    static func wifiCode(_ code: PairingCode) -> String? {
+        guard code.hosts.first?.kind == "tailscale",
+              let lan = code.hosts.dropFirst().first(where: { $0.kind == "lan" && $0.port == PairLongCode.port }) else { return nil }
+        return PairLongCode.encode(code: PairLongCode.normalize(code.display), host: lan.host).map(PairLongCode.display)
+    }
+    static func wifiLine(_ shown: String) -> String { "Phone on this Wi-Fi without Tailscale? Use this code: \(shown)" }
+
+    /// "4:12", never negative.
+    static func clock(_ seconds: TimeInterval) -> String {
+        let left = max(0, Int(seconds.rounded(.up)))
+        return "\(left / 60):\(left % 60 < 10 ? "0" : "")\(left % 60)"
+    }
+
+    /// The code's own line: it works once, and when the next one comes.
+    static func expiryLine(_ expiresAt: Date, now: Date) -> String {
+        let left = expiresAt.timeIntervalSince(now)
+        return left > 0 ? "Works once. A new code appears in \(clock(left))." : "Works once. A new code is on its way."
+    }
+
+    static func showsNewCodeNote(replacedAt: Date?, now: Date) -> Bool {
+        guard let replacedAt else { return false }
+        let since = now.timeIntervalSince(replacedAt)
+        return since >= 0 && since < newCodeNoteFor
+    }
+
+    /// "0:52 left" on the Allow card, from when the phone asked. Nil when the server did not say when.
+    static func allowLeft(_ pending: PairingStatusFacts.Pending, now: Date) -> String? {
+        guard let at = pending.at else { return nil }
+        return "\(clock(allowWindow - now.timeIntervalSince(at))) left"
+    }
+
+    /// A phone has just asked (a claim that was not there, or a different one): the card comes to the front.
+    static func shouldComeForward(old: String?, new: String?) -> Bool { new != nil && new != old }
 
     enum Stage: Equatable, Sendable {
         case serverOff, updateServer, checking, failed(String), noHosts, code, pending, allowedWaiting, paired, madeElsewhere
@@ -2008,7 +2219,7 @@ enum GlassesRules {
         case .checking: row.status = "Making a code…"
         case .failed(let message): row.status = "Could not make a code"; row.detail = message
         case .noHosts: row.status = "Needs Tailscale"; row.detail = "Turn on Tailscale or allow pairing on this Wi-Fi."
-        case .code: row.status = "Ready to scan"
+        case .code: row.status = "Ready"
         case .pending: row.status = "Waiting for you"
         case .allowedWaiting: row.status = "Allowed"; row.detail = "Waiting for the phone to connect…"
         case .paired: row.status = "Paired"; row.done = true; row.detail = pairedLine(facts)
@@ -2040,6 +2251,8 @@ enum GlassesRules {
 final class GlassesPairingState: ObservableObject {
     @Published private(set) var tailscale: TailscaleFacts?
     @Published private(set) var code: PairingCode?
+    /// When the code on the card last changed to a different one (S8); nil until that has happened.
+    @Published private(set) var codeReplacedAt: Date?
     @Published private(set) var status: PairingStatusFacts?
     @Published private(set) var whois: [String: WhoisFacts] = [:]
     @Published private(set) var failure: String?
@@ -2170,6 +2383,9 @@ final class GlassesPairingState: ObservableObject {
         }
         guard let next = PairingCode.decode(details) else { failure = "The server's code could not be read."; return }
         let replacedCode = code != nil
+        // S8: the card says so when the code it shows changes (expired, used, or Show a new code), so nobody goes on
+        // typing the old one. The first code after the card opens is not "new".
+        if let old = code, old.display != next.display { codeReplacedAt = now() }
         code = next
         codeMintedWithTailscale = tailscaleUp
         lanArmedUntil = next.lanArmedUntil

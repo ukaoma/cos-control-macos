@@ -121,12 +121,22 @@ need("QRImage.make(text, cached: cached)" in views_file, "qr not cached", "QRCod
 # Show a new code are unchanged; its row and caption now say it is for the COS Glasses app and the Camera cannot read it.
 card = body(views_file, "@ViewBuilder private func codeCard(_ code: PairingCode) -> some View {")
 need('QRCodeView(text: qr, side: 228, label: "Pairing code \\(code.display)").frame(maxWidth: .infinity)' in card
-     and "Text(code.display)" in card and "Text(host.text)" in card and 'Button("Show a new code") { Task { await pairing.showNewCode() } }' in card,
-     "glasses QR labeled", "the glasses pairing QR, its code, host and Show a new code")
+     and "Text(shown)" in card and "GlassesRules.shownCode(code)" in card and "GlassesRules.addressLine(code)" in card
+     and "Text(host.text)" not in card and 'Button("Show a new code") { Task { await pairing.showNewCode() } }' in card,
+     "glasses QR labeled", "the glasses pairing QR, the code it shows large, the labelled address line and Show a new code (0.5.390 line: the address is no longer an unlabelled grey text beside the code)")
+# 0.5.390 line (Miles 2026-11-12): the code comes first and is typed; the QR is under it, the second way in.
+need(card.index("Text(shown)") < card.index("QRCodeView(text: qr") and "copy(shown)" in card and "GlassesRules.expiryLine(code.expiresAt, now: pairing.now())" in card
+     and "GlassesRules.showsNewCodeNote(replacedAt: pairing.codeReplacedAt, now: pairing.now())" in card and "GlassesRules.wifiCode(code)" in card,
+     "glasses code first", "the code, Copy, the time left and the new-code line come before the QR")
+allow = body(views_file, "@ViewBuilder private func allowCard(_ pending: PairingStatusFacts.Pending, facts: GlassesFacts) -> some View {")
+need("GlassesRules.allowLeft(pending, now: pairing.now())" in allow, "allow countdown", "the Allow card counts the same seconds as the phone")
+need("if GlassesRules.shouldComeForward(old: old, new: new) { windowHolder.comeForward() }" in views_file
+     and 'guard ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] == nil, let window else { return }' in views_file,
+     "allow comes forward", "a pairing request brings the card's window forward, never in a test or render run")
 need("Text(GlassesRules.pairCaption)" in card and "Hold your phone so the code fills the screen\"" not in views_file, "glasses QR labeled", "the caption under the pairing QR names the app")
 glasses_words = dict(re.findall(r'static let (\w+) = "([^"]*)"', body(model_file, "enum GlassesRules {")))
-need(glasses_words.get("pairSubtitle") == "Scan this inside the COS Glasses app. Your phone's camera can't read it.", "glasses QR labeled", "the pairing row's subtitle")
-need(glasses_words.get("pairCaption") == "Open the COS Glasses app, then hold your phone so the code fills the screen.", "glasses QR labeled", "the pairing caption")
+need(glasses_words.get("pairSubtitle") == "Type this code in the COS Glasses app on your phone.", "glasses QR labeled", "the pairing row's subtitle")
+need(glasses_words.get("pairCaption") == "Or, in the COS Glasses app, choose Take a photo of the code. It takes one photo. Your phone's camera app can't read it.", "glasses QR labeled", "the pairing caption")
 need('title: "Connect your glasses", status: "Checking…",\n                           unlocks: GlassesRules.pairSubtitle,' in model_file, "glasses QR labeled", "Connect your glasses shows the subtitle")
 for name in ("pairSubtitle", "pairCaption"):
     need(not re.search("[—–→]|->", glasses_words.get(name, "")), "glasses QR labeled", f"no em dash, en dash or arrow: {name}")
