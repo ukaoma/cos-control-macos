@@ -816,7 +816,8 @@ struct ActivityWindow: View {
         return ActivityBackPath.step(backPath, current: currentPlace, hasDetail: hasDetail)
     }
 
-    /// Back's visible word after a recorded jump: where it goes (the web's top-bar label); nil keeps "Back".
+    /// Where Back goes after a recorded jump, for help and VoiceOver; nil keeps "Back". The visible text stays "Back" on the Mac:
+    /// the trail beside it says where (Miles's pick B, lead 10:54).
     private var backWord: String? {
         backStep.map { step in
             ActivityBackPath.word(step, titles: { ActivitySection(rawValue: $0)?.title }, home: todayEnabled && !isolatedWorkPreview ? "Today" : "Home")
@@ -1249,7 +1250,7 @@ struct ActivityWindow: View {
             .help("Activity home")
 
             Button { goBack() } label: {
-                Label(backWord ?? "Back", systemImage: "chevron.left")
+                Label("Back", systemImage: "chevron.left")
             }
             .buttonStyle(COSQuietButtonStyle())
             .disabled(!canGoBack)

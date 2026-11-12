@@ -52,7 +52,7 @@ need("!isolatedWorkPreview, !showingLinkedSession, !meetingReturnToWork, meeting
 # Speakers, a review, Open meeting, Back: the existing return, kept.
 need("else if let sessionId = meetingReturnSpeakerSessionID { returnFromMeetingToSpeakers(sessionId) }" in go
      and "meetingReturnSpeakerSessionID = sessionId" in win, "[back] Speakers, a review, Open meeting, Back lands on the review")
-need('Label(backWord ?? "Back", systemImage: "chevron.left")' in win and ".help(backLabel)" in win
+need('Label("Back", systemImage: "chevron.left")' in win and ".help(backLabel)" in win
      and '.accessibilityLabel(backWord == nil ? "Back" : backLabel)' in win and win.count("ActivityBackPath.word(") == 1,
      "[back] Back says where it goes, from one place")
 ret = body(win, "    private func returnTo(_ place: ActivityPlace) {", "\n    }\n")

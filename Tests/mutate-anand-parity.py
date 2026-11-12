@@ -42,7 +42,7 @@ MUTANTS = [
     ("pick-keeps-path", "pins", W, "        backPath = []\n        // Already there", "        // Already there", "[back] a pick clears the path"),
     ("linked-unguarded", "pins", W, "!isolatedWorkPreview, !showingLinkedSession, !meetingReturnToWork,", "!isolatedWorkPreview, !meetingReturnToWork,",
      "[back] the Work preview, the linked session and the meeting returns keep their own Back"),
-    ("label-hidden", "pins", W, 'Label(backWord ?? "Back", systemImage: "chevron.left")', 'Label("Back", systemImage: "chevron.left")', "[back] Back says where it goes"),
+    ("label-silent-voiceover", "pins", W, '.accessibilityLabel(backWord == nil ? "Back" : backLabel)', '.accessibilityLabel("Back")', "[back] Back says where it goes"),
     ("label-silent", "pins", W, ".help(backLabel)", '.help("Go back one step")', "[back] Back says where it goes"),
     ("review-not-reopened", "pins", W, "                if model.openReview?.sessionId != id { model.openSpeakerReview(sessionId: id) }\n", "",
      "[back] the item that was open comes back"),
