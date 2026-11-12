@@ -5765,13 +5765,15 @@ struct SpeakerReviewPane: View {
                 // transcript for an LLM. Both are built server-side with the
                 // display floor applied to the attendee block.
                 if let content = model.openContent, !content.clipboardSummary.isEmpty {
+                    // Anand parity item 3 (as Control Web 7.0.30): the buttons say they copy, and the tapped one says Copied.
                     Button { model.copyMeeting(full: false) } label: {
-                        Label("Summary", systemImage: "doc.on.doc").font(.system(size: 11))
+                        Label(MeetingCopyWords.label(MeetingCopyWords.summary, copied: model.copiedMeetingKind, fullChars: content.fullChars),
+                              systemImage: "doc.on.doc").font(.system(size: 11))
                     }
                     .buttonStyle(.plain)
                     .help("Copy the meeting without the transcript")
                     Button { model.copyMeeting(full: true) } label: {
-                        Label("Full (\(max(1, content.fullChars / 1024)) KB)",
+                        Label(MeetingCopyWords.label(MeetingCopyWords.full, copied: model.copiedMeetingKind, fullChars: content.fullChars),
                               systemImage: "doc.on.doc.fill").font(.system(size: 11))
                     }
                     .buttonStyle(.plain)

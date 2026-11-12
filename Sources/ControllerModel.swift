@@ -492,6 +492,9 @@ final class ControllerModel: ObservableObject {
     /// older than 6.21.28 or the fetch failed — the review still renders.
     @Published var openContent: MeetingContent?
     @Published var copyNote: String?
+    /// Which Speakers copy button says Copied right now (MeetingCopyWords.summary or .full), for copiedSeconds.
+    @Published private(set) var copiedMeetingKind: String?
+    private var copiedMeetingReset: Task<Void, Never>?
     /// 0.5.259: why Open meeting found no Meetings row for this review. Cleared whenever a review opens or closes.
     @Published var openMeetingNote: String?
     /// Why the write-up is absent: "route_absent" (server too old) or an error
@@ -10161,6 +10164,19 @@ final class ControllerModel: ObservableObject {
         NSPasteboard.general.setString(text, forType: .string)
         let kb = max(1, (full ? c.fullChars : c.summaryChars) / 1024)
         copyNote = full ? "Copied full meeting (\(kb) KB)" : "Copied summary (\(kb) KB)"
+        // Anand parity item 3 (2026-11-12, as Control Web 7.0.30): the tapped button says Copied for a moment, and VoiceOver
+        // hears what was copied.
+        copiedMeetingKind = full ? MeetingCopyWords.full : MeetingCopyWords.summary
+        copiedMeetingReset?.cancel()
+        copiedMeetingReset = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(MeetingCopyWords.copiedSeconds))
+            guard !Task.isCancelled else { return }
+            self?.copiedMeetingKind = nil
+        }
+        if let note = copyNote {
+            NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                                 userInfo: [.announcement: note, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+        }
     }
 
     func retryOpenReview() {

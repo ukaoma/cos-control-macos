@@ -13822,6 +13822,20 @@ enum MessageReply {
 /// the Needs you header, the brief, the cards and the tabs show comes from one function here, so Tests/ActivityTodayChecks
 /// executes each rule and pins that they agree. A source Control has not loaded is nil, never a made-up 0. Zero LLM: the
 /// brief is fixed templates over these counts.
+/// Anand parity item 3 (2026-11-12): the Speakers review's copy buttons, in Control Web 7.0.30's words (speakers.js): "Copy
+/// summary", "Copy full (N KB)", and "Copied" on the tapped one for 2.5 s.
+enum MeetingCopyWords {
+    static let summary = "summary"
+    static let full = "full"
+    static let copied = "Copied"
+    static let copiedSeconds: Double = 2.5
+
+    static func label(_ kind: String, copied: String?, fullChars: Int) -> String {
+        if copied == kind { return Self.copied }
+        return kind == full ? "Copy full (\(max(1, fullChars / 1024)) KB)" : "Copy summary"
+    }
+}
+
 enum TodayHome {
     // MARK: Settings (UserDefaults keys; Settings > Activity)
 
