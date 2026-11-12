@@ -98,10 +98,10 @@ mutants = [
  ("Q3 the phone subtitle says scan again (pins)", M, '"Point your phone\'s camera here. Its browser opens COS already signed in."', '"Scan with your iPhone camera. Safari opens COS already signed in."', PINS, "[copy]"),
  ("Q4 the phone subtitle says scan again (checks)", M, '"Point your phone\'s camera here. Its browser opens COS already signed in."', '"Scan with your iPhone camera. Safari opens COS already signed in."', APP, "[phone copy]"),
  ("Q5 the note still says the glasses QR is above", M, '"The QR below is for the COS Glasses app, not the Camera."', '"This QR is for Safari. The one in Connect your glasses is for the COS app."', PINS, "[copy]"),
- ("Q6 the pairing caption loses the app (pins)", M, 'static let pairCaption = "Open the COS Glasses app, then hold your phone so the code fills the screen."', 'static let pairCaption = "Hold your phone so the code fills the screen"', PINS, "[glasses QR labeled]"),
- ("Q7 the pairing caption loses the app (checks)", M, 'static let pairCaption = "Open the COS Glasses app, then hold your phone so the code fills the screen."', 'static let pairCaption = "Hold your phone so the code fills the screen"', APP, "[glasses qr copy]"),
+ ("Q6 the pairing caption loses the app (pins)", M, 'static let pairCaption = "Or, in the COS Glasses app, choose Take a photo of the code. It takes one photo. Your phone\'s camera app can\'t read it."', 'static let pairCaption = "Hold your phone so the code fills the screen"', PINS, "[glasses QR labeled]"),
+ ("Q7 the pairing caption loses the app (checks)", M, 'static let pairCaption = "Or, in the COS Glasses app, choose Take a photo of the code. It takes one photo. Your phone\'s camera app can\'t read it."', 'static let pairCaption = "Hold your phone so the code fills the screen"', APP, "[glasses qr copy]"),
  ("Q8 the pairing row says COS app again", M, 'unlocks: GlassesRules.pairSubtitle,', 'unlocks: "Scan the code with the COS app on your phone. Nothing to type.",', APP, "[glasses qr copy]"),
- ("Q9 the caption is a literal again", V, '            Text(GlassesRules.pairCaption)\n', '            Text("Hold your phone so the code fills the screen")\n', PINS, "[glasses QR labeled]"),
+ ("Q9 the caption is a literal again", V, '                Text(GlassesRules.pairCaption)\n', '                Text("Hold your phone so the code fills the screen")\n', PINS, "[glasses QR labeled]"),
  ("Q10 the pairing QR loses Show a new code", V, '''            HStack(spacing: 12) {
                 Button("Show a new code") { Task { await pairing.showNewCode() } }.buttonStyle(COSTextButtonStyle())
                 Spacer(minLength: 0)

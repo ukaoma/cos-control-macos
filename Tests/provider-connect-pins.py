@@ -122,7 +122,7 @@ pin("visible: windowHolder.onScreen(panelVisible: model.panelVisible)" in glasse
 pin('label: "Pairing code \\(code.display)"' in glasses_rows and 'label: "Tailscale download link"' in glasses_rows, "glasses voiceover", "the QRs say what they are")
 
 pin("let next = SetupGuideRules.next(rows)" in connect_views and "$0.counted }" in body(connect, "    static func progress(", "\n    }\n"), "glasses uncounted", "progress and Next skip uncounted rows")
-pin('Text(GlassesRules.pairCaption)' in connect_views and 'static let pairCaption = "Open the COS Glasses app, then hold your phone so the code fills the screen."' in connect
+pin('Text(GlassesRules.pairCaption)' in connect_views and 'static let pairCaption = "Or, in the COS Glasses app, choose Take a photo of the code. It takes one photo. Your phone\'s camera app can\'t read it."' in connect
     and '"Allow pairing on this Wi-Fi (home only)"' in connect_views, "glasses copy", "contract copy (0.5.368: the pairing caption names the COS Glasses app)")
 pin("facts.glasses = glassesPairing.facts(serverRunning: status.running, pairingSupported: status.pairingSupported)" in connect_views, "capability gate", "rows read the server's pairing capability")
 
