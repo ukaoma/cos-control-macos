@@ -6506,7 +6506,7 @@ struct ActivityMessageCard: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 14).padding(.vertical, 10)
                 .background(UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18, bottomTrailingRadius: 6, topTrailingRadius: 18, style: .continuous).fill(DropInk.youBg))
-                .overlay(UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18, bottomTrailingRadius: 6, topTrailingRadius: 18, style: .continuous).stroke(DropInk.youBorder, lineWidth: 1))
+                .overlay(UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18, bottomTrailingRadius: 6, topTrailingRadius: 18, style: .continuous).stroke(DropInk.youEdgeReader, lineWidth: 1))
             if let caption {
                 Text(caption).font(COSType.body(11.5)).foregroundStyle(DropInk.tertiary).padding(.trailing, 4)
             }

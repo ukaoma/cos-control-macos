@@ -75,10 +75,19 @@ detail = body(win, "    private func messageDetail(_ turn: GlassesTurn) -> some 
 need("side: .you, caption: MessageSides.youCaption(time: turn.timeLabel))" in detail and 'markdownID: "turn:" + turn.id, side: .cos)' in detail,
      "[sides] his words right, COS left, in the reader")
 card = body(win, "struct ActivityMessageCard: View {", "\n    private var card: some View {")
-need(".fill(DropInk.youBg)" in card and ".stroke(DropInk.youBorder, lineWidth: 1)" in card and "DropInk.youInk" in card
+need(".fill(DropInk.youBg)" in card and ".stroke(DropInk.youEdgeReader, lineWidth: 1)" in card and "DropInk.youInk" in card
      and ".frame(maxWidth: .infinity, alignment: .trailing)" in card, "[sides] his words in the COS chat's own bubble, on the right")
 need("DropItAvatar(size: 26)" in card and 'ActivityCopyMenu(label: "Copy answer"' in card, "[sides] COS by its mark, Copy answer kept")
 need("var side: Side = .card" in card, "[sides] every other caller keeps the card")
+# The reader's bubble edge reaches 3 to 1 in light (0xab8436 on the page 0xf5f0e6 is 3.04), dark unchanged; the COS chat keeps
+# its own edge. And this Mac's replies sit on the same sides.
+dropit = read("Sources/DropItViews.swift")
+need("static let youEdgeReader = pair(0xab8436, 0x56422c)" in dropit and "static let youBorder = pair(0xe3cfa6, 0x56422c)" in dropit,
+     "[sides] the reader's bubble edge is 3 to 1 in light, dark unchanged, the chat's own edge kept")
+replyview = read("Sources/MessageReplyView.swift")
+row = body(replyview, "    private func replyRow(_ reply: DropIt.Ask) -> some View {", "\n    static func stateWord(")
+need("ActivityMessageCard(label: \"You\", text: reply.words, tint: ActivitySection.messages.tint, side: .you," in row
+     and "DropItAvatar(size: 26)" in row, "[sides] this Mac's replies sit on the same sides")
 if fails:
     print("\n".join("anand parity pin FAILED " + f for f in fails)); sys.exit(1)
 print("anand parity pins: passed")
