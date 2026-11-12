@@ -30,29 +30,50 @@ import Foundation
         check(T.latestDayBefore("2026-11-12", days: days) == "2026-11-10", "jump to the latest earlier day with meetings")
         check(T.latestDayBefore("2026-11-03", days: days) == nil, "no earlier day: last month")
         check(T.jump(to: "2026-11-10", today: "2026-11-12") == "Go to Nov 10" && T.jump(to: nil, today: "2026-11-12") == "Go to last month", "today words")
-        // Item 1: Back by path.
+        // Item 1: Back by path (lead 10:47 scope, with the 10:5x conditions).
         typealias P = ActivityPlace
+        typealias B = ActivityBackPath
+        func rec(_ path: [ActivityBackStep], _ old: P, _ new: P, back: Bool = false, pick: P? = nil) -> [ActivityBackStep] {
+            B.record(path, old: old, new: new, goingBack: back, pick: pick).path
+        }
         let review = P(section: "speakers", speakerSessionID: "s-1"), meeting = P(section: "meetings", libraryRecordID: "r-1")
-        var path = ActivityBackPath.record([], old: review, new: meeting, goingBack: false)
+        var path = rec([], review, meeting)
         check(path == [ActivityBackStep(from: review, to: meeting)], "a change of section is a step")
-        check(ActivityBackPath.step(path, current: meeting, hasDetail: true)?.from == review, "Speakers, a review, Open meeting, Back lands on the review")
-        check(ActivityBackPath.record(path, old: meeting, new: P(section: "meetings", libraryRecordID: "r-2"), goingBack: false) == path,
-              "a move inside a section is not a step")
-        check(ActivityBackPath.step(path, current: P(section: "meetings", libraryRecordID: "r-2"), hasDetail: true) == nil,
-              "deeper or elsewhere in the section, Back keeps the parent chain")
-        check(ActivityBackPath.step(path, current: P(section: "meetings"), hasDetail: false)?.from == review, "on the section's list, Back goes back along the path")
-        check(ActivityBackPath.record(path, old: meeting, new: review, goingBack: true) == path, "Back's own move is not a step")
-        check(ActivityBackPath.step(path, current: P(section: "messages", turnID: "t"), hasDetail: true) == nil, "a step for another section is not taken")
-        check(ActivityBackPath.step(path, current: P(section: nil), hasDetail: false) == nil, "Activity home never goes back along the path")
-        let home = P(section: nil), today = P(section: "messages", turnID: "t-9")
-        path = ActivityBackPath.record([], old: home, new: today, goingBack: false)
-        check(ActivityBackPath.step(path, current: today, hasDetail: true)?.from == home, "a message opened from the home goes back home")
+        check(B.step(path, current: meeting, hasDetail: true)?.from == review, "Speakers, a review, Open meeting, Back lands on the review")
+        check(rec(path, meeting, P(section: "meetings"), back: false) == path, "closing an item to its list is not a step")
+        check(B.step(path, current: P(section: "meetings", libraryRecordID: "r-2"), hasDetail: true) == nil,
+              "elsewhere in the section, Back keeps the parent chain")
+        check(B.step(path, current: P(section: "meetings"), hasDetail: false)?.from == review, "on the section's list, Back goes back along the path")
+        check(rec(path, meeting, review, back: true) == path, "Back's own move is not a step")
+        check(B.step(path, current: P(section: "messages", turnID: "t"), hasDetail: true) == nil, "a step for another section is not taken")
+        check(B.step(path, current: P(section: nil), hasDetail: false) == nil, "the home never goes back along the path")
+        // Two jumps stack: the home, a message, a meeting opened from it; Back, Back.
+        let home = P(section: nil), message = P(section: "messages", turnID: "t-9"), fromMessage = P(section: "meetings", libraryRecordID: "r-7")
+        path = rec(rec([], home, message), message, fromMessage)
+        let first = B.step(path, current: fromMessage, hasDetail: true)
+        check(first?.from == message, "two jumps stack: the first Back returns to the message")
+        path = Array(path.dropLast())
+        check(B.step(path, current: message, hasDetail: true)?.from == home, "two jumps stack: the second Back returns home")
+        // One item opened from another in the same section is a step (a session from a session).
+        let s1 = P(section: "sessions", sessionID: "a"), s2 = P(section: "sessions", sessionID: "b")
+        path = rec([], s1, s2)
+        check(path == [ActivityBackStep(from: s1, to: s2)] && B.step(path, current: s2, hasDetail: true)?.from == s1, "an item from an item in one section is a step")
+        check(rec([], P(section: "sessions"), s1) == [], "opening an item from its own list is not a step")
+        // A sidebar or Home pick starts a fresh path and is not a step.
+        let picked = B.record(rec([], home, message), old: message, new: P(section: "meetings"), goingBack: false, pick: P(section: "meetings"))
+        check(picked.path.isEmpty && picked.pick == nil, "a sidebar pick clears the path and is spent on arrival")
+        let notYet = B.record(rec([], home, message), old: message, new: P(section: "messages"), goingBack: false, pick: P(section: "meetings"))
+        check(notYet.pick == P(section: "meetings"), "a pick waits until the window arrives")
+        check(B.record([], old: message, new: home, goingBack: false, pick: P(section: nil)).path.isEmpty, "Home is a pick")
         var long: [ActivityBackStep] = []
-        for i in 0..<40 { long = ActivityBackPath.record(long, old: P(section: i % 2 == 0 ? "messages" : "meetings"), new: P(section: i % 2 == 0 ? "meetings" : "messages"), goingBack: false) }
-        check(long.count == ActivityBackPath.limit, "the path keeps its last 30 steps")
+        for i in 0..<40 { long = rec(long, P(section: i % 2 == 0 ? "messages" : "meetings"), P(section: i % 2 == 0 ? "meetings" : "messages")) }
+        check(long.count == B.limit, "the path keeps its last 30 steps")
         let linked = [ActivityBackStep(from: P(section: "work"), to: P(section: "sessions", sessionID: "x"))]
-        check(ActivityBackPath.settle(linked, before: "sessions", after: "work").isEmpty && ActivityBackPath.settle(linked, before: "sessions", after: "meetings") == linked
-              && ActivityBackPath.settle(linked, before: "sessions", after: "sessions") == linked, "a parent-chain move across sections drops only the step it undid")
+        check(B.settle(linked, before: "sessions", after: "work").isEmpty && B.settle(linked, before: "sessions", after: "meetings") == linked
+              && B.settle(linked, before: "sessions", after: "sessions") == linked, "a parent-chain move across sections drops only the step it undid")
+        let titles: (String) -> String? = { $0 == "speakers" ? "Speakers" : nil }
+        check(B.word(ActivityBackStep(from: review, to: meeting), titles: titles, home: "Today") == "Speakers"
+              && B.word(ActivityBackStep(from: home, to: message), titles: titles, home: "Today") == "Today", "Back names where it goes")
         let all = [T.emptyToday, T.lastMonth, W.copied, W.label(W.summary, copied: nil, fullChars: 0)]
         check(all.allSatisfy { !$0.contains("\u{2014}") && !$0.contains("\u{2192}") && !$0.contains("Miles") }, "no dash, arrow or name")
         print("anand parity checks: \(passes) passed, \(failures) failed")

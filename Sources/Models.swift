@@ -13834,6 +13834,12 @@ struct ActivityPlace: Equatable, Sendable {
     var voiceName: String? = nil
     var libraryRecordID: String? = nil
     var sessionID: String? = nil
+
+    /// The open item, as one key; nil on a section's list or the home.
+    var item: String? {
+        let parts = [turnID, archiveDate, speakerSessionID, voiceName, libraryRecordID, sessionID]
+        return parts.allSatisfy { $0 == nil } ? nil : parts.map { $0 ?? "" }.joined(separator: "|")
+    }
 }
 
 struct ActivityBackStep: Equatable, Sendable {
@@ -13845,10 +13851,23 @@ enum ActivityBackPath {
     /// Steps kept; the oldest go first.
     static let limit = 30
 
-    /// The path after the place changed from `old` to `new`: a new step when the section changed and Back did not make the move.
-    static func record(_ path: [ActivityBackStep], old: ActivityPlace, new: ActivityPlace, goingBack: Bool) -> [ActivityBackStep] {
-        guard !goingBack, old.section != new.section else { return path }
-        return Array((path + [ActivityBackStep(from: old, to: new)]).suffix(limit))
+    /// The path after the place changed from `old` to `new`. A step when the section changed, or when one item opened from
+    /// another in the same section (lead 2026-11-12: a session from a session, a meeting from a meeting); never for Back's own
+    /// move. A pick from the sidebar or Home (`pick`, the place it goes to) starts a fresh path and is not a step; the pick is
+    /// spent once the window arrives there.
+    static func record(_ path: [ActivityBackStep], old: ActivityPlace, new: ActivityPlace, goingBack: Bool,
+                       pick: ActivityPlace? = nil) -> (path: [ActivityBackStep], pick: ActivityPlace?) {
+        if let pick, new.section == pick.section { return ([], nil) }
+        let crossed = old.section != new.section
+        let itemToItem = !crossed && old.item != nil && new.item != nil && old.item != new.item
+        guard !goingBack, crossed || itemToItem else { return (path, pick) }
+        return (Array((path + [ActivityBackStep(from: old, to: new)]).suffix(limit)), pick)
+    }
+
+    /// Back's word for where it goes: the section's title, or `home` for the Activity home. One place, so a later pick of the
+    /// breadcrumb design changes it once.
+    static func word(_ step: ActivityBackStep, titles: (String) -> String?, home: String) -> String {
+        step.from.section.flatMap(titles) ?? home
     }
 
     /// The step Back takes from `current`, or nil for the section's own parent chain.

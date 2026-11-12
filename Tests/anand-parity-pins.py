@@ -41,13 +41,20 @@ need("if let step = backStep {\n            tookStep = true\n            backPat
      and go.find("if let step = backStep {") < go.find("if section == .sessions, showingLinkedSession {"), "[back] Back goes back along the path first")
 need("backMoving = true" in go and "if section == sectionBefore { backMoving = false }" in go
      and "else if !tookStep { backPath = ActivityBackPath.settle(" in go, "[back] Back's own moves are not steps")
-need(".onChange(of: currentPlace) { old, new in\n            backPath = ActivityBackPath.record(backPath, old: old, new: new, goingBack: backMoving)" in win,
+need(".onChange(of: currentPlace) { old, new in\n            let recorded = ActivityBackPath.record(backPath, old: old, new: new, goingBack: backMoving, pick: backPick)\n            backPath = recorded.path\n            backPick = recorded.pick" in win,
      "[back] every change of section is a step")
-need("!isolatedWorkPreview, !meetingReturnToWork, meetingReturnSpeakerSessionID == nil" in body(win, "    private var backStep: ActivityBackStep? {", "\n    }\n"),
-     "[back] the Work preview and the meeting returns keep their own Back")
-need(".help(backLabel)" in win and '.accessibilityLabel(backStep == nil ? "Back" : backLabel)' in win
-     and 'return "Back to " + (step.from.section.flatMap(ActivitySection.init(rawValue:))?.title ?? "Activity home")' in win,
-     "[back] Back says where it goes")
+# A pick from the sidebar (the rail), the home's cards, Home and the shortcuts starts a fresh path.
+pick = body(win, "    private func pickSection(_ item: ActivitySection?) {", "\n    }\n")
+need("backPath = []" in pick and "backPick = currentPlace == target ? nil : target" in pick, "[back] a pick clears the path")
+need(win.count("pickSection(item)") == 5 and win.count("pickSection(nil)") == 3, "[back] the rail, the home cards, Home and the shortcuts are picks")
+need("!isolatedWorkPreview, !showingLinkedSession, !meetingReturnToWork, meetingReturnSpeakerSessionID == nil" in body(win, "    private var backStep: ActivityBackStep? {", "\n    }\n"),
+     "[back] the Work preview, the linked session and the meeting returns keep their own Back")
+# Speakers, a review, Open meeting, Back: the existing return, kept.
+need("else if let sessionId = meetingReturnSpeakerSessionID { returnFromMeetingToSpeakers(sessionId) }" in go
+     and "meetingReturnSpeakerSessionID = sessionId" in win, "[back] Speakers, a review, Open meeting, Back lands on the review")
+need('Label(backWord ?? "Back", systemImage: "chevron.left")' in win and ".help(backLabel)" in win
+     and '.accessibilityLabel(backWord == nil ? "Back" : backLabel)' in win and win.count("ActivityBackPath.word(") == 1,
+     "[back] Back says where it goes, from one place")
 ret = body(win, "    private func returnTo(_ place: ActivityPlace) {", "\n    }\n")
 need("model.openSpeakerReview(sessionId: id)" in ret and "model.openLibraryMeeting(row)" in ret and "model.openClaudeSession(row)" in ret
      and "selectedTurnID = id" in ret and "Task { await load(target) }" in ret, "[back] the item that was open comes back")
