@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Anand parity (D4, 2026-11-12): the mutation gate for Back by path, the Speakers copy buttons and Meetings on today.
+
+    python3 -u Tests/mutate-anand-parity.py [--targets] [mutant-name ...]
+
+Runs each kind unmutated first and refuses unless it passes (a gate over a red suite proves nothing); then for each mutant
+asserts its target appears EXACTLY ONCE, applies it, reruns its kind, and requires a failure carrying the named message.
+Files are restored in `finally`. The words kind compiles Models.swift alone through Tests/compile-guard.sh, under the
+swift-slot lease; the pins kind compiles nothing.
+"""
+import os, subprocess, sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+M, W, V, C, A = "Sources/Models.swift", "Sources/ActivityWindow.swift", "Sources/Views.swift", "Sources/ControllerModel.swift", "Sources/ActivityMeetings.swift"
+KINDS = {"words": ["zsh", "Tests/run-anand-parity.sh"], "pins": ["python3", "Tests/anand-parity-pins.py", "."]}
+MUTANTS = [
+    # Item 1, the path logic (words) and its wiring (pins).
+    ("every-move-a-step", "words", M, "        guard !goingBack, old.section != new.section else { return path }", "        guard !goingBack else { return path }",
+     "check failed [a move inside a section is not a step]"),
+    ("back-records", "words", M, "        guard !goingBack, old.section != new.section else { return path }", "        guard old.section != new.section else { return path }",
+     "check failed [Back's own move is not a step]"),
+    ("always-step", "words", M, "        return current == top.to || !hasDetail ? top : nil", "        return top",
+     "check failed [deeper or elsewhere in the section, Back keeps the parent chain]"),
+    ("settle-anything", "words", M, "        guard before != after, let top = path.last, top.to.section == before, top.from.section == after else { return path }",
+     "        guard before != after, path.last != nil else { return path }", "check failed [a parent-chain move across sections drops only the step it undid]"),
+    ("no-limit", "words", M, "        return Array((path + [ActivityBackStep(from: old, to: new)]).suffix(limit))", "        return path + [ActivityBackStep(from: old, to: new)]",
+     "check failed [the path keeps its last 30 steps]"),
+    ("path-ignored", "pins", W, "        if let step = backStep {\n            tookStep = true\n            backPath.removeLast()\n            returnTo(step.from)\n            return\n        }\n", "",
+     "[back] Back goes back along the path first"),
+    ("not-recorded", "pins", W, "            backPath = ActivityBackPath.record(backPath, old: old, new: new, goingBack: backMoving)\n", "",
+     "[back] every change of section is a step"),
+    ("label-silent", "pins", W, ".help(backLabel)", '.help("Go back one step")', "[back] Back says where it goes"),
+    ("review-not-reopened", "pins", W, "                if model.openReview?.sessionId != id { model.openSpeakerReview(sessionId: id) }\n", "",
+     "[back] the item that was open comes back"),
+    # Item 3.
+    ("copied-on-both", "words", M, "        if copied == kind { return Self.copied }", "        if copied != nil { return Self.copied }",
+     "check failed [copied shows only on the tapped one]"),
+    ("old-summary-word", "words", M, ': "Copy summary"', ': "Summary"', "check failed [copy words]"),
+    ("copied-stays", "pins", C, "            self?.copiedMeetingKind = nil\n", "", "[copy] Copied lasts copiedSeconds"),
+    ("copy-silent", "pins", C, "        if let note = copyNote {\n            NSAccessibility.post(", "        if let note = copyNote, false {\n            NSAccessibility.post(",
+     "[copy] VoiceOver hears what was copied"),
+    # Item 4.
+    ("jump-to-oldest", "words", M, '        days.filter { $0.count > 0 && $0.date < today }.map(\\.date).max()', '        days.filter { $0.count > 0 && $0.date < today }.map(\\.date).min()',
+     "check failed [jump to the latest earlier day with meetings]"),
+    ("plain-day-iso", "words", M, '        if day == today { return "Today" }', '        if day == today { return day }', "check failed [plain day as the web]"),
+    ("today-needs-meetings", "pins", C, "                libraryDay = Self.currentMeetingDay()\n",
+     "                if libraryDays.contains(where: { $0.date == Self.currentMeetingDay() && $0.count > 0 }) { libraryDay = Self.currentMeetingDay() }\n",
+     "[today] Meetings opens on today, with or without meetings"),
+    ("no-ring", "pins", A, ".stroke(cell.date == today ? tint : Color.clear, lineWidth: 1.2)", ".stroke(Color.clear, lineWidth: 1.2)", "[today] today is ringed"),
+    ("empty-today-locked", "pins", A, ".disabled(count == 0 && cell.date != today)", ".disabled(count == 0)",
+     "[today] an empty today can be picked, and VoiceOver says today"),
+]
+
+
+def run(kind):
+    r = subprocess.run(KINDS[kind], cwd=ROOT, capture_output=True, text=True)
+    return r.returncode == 0, r.stdout + r.stderr
+
+
+def main():
+    want = set(sys.argv[1:]); targets_only = "--targets" in want; want.discard("--targets")
+    chosen = [m for m in MUTANTS if not want or m[0] in want]
+    bad = [m[0] for m in chosen if open(os.path.join(ROOT, m[2])).read().count(m[3]) != 1]
+    if bad:
+        print("targets not found exactly once:", ", ".join(bad)); sys.exit(2)
+    if targets_only:
+        print(f"targets: {len(chosen)} found exactly once"); return
+    for kind in sorted({m[1] for m in chosen}):
+        ok, out = run(kind)
+        if not ok:
+            print(f"REFUSED: baseline {kind} is not green:", out[-400:]); sys.exit(2)
+        print(f"baseline {kind}: pass")
+    killed = survived = 0
+    for name, kind, rel, target, replacement, expect in chosen:
+        path = os.path.join(ROOT, rel); source = open(path).read()
+        try:
+            open(path, "w").write(source.replace(target, replacement, 1))
+            ok, out = run(kind)
+        finally:
+            open(path, "w").write(source)
+        assert open(path).read() == source, "source not restored"
+        if not ok and expect in out:
+            killed += 1; print(f"KILLED   {name}: failed with '{expect}'")
+        else:
+            survived += 1; print(f"SURVIVED {name}: {'passed' if ok else 'failed for another reason: ' + out[-200:]}")
+    print(f"mutants: {killed} killed, {survived} survived")
+    sys.exit(1 if survived else 0)
+
+
+if __name__ == "__main__":
+    main()
