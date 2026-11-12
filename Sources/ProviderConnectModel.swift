@@ -350,8 +350,8 @@ enum ServerUpdateWords {
     }
 
     static func failure(_ error: String, caller: String) -> ServerUpdateResult {
-        // The helper's sign-in pre-check and its won't-move-backward refusal are already plain, and nothing changed.
-        if error.hasPrefix("No AI on this Mac is signed in") || error.hasPrefix("This Mac runs server ") {
+        // The helper's won't-move-backward refusal is already plain, and nothing changed.
+        if error.hasPrefix("This Mac runs server ") {
             return ServerUpdateResult(caller: caller, line: error, detail: nil, failed: true)
         }
         if let verdict = SetupFailureWords.verdict(error) {

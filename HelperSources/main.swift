@@ -1543,10 +1543,12 @@ final class COSControlHelper {
             emit(ok: true, message: Self.upToDateMessage(current), details: details)
             return
         }
+        // Q1 (fix d risk): warn, never refuse, until a real signed-out run proves the sign-in read. The proof below still keeps a
+        // new server only when one AI answers; this line only says early why it may not.
         if update {
             progress("Checking that an AI is signed in…")
-            if let refusal = Self.signInRefusal(updateSignIns(), otherProvider: resolveAgentBinary() != nil) {
-                throw HelperError.message(refusal)
+            if let warning = Self.signInRefusal(updateSignIns(), otherProvider: resolveAgentBinary() != nil) {
+                progress(warning)
             }
         }
         try requireVideoUploadDowngradeSafe(targetVersion: release.version)
@@ -9351,8 +9353,8 @@ final class COSControlHelper {
         guard !otherProvider, !labels.isEmpty, labels.values.allSatisfy(authWarns) else { return nil }
         let names = labels.keys.sorted().map { $0.capitalized }
         let who = names.count == 1 ? names[0] : names.dropLast().joined(separator: ", ") + " or " + names[names.count - 1]
-        return "No AI on this Mac is signed in, so nothing was changed. COS keeps a new server only after one AI answers a test question. "
-            + "Sign in to \(who), then press Update Server again."
+        return "No AI on this Mac reads as signed in. COS keeps the new server only if one answers a test question, "
+            + "so sign in to \(who) if the update stops."
     }
 
     /// Run checks' labels for a CLI's sign-in. Only these two warn; "sign-in check required" (no answer we can read) stays ok,
@@ -9366,7 +9368,17 @@ final class COSControlHelper {
     /// present. An older CLI has no loginExpiresAt and reads signed in as before. Any other exit, or output that is not the
     /// status JSON, is "sign-in check required". The output can carry stderr lines, so the JSON object is cut out of it.
     static func claudeAuthLabel(code: Int32, output: String, now: Date = Date()) -> String {
-        if code == 1 { return authSignedOut }
+        // Q1 (fix d risk): exit 1 is signed out only when the output says so (the status JSON with loggedIn false, or "not logged
+        // in"). An older CLI that exits 1 because it has no `auth status --json` stays a quiet check, never a false warning.
+        if code == 1 {
+            if output.lowercased().contains("not logged in") { return authSignedOut }
+            if let open = output.firstIndex(of: "{"), let close = output.lastIndex(of: "}"), open < close,
+               let data = String(output[open...close]).data(using: .utf8),
+               let status = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], status["loggedIn"] as? Bool == false {
+                return authSignedOut
+            }
+            return "sign-in check required"
+        }
         guard code == 0, let open = output.firstIndex(of: "{"), let close = output.lastIndex(of: "}"), open < close,
               let data = String(output[open...close]).data(using: .utf8),
               let status = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
@@ -28348,8 +28360,11 @@ final class COSControlHelper {
         do {
             let now = Date(timeIntervalSince1970: 1_800_000_000)
             let label = { (code: Int32, output: String) in Self.claudeAuthLabel(code: code, output: output, now: now) }
-            try expect(label(1, "{\"loggedIn\":false}") == Self.authSignedOut && Self.authWarns(label(1, "")),
-                       "claude auth: exit 1 is signed out, and it warns")
+            try expect(label(1, "{\"loggedIn\":false}") == Self.authSignedOut && label(1, "Not logged in. Run claude to sign in.") == Self.authSignedOut
+                       && Self.authWarns(Self.authSignedOut),
+                       "claude auth: exit 1 that says so is signed out, and it warns")
+            try expect(label(1, "error: unknown command 'auth'") == "sign-in check required" && label(1, "") == "sign-in check required",
+                       "claude auth: exit 1 from an older CLI with no auth status stays a quiet check")
             try expect(label(0, "{\"loggedIn\":false}") == Self.authSignedOut, "claude auth: loggedIn false is signed out")
             try expect(label(0, "{\"loggedIn\":true,\"loginExpiresAt\":\"2027-01-15T08:00:00Z\"}") == Self.authExpired
                        && label(0, "{\"loggedIn\":true,\"loginExpiresAt\":1700000000000}") == Self.authExpired
@@ -28366,15 +28381,15 @@ final class COSControlHelper {
                        "claude auth: unreadable output or another exit stays a quiet check")
             // Update Server (Anand fix c): stop before the switch only when every installed AI is signed out or expired.
             try expect(Self.signInRefusal(["claude": Self.authSignedOut, "codex": Self.authSignedOut], otherProvider: false)
-                       == "No AI on this Mac is signed in, so nothing was changed. COS keeps a new server only after one AI answers a test question. Sign in to Claude or Codex, then press Update Server again."
-                       && Self.signInRefusal(["claude": Self.authExpired], otherProvider: false)?.hasSuffix("Sign in to Claude, then press Update Server again.") == true,
-                       "update sign-in: every installed AI signed out or expired stops before the switch, naming them")
+                       == "No AI on this Mac reads as signed in. COS keeps the new server only if one answers a test question, so sign in to Claude or Codex if the update stops."
+                       && Self.signInRefusal(["claude": Self.authExpired], otherProvider: false)?.hasSuffix("so sign in to Claude if the update stops.") == true,
+                       "update sign-in: every installed AI signed out or expired is warned about before the switch, naming them")
             try expect(Self.signInRefusal(["claude": Self.authSignedOut, "codex": "signed in"], otherProvider: false) == nil
                        && Self.signInRefusal(["claude": Self.authSignedOut, "codex": "auth status unavailable"], otherProvider: false) == nil
                        && Self.signInRefusal(["claude": "sign-in check required"], otherProvider: false) == nil,
-                       "update sign-in: one AI signed in, or one that did not answer, lets the update run")
+                       "update sign-in: one AI signed in, or one that did not answer, warns nothing")
             try expect(Self.signInRefusal(["claude": Self.authSignedOut], otherProvider: true) == nil && Self.signInRefusal([:], otherProvider: false) == nil,
-                       "update sign-in: Cursor, or no Claude or Codex at all, never stops it here")
+                       "update sign-in: Cursor, or no Claude or Codex at all, warns nothing")
             try expect(Self.upToDateMessage("7.0.29") == "Server 7.0.29 is up to date. It is the newest published release, so nothing was installed.",
                        "update: nothing newer says so")
         }

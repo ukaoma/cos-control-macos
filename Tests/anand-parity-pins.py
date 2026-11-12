@@ -48,7 +48,7 @@ need("backMoving = true" in go and "if currentPlace == placeBefore { backMoving 
 crumb = body(win, "    @ViewBuilder private var breadcrumb: some View {", "\n    }\n")
 need("let trail = backStep == nil ? [] : ActivityBackPath.trail(backPath, current: currentPlace, hasDetail: hasDetail)" in crumb
      and "if trail.isEmpty { locationCrumb } else {" in crumb, "[trail] the trail shows only while Back goes along the path")
-need("ViewThatFits(in: .horizontal) {\n                trailRow(trail, room: trail.count)\n                trailRow(trail, room: 6)\n                trailRow(trail, room: 5)\n                trailRow(trail, room: 4)" in crumb,
+need("ViewThatFits(in: .horizontal) {\n                trailRow(trail, room: trail.count)\n                trailRow(trail, room: 12)" in crumb,
      "[trail] one line: steps leave from the middle as it narrows")
 row = body(win, "    private func trailRow(_ trail: [ActivityPlace], room: Int) -> some View {", "\n    /// A place's word in the trail")
 need("Button(word) { goBackAlongPath(to: index) }" in row and "if let index, index == trail.count - 1 {" in row
@@ -57,7 +57,7 @@ need("Button(word) { goBackAlongPath(to: index) }" in row and "if let index, ind
 need(".accessibilityValue(trail.map(trailWord).joined(separator: \", \"))" in row, "[trail] left-out steps stay readable by VoiceOver")
 words = body(win, "    private func trailWord(_ place: ActivityPlace) -> String {", "\n    }\n")
 need('return "Naming voices"' in words and 'return "Meeting"' in words and 'return "Session"' in words and '"Message #\\($0)"' in words
-     and "MeetingTodayWords.plainDay(day, today: ControllerModel.currentMeetingDay())" in words and "detailTitle" not in words,
+     and "detailTitle" not in words,
      "[trail] steps named by kind, as the web, this page too")
 along = body(win, "    private func goBackAlongPath(to index: Int) {", "\n    }\n")
 need("backMoving = true" in along and "backPath = Array(backPath.prefix(index))" in along and "returnTo(place)" in along, "[trail] a link goes back to that place")
@@ -73,7 +73,7 @@ need("!isolatedWorkPreview, !showingLinkedSession, !meetingReturnToWork, meeting
 need("else if let sessionId = meetingReturnSpeakerSessionID { returnFromMeetingToSpeakers(sessionId) }" in go
      and "meetingReturnSpeakerSessionID = sessionId" in win, "[back] Speakers, a review, Open meeting, Back lands on the review")
 need('Label("Back", systemImage: "chevron.left")' in win and ".help(backLabel)" in win
-     and '.accessibilityLabel(backWord == nil ? "Back" : backLabel)' in win and win.count("ActivityBackPath.word(") == 1,
+     and '.accessibilityLabel(backLabel)' in win and win.count("ActivityBackPath.word(") == 1,
      "[back] Back says where it goes, from one place")
 ret = body(win, "    private func returnTo(_ place: ActivityPlace) {", "\n    }\n")
 need("model.openSpeakerReview(sessionId: id)" in ret and "model.openLibraryMeeting(row)" in ret and "model.openClaudeSession(row)" in ret
@@ -98,6 +98,19 @@ replyview = read("Sources/MessageReplyView.swift")
 row = body(replyview, "    private func replyRow(_ reply: DropIt.Ask) -> some View {", "\n    static func stateWord(")
 need("ActivityMessageCard(label: \"You\", text: reply.words, tint: ActivitySection.messages.tint, side: .you," in row
      and "DropItAvatar(size: 30)" in row, "[sides] this Mac's replies sit on the same sides")
+# Q1 FIX 2 and 3 (2026-11-12): an untracked detail marks the place; Back's label names the parent without a jump; the trail
+# drops one step at a time; archive chats draw the sides; a pick that moved nothing leaves no pick.
+need("        place.detail = hasDetail && place.item == nil" in win, "[back] an untracked detail marks the place")
+need('if hasDetail, let section { return "Back to " + section.title }' in win and 'if section != nil { return "Back to " + home }' in win
+     and ".accessibilityLabel(backLabel)" in win, "[back] Back names its parent without a jump")
+need("                trailRow(trail, room: 12)\n                trailRow(trail, room: 11)" in win and "                trailRow(trail, room: 5)\n                trailRow(trail, room: 4)" in win,
+     "[trail] one step leaves at a time")
+need("        if let day = place.archiveDate { return day }" in win, "[trail] a day by its raw date, as the web")
+chats = body(win, "@ViewBuilder private func archiveChatDetail(", "\n    private func ")
+need("side: .you, caption: MessageSides.youCaption)" in chats and "side: .cos)" in chats, "[sides] archive chats too")
+need("        if currentPlace == before { backPick = nil }" in pick, "[back] a pick that moved nothing leaves no pick")
+need("                Text(caption).font(COSType.body(12)).foregroundStyle(DropInk.tertiary).padding(.trailing, 4)" in card,
+     "[sides] the caption at 12, as the web")
 if fails:
     print("\n".join("anand parity pin FAILED " + f for f in fails)); sys.exit(1)
 print("anand parity pins: passed")

@@ -527,9 +527,6 @@ struct ProviderConnectChecks {
               && upd.line == "The update did not finish: none of your AIs answered a test request. Sign in to Claude Code, then press Update Server again.",
               "update words", upd.line)
         check(ServerUpdateWords.failure(mixed, caller: "settings").line.hasSuffix("Check Claude Code or Codex, then press Update Server again."), "update words", "a mixed proof failure says Check")
-        let refusal = "No AI on this Mac is signed in, so nothing was changed. COS keeps a new server only after one AI answers a test question. Sign in to Claude, then press Update Server again."
-        let pre = ServerUpdateWords.failure(refusal, caller: "settings")
-        check(pre.line == refusal && pre.detail == nil && pre.failed, "update words", "the helper's sign-in stop is shown as it is")
         let backward = "This Mac runs server 7.0.30, which is newer than 7.0.29, the latest published release. COS will not move it backward, so nothing changed."
         check(ServerUpdateWords.failure(backward, caller: "settings").line == backward, "update words", "the won't-move-backward refusal as it is")
         let raw = "Update failed. Control restored the previous version. Original error: npm ERR! code ETIMEDOUT"
