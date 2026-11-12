@@ -383,6 +383,7 @@ class SlotTests(Base):
             for name in ('run-work-board-perf.sh', 'run-control-instance.sh', 'compile-guard.sh'):
                 (root / 'Tests' / name).write_text(stub); (root / 'Tests' / name).chmod(0o755)
             (root / 'Tests' / 'desktop-safety-check.py').write_text('')
+            (root / 'Tests' / 'compile-list-pins.py').write_text('')  # D4 2026-11-12: the compile-list guard runs before the compiles too
             env = {k: v for k, v in os.environ.items() if not k.startswith('COS_')}
             env.update(RECORD=str(record), COS_BUILD_DIST_DIR=str(root / 'dist'))
             if ambient[0]:

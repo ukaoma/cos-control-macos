@@ -221,7 +221,8 @@ pin("@AppStorage(SettingsHub.classicKey) private var classicSettings = false" in
 pin('hubSwitch("HUB-CL", isOn: $useClassicSettings)' in hub, "General, Advanced: Use classic Settings is the switch")
 pin("private var settingsHubShowing: Bool { showingSettings && !classicSettings }" in activity, "the hub shows only with the switch off")
 frame = body(activity, "    var todayFrameView: some View {", "\n    func todayResetExpansions()")
-pin("if !settingsHubShowing { todayRail(mode: mode, frame: frame, now: timeline.date) }" in frame, "the hub's sidebar takes the Today rail's place")
+# 4a275d9 split this over several lines (the rail is held to the window's height); the guard is still settingsHubShowing.
+pin("if !settingsHubShowing {\n                        todayRail(mode: mode, frame: frame, now: timeline.date)" in frame, "the hub's sidebar takes the Today rail's place")
 pin("if (canGoBack || connectedWorkTest) && !settingsHubShowing { navigationBar; Divider() }" in frame, "the hub's back control replaces the toolbar in Today")
 pin(".frame(maxWidth: classicSettings ? 780 : .infinity, maxHeight: .infinity)" in activity, "the classic panel keeps its 780 pt column")
 
