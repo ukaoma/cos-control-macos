@@ -1381,7 +1381,9 @@ struct WebKeyChecks {
         fake.calls = []
         fake.answers["revoke-all"] = (500, ["ok": false])
         let noSaveNoServer = await state.revokeAll()
-        check(fake.count("revoke-all") == 1, "revoke all reaches the server", "a failing store still sends revoke-all")
+        // At least once: the refresh after it sends revoke-all again when Control's epoch is ahead (W5). A revoke-all that
+        // skipped the server (RV-2) never reaches its refresh either, so it sends none.
+        check(fake.count("revoke-all") >= 1, "revoke all reaches the server", "a failing store still sends revoke-all")
         check(!noSaveNoServer && state.message?.contains("stay off") == false && state.message?.contains("may still approve") == true,
               "revoke says what failed", "neither saved nor confirmed: the message says a phone may still approve")
         fake.answers["revoke-all"] = (200, ["ok": true])
