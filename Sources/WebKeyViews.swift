@@ -128,7 +128,7 @@ struct PhoneApprovalsSwitchRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center, spacing: 16) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(PhoneApprovalsSwitch.label).font(COSType.body(13.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
+                    Text(PhoneApprovalsSwitch.title(on: on && pendingOff == nil)).font(COSType.body(13.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
                     Text(PhoneApprovalsSwitch.detail).font(COSType.body(12)).foregroundStyle(TodayInk.sub).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)

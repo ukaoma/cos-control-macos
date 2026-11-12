@@ -308,6 +308,8 @@ mutants = [
      "[signer reasons match the server]"),
     ("PA-31 the switch draws its label twice again (pins)", V, "                Toggle(isOn: Binding(get: { (on && pendingOff == nil) || choosing }",
      "                Toggle(PhoneApprovalsSwitch.label, isOn: Binding(get: { (on && pendingOff == nil) || choosing }", "[phone switch label once]"),
+    ("PA-32 the title stays an instruction once on", C, "static func title(on: Bool) -> String { on ? labelOn : label }",
+     "static func title(on: Bool) -> String { label }", "[phone switch title follows the switch]"),
     ("PA-29 a phone's Revoke waits for work (pins)", V, "Button(WebKeyCopy.revoke) { Task { await state.revoke(row.kid) } }",
      "Button(WebKeyCopy.revoke) { if PhoneApprovalsSwitch.applyAllowed(locked: false, workActive: false) { Task { await state.revoke(row.kid) } } }",
      "[devices revoke is live]"),

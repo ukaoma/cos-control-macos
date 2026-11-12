@@ -523,6 +523,9 @@ enum PhoneApprovalsSwitch {
     static let confirmOffMessage = "Every enrolled phone is removed now and stops approving at once. If you turn this on again, enroll each phone again with Touch ID. COS then restarts the server with phone approvals off, after any running work."
     static let confirmOff = "Remove phones and turn off"
     static let label = "Turn on phone approvals"
+    static let labelOn = "Phone approvals are on"
+    /// The row's title follows the switch (lead 11:40): "Turn on phone approvals" reads as an instruction once it is on.
+    static func title(on: Bool) -> String { on ? labelOn : label }
     static let detail = "Off unless you turn it on. Lets one of your iPhones approve agent actions. Restarts the server."
     static let noPhone = "No iPhone on your Tailscale account yet. Sign in to Tailscale on the phone, then check again."
 }

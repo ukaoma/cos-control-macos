@@ -292,6 +292,9 @@ need('"PK-02"' not in basic_block and catalog.index("static let extras: [Setting
 switch_view = body_of(views, views.index("struct PhoneApprovalsSwitchRow: View"))
 toggle_at = switch_view.find("Toggle(isOn: Binding(get: { (on && pendingOff == nil) || choosing }")
 toggle_end = switch_view.find(".accessibilityLabel(PhoneApprovalsSwitch.label)", toggle_at)
+# The row's title follows the switch, off while Off's restart waits (lead 11:40).
+need("Text(PhoneApprovalsSwitch.title(on: on && pendingOff == nil))" in switch_view and "Text(PhoneApprovalsSwitch.label)" not in switch_view,
+     "phone switch title follows the switch", "the row's title says on only while the server is on and no Off waits")
 # The switch draws no second label (COSSwitchStyle ignores .labelsHidden()); VoiceOver keeps the name.
 need(0 <= toggle_at and switch_view.count("Toggle(") == 1 and "})) { EmptyView() }\n                .accessibilityLabel(PhoneApprovalsSwitch.label)" in switch_view,
      "phone switch label once", "the switch has no visible label of its own; the row's title says it, and VoiceOver keeps the name")

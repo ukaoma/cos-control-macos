@@ -582,9 +582,11 @@ struct WebKeyChecks {
               && message.contains("example-mac.tail00000a.ts.net") && message.contains("becomes public in certificate logs")
               && message.contains("restarts the server"), "phone switch confirm", "the phone, the Mac's name, public certificate logs, the restart")
         let copy = [PhoneApprovalsSwitch.confirmOnTitle(amy), message, PhoneApprovalsSwitch.confirmOnMessage(amy, macName: nil), PhoneApprovalsSwitch.confirmOffTitle,
-                    PhoneApprovalsSwitch.confirmOffMessage, PhoneApprovalsSwitch.label, PhoneApprovalsSwitch.detail, PhoneApprovalsSwitch.noPhone]
+                    PhoneApprovalsSwitch.confirmOffMessage, PhoneApprovalsSwitch.label, PhoneApprovalsSwitch.labelOn, PhoneApprovalsSwitch.detail, PhoneApprovalsSwitch.noPhone]
         check(copy.allSatisfy { !$0.isEmpty && !$0.contains("—") && !$0.contains("COS_") }, "phone switch confirm", "plain copy: no em dash, no variable names")
         check(PhoneApprovalsSwitch.detail.hasPrefix("Off unless you turn it on."), "phone switch off by default", "the row says it is off by default")
+        check(PhoneApprovalsSwitch.title(on: false) == "Turn on phone approvals" && PhoneApprovalsSwitch.title(on: true) == "Phone approvals are on",
+              "phone switch title follows the switch", "the title asks only while it is off, and says it is on once it is")
         // Like the nine restart rows: never live while work runs or another change is in progress.
         check(PhoneApprovalsSwitch.applyAllowed(locked: false, workActive: false) && !PhoneApprovalsSwitch.applyAllowed(locked: true, workActive: false)
               && !PhoneApprovalsSwitch.applyAllowed(locked: false, workActive: true) && !PhoneApprovalsSwitch.applyAllowed(locked: true, workActive: true),
