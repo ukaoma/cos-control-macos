@@ -2408,8 +2408,11 @@ done
 # execution in ModelsContract; this pins that the reason is actually assigned.
 /usr/bin/grep -qE '^[[:space:]]*contentUnavailable = reason$' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'MeetingContent.unavailableMessage(reason)' "$ROOT/Sources/Views.swift"
-# The clipboard must never quote a size the confirmation disagrees with.
-/usr/bin/grep -q 'content.fullChars / 1024' "$ROOT/Sources/Views.swift"
+# The clipboard must never quote a size the confirmation disagrees with. Since 543e697 the button's KB comes from
+# MeetingCopyWords.label (Models.swift), fed content.fullChars, with the confirmation's max(1, chars / 1024).
+/usr/bin/grep -q -F 'fullChars: content.fullChars)' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q -F 'max(1, fullChars / 1024)) KB)' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q -F 'max(1, (full ? c.fullChars : c.summaryChars) / 1024)' "$ROOT/Sources/ControllerModel.swift"
 
 # Talk time decodes with no `?? 0` (same no-safe-default rule as coverage), and
 # is rendered ONLY behind nameAsserted or a typed interval row — showing minutes for
