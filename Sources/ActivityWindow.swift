@@ -815,9 +815,12 @@ struct ActivityWindow: View {
 
     /// Where the window is now, for Back by path (ActivityBackPath in Models.swift).
     private var currentPlace: ActivityPlace {
-        ActivityPlace(section: section?.rawValue, turnID: selectedTurnID, archiveDate: selectedArchiveDate,
-                      speakerSessionID: selectedSpeakerSessionID, voiceName: selectedVoiceName,
-                      libraryRecordID: selectedLibraryRecordID, sessionID: selectedSessionID)
+        var place = ActivityPlace(section: section?.rawValue, turnID: selectedTurnID, archiveDate: selectedArchiveDate,
+                                  speakerSessionID: selectedSpeakerSessionID, voiceName: selectedVoiceName,
+                                  libraryRecordID: selectedLibraryRecordID, sessionID: selectedSessionID)
+        // Q1 FIX 2: an open detail the path does not track makes this place differ from the list a jump arrived at.
+        place.detail = hasDetail && place.item == nil
+        return place
     }
 
     /// The step Back takes now, when it goes back along the path instead of the section's parent chain. Never in the isolated
@@ -836,7 +839,16 @@ struct ActivityWindow: View {
     }
 
     /// The Back button's help and VoiceOver label: "Back to <where>" after a recorded jump.
-    private var backLabel: String { backWord.map { "Back to " + $0 } ?? "Go back one step" }
+    /// Help and VoiceOver for Back, as the web (Q1 FIX 3): "Back to <where>", by the recorded jump, else the parent (the
+    /// section's list from a detail, the home from a list); "Back" only where there is nowhere to go.
+    private var backLabel: String {
+        if let word = backWord { return "Back to " + word }
+        let home = todayEnabled && !isolatedWorkPreview ? "Today" : "Home"
+        if showingSettings { return "Back to " + (section?.title ?? home) }
+        if hasDetail, let section { return "Back to " + section.title }
+        if section != nil { return "Back to " + home }
+        return "Back"
+    }
 
     /// A pick from the sidebar, the home's cards, Home or a number shortcut: a fresh path (lead 2026-11-12).
     private func pickSection(_ item: ActivitySection?) {
@@ -844,7 +856,11 @@ struct ActivityWindow: View {
         // Already there: nothing will move, so no pick is left waiting to clear a later Back.
         let target = ActivityPlace(section: item?.rawValue)
         backPick = currentPlace == target ? nil : target
+        let before = currentPlace
         if let item { select(item) } else { goHome() }
+        // Q1 lower: select and goHome return early with a task detail open; nothing moved, so the pick must not wait to clear a
+        // later real path.
+        if currentPlace == before { backPick = nil }
     }
 
     /// Back along the path: the section it came from, and the item that was open there when it reopens by its ID.
@@ -1268,7 +1284,7 @@ struct ActivityWindow: View {
             .disabled(!canGoBack)
             .keyboardShortcut(.leftArrow, modifiers: .command)
             .help(backLabel)
-            .accessibilityLabel(backWord == nil ? "Back" : backLabel)
+            .accessibilityLabel(backLabel)
 
             if showingSettings {
                 Text("COS Control › Settings").font(COSType.body(12, weight: .semibold))
@@ -1302,8 +1318,15 @@ struct ActivityWindow: View {
         if trail.isEmpty { locationCrumb } else {
             // One line, never wraps (as the web, 7.0.30): when it is too wide, steps leave from the middle; the first, the step
             // before this page and this page always stay.
+            // One step leaves at a time, as the web's trailCut (Q1 FIX 3).
             ViewThatFits(in: .horizontal) {
                 trailRow(trail, room: trail.count)
+                trailRow(trail, room: 12)
+                trailRow(trail, room: 11)
+                trailRow(trail, room: 10)
+                trailRow(trail, room: 9)
+                trailRow(trail, room: 8)
+                trailRow(trail, room: 7)
                 trailRow(trail, room: 6)
                 trailRow(trail, room: 5)
                 trailRow(trail, room: 4)
@@ -1345,13 +1368,14 @@ struct ActivityWindow: View {
     }
 
     /// A place's word in the trail, by kind, as server 7.0.30 names them (W1, COORD 13:40): a pane's list by its title, a
-    /// meeting "Meeting", a session "Session", the Speakers review "Naming voices", a message "Message #N", a day its short
-    /// date; this page the same way, in bold.
+    /// meeting "Meeting", a session "Session", the Speakers review "Naming voices", a message "Message #N", a day its raw date;
+    /// this page the same way, in bold.
     private func trailWord(_ place: ActivityPlace) -> String {
         let target = place.section.flatMap(ActivitySection.init(rawValue:))
         guard let target else { return todayEnabled && !isolatedWorkPreview ? "Today" : "Home" }
         if let id = place.turnID { return model.recentMessages.first { $0.id == id }?.no.map { "Message #\($0)" } ?? "Message" }
-        if let day = place.archiveDate { return MeetingTodayWords.plainDay(day, today: ControllerModel.currentMeetingDay()) }
+        // A day by its raw date, as the web's crumb (messages.js:527; Q1 FIX 3 reverted c6f93c9's "Nov 10").
+        if let day = place.archiveDate { return day }
         if let name = place.voiceName { return name }
         if place.speakerSessionID != nil { return "Naming voices" }
         if place.libraryRecordID != nil { return "Meeting" }
@@ -5913,12 +5937,15 @@ struct ActivityWindow: View {
                                     Button("Copy turn") { model.copyArchiveMessage(message) }
                                         .controlSize(.small)
                                 }
+                                // Pick A in archive chats too (Q1 FIX 3; W1: "message reader and archive chats").
                                 messageBlock(label: "You", text: message.query,
-                                             tint: ActivitySection.messages.tint, highlight: chatQuery)
+                                             tint: ActivitySection.messages.tint, highlight: chatQuery,
+                                             side: .you, caption: MessageSides.youCaption)
                                 // 0.5.380: the lens's inline numbered lists on their own lines, as Control Web draws them.
                                 // The card gets the stored answer; only its Markdown view draws it structured (Copy answer).
                                 messageBlock(label: "COS", text: message.text, lensLists: true,
-                                             tint: COSPalette.green, highlight: chatQuery, markdownID: "archive:\(date)/\(index)/\(message.id)")
+                                             tint: COSPalette.green, highlight: chatQuery, markdownID: "archive:\(date)/\(index)/\(message.id)",
+                                             side: .cos)
                             }
                             .padding(hit ? 10 : 0)
                             .background(

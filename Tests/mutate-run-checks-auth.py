@@ -18,14 +18,16 @@ HELPER_SOURCES = ["HelperSources/main.swift", "HelperSources/ProviderStatusCore.
                   "HelperSources/SessionUsageCollector.swift", "Sources/SessionUsageCore.swift", "Sources/WorkSessionLinks.swift"]
 MUTANTS = [
     # (name, target, replacement, expected message[, file, kind]); file defaults to the helper, kind to "helper".
-    ("exit-one-ignored", "        if code == 1 { return authSignedOut }\n", "", "claude auth: exit 1 is signed out"),
+    ("exit-one-ignored", "            if output.lowercased().contains(\"not logged in\") { return authSignedOut }\n", "", "claude auth: exit 1 that says so is signed out"),
+    ("exit-one-trusted", "            return \"sign-in check required\"\n        }\n        guard code == 0,", "            return authSignedOut\n        }\n        guard code == 0,",
+     "claude auth: exit 1 from an older CLI with no auth status stays a quiet check"),
     ("logged-out-ignored", "        guard loggedIn else { return authSignedOut }\n", "", "claude auth: loggedIn false is signed out"),
     ("expiry-ignored", "        if let expires = authExpiry(status[\"loginExpiresAt\"]), expires <= now { return authExpired }\n", "",
      "claude auth: a loginExpiresAt already past is expired"),
     ("expiry-always", "expires <= now { return authExpired }", "expires <= now.addingTimeInterval(10 * 365 * 86_400) { return authExpired }",
      "claude auth: a loginExpiresAt still ahead is signed in"),
     ("millis-as-seconds", "raw > 100_000_000_000 ? raw / 1000 : raw", "raw", "claude auth: a loginExpiresAt already past is expired"),
-    ("no-json-cut", "let data = String(output[open...close]).data(using: .utf8)", "let data = output.data(using: .utf8)",
+    ("no-json-cut", "open < close,\n              let data = String(output[open...close]).data(using: .utf8)", "open < close,\n              let data = output.data(using: .utf8)",
      "claude auth: an older CLI with no loginExpiresAt reads signed in"),
     ("unreadable-warns", "static func authWarns(_ label: String) -> Bool { label == authSignedOut || label == authExpired }",
      "static func authWarns(_ label: String) -> Bool { label != \"signed in\" }", "claude auth: unreadable output or another exit stays a quiet check"),
@@ -33,10 +35,10 @@ MUTANTS = [
      "static func authWarns(_ label: String) -> Bool { label == authSignedOut }", "claude auth: a loginExpiresAt already past is expired"),
     # Fix c, helper: the sign-in stop before the switch.
     ("refuse-on-any", "labels.values.allSatisfy(authWarns)", "labels.values.contains(where: authWarns)",
-     "update sign-in: one AI signed in, or one that did not answer, lets the update run"),
-    ("cursor-ignored", "guard !otherProvider, !labels.isEmpty,", "guard !labels.isEmpty,", "update sign-in: Cursor, or no Claude or Codex at all"),
-    ("refuse-unnamed", "+ \"Sign in to \\(who), then press Update Server again.\"", "+ \"Sign in, then press Update Server again.\"",
-     "update sign-in: every installed AI signed out or expired stops before the switch"),
+     "update sign-in: one AI signed in, or one that did not answer, warns nothing"),
+    ("cursor-ignored", "guard !otherProvider, !labels.isEmpty,", "guard !labels.isEmpty,", "update sign-in: Cursor, or no Claude or Codex at all, warns nothing"),
+    ("refuse-unnamed", "+ \"so sign in to \\(who) if the update stops.\"", "+ \"so sign in if the update stops.\"",
+     "update sign-in: every installed AI signed out or expired is warned about"),
     # Fix c, app: the words and the wiring.
     ("update-proof-raw", "        if let verdict = SetupFailureWords.verdict(error) {", "        if false, let verdict = SetupFailureWords.verdict(error) {",
      "check failed [update words]", PM, "app"),

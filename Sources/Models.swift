@@ -13834,6 +13834,10 @@ struct ActivityPlace: Equatable, Sendable {
     var voiceName: String? = nil
     var libraryRecordID: String? = nil
     var sessionID: String? = nil
+    /// Q1 FIX 2 (2026-11-12): a detail Back by path does not track is open (a memory, a lesson, a graph entry, a thread, a task,
+    /// the cue review, the COS chat or its History, a media preview, an archive chat, a live transcript, Import, Suggestions, the
+    /// dictionary, dictation). It makes the place differ from the list a jump arrived at, so Back closes that detail first.
+    var detail = false
 
     /// The open item, as one key; nil on a section's list or the home.
     var item: String? {
@@ -13848,8 +13852,10 @@ struct ActivityBackStep: Equatable, Sendable {
 }
 
 enum ActivityBackPath {
-    /// Earlier steps kept, as the web (12); the oldest go first.
-    static let limit = 12
+    /// Steps Back remembers (35ac0a4's 30; Q1 FIX 1: the web's Back is history with no cap, and 12 caps only its trail line).
+    static let limit = 30
+    /// Earlier steps the trail shows at most (the web's NAV_TRAIL_MAX, 12).
+    static let trailLimit = 12
 
     /// The path after the place changed from `old` to `new`. A step when the section changed, or when one item opened from
     /// another in the same section (lead 2026-11-12: a session from a session, a meeting from a meeting); never for Back's own
@@ -13867,9 +13873,10 @@ enum ActivityBackPath {
     /// Miles's pick B (2026-11-12, "the trail row"): the places a trail shows, oldest first, ending with `current`; empty when
     /// Back would not go along the path (then the bar keeps its location text). It reads the same steps as Back, never a
     /// second record.
+    /// Only on a page opened along the path, never on a section's list (the web: "Not shown on a pane's list").
     static func trail(_ path: [ActivityBackStep], current: ActivityPlace, hasDetail: Bool) -> [ActivityPlace] {
-        guard step(path, current: current, hasDetail: hasDetail) != nil else { return [] }
-        return path.map(\.from) + [current]
+        guard hasDetail, step(path, current: current, hasDetail: hasDetail) != nil else { return [] }
+        return path.suffix(trailLimit).map(\.from) + [current]
     }
 
     /// One line that never wraps: when a trail has more than `room` places it keeps the first and the last `room - 2`, with

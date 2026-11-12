@@ -67,7 +67,26 @@ import Foundation
         check(B.record([], old: message, new: home, goingBack: false, pick: P(section: nil)).path.isEmpty, "Home is a pick")
         var long: [ActivityBackStep] = []
         for i in 0..<40 { long = rec(long, P(section: i % 2 == 0 ? "messages" : "meetings"), P(section: i % 2 == 0 ? "meetings" : "messages")) }
-        check(long.count == B.limit, "the path keeps its last 12 steps, as the web")
+        check(long.count == 30 && B.limit == 30, "Back remembers 30 steps")
+        var hops: [ActivityBackStep] = []
+        for i in 0..<20 { hops = rec(hops, P(section: "messages", turnID: "m\(i)"), P(section: "messages", turnID: "m\(i + 1)")) }
+        let hopTrail = B.trail(hops, current: P(section: "messages", turnID: "m20"), hasDetail: true)
+        check(hops.count == 20 && hopTrail.count == 13 && hopTrail.first == P(section: "messages", turnID: "m8"),
+              "the trail shows at most 12 earlier steps")
+        // Q1 FIX 2, the wrong-place family: from the home a jump opens Memories (its list); a memory opened there is a detail
+        // the path does not track. Back closes it to the list first, then goes home. And no trail on the memory or the list.
+        let memoriesList = P(section: "memories")
+        var memoryOpen = P(section: "memories"); memoryOpen.detail = true
+        var family = rec([], home, memoriesList)
+        family = rec(family, memoriesList, memoryOpen)
+        check(family == [ActivityBackStep(from: home, to: memoriesList)], "an untracked detail is not a step")
+        check(B.step(family, current: memoryOpen, hasDetail: true) == nil, "Back on an untracked detail closes it, never jumps away")
+        check(B.step(family, current: memoriesList, hasDetail: false)?.from == home, "then Back on the list goes back along the path")
+        check(B.trail(family, current: memoryOpen, hasDetail: true).isEmpty && B.trail(family, current: memoriesList, hasDetail: false).isEmpty,
+              "no trail on an untracked detail or on a section's list")
+        // Back never leaves the app: at the home, or with no path, it takes no step (the parent chain then stops at the home).
+        check(B.step([], current: memoriesList, hasDetail: false) == nil && B.step(family, current: home, hasDetail: false) == nil,
+              "Back never leaves the app")
         let linked = [ActivityBackStep(from: P(section: "work"), to: P(section: "sessions", sessionID: "x"))]
         check(B.settle(linked, before: "sessions", after: "work").isEmpty && B.settle(linked, before: "sessions", after: "meetings") == linked
               && B.settle(linked, before: "sessions", after: "sessions") == linked, "a parent-chain move across sections drops only the step it undid")

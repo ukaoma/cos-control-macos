@@ -253,7 +253,8 @@ pin('case "update": try withMutationLock { try install(requestedVersion: "latest
     and "if update, let current = loadManifest()?.version, current == release.version," in install
     and "== .managedHealthy {" in install and "emit(ok: true, message: Self.upToDateMessage(current), details: details)\n            return" in install,
     "update up to date", "a healthy server on the newest release is not reinstalled")
-pin("        if update {\n            progress(\"Checking that an AI is signed in…\")\n            if let refusal = Self.signInRefusal(updateSignIns(), otherProvider: resolveAgentBinary() != nil) {" in install
+pin("        if update {\n            progress(\"Checking that an AI is signed in…\")\n            if let warning = Self.signInRefusal(updateSignIns(), otherProvider: resolveAgentBinary() != nil) {\n                progress(warning)\n            }" in install
+    and "throw HelperError.message(refusal)" not in install
     and before(install, "Self.signInRefusal(", "let generation = try stageGeneration("), "update sign-in first", "the sign-in check runs before anything is staged or switched")
 pin('case "install"' in helper and "try install(requestedVersion: requested, workDirectory: work)\n" in helper, "install unchanged", "Install keeps reinstalling as before")
 
