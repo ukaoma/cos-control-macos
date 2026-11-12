@@ -677,6 +677,17 @@ struct ActivityWindow: View {
         return view
     }
 
+    /// Anand parity renders (D4, Tests/AnandParityRender.swift): a section, the message open in it and a recorded path, so the
+    /// trail row draws as it does after real jumps.
+    static func pathFixture(model: ControllerModel, section: ActivitySection, turnID: String? = nil, backPath: [ActivityBackStep]) -> ActivityWindow {
+        precondition(!model.backgroundWorkEnabled)
+        var view = ActivityWindow(model: model)
+        view._section = State(initialValue: section)
+        view._selectedTurnID = State(initialValue: turnID)
+        view._backPath = State(initialValue: backPath)
+        return view
+    }
+
     /// Full Activity shell for the offscreen settings regression fixture.
     static func settingsFixture(model: ControllerModel) -> ActivityWindow {
         precondition(!model.backgroundWorkEnabled)
