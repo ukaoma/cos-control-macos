@@ -457,7 +457,7 @@ struct MeetingMonthCalendar: View {
                         } label: {
                             VStack(spacing: 3) {
                                 Text("\(cell.day)")
-                                    .font(COSType.body(11.5, weight: selectedDay == cell.date ? .semibold : .regular))
+                                    .font(COSType.body(11.5, weight: selectedDay == cell.date || cell.date == today ? .semibold : .regular))
                                 Circle()
                                     .fill(count > 0 ? tint : Color.clear)
                                     .frame(width: 5, height: 5)
@@ -470,7 +470,7 @@ struct MeetingMonthCalendar: View {
                             // Today is marked, as the web's ring.
                             .overlay(
                                 RoundedRectangle(cornerRadius: 6)
-                                    .stroke(cell.date == today ? tint : Color.clear, lineWidth: 1.2)
+                                    .stroke(cell.date == today ? tint : Color.clear, lineWidth: 1.5)
                             )
                             // THE WHOLE CELL IS THE TARGET. With a plain
                             // button style SwiftUI hit-tests only the RENDERED

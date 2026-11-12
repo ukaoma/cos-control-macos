@@ -13848,8 +13848,8 @@ struct ActivityBackStep: Equatable, Sendable {
 }
 
 enum ActivityBackPath {
-    /// Steps kept; the oldest go first.
-    static let limit = 30
+    /// Earlier steps kept, as the web (12); the oldest go first.
+    static let limit = 12
 
     /// The path after the place changed from `old` to `new`. A step when the section changed, or when one item opened from
     /// another in the same section (lead 2026-11-12: a session from a session, a meeting from a meeting); never for Back's own
@@ -13901,7 +13901,10 @@ enum ActivityBackPath {
 
 /// Miles's pick A (2026-11-12, "sides"): the message reader's words. Provisional until W1 posts the web's strings.
 enum MessageSides {
-    static func youCaption(time: String) -> String { "You, " + time }
+    /// Under his bubble, as the web (7.0.30): "You", hidden from VoiceOver, which hears "You said" before the words.
+    static let youCaption = "You"
+    static let youSaid = "You said"
+    static let cosSaid = "COS said"
 }
 
 /// Anand parity item 3 (2026-11-12): the Speakers review's copy buttons, in Control Web 7.0.30's words (speakers.js): "Copy

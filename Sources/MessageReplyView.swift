@@ -112,7 +112,7 @@ struct MessageReplyBlock: View {
                                 caption: reply.files.isEmpty ? "Replied on this Mac"
                                     : "Replied on this Mac, with " + reply.files.map(\.name).joined(separator: ", "))
             HStack(alignment: .top, spacing: 10) {
-            DropItAvatar(size: 26).accessibilityHidden(true)
+            DropItAvatar(size: 30).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(DropIt.askTitle(reply))

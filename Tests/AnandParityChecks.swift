@@ -67,7 +67,7 @@ import Foundation
         check(B.record([], old: message, new: home, goingBack: false, pick: P(section: nil)).path.isEmpty, "Home is a pick")
         var long: [ActivityBackStep] = []
         for i in 0..<40 { long = rec(long, P(section: i % 2 == 0 ? "messages" : "meetings"), P(section: i % 2 == 0 ? "meetings" : "messages")) }
-        check(long.count == B.limit, "the path keeps its last 30 steps")
+        check(long.count == B.limit, "the path keeps its last 12 steps, as the web")
         let linked = [ActivityBackStep(from: P(section: "work"), to: P(section: "sessions", sessionID: "x"))]
         check(B.settle(linked, before: "sessions", after: "work").isEmpty && B.settle(linked, before: "sessions", after: "meetings") == linked
               && B.settle(linked, before: "sessions", after: "sessions") == linked, "a parent-chain move across sections drops only the step it undid")

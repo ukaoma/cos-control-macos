@@ -1299,19 +1299,29 @@ struct ActivityWindow: View {
     /// earlier place a link back to it and this page last; otherwise the location, as before.
     @ViewBuilder private var breadcrumb: some View {
         let trail = backStep == nil ? [] : ActivityBackPath.trail(backPath, current: currentPlace, hasDetail: hasDetail)
-        if trail.isEmpty { locationCrumb } else { trailRow(trail) }
+        if trail.isEmpty { locationCrumb } else {
+            // One line, never wraps (as the web, 7.0.30): when it is too wide, steps leave from the middle; the first, the step
+            // before this page and this page always stay.
+            ViewThatFits(in: .horizontal) {
+                trailRow(trail, room: trail.count)
+                trailRow(trail, room: 6)
+                trailRow(trail, room: 5)
+                trailRow(trail, room: 4)
+            }
+        }
     }
 
-    private func trailRow(_ trail: [ActivityPlace]) -> some View {
+    private func trailRow(_ trail: [ActivityPlace], room: Int) -> some View {
         HStack(spacing: 6) {
-            ForEach(Array(ActivityBackPath.shortened(trail.count).enumerated()), id: \.offset) { position, index in
+            ForEach(Array(ActivityBackPath.shortened(trail.count, room: room).enumerated()), id: \.offset) { position, index in
                 if position > 0 {
                     Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
                 }
                 if let index, index == trail.count - 1 {
-                    Text(trailWord(trail[index], current: true)).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                    Text(trailWord(trail[index])).font(.system(size: 11, weight: .semibold)).lineLimit(1)
                 } else if let index {
-                    let word = trailWord(trail[index], current: false)
+                    let word = trailWord(trail[index])
                     Button(word) { goBackAlongPath(to: index) }
                         .buttonStyle(.plain)
                         .font(.system(size: 11))
@@ -1326,18 +1336,22 @@ struct ActivityWindow: View {
             }
         }
         .lineLimit(1)
+        .fixedSize()
         .padding(.horizontal, 4)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("How you got here")
+        // Steps left out of the line stay readable by VoiceOver (the web's rule), in order.
+        .accessibilityValue(trail.map(trailWord).joined(separator: ", "))
     }
 
-    /// A place's word in the trail: this page by its title; an earlier one by what it was (provisional until W1's strings).
-    private func trailWord(_ place: ActivityPlace, current: Bool) -> String {
+    /// A place's word in the trail, by kind, as server 7.0.30 names them (W1, COORD 13:40): a pane's list by its title, a
+    /// meeting "Meeting", a session "Session", the Speakers review "Naming voices", a message "Message #N", a day its short
+    /// date; this page the same way, in bold.
+    private func trailWord(_ place: ActivityPlace) -> String {
         let target = place.section.flatMap(ActivitySection.init(rawValue:))
         guard let target else { return todayEnabled && !isolatedWorkPreview ? "Today" : "Home" }
-        if current { return detailTitle ?? target.title }
         if let id = place.turnID { return model.recentMessages.first { $0.id == id }?.no.map { "Message #\($0)" } ?? "Message" }
-        if let day = place.archiveDate { return day }
+        if let day = place.archiveDate { return MeetingTodayWords.plainDay(day, today: ControllerModel.currentMeetingDay()) }
         if let name = place.voiceName { return name }
         if place.speakerSessionID != nil { return "Naming voices" }
         if place.libraryRecordID != nil { return "Meeting" }
@@ -6089,7 +6103,7 @@ struct ActivityWindow: View {
                 // Miles's pick A (2026-11-12, "sides"): his words right in the chat's bubble, COS left by its mark.
                 messageBlock(label: "You", text: turn.query,
                              tint: ActivitySection.messages.tint, highlight: recentQuery,
-                             side: .you, caption: MessageSides.youCaption(time: turn.timeLabel))
+                             side: .you, caption: MessageSides.youCaption)
                 attachmentStrip(attachments: turn.attachments.filter(\.isUserPhoto), fallback: "Your attachments")
                 // 0.5.380 (server 7.0.5 parity): a COS answer is written for the lens as plain text, so its inline numbered
                 // lists go on their own lines before Markdown draws them (Sources/LensAnswerStructure.swift, the web's
@@ -6508,19 +6522,20 @@ struct ActivityMessageCard: View {
                 .background(UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18, bottomTrailingRadius: 6, topTrailingRadius: 18, style: .continuous).fill(DropInk.youBg))
                 .overlay(UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18, bottomTrailingRadius: 6, topTrailingRadius: 18, style: .continuous).stroke(DropInk.youEdgeReader, lineWidth: 1))
             if let caption {
-                Text(caption).font(COSType.body(11.5)).foregroundStyle(DropInk.tertiary).padding(.trailing, 4)
+                Text(caption).font(COSType.body(12)).foregroundStyle(DropInk.tertiary).padding(.trailing, 4)
+                    .accessibilityHidden(caption == MessageSides.youCaption)
             }
         }
         .frame(maxWidth: 560, alignment: .trailing)
         .frame(maxWidth: .infinity, alignment: .trailing)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel((label.isEmpty ? "" : label + ": ") + text)
+        .accessibilityLabel(MessageSides.youSaid + ": " + text)
     }
 
     /// The answer, left, by COS's mark; no card around it.
     private var cosSide: some View {
         HStack(alignment: .top, spacing: 10) {
-            DropItAvatar(size: 26).accessibilityHidden(true)
+            DropItAvatar(size: 30).accessibilityHidden(true)
             Group {
                 if text.isEmpty {
                     Text("(empty)").font(.system(size: 13)).foregroundStyle(.secondary)
@@ -6534,7 +6549,7 @@ struct ActivityMessageCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(label)
+        .accessibilityLabel(MessageSides.cosSaid)
         .modifier(ActivityCopyMenu(label: "Copy answer", text: markdownID == nil ? nil : text))
     }
 
