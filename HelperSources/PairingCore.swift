@@ -455,8 +455,9 @@ enum WebKeyAssetsCore {
 
 /// How Control's signer-file audit (HelperSources/main.swift, webKeyAssetAudit) trusts the HTTPS origin it fetches from.
 ///
-/// The ts.net signer host must be trusted the way the phone trusts it: by the public roots macOS ships, for that host
-/// name. curl alone cannot say that here. Apple's /usr/bin/curl adds any --cacert to the keychain's trust instead of
+/// The ts.net signer host is checked against the certificate authorities macOS ships, for that host name: close to what
+/// the phone needs, not equal to it (SR-06: with custom anchors SecTrust applies no Certificate Transparency or by-date
+/// distrust rules, and revocation is off). curl alone cannot say even that here. Apple's /usr/bin/curl adds any --cacert to the keychain's trust instead of
 /// replacing it (the B2 builder's probe, 2026-11-09), and the keychain also trusts the admin-domain mkcert root for SSL,
 /// whose private key is a user-readable file. So for the ts.net host curl writes out the chain it received, and
 /// `trusted` judges that chain against the system trust domain ALONE, with the SSL policy for the host name. localhost
@@ -489,19 +490,30 @@ enum SignerTLSCore {
 
     /// curl's trust and write-out arguments for one fetch. Never --insecure: curl keeps its own chain and hostname checks
     /// either way. For the ts.net host there is no --cacert (it would only add to the keychain's trust), and curl writes
-    /// the chain it received after the status code, so the audit judges THAT connection's chain.
+    /// the status, its own count of the chain, then the chain it received, so the audit judges THAT connection's chain.
     static func curlTrustArguments(_ trust: Trust, managedCert: String) -> [String] {
         switch trust {
-        case .systemRoots: return ["--write-out", "%{http_code}\n%{certs}"]
+        case .systemRoots: return ["--write-out", "%{http_code}\n%{num_certs}\n%{certs}"]
         case .managedCert: return ["--cacert", managedCert, "--write-out", "%{http_code}"]
         }
     }
 
-    /// curl's --write-out answer: the status code (its first line) and, for the ts.net host, the chain, leaf first.
+    /// curl's --write-out answer: the status code (line 1) and, for the ts.net host, the chain, leaf first. SR-02: curl's
+    /// certinfo prints every extension value raw, so a leaf can carry extra PEM blocks ahead of its own; settled on Apple
+    /// curl 8.7.1, Tests/fixtures/web-key/tls/curl-certinfo-injected.txt (num_certs 2, 3 blocks, the injected one first).
+    /// So the chain is EMPTY (and judged untrusted) unless the PEM blocks number exactly curl's own %{num_certs} (line 2).
     static func curlAnswer(_ output: String) -> (code: String, chain: [Data]) {
-        let code = output.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
-        return (code, certificates(output))
+        let lines = output.split(separator: "\n", maxSplits: 2, omittingEmptySubsequences: false)
+        let code = lines.first.map(String.init) ?? ""
+        let blocks = certificates(output)
+        guard lines.count >= 2, let declared = Int(lines[1]), declared > 0, declared == blocks.count else { return (code, []) }
+        return (code, blocks)
     }
+
+    /// SR-07: curl's own TLS failures are a TLS problem, not a byte mismatch. 35 handshake, 51 and 60 the peer's
+    /// certificate or name, 58 a local certificate problem. Anything else that is not 0 is served_signer_assets, as before.
+    static let tlsExitCodes: Set<Int32> = [35, 51, 58, 60]
+    static func curlFailureReason(exit: Int32) -> String { tlsExitCodes.contains(exit) ? "signer_tls" : "served_signer_assets" }
 
     /// The DER of every well-formed CERTIFICATE PEM block, in order. curl's certinfo text around them is ignored.
     static func certificates(_ text: String) -> [Data] {

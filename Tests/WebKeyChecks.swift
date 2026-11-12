@@ -588,7 +588,8 @@ struct WebKeyChecks {
         let managed = SignerTLSCore.curlTrustArguments(.managedCert, managedCert: "/m/cert.pem")
         check(!system.contains("--cacert") && !system.contains("/m/cert.pem") && !system.contains("--capath"),
               "audit curl trust args", "the ts.net fetch passes no CA file")
-        check(system == ["--write-out", "%{http_code}\n%{certs}"], "audit curl trust args", "the ts.net fetch writes out the chain it received")
+        check(system == ["--write-out", "%{http_code}\n%{num_certs}\n%{certs}"], "audit curl trust args",
+              "the ts.net fetch writes out curl's own chain count, then the chain it received")
         check(managed == ["--cacert", "/m/cert.pem", "--write-out", "%{http_code}"], "audit curl trust args",
               "localhost and IP fetches keep --cacert with the managed certificate")
         for arguments in [system, managed] {
@@ -600,13 +601,36 @@ struct WebKeyChecks {
         let x2 = chain(fixtures.appendingPathComponent("valid-isrgrootx2.letsencrypt.org.pem"))
         check(x1.count == 3 && x2.count == 3, "audit fixtures", "both committed Let's Encrypt chains parse: leaf, intermediate, cross-signed root")
         guard x2.count == 3, x1.count == 3 else { return }
-        let written = "200\nSubject:CN = valid-isrgrootx2.letsencrypt.org\nIssuer:CN = YE1\nCert:" + pem(x2[0]) + "\nSubject:CN = YE1\nCert:" + pem(x2[1]) + "\n"
+        let written = "200\n2\nSubject:CN = valid-isrgrootx2.letsencrypt.org\nIssuer:CN = YE1\nCert:" + pem(x2[0]) + "\nSubject:CN = YE1\nCert:" + pem(x2[1]) + "\n"
         let answer = SignerTLSCore.curlAnswer(written)
         check(answer.code == "200" && answer.chain == [x2[0], x2[1]], "audit curl answer", "status first, then the received chain, leaf first")
         check(SignerTLSCore.curlAnswer("200").code == "200" && SignerTLSCore.curlAnswer("200").chain.isEmpty, "audit curl answer", "a bare status has no chain")
-        check(SignerTLSCore.curlAnswer("404\n" + pem(x2[0])).code == "404", "audit curl answer", "the code is the first line, never a later one")
-        let garbled = "200\nCert:-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----\nCert:" + pem(x2[0])
+        check(SignerTLSCore.curlAnswer("404\n1\n" + pem(x2[0])).code == "404", "audit curl answer", "the code is the first line, never a later one")
+        let garbled = "200\n1\nCert:-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----\nCert:" + pem(x2[0])
         check(SignerTLSCore.curlAnswer(garbled).chain == [x2[0]], "audit curl answer", "a block that is not base64 is dropped, never half read")
+
+        // SR-02: a PEM block inside a certificate extension. The fixture is Apple curl 8.7.1's real write-out for a throwaway
+        // ts.net leaf whose extension 1.3.6.1.4.1.55555.1 holds the public LE X2 leaf (num_certs 2, three PEM blocks, the
+        // injected one FIRST). The count must refuse it, or the injected public leaf would be judged as this connection's.
+        let injected = (try? String(contentsOf: fixtures.appendingPathComponent("curl-certinfo-injected.txt"), encoding: .utf8)) ?? ""
+        check(SignerTLSCore.certificates(injected).count == 3 && SignerTLSCore.certificates(injected).first == x2[0]
+              && injected.split(separator: "\n", maxSplits: 2).dropFirst().first == "2",
+              "audit refuses injected blocks", "control: the real curl output carries 3 PEM blocks, the injected LE leaf first, for curl's count of 2")
+        check(SignerTLSCore.curlAnswer(injected).code == "200" && SignerTLSCore.curlAnswer(injected).chain.isEmpty, "audit refuses injected blocks",
+              "more PEM blocks than curl's own %{num_certs}: no chain at all, so the audit refuses signer_tls")
+        check(!SignerTLSCore.trusted(chain: SignerTLSCore.curlAnswer(injected).chain, host: "valid-isrgrootx2.letsencrypt.org",
+                                     at: ISO8601DateFormatter().date(from: "2026-12-01T00:00:00Z")!, anchors: SignerTLSCore.systemRoots()),
+              "audit refuses injected blocks", "even for the injected leaf's own name and date, the empty chain is not trusted")
+        check(SignerTLSCore.curlAnswer("200\nSubject:CN = x\nCert:" + pem(x2[0])).chain.isEmpty
+              && SignerTLSCore.curlAnswer("200\n0\nCert:" + pem(x2[0])).chain.isEmpty
+              && SignerTLSCore.curlAnswer("200\n1\nCert:" + pem(x2[0]) + "\nCert:" + pem(x2[1])).chain.isEmpty,
+              "audit refuses injected blocks", "no count line, a zero count, or fewer counted than found: no chain")
+
+        // SR-07: curl's own TLS failures are a TLS problem.
+        check([35, 51, 58, 60].allSatisfy { SignerTLSCore.curlFailureReason(exit: $0) == "signer_tls" }, "audit curl tls exits",
+              "curl exits 35, 51, 58 and 60 say signer_tls")
+        check([1, 6, 7, 22, 28, 63].allSatisfy { SignerTLSCore.curlFailureReason(exit: $0) == "served_signer_assets" }, "audit curl tls exits",
+              "any other failure (HTTP error 22, timeout 28, connect 7, too big 63) stays served_signer_assets")
 
         // The system trust domain: both ISRG roots, and never a locally added root (this Mac's admin domain trusts mkcert's).
         let roots = SignerTLSCore.systemRoots()

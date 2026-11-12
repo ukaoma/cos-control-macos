@@ -9184,8 +9184,8 @@ final class COSControlHelper {
               components.user == nil, components.password == nil, components.query == nil, components.fragment == nil, components.path.isEmpty,
               let host = components.host, SignerTLSCore.trust(host: host) == .systemRoots,
               origin == "https://" + host + ":3144", let signerFiles else { return refused("reported_integrity") }
-        // 0.5.390 (11/09 open question 2): the ts.net signer host is judged the way the phone judges it, against the roots
-        // macOS ships ALONE, over the chain each fetch received (SignerTLSCore). It used to pass only because Apple's curl
+        // 11/09 open question 2: the ts.net signer host is checked against the certificate authorities macOS ships ALONE,
+        // over the chain each fetch received (SignerTLSCore; close to the phone's check, not equal: SR-06). It used to pass only because Apple's curl
         // adds --cacert to the keychain's trust, and that trust also covers the admin-domain mkcert root. The managed
         // (mkcert) certificate stays the trust for localhost and IP targets (SignerTLSCore.trust); this audit has none.
         let anchors = SignerTLSCore.systemRoots()
@@ -9200,8 +9200,12 @@ final class COSControlHelper {
                   "--proto", "=https", "--max-redirs", "0", "--max-time", "5", "--max-filesize", String(WebKeyAssetsCore.maximumFileBytes)]
             arguments += SignerTLSCore.curlTrustArguments(.systemRoots, managedCert: managedCert.path)
             arguments += ["--resolve", host + ":3144:127.0.0.1", "--output", output.path, origin + (path == "/index.html" ? "/" : path)]
-            guard let result = try? execute("/usr/bin/curl", arguments, environment: ["PATH": "/usr/bin:/bin", "CURL_HOME": "/var/empty"], timeout: 7),
-                  result.code == 0 else { return refused("served_signer_assets") }
+            guard let result = try? execute("/usr/bin/curl", arguments, environment: ["PATH": "/usr/bin:/bin", "CURL_HOME": "/var/empty"], timeout: 7) else {
+                return refused("served_signer_assets")
+            }
+            // SR-07: curl's own TLS failures (35, 51, 58, 60) say signer_tls, so nobody chases a byte mismatch.
+            guard result.code == 0 else { return refused(SignerTLSCore.curlFailureReason(exit: result.code)) }
+            // SR-02: an empty chain unless curl's %{num_certs} equals the PEM blocks, so trusted() refuses an injection.
             let answer = SignerTLSCore.curlAnswer(result.output)
             guard answer.code == "200" else { return refused("served_signer_assets") }
             guard SignerTLSCore.trusted(chain: answer.chain, host: host, at: Date(), anchors: anchors) else { return refused("signer_tls") }

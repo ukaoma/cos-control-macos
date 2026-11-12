@@ -246,8 +246,20 @@ need(roots_fn.count("SecTrustSettingsCopyCertificates(.system, &list)") == 1 and
      "audit system roots wiring", "the system trust domain only, never admin or user")
 args_fn = body_of(pairing, pairing.index("static func curlTrustArguments(_ trust: Trust, managedCert: String) -> [String]"))
 system_case = args_fn[args_fn.find("case .systemRoots:"):args_fn.find("case .managedCert:")]
-need(args_fn.find("case .systemRoots:") >= 0 and "--cacert" not in system_case and "%{certs}" in system_case and "--insecure" not in args_fn,
-     "audit curl trust args", "the ts.net case has no CA file and writes out the chain")
+need(args_fn.find("case .systemRoots:") >= 0 and "--cacert" not in system_case and "%{certs}" in system_case and "%{num_certs}" in system_case
+     and "--insecure" not in args_fn,
+     "audit curl trust args", "the ts.net case has no CA file and writes out curl's chain count and the chain")
+# SR-02 and SR-07 (reopen, 2026-11-11): the count gate lives in curlAnswer, and the audit maps curl's exit through one table.
+answer_fn = body_of(pairing, pairing.index("static func curlAnswer(_ output: String) -> (code: String, chain: [Data])"))
+need(answer_fn.count("declared == blocks.count else { return (code, []) }") == 1, "audit refuses injected blocks",
+     "curlAnswer returns no chain unless the PEM blocks number curl's own %{num_certs}")
+need(audit_fn.count("guard result.code == 0 else { return refused(SignerTLSCore.curlFailureReason(exit: result.code)) }") == 1
+     and 'result.code == 0 else { return refused("served_signer_assets") }' not in audit_fn,
+     "audit curl tls exits wiring", "a curl failure is named by SignerTLSCore.curlFailureReason, never a fixed served_signer_assets")
+# SR-06: the audit approximates the phone, it does not equal it; release notes must not say otherwise.
+notes = ((root / "Resources/WhatsNew.json").read_text(encoding="utf-8") + (root / "CHANGELOG.md").read_text(encoding="utf-8")).lower()
+need("way your iphone does" not in notes and "the way the iphone does" not in notes, "audit copy",
+     "notes say 'checked against the certificate authorities macOS ships', never 'the way your iPhone does'")
 # 0.5.390: one plain line from the server's signerTls, authority only, inside the existing anchor section.
 anchor_view = body_of(views, views.index("private struct WebKeyAnchorSection: View"))
 need(views.count("state.signerTLSLine") == 1 and anchor_view.count("if state.authority, let line = state.signerTLSLine {") == 1,
@@ -278,6 +290,10 @@ need(checks_src.count("let reasons = Array(WebKeySignerTLS.sentences.keys)") == 
      "signer reasons one list", "the checks read the codes from the list, never a copy, and try a made-up code")
 need("tail38457f" not in checks_src and "ukaoma" not in checks_src.lower(),
      "no private names in tests", "this repo is public: no real tailnet or Mac name in the checks")
+# SR-12 (reopen): the same for every text fixture of this lane, golden.json included.
+fixture_files = sorted(p for p in (root / "Tests/fixtures/web-key").rglob("*") if p.is_file() and p.suffix in {".json", ".txt", ".pem", ".mts", ".md"})
+named = [str(p.relative_to(root)) for p in fixture_files if re.search(r"tail38457f|ukaoma", p.read_text(encoding="utf-8", errors="replace"), re.I)]
+need(fixture_files and not named, "no private names in tests", f"no real tailnet or Mac name in Tests/fixtures/web-key (found in: {named})")
 need('.onDisappear { state.cancelActions() }' in block and 'state.startApproval()' in card_view,
      "approval lifetime wiring", "disappearing Settings cancels the tracked action")
 need('visible && anchorRegisteredHere && protectionReady && controlState != nil' in core,
