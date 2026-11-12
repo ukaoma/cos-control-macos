@@ -9300,10 +9300,48 @@ final class COSControlHelper {
         if name == "codex", let result = try? execute(path, ["login", "status"], timeout: 6) {
             auth = result.output.lowercased().contains("logged in") && !result.output.lowercased().contains("not logged in") ? "signed in" : "sign-in required"
         } else if name == "claude", let result = try? execute(path, ["auth", "status", "--json"], timeout: 6) {
-            auth = result.output.contains("\"loggedIn\":true") || result.output.contains("\"loggedIn\": true") ? "signed in" : "sign-in check required"
+            auth = Self.claudeAuthLabel(code: result.code, output: result.output)
         }
         let detail = redacted ? "\(version) · \(auth)" : "\(version) · \(auth) · \(redactPath(path))"
-        return (auth == "sign-in required" ? "warning" : "ok", detail)
+        return (Self.authWarns(auth) ? "warning" : "ok", detail)
+    }
+
+    /// Run checks' labels for a CLI's sign-in. Only these two warn; "sign-in check required" (no answer we can read) stays ok,
+    /// so an older CLI or a slow status call never shows a false warning.
+    static let authSignedOut = "sign-in required"
+    static let authExpired = "sign-in expired"
+    static func authWarns(_ label: String) -> Bool { label == authSignedOut || label == authExpired }
+
+    /// `claude auth status --json` (D4, 2026-11-12, from the lead's reading of the Claude Code docs): exit 1 is signed out;
+    /// exit 0 is signed in unless loginExpiresAt (CLI 2.1.318 and later) has passed, because loggedIn only means a token is
+    /// present. An older CLI has no loginExpiresAt and reads signed in as before. Any other exit, or output that is not the
+    /// status JSON, is "sign-in check required". The output can carry stderr lines, so the JSON object is cut out of it.
+    static func claudeAuthLabel(code: Int32, output: String, now: Date = Date()) -> String {
+        if code == 1 { return authSignedOut }
+        guard code == 0, let open = output.firstIndex(of: "{"), let close = output.lastIndex(of: "}"), open < close,
+              let data = String(output[open...close]).data(using: .utf8),
+              let status = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let loggedIn = status["loggedIn"] as? Bool else { return "sign-in check required" }
+        guard loggedIn else { return authSignedOut }
+        if let expires = authExpiry(status["loginExpiresAt"]), expires <= now { return authExpired }
+        return "signed in"
+    }
+
+    /// loginExpiresAt as an ISO 8601 string, or seconds or milliseconds since 1970; nil when absent or unreadable.
+    static func authExpiry(_ value: Any?) -> Date? {
+        if let text = value as? String {
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = iso.date(from: text) { return date }
+            iso.formatOptions = [.withInternetDateTime]
+            return iso.date(from: text)
+        }
+        if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
+            let raw = number.doubleValue
+            guard raw > 0 else { return nil }
+            return Date(timeIntervalSince1970: raw > 100_000_000_000 ? raw / 1000 : raw)
+        }
+        return nil
     }
 
     /// Parse `agent about` without ever retaining User Email.
@@ -28255,6 +28293,28 @@ final class COSControlHelper {
             try expect(launchPathDirectories(node: "/usr/bin/true").contains(URL(fileURLWithPath: found).deletingLastPathComponent().path),
                        "the server's launch PATH includes the folder of the codex COS found")
             try? fm.removeItem(at: home.appendingPathComponent("Applications/ChatGPT.app"))
+        }
+
+        // Run checks flags a signed-out or expired Claude (D4, 2026-11-12); an answer it cannot read never warns.
+        do {
+            let now = Date(timeIntervalSince1970: 1_800_000_000)
+            let label = { (code: Int32, output: String) in Self.claudeAuthLabel(code: code, output: output, now: now) }
+            try expect(label(1, "{\"loggedIn\":false}") == Self.authSignedOut && Self.authWarns(label(1, "")),
+                       "claude auth: exit 1 is signed out, and it warns")
+            try expect(label(0, "{\"loggedIn\":false}") == Self.authSignedOut, "claude auth: loggedIn false is signed out")
+            try expect(label(0, "{\"loggedIn\":true,\"loginExpiresAt\":\"2027-01-15T08:00:00Z\"}") == Self.authExpired
+                       && label(0, "{\"loggedIn\":true,\"loginExpiresAt\":1700000000000}") == Self.authExpired
+                       && label(0, "{\"loggedIn\":true,\"loginExpiresAt\":1700000000}") == Self.authExpired
+                       && Self.authWarns(Self.authExpired),
+                       "claude auth: a loginExpiresAt already past is expired (ISO, milliseconds, seconds), and it warns")
+            try expect(label(0, "{\"loggedIn\":true,\"loginExpiresAt\":\"2027-03-15T08:00:00.000Z\"}") == "signed in"
+                       && label(0, "{\"loggedIn\":true,\"loginExpiresAt\":1900000000000}") == "signed in",
+                       "claude auth: a loginExpiresAt still ahead is signed in")
+            try expect(label(0, "note: update available\n{\"loggedIn\": true}\n") == "signed in",
+                       "claude auth: an older CLI with no loginExpiresAt reads signed in, with stderr around the JSON")
+            try expect(label(0, "Usage: claude [options]") == "sign-in check required" && label(2, "{\"loggedIn\":true}") == "sign-in check required"
+                       && label(0, "{\"loggedIn\":\"yes\"}") == "sign-in check required" && !Self.authWarns("sign-in check required"),
+                       "claude auth: unreadable output or another exit stays a quiet check")
         }
 
         emit(ok: true, message: "\(passed) deterministic helper tests passed", details: ["tests": passed])
