@@ -19,6 +19,9 @@ enum DropInk {
     static let youBg = pair(0xf1e4c9, 0x3a2c1e)
     static let youBorder = pair(0xe3cfa6, 0x56422c)
     static let youInk = pair(0x2b1f14, 0xf2e8da)
+    /// The message reader's bubble edge (Miles's pick A, 2026-11-12): 3.04 to 1 against the page in light (youBorder is 1.35),
+    /// the same hue darkened; dark unchanged. The COS chat keeps youBorder.
+    static let youEdgeReader = pair(0xab8436, 0x56422c)
     static let tertiary = pair(0x8b857c, 0x8a7f70)
     static let note = Color(red: 0.66, green: 0.42, blue: 0.24)
 
