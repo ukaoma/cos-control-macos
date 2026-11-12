@@ -109,6 +109,11 @@ mutants = [
             lanToggle
 ''', "            lanToggle\n", PINS, "[glasses QR labeled]"),
  ("Q11 the catalog keeps the old subtitle", K, '"Point your phone\'s camera here. Its browser opens COS already signed in.", old: ""', '"Scan with your iPhone camera. Safari opens COS already signed in.", old: ""', PINS, "[catalog row]"),
+ # Anand fixes a and b (2026-11-12).
+ ("BN1 the old-server note is gone", V, "            if hidden { SettingsHubBlock { PhoneSignInOldServer(model: model) } }\n", "", PINS, "[old server says so]"),
+ ("BN2 no ask after the server changes", M, "        guard serverTooOld else { return }\n        askedThisAppearance = false\n", "        guard serverTooOld else { return }\n", APP, "[phone old server rechecks]"),
+ ("BN3 the update never rechecks", V, "        .onChange(of: model.status.version) { _, _ in state.recheckAfterServerChange() }\n", "", PINS, "[old server rechecks]"),
+ ("BN4 the row never says Tailscale goes on both", V, "                Text(PhoneSignInRules.bothDevices).font(COSType.body(11)).foregroundStyle(COSPalette.muted)\n                    .fixedSize(horizontal: false, vertical: true)\n", "", PINS, "[both devices]"),
 ]
 # V6 (0.5.368 order: the row above the glasses block) opens the glasses block before the row and drops its own opening line, so
 # the block encloses the row and still compiles.

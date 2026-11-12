@@ -160,8 +160,19 @@ need("let hidden = state.serverTooOld" in block
      "the block takes no space, draws nothing, takes no click and says nothing to VoiceOver when the server is too old")
 need(views_file.count("PhoneSignInRules.notGlasses") == 1 and "PhoneSignInRules.notGlasses" in body(views_file, "struct PhoneSignInRow: View {")
      and "notGlasses" not in panel, "old server hides", "the glasses note lives only inside the row, so it hides with it")
-need("Text(line)" in body(views_file, "struct PhoneSignInRow: View {") and "PhoneSignInRules.needsUpdate" not in views_file + panel, "old server hides",
-     "the update line is never drawn by name")
+# Anand fix b (2026-11-12): in place of the hidden row, the old-server note with the panel's Update Server, and a recheck when
+# the server changes; the row's own line never draws it by name.
+old_server = body(views_file, "struct PhoneSignInOldServer: View {")
+need("Text(line)" in body(views_file, "struct PhoneSignInRow: View {") and views_file.count("PhoneSignInRules.needsUpdate") == 1
+     and "PhoneSignInRules.needsUpdate" in old_server and "PhoneSignInRules.needsUpdate" not in panel, "old server says so",
+     "the update line is drawn once, in the old-server note")
+need('Button("Update Server") { model.perform("update") }' in old_server and ".disabled(model.busy)" in old_server
+     and "if hidden { SettingsHubBlock { PhoneSignInOldServer(model: model) } }" in block, "old server says so",
+     "the note shows only while the row is hidden, with the panel's own update")
+need(".onChange(of: model.status.version) { _, _ in state.recheckAfterServerChange() }" in block, "old server rechecks",
+     "a server change asks again")
+need(views_file.count("PhoneSignInRules.bothDevices") == 1 and "PhoneSignInRules.bothDevices" in body(views_file, "struct PhoneSignInRow: View {"),
+     "both devices", "the row says Tailscale goes on both, on every device path")
 need('.settingsHubAnchor("UT-29")' in phone_card, "search lands", "search lands on the row")
 # 0.5.368: the Camera's QR comes first: the phone row right after the device choice, above the glasses rows, in the card and in
 # the offscreen render that stands for it.
@@ -190,6 +201,7 @@ row = body(views_file, "struct PhoneSignInRow: View {")
 need("state.code == nil ? PhoneSignInRules.showCode : PhoneSignInRules.newCode" in row, "buttons", "the code button says new once a code is shown")
 need("state.handoff == nil && state.line != nil ? PhoneSignInRules.tryAgain : PhoneSignInRules.newQR" in row, "buttons", "the QR button says Try again only when no QR could be made")
 need(words.get("noTailnet") == "Turn on Tailscale on this Mac." and words.get("needsUpdate") == "Update the server to use this.", "copy", "the two lines instead of a QR")
+need(words.get("bothDevices") == "Tailscale goes on this Mac and on your phone, signed in to the same account.", "copy", "what the QR needs")
 for name, text in words.items():
     need(not re.search("[—–→]|->", text), "copy", f"no em dash, en dash or arrow: {name}")
 need("static let refreshAfter: TimeInterval = 90" in rules, "refresh 90", "a new link about every 90 seconds")

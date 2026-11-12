@@ -2305,7 +2305,11 @@ enum PhoneSignInRules {
     static let tryAgain = "Try again"
     static let making = "Making a QR…"
     static let noTailnet = "Turn on Tailscale on this Mac."
-    /// Kept for the stage name and the checks; never drawn since 0.5.368, when the whole row hides instead (serverTooOld).
+    /// Anand fix b (2026-11-12): on every device path, what the QR needs. The glasses path said "same account" only on its own
+    /// Tailscale rows; Just my Mac never named the phone.
+    static let bothDevices = "Tailscale goes on this Mac and on your phone, signed in to the same account."
+    /// On a server before 6.99.3 (serverTooOld). 0.5.368 hid the whole row instead; since Anand fix b (2026-11-12) the row
+    /// says this, with the panel's own Update Server (PhoneSignInOldServer).
     static let needsUpdate = "Update the server to use this."
     static let notReady = "This works once the COS server is running and verified."
     static let noToken = "COS has no pairing token yet. Set up the server first."
@@ -2521,6 +2525,15 @@ final class PhoneSignInState: ObservableObject {
         if serverTooOld && askedThisAppearance { return }
         guard !minting, PhoneSignInRules.due(handoff: handoff, lastAttempt: lastAttempt, retryAfter: retryAfter, now: t) else { return }
         await mint()
+    }
+
+    /// Anand fix b (2026-11-12): the server changed (Update Server finished, or another version answers), so an old-server
+    /// verdict is asked again on the next tick, even within this appearance. The verdict itself stays until an answer clears it.
+    func recheckAfterServerChange() {
+        guard serverTooOld else { return }
+        askedThisAppearance = false
+        lastAttempt = nil
+        retryAfter = 0
     }
 
     /// The row went off screen: the QR, the code and their lines go, and a reply still in flight is dropped.
