@@ -13,9 +13,19 @@ def body(text, start, end):
     return text[i:j] if i >= 0 and j > i else ""
 
 detail = body(win, "    private func messageDetail(_ turn: GlassesTurn) -> some View {", "\n    /// Offered on its own when the keyword answer")
-mount = 'MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, onAppear: wireMessageReply)\n                    .id("reply:" + turn.id)'
-need(win.count("MessageReplyBlock(") == 1 and mount in detail, "[reader] Reply mounts once, in the single-message reader, one block per turn")
-need(detail.find('fallback: "From COS")') < detail.find("MessageReplyBlock("), "[reader] under the answer and its files, as on the web")
+# Anand parity (lead 2026-11-12, as the web's reader): the Reply card is pinned under the scroll; this Mac's replies read in the
+# scroll under the answer.
+mount = 'MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, onAppear: wireMessageReply, part: .composer)\n            .id("reply:" + turn.id)'
+replies_mount = 'MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, part: .replies)\n                    .id("replies:" + turn.id)'
+need(win.count("MessageReplyBlock(") == 2 and mount in detail and detail.count("onAppear: wireMessageReply") == 1,
+     "[reader] Reply mounts once, in the single-message reader, one block per turn")
+scroll_end = detail.find("\n        }\n        Divider()\n")
+need(detail.startswith("    private func messageDetail(_ turn: GlassesTurn) -> some View {") and "        VStack(spacing: 0) {\n        ScrollView {" in detail
+     and scroll_end > 0 and detail.find(mount) > scroll_end, "[reader] the Reply card is pinned under the scroll, outside it")
+need(replies_mount in detail and 0 < detail.find('fallback: "From COS")') < detail.find(replies_mount) < scroll_end,
+     "[reader] this Mac's replies read under the answer and its files, in the scroll")
+need("if part == .replies { repliesList } else { block }" in view and "if part == .all, !replies.isEmpty {" in view
+     and "guard part != .replies else { return }" in view, "[reader] the pinned card holds the box, the scroll holds the replies")
 chat = body(win, "@ViewBuilder private func archiveChatDetail(", "\n    private func ")
 need("MessageReplyBlock" not in chat and 'Button("Copy turn") { model.copyArchiveMessage(message) }' in chat,
      "[archive] the day chat keeps Copy turn only (the web's archive day has no Reply)")

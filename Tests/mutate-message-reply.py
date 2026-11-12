@@ -43,15 +43,21 @@ MUTANTS = [
     ("session-dropped", "models", D, "var start = await askJob(MessageReply.target(turnID: turnID, replyID: replyID), words, ids, session, nil)",
      "var start = await askJob(MessageReply.target(turnID: turnID, replyID: replyID), words, ids, nil, nil)", "[reply] it sends the words, trimmed, with the turn's session"),
     ("untagged", "models", D, "            made.replyTo = turnID\n", "", "[reply] it is kept as this turn's reply"),
-    ("mount-removed", "pins", W, '''                MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, onAppear: wireMessageReply)
-                    .id("reply:" + turn.id)
+    ("mount-removed", "pins", W, '''        MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, onAppear: wireMessageReply, part: .composer)
+            .id("reply:" + turn.id)
 ''', "", "[reader] Reply mounts once"),
+    ("card-in-scroll", "pins", W, "        Divider()\n        // The Reply card, pinned: one per turn.\n", "        // The Reply card, pinned: one per turn.\n",
+     "[reader] the Reply card is pinned under the scroll"),
+    ("replies-dropped", "pins", W, '''                MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, part: .replies)
+                    .id("replies:" + turn.id)
+''', "", "[reader] this Mac's replies read under the answer"),
+    ("replies-twice", "pins", V, "            if part == .all, !replies.isEmpty {", "            if !replies.isEmpty {", "[reader] the pinned card holds the box"),
     ("effort-always", "pins", V, "        if !efforts.isEmpty {\n", "        if true {\n", "[effort] Effort shows only when the server serves efforts"),
     ("effort-ungated", "pins", W, "MessageReply.effortOffered(e, provider: handoff.models[index].provider, efforts: handoff.efforts) ? e : nil", "e",
      "[run] an effort only one the server served"),
     ("effort-every-mode", "pins", H, "if mode == .newSession, let effort { job[\"effort\"] = effort }", "if let effort { job[\"effort\"] = effort }",
      "[handoff] the effort rides only a new Work run"),
-    ("chat-store-used", "pins", W, "MessageReplyBlock(store: model.messageReply,", "MessageReplyBlock(store: model.dropIt,", "[reader] Reply mounts once"),
+    ("chat-store-used", "pins", W, "MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, onAppear:", "MessageReplyBlock(store: model.dropIt, handoff: handoffStore, turn: turn, onAppear:", "[reader] Reply mounts once"),
     ("helper-any-effort", "helper", HS, "guard let effort = value as? String, workEffortValues.contains(effort) else { return nil }",
      "guard let effort = value as? String else { return nil }", "Work effort contract self-test failed"),
     ("helper-efforts-raw", "helper", HS, "guard let value = row[\"value\"] as? String, workEffortValues.contains(value), seen.insert(value).inserted else { return nil }",

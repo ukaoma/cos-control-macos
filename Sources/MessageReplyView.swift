@@ -18,6 +18,10 @@ struct MessageReplyBlock: View {
     var polls = true
     /// The renders' typed words (the box starts empty in the app).
     var initialDraft = ""
+    /// Anand parity (lead 2026-11-12, as the web's reader): the Reply card is pinned under the reader's scroll (.composer),
+    /// and this Mac's replies to the turn read in the scroll under the answer (.replies). .all is both in one card.
+    enum Part { case all, replies, composer }
+    var part: Part = .all
     @AppStorage(MessageReply.modelKey) private var pickedModel = ""
     @AppStorage(MessageReply.effortKey) private var pickedEffort = ""
     @State private var draft = ""
@@ -29,14 +33,28 @@ struct MessageReplyBlock: View {
     /// when durable query jobs are off), as Control Web shows it only while Ask is on (askOn).
     var body: some View {
         Group {
-            if MessageReply.available(handoff.models.map { ($0.id, $0.available, $0.resolvedModel) }) { block }
+            if MessageReply.available(handoff.models.map { ($0.id, $0.available, $0.resolvedModel) }) {
+                if part == .replies { repliesList } else { block }
+            }
         }
         .onAppear {
+            guard part != .replies else { return }
             onAppear()
             if draft.isEmpty, !initialDraft.isEmpty { draft = initialDraft }
         }
         .task {
-            if polls, handoff.models.isEmpty { await handoff.refresh() }
+            if polls, part != .replies, handoff.models.isEmpty { await handoff.refresh() }
+        }
+    }
+
+    /// This Mac's replies to the turn, in the reader's scroll under the answer (part .replies); nothing when there are none.
+    @ViewBuilder private var repliesList: some View {
+        let replies = store.asks.filter { $0.replyTo == turn.id }
+        if !replies.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(replies) { reply in replyRow(reply) }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -53,7 +71,7 @@ struct MessageReplyBlock: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if !replies.isEmpty {
+            if part == .all, !replies.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
                     ForEach(replies) { reply in replyRow(reply) }
                 }

@@ -5889,6 +5889,9 @@ struct ActivityWindow: View {
     }
 
     private func messageDetail(_ turn: GlassesTurn) -> some View {
+        // Anand parity (lead 2026-11-12, as Control Web's reader): the Reply card stays pinned under the scroll, so it is at the
+        // bottom of the window however long the answer is; this Mac's replies read in the scroll under the answer.
+        VStack(spacing: 0) {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 HStack(alignment: .top) {
@@ -5919,11 +5922,19 @@ struct ActivityWindow: View {
                 messageBlock(label: "COS", text: turn.text, lensLists: true,
                              tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id)
                 attachmentStrip(attachments: turn.attachments.filter { !$0.isUserPhoto }, fallback: "From COS")
-                // Reply (D4; Miles 2026-11-11 13:59, parity with Control Web's reader): under the answer, inline, one per turn.
-                MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, onAppear: wireMessageReply)
-                    .id("reply:" + turn.id)
+                // Reply (D4; asked for 2026-11-11 13:59, parity with Control Web's reader): this Mac's replies, under the answer.
+                MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, part: .replies)
+                    .id("replies:" + turn.id)
             }
             .padding(28)
+            .frame(maxWidth: 820, alignment: .leading)
+            .frame(maxWidth: .infinity)
+        }
+        Divider()
+        // The Reply card, pinned: one per turn.
+        MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, onAppear: wireMessageReply, part: .composer)
+            .id("reply:" + turn.id)
+            .padding(.horizontal, 28).padding(.vertical, 12)
             .frame(maxWidth: 820, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
