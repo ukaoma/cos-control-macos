@@ -17,7 +17,8 @@ copy = body(model, "    func copyMeeting(full: Bool) {", "\n    }\n")
 need("copiedMeetingKind = full ? MeetingCopyWords.full : MeetingCopyWords.summary" in copy, "[copy] the tapped button is the one that says Copied")
 need("try? await Task.sleep(for: .seconds(MeetingCopyWords.copiedSeconds))" in copy and "self?.copiedMeetingKind = nil" in copy
      and "copiedMeetingReset?.cancel()" in copy, "[copy] Copied lasts copiedSeconds, and a new copy restarts it")
-need(".announcementRequested" in copy and "[.announcement: note," in copy, "[copy] VoiceOver hears what was copied")
+need("        if let note = copyNote {\n            NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested," in copy
+     and "[.announcement: note," in copy, "[copy] VoiceOver hears what was copied")
 need(views.count("MeetingCopyWords.label(MeetingCopyWords.summary, copied: model.copiedMeetingKind, fullChars: content.fullChars)") == 1
      and views.count("MeetingCopyWords.label(MeetingCopyWords.full, copied: model.copiedMeetingKind, fullChars: content.fullChars)") == 1
      and 'Label("Summary", systemImage' not in views, "[copy] the buttons use the web's words")
