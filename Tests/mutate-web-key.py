@@ -14,6 +14,7 @@ env = dict(os.environ)
 LANE = "zsh Tests/run-web-key.sh"
 C, V, P = "Sources/WebKeyCore.swift", "Sources/WebKeyViews.swift", "HelperSources/PairingCore.swift"
 H, T = "HelperSources/main.swift", "Tests/WebKeyChecks.swift"
+G = "Tests/fixtures/web-key/golden.json"
 
 
 def sh(cmd):
@@ -211,6 +212,8 @@ mutants = [
     ("TLS-40 the audit names every curl failure served_signer_assets (pins)", H,
      "guard result.code == 0 else { return refused(SignerTLSCore.curlFailureReason(exit: result.code)) }",
      'guard result.code == 0 else { return refused("served_signer_assets") }', "[audit curl tls exits wiring]"),
+    # SR-11: the server's reason list in golden.json must equal Control's sentences plus "ok".
+    ("TLS-41 the server lists a code Control does not know", G, '    "cert_daily_cap",\n', "", "[signer reasons match the server]"),
 ]
 
 only = [part for part in os.environ.get("MUTATE_ONLY", "").split("|") if part]
@@ -234,7 +237,7 @@ if code != 0 or "web key pins: all passed" not in out:
     print(f"BASELINE RED:\n{out[-3000:]}")
     sys.exit(1)
 print("baseline: green (" + [l for l in out.splitlines() if "web key checks:" in l][-1] + ", pins all passed)", flush=True)
-files = (C, V, P, H, T)
+files = (C, V, P, H, T, G)
 before = {f: (root / f).read_text() for f in files}
 results = []
 for name, path, old, new, expect in mutants:

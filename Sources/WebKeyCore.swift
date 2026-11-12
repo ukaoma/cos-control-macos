@@ -387,9 +387,10 @@ enum WebKeySignerTLS {
         return line(tls["reason"] as? String)
     }
 
-    /// THE one list of the server's not-trusted reason codes (SignerTlsReason minus "ok"; provenance, server file and line:
-    /// PK-C_report.md) and one plain sentence each. These codes are written nowhere else in Control (Tests/web-key-pins.py),
-    /// and the checks read them from here. A code the server adds later gets `fallback`, never a code on screen.
+    /// THE one list of the server's not-trusted reason codes (the server's SIGNER_TLS_REASONS minus "ok",
+    /// server/lib/web-key-signer-tls.ts; golden.json carries the server's list and the reasonParity check compares them)
+    /// and one plain sentence each. These codes are written nowhere else in Control (Tests/web-key-pins.py). A code the
+    /// server adds later gets `fallback`, never a code on screen.
     static let sentences: [String: String] = [
         "pending": "COS is getting this Mac's Tailscale certificate for your phone.",
         "tailnet_name_unknown": "COS does not know this Mac's Tailscale name yet. Check that Tailscale is connected.",
@@ -404,6 +405,16 @@ enum WebKeySignerTLS {
         "cert_invalid": "Tailscale's certificate did not check out, so COS is not using it.",
         "cert_expired": "This Mac's Tailscale certificate expired. COS is getting a new one.",
         "cert_store_failed": "COS could not save this Mac's Tailscale certificate.",
+        // Server reopen (2026-11-11): SR-03, SR-01, SR-05 and the stored-pair checks of SR-08.
+        "tailscale_output_too_large": "Tailscale's answer was too large for the COS server to read. COS tries again later.",
+        "cert_not_yet_valid": "This Mac's Tailscale certificate is not valid yet. Check the Mac's date and time.",
+        "cert_untrusted": "The certificate COS found is not publicly trusted, so COS is not using it.",
+        "cert_daily_cap": "COS asked Tailscale for a certificate too often today. It tries again tomorrow.",
+        "stored_symlink": "COS did not use the certificate files in its folder: one of them is a link.",
+        "stored_not_file": "COS did not use the certificate files in its folder: one of them is not a regular file.",
+        "stored_owner": "COS did not use the certificate files in its folder: they belong to another user.",
+        "stored_writable": "COS did not use the certificate files in its folder: other users can change them.",
+        "stored_too_large": "COS did not use the certificate files in its folder: one of them is too large.",
     ]
     static let fallback = "Your phone's secure connection to this Mac is not ready yet."
 
