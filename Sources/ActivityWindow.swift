@@ -511,6 +511,9 @@ struct ActivityWindow: View {
     @State private var chatQuery = ""
     @State private var chatMatchCursor = 0
     @State private var section: ActivitySection?
+    /// Back by path (Anand parity item 1): the steps between sections, and whether the move in flight is Back's own.
+    @State private var backPath: [ActivityBackStep] = []
+    @State private var backMoving = false
     /// 0.5.278: Settings, "Show live meeting transcript" (the Meetings tab's live dot reads it).
     @AppStorage(LiveTranscript.enabledKey) private var showLiveTranscript = true
     @State private var showingSettings = false
@@ -794,6 +797,61 @@ struct ActivityWindow: View {
     }
 
     private var canGoBack: Bool { showingSettings || section != nil || hasDetail }
+
+    // MARK: Back by path (Anand parity item 1, 2026-11-12, as Control Web 7.0.30)
+
+    /// Where the window is now, for Back by path (ActivityBackPath in Models.swift).
+    private var currentPlace: ActivityPlace {
+        ActivityPlace(section: section?.rawValue, turnID: selectedTurnID, archiveDate: selectedArchiveDate,
+                      speakerSessionID: selectedSpeakerSessionID, voiceName: selectedVoiceName,
+                      libraryRecordID: selectedLibraryRecordID, sessionID: selectedSessionID)
+    }
+
+    /// The step Back takes now, when it goes back along the path instead of the section's parent chain. Never in the isolated
+    /// Work preview, nor for a meeting opened from Work or a speaker review (those return to it already).
+    private var backStep: ActivityBackStep? {
+        guard !showingSettings, !isolatedWorkPreview, !meetingReturnToWork, meetingReturnSpeakerSessionID == nil else { return nil }
+        return ActivityBackPath.step(backPath, current: currentPlace, hasDetail: hasDetail)
+    }
+
+    /// The Back button's help and VoiceOver label: where it goes, when that is another place.
+    private var backLabel: String {
+        guard let step = backStep else { return "Go back one step" }
+        return "Back to " + (step.from.section.flatMap(ActivitySection.init(rawValue:))?.title ?? "Activity home")
+    }
+
+    /// Back along the path: the section it came from, and the item that was open there when it reopens by its ID.
+    private func returnTo(_ place: ActivityPlace) {
+        clearDetail()
+        let target = place.section.flatMap(ActivitySection.init(rawValue:))
+        withOptionalAnimation { section = target }
+        guard let target else { return }
+        switch target {
+        case .messages:
+            if let id = place.turnID { selectedTurnID = id }
+            else if let day = place.archiveDate { openArchiveDay(day) }
+        case .speakers:
+            if let id = place.speakerSessionID {
+                selectedSpeakerSessionID = id
+                if model.openReview?.sessionId != id { model.openSpeakerReview(sessionId: id) }
+            } else if let name = place.voiceName {
+                selectedVoiceName = name
+            }
+        case .meetings:
+            if let id = place.libraryRecordID, let row = model.libraryMeetings.first(where: { $0.id == id }) {
+                selectedLibraryRecordID = id
+                model.openLibraryMeeting(row)
+            }
+        case .sessions:
+            if let id = place.sessionID, let row = model.claudeSessions.first(where: { $0.id == id }) {
+                selectedSessionID = id
+                model.openClaudeSession(row)
+            }
+        default:
+            break
+        }
+        Task { await load(target) }
+    }
 
     private var activityFrame: some View {
         VStack(spacing: 0) {
@@ -1094,6 +1152,11 @@ struct ActivityWindow: View {
         )
         .background(ActivityEscapeHandler(onEscape: handleActivityEscape).frame(width: 0, height: 0))
         .onExitCommand { if !handleActivityEscape() { goBack() } }
+        // Back by path: every change of section is a step, unless Back made it.
+        .onChange(of: currentPlace) { old, new in
+            backPath = ActivityBackPath.record(backPath, old: old, new: new, goingBack: backMoving)
+            if old.section != new.section { backMoving = false }
+        }
         // 0.5.385: the Prep composer took a Start prep's words and files; that meeting's Today draft goes.
         .onReceive(model.meetingPrep.$carriedLaunch) { launch in if let launch { todayPrep.carried(launch: launch) } }
         .onAppear { applyLaunchSection() }
@@ -1174,7 +1237,8 @@ struct ActivityWindow: View {
             .buttonStyle(COSQuietButtonStyle())
             .disabled(!canGoBack)
             .keyboardShortcut(.leftArrow, modifiers: .command)
-            .help("Go back one step")
+            .help(backLabel)
+            .accessibilityLabel(backStep == nil ? "Back" : backLabel)
 
             if showingSettings {
                 Text("COS Control › Settings").font(COSType.body(12, weight: .semibold))
@@ -1406,6 +1470,21 @@ struct ActivityWindow: View {
 
     private func goBack() {
         if showingSettings { showingSettings = false; return }
+        // Back by path: Back's own moves are not steps, and a parent-chain move across sections (a linked session back to
+        // Work) also drops the step it undid.
+        let sectionBefore = section
+        var tookStep = false
+        backMoving = true
+        defer {
+            if section == sectionBefore { backMoving = false }
+            else if !tookStep { backPath = ActivityBackPath.settle(backPath, before: sectionBefore?.rawValue, after: section?.rawValue) }
+        }
+        if let step = backStep {
+            tookStep = true
+            backPath.removeLast()
+            returnTo(step.from)
+            return
+        }
         if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil } // A send being handed over keeps its overlay; it shows the result back in Work.
         // The linked receipt reader is a child of Work in both the integrated
         // candidate and production. Header Back and Escape keep that context.
