@@ -87,7 +87,9 @@ def main():
         print("targets not found exactly once:", ", ".join(bad)); sys.exit(2)
     if targets_only:
         print(f"targets: {len(chosen)} found exactly once"); return
-    with tempfile.TemporaryDirectory(prefix="cos-mutate-auth-") as tmp:
+    # /tmp, as Tests/mutate-phone-signin.py and the helper build use: the helper's self-test refused its baseline under the
+    # system temp folder (11:37, "No COS Python bridge in that folder") while the same build passed from /tmp.
+    with tempfile.TemporaryDirectory(prefix="cos-mutate-auth-", dir="/tmp") as tmp:
         for kind in sorted({m[5] for m in chosen}):
             ok, message = run_kind(kind, tmp)
             if not ok:
