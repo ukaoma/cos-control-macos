@@ -116,7 +116,7 @@ let handoffReady = #"{"transport":"answered","httpStatus":200,"phone":"ready","p
     return state
 }
 
-// MARK: The model (Settings hub fixture values, server 7.0.29, nothing loads from a server)
+// MARK: The model (Settings hub fixture values, the server floor's version, nothing loads from a server)
 
 @MainActor func seeded(_ served: Served, peers: String = peersAll) async -> ControllerModel {
     let model = ControllerModel(startBackgroundWork: false)

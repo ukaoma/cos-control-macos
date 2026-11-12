@@ -447,7 +447,7 @@ enum WebKeySignerTLS {
 /// HelperSources/PairingCore.swift). Whether it is on is read from the server's own status (WebKeyServerMode).
 enum PhoneApprovalsSwitch {
     /// The first server with the reopened phone approvals; PhoneApprovalsCore.minimumServer must equal it (a check).
-    static let minimumServer = "7.0.29"
+    static let minimumServer = "7.0.30"
 
     struct Peer: Equatable, Sendable {
         var os: String

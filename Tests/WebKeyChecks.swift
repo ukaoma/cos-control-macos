@@ -565,8 +565,8 @@ struct WebKeyChecks {
         // Shown only for a server with the reopened phone approvals; the app and the helper agree on that server.
         check(PhoneApprovalsSwitch.minimumServer == PhoneApprovalsCore.minimumServer, "phone switch server floor", "the app and the helper name the same server")
         check(PhoneApprovalsSwitch.shown(serverVersion: PhoneApprovalsSwitch.minimumServer) && PhoneApprovalsSwitch.shown(serverVersion: "8.0.0")
-              && !PhoneApprovalsSwitch.shown(serverVersion: "7.0.28") && !PhoneApprovalsSwitch.shown(serverVersion: nil)
-              && !PhoneApprovalsSwitch.shown(serverVersion: "7.0") && !PhoneApprovalsSwitch.shown(serverVersion: "7.0.29-rc1"),
+              && !PhoneApprovalsSwitch.shown(serverVersion: "7.0.28") && !PhoneApprovalsSwitch.shown(serverVersion: "7.0.29") && !PhoneApprovalsSwitch.shown(serverVersion: nil)
+              && !PhoneApprovalsSwitch.shown(serverVersion: "7.0") && !PhoneApprovalsSwitch.shown(serverVersion: "7.0.30-rc1"),
               "phone switch server floor", "at or above the floor only; unknown or malformed versions hide the row")
         // On is the server's own answer; bootstrap (registration only) and off read as off.
         check(PhoneApprovalsSwitch.isOn(.authority) && !PhoneApprovalsSwitch.isOn(.bootstrap) && !PhoneApprovalsSwitch.isOn(.off),

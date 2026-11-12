@@ -254,7 +254,7 @@ mutants = [
     ("PA-12 no proof after an in-place restart (pins)", H,
      "            if let phoneApprovals = PhoneApprovalsCore.change(fromEnvironment: values) {\n                try requirePhoneApprovals(phoneApprovals)\n            }\n", "",
      "[phone switch wiring]"),
-    ("PA-13 the app and the helper name different servers", C, 'static let minimumServer = "7.0.29"\n\n    struct Peer', 'static let minimumServer = "7.0.28"\n\n    struct Peer',
+    ("PA-13 the app and the helper name different servers", C, 'static let minimumServer = "7.0.30"\n\n    struct Peer', 'static let minimumServer = "7.0.29"\n\n    struct Peer',
      "[phone switch server floor]"),
     ("PA-14 the confirm drops the certificate-log sentence", C,
      '+ "\\(mac) becomes public in certificate logs when its first certificate is issued, and stays public. "', '+ ""', "[phone switch confirm]"),

@@ -583,7 +583,7 @@ enum PhoneApprovalsCore {
     static let devicesKey = "COS_WEB_KEY_DEVICES"
     /// The first server with the reopened phone approvals (SR-01 to SR-12). The integrator sets it to the integrated
     /// server's version; PhoneApprovalsSwitch.minimumServer (Sources/WebKeyCore.swift) must equal it (a check holds both).
-    static let minimumServer = "7.0.29"
+    static let minimumServer = "7.0.30"
 
     enum Change: Equatable, Sendable {
         case on(device: String)

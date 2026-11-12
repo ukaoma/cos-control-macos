@@ -1,5 +1,5 @@
 {
-  "generatedBy": "gen_control_golden.mts (cos-glasses-server code at 76f50e1b232d9a91f40500429c9b4a9d8eb743e1)",
+  "generatedBy": "gen_control_golden.mts (cos-glasses-server code at 96fa2ed896e81327757fe3cb2e7fe09ac5ab5f38)",
   "selfDns": "example-mac.tail00000a.ts.net",
   "signerTlsReasons": [
     "ok",
@@ -28,71 +28,71 @@
     "stored_readable"
   ],
   "anchor": {
-    "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEqaCMFH1G06iLifquPqfCZTHB8cyII15oGXNo6nNPjgiWfZ2W_kBFjAKSp-fGYy2nlDki6vmwyUZanaX-iw8u9w",
-    "d": "ivrJpeha59a0_s1_D-h2-cDmnBrskhjLQ9upiFDMIUQ",
-    "spkiSha256": "d486248647735574c84c7016140224807167d2f2bcc877b15b4b7cac4b3ad483",
-    "fingerprint": "D486-2486-4773-5574",
-    "kid": "1IYkhkdzVXTITHAWFAIkgH",
-    "aud": "5db95935c6adfda5649365e7c3c56f09232bfb311edd29629a103e28415b31cf",
-    "statement": "eyJjcmVhdGVkQXQiOjE3ODYwMDAwMDAwMDAsImZpbmdlcnByaW50IjoiRDQ4Ni0yNDg2LTQ3NzMtNTU3NCIsInNwa2lTaGEyNTYiOiJkNDg2MjQ4NjQ3NzM1NTc0Yzg0YzcwMTYxNDAyMjQ4MDcxNjdkMmYyYmNjODc3YjE1YjRiN2NhYzRiM2FkNDgzIiwidiI6ImNvcy13ZWItYW5jaG9yLzEifQ",
+    "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEZPnWYyF2HDciQG0Gfby0RIfJ59vqhcoRS6wFkZKvUfS-mfCUK6Pdy1pi30D-N_ryZEZjz2OOVgwqofqqhZC0rA",
+    "d": "6Y5Mbdnn1gxhvDQXdDYaLaoE4s3bjSvjv91zhWP6Ls0",
+    "spkiSha256": "0ddde896d507c66abb712ad359294d3934af7ee2cce21a8827af9182453d8dca",
+    "fingerprint": "0DDD-E896-D507-C66A",
+    "kid": "Dd3oltUHxmq7cSrTWSlNOT",
+    "aud": "11dd0120c7749ed08333b7a3bcf4986558cbcd2b31d7f86987d70996d177e737",
+    "statement": "eyJjcmVhdGVkQXQiOjE3ODYwMDAwMDAwMDAsImZpbmdlcnByaW50IjoiMERERC1FODk2LUQ1MDctQzY2QSIsInNwa2lTaGEyNTYiOiIwZGRkZTg5NmQ1MDdjNjZhYmI3MTJhZDM1OTI5NGQzOTM0YWY3ZWUyY2NlMjFhODgyN2FmOTE4MjQ1M2Q4ZGNhIiwidiI6ImNvcy13ZWItYW5jaG9yLzEifQ",
     "createdAt": 1786000000000,
     "registered": true
   },
   "pending": {
-    "enrollId": "aGJUYOdzw_JYUH1t3iFsRQ",
+    "enrollId": "KdD5Tc1Ak9pdRkHi5hKXKA",
     "startedAt": 1786000000000,
     "exp": 1786000300000,
     "approval": {
-      "aud": "5db95935c6adfda5649365e7c3c56f09232bfb311edd29629a103e28415b31cf",
-      "challenge": "zw6Say1nj-lot09QZTpKb8lZh_81joiOLXDjP-mUpAo",
-      "enrollId": "aGJUYOdzw_JYUH1t3iFsRQ",
+      "aud": "11dd0120c7749ed08333b7a3bcf4986558cbcd2b31d7f86987d70996d177e737",
+      "challenge": "_3mvrtVrboNgLAegNPwh9Y59V8iIHH_4PEGj-sJY-1Y",
+      "enrollId": "KdD5Tc1Ak9pdRkHi5hKXKA",
       "enrolledAt": 1786000000000,
       "epoch": 0,
       "exp": 1786000300000,
-      "fingerprint": "B5A8-F853-B8CA-DF02",
-      "kid": "taj4U7jK3wKvuFza11MnKu",
+      "fingerprint": "23EC-3A39-A716-17E2",
+      "kid": "I-w6OacWF-L3WYg_pbXcYh",
       "kver": 1,
       "label": "Miles’s iPhone \"Duo\" \\ é",
       "origin": "https://example-mac.tail00000a.ts.net:3144",
-      "passkey_credential_id": "cred-taj4U7jK3wKvuFza11MnKu",
-      "passkey_spki_sha256": "b193d7499e3dd706085464b549a736830a588504894ea1724b91874fc876ac0b",
-      "phoneNonce": "ExPDniysLFoSlgB5NIB8ebSySOZtjudmiGku0Ew3SJc",
+      "passkey_credential_id": "cred-I-w6OacWF-L3WYg_pbXcYh",
+      "passkey_spki_sha256": "7dd18021c637449398d8248e6ca43525d04b149b4f8ba575895a09d20d48629c",
+      "phoneNonce": "iwuG50ProA1HchLk78BUhnvNalWzWc2MnBy2Dpckoco",
       "remote": "100.64.0.9",
       "rotates": null,
-      "sas": "514394",
-      "sasCommit": "9e3e6efc30a5da7c2daf04fe481ce80702d4f44ce0aa1f42611562ee71179c62",
-      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQeaIuyi_xSM4KaN9c9dyJ8w8xHGpSRfVyAVyZORq3zkvB_-8mwd5ote6LZwmpWxJ6tV_oYdnrWWra_2zctSWPA",
-      "spki_sha256": "b5a8f853b8cadf02afb85cdad753272aefe3270112c4b0c057b9bbec7c7b3ff9",
+      "sas": "689266",
+      "sasCommit": "3d3d0610d2f2cfbf1955854c8b5ad5e452f4107255b3544ccec45aa843103404",
+      "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEB8solc2SonkavtD1lHETj_TzJAQQJ-ORoPqWUQAmq-wBIZVd4nS_fBztizqYMaREUpXutbLSmX0WspckECOTjg",
+      "spki_sha256": "23ec3a39a71617e2f759883fa5b5dc621bebea1e1068f4955bb2273545922c1e",
       "userAgent": "Mozilla/5.0 (iPhone) Safari tab end",
       "v": "cos-web-enroll-approve/2"
     },
-    "approvalJcs": "eyJhdWQiOiI1ZGI5NTkzNWM2YWRmZGE1NjQ5MzY1ZTdjM2M1NmYwOTIzMmJmYjMxMWVkZDI5NjI5YTEwM2UyODQxNWIzMWNmIiwiY2hhbGxlbmdlIjoienc2U2F5MW5qLWxvdDA5UVpUcEtiOGxaaF84MWpvaU9MWERqUC1tVXBBbyIsImVucm9sbElkIjoiYUdKVVlPZHp3X0pZVUgxdDNpRnNSUSIsImVucm9sbGVkQXQiOjE3ODYwMDAwMDAwMDAsImVwb2NoIjowLCJleHAiOjE3ODYwMDAzMDAwMDAsImZpbmdlcnByaW50IjoiQjVBOC1GODUzLUI4Q0EtREYwMiIsImtpZCI6InRhajRVN2pLM3dLdnVGemExMU1uS3UiLCJrdmVyIjoxLCJsYWJlbCI6Ik1pbGVz4oCZcyBpUGhvbmUgXCJEdW9cIiBcXCDDqSIsIm9yaWdpbiI6Imh0dHBzOi8vZXhhbXBsZS1tYWMudGFpbDAwMDAwYS50cy5uZXQ6MzE0NCIsInBhc3NrZXlfY3JlZGVudGlhbF9pZCI6ImNyZWQtdGFqNFU3akszd0t2dUZ6YTExTW5LdSIsInBhc3NrZXlfc3BraV9zaGEyNTYiOiJiMTkzZDc0OTllM2RkNzA2MDg1NDY0YjU0OWE3MzY4MzBhNTg4NTA0ODk0ZWExNzI0YjkxODc0ZmM4NzZhYzBiIiwicGhvbmVOb25jZSI6IkV4UERuaXlzTEZvU2xnQjVOSUI4ZWJTeVNPWnRqdWRtaUdrdTBFdzNTSmMiLCJyZW1vdGUiOiIxMDAuNjQuMC45Iiwicm90YXRlcyI6bnVsbCwic2FzIjoiNTE0Mzk0Iiwic2FzQ29tbWl0IjoiOWUzZTZlZmMzMGE1ZGE3YzJkYWYwNGZlNDgxY2U4MDcwMmQ0ZjQ0Y2UwYWExZjQyNjExNTYyZWU3MTE3OWM2MiIsInNwa2kiOiJNRmt3RXdZSEtvWkl6ajBDQVFZSUtvWkl6ajBEQVFjRFFnQUVRZWFJdXlpX3hTTTRLYU45YzlkeUo4dzh4SEdwU1JmVnlBVnlaT1JxM3prdkJfLThtd2Q1b3RlNkxad21wV3hKNnRWX29ZZG5yV1dyYV8yemN0U1dQQSIsInNwa2lfc2hhMjU2IjoiYjVhOGY4NTNiOGNhZGYwMmFmYjg1Y2RhZDc1MzI3MmFlZmUzMjcwMTEyYzRiMGMwNTdiOWJiZWM3YzdiM2ZmOSIsInVzZXJBZ2VudCI6Ik1vemlsbGEvNS4wIChpUGhvbmUpIFNhZmFyaeKAqHRhYiBlbmQiLCJ2IjoiY29zLXdlYi1lbnJvbGwtYXBwcm92ZS8yIn0"
+    "approvalJcs": "eyJhdWQiOiIxMWRkMDEyMGM3NzQ5ZWQwODMzM2I3YTNiY2Y0OTg2NTU4Y2JjZDJiMzFkN2Y4Njk4N2Q3MDk5NmQxNzdlNzM3IiwiY2hhbGxlbmdlIjoiXzNtdnJ0VnJib05nTEFlZ05Qd2g5WTU5VjhpSUhIXzRQRUdqLXNKWS0xWSIsImVucm9sbElkIjoiS2RENVRjMUFrOXBkUmtIaTVoS1hLQSIsImVucm9sbGVkQXQiOjE3ODYwMDAwMDAwMDAsImVwb2NoIjowLCJleHAiOjE3ODYwMDAzMDAwMDAsImZpbmdlcnByaW50IjoiMjNFQy0zQTM5LUE3MTYtMTdFMiIsImtpZCI6IkktdzZPYWNXRi1MM1dZZ19wYlhjWWgiLCJrdmVyIjoxLCJsYWJlbCI6Ik1pbGVz4oCZcyBpUGhvbmUgXCJEdW9cIiBcXCDDqSIsIm9yaWdpbiI6Imh0dHBzOi8vZXhhbXBsZS1tYWMudGFpbDAwMDAwYS50cy5uZXQ6MzE0NCIsInBhc3NrZXlfY3JlZGVudGlhbF9pZCI6ImNyZWQtSS13Nk9hY1dGLUwzV1lnX3BiWGNZaCIsInBhc3NrZXlfc3BraV9zaGEyNTYiOiI3ZGQxODAyMWM2Mzc0NDkzOThkODI0OGU2Y2E0MzUyNWQwNGIxNDliNGY4YmE1NzU4OTVhMDlkMjBkNDg2MjljIiwicGhvbmVOb25jZSI6Iml3dUc1MFByb0ExSGNoTGs3OEJVaG52TmFsV3pXYzJNbkJ5MkRwY2tvY28iLCJyZW1vdGUiOiIxMDAuNjQuMC45Iiwicm90YXRlcyI6bnVsbCwic2FzIjoiNjg5MjY2Iiwic2FzQ29tbWl0IjoiM2QzZDA2MTBkMmYyY2ZiZjE5NTU4NTRjOGI1YWQ1ZTQ1MmY0MTA3MjU1YjM1NDRjY2VjNDVhYTg0MzEwMzQwNCIsInNwa2kiOiJNRmt3RXdZSEtvWkl6ajBDQVFZSUtvWkl6ajBEQVFjRFFnQUVCOHNvbGMyU29ua2F2dEQxbEhFVGpfVHpKQVFRSi1PUm9QcVdVUUFtcS13QklaVmQ0blNfZkJ6dGl6cVlNYVJFVXBYdXRiTFNtWDBXc3Bja0VDT1RqZyIsInNwa2lfc2hhMjU2IjoiMjNlYzNhMzlhNzE2MTdlMmY3NTk4ODNmYTViNWRjNjIxYmViZWExZTEwNjhmNDk1NWJiMjI3MzU0NTkyMmMxZSIsInVzZXJBZ2VudCI6Ik1vemlsbGEvNS4wIChpUGhvbmUpIFNhZmFyaeKAqHRhYiBlbmQiLCJ2IjoiY29zLXdlYi1lbnJvbGwtYXBwcm92ZS8yIn0"
   },
-  "pendingJson": "{\"enrollId\":\"aGJUYOdzw_JYUH1t3iFsRQ\",\"startedAt\":1786000000000,\"exp\":1786000300000,\"approval\":{\"aud\":\"5db95935c6adfda5649365e7c3c56f09232bfb311edd29629a103e28415b31cf\",\"challenge\":\"zw6Say1nj-lot09QZTpKb8lZh_81joiOLXDjP-mUpAo\",\"enrollId\":\"aGJUYOdzw_JYUH1t3iFsRQ\",\"enrolledAt\":1786000000000,\"epoch\":0,\"exp\":1786000300000,\"fingerprint\":\"B5A8-F853-B8CA-DF02\",\"kid\":\"taj4U7jK3wKvuFza11MnKu\",\"kver\":1,\"label\":\"Miles’s iPhone \\\"Duo\\\" \\\\ é\",\"origin\":\"https://example-mac.tail00000a.ts.net:3144\",\"passkey_credential_id\":\"cred-taj4U7jK3wKvuFza11MnKu\",\"passkey_spki_sha256\":\"b193d7499e3dd706085464b549a736830a588504894ea1724b91874fc876ac0b\",\"phoneNonce\":\"ExPDniysLFoSlgB5NIB8ebSySOZtjudmiGku0Ew3SJc\",\"remote\":\"100.64.0.9\",\"rotates\":null,\"sas\":\"514394\",\"sasCommit\":\"9e3e6efc30a5da7c2daf04fe481ce80702d4f44ce0aa1f42611562ee71179c62\",\"spki\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQeaIuyi_xSM4KaN9c9dyJ8w8xHGpSRfVyAVyZORq3zkvB_-8mwd5ote6LZwmpWxJ6tV_oYdnrWWra_2zctSWPA\",\"spki_sha256\":\"b5a8f853b8cadf02afb85cdad753272aefe3270112c4b0c057b9bbec7c7b3ff9\",\"userAgent\":\"Mozilla/5.0 (iPhone) Safari tab end\",\"v\":\"cos-web-enroll-approve/2\"},\"approvalJcs\":\"eyJhdWQiOiI1ZGI5NTkzNWM2YWRmZGE1NjQ5MzY1ZTdjM2M1NmYwOTIzMmJmYjMxMWVkZDI5NjI5YTEwM2UyODQxNWIzMWNmIiwiY2hhbGxlbmdlIjoienc2U2F5MW5qLWxvdDA5UVpUcEtiOGxaaF84MWpvaU9MWERqUC1tVXBBbyIsImVucm9sbElkIjoiYUdKVVlPZHp3X0pZVUgxdDNpRnNSUSIsImVucm9sbGVkQXQiOjE3ODYwMDAwMDAwMDAsImVwb2NoIjowLCJleHAiOjE3ODYwMDAzMDAwMDAsImZpbmdlcnByaW50IjoiQjVBOC1GODUzLUI4Q0EtREYwMiIsImtpZCI6InRhajRVN2pLM3dLdnVGemExMU1uS3UiLCJrdmVyIjoxLCJsYWJlbCI6Ik1pbGVz4oCZcyBpUGhvbmUgXCJEdW9cIiBcXCDDqSIsIm9yaWdpbiI6Imh0dHBzOi8vZXhhbXBsZS1tYWMudGFpbDAwMDAwYS50cy5uZXQ6MzE0NCIsInBhc3NrZXlfY3JlZGVudGlhbF9pZCI6ImNyZWQtdGFqNFU3akszd0t2dUZ6YTExTW5LdSIsInBhc3NrZXlfc3BraV9zaGEyNTYiOiJiMTkzZDc0OTllM2RkNzA2MDg1NDY0YjU0OWE3MzY4MzBhNTg4NTA0ODk0ZWExNzI0YjkxODc0ZmM4NzZhYzBiIiwicGhvbmVOb25jZSI6IkV4UERuaXlzTEZvU2xnQjVOSUI4ZWJTeVNPWnRqdWRtaUdrdTBFdzNTSmMiLCJyZW1vdGUiOiIxMDAuNjQuMC45Iiwicm90YXRlcyI6bnVsbCwic2FzIjoiNTE0Mzk0Iiwic2FzQ29tbWl0IjoiOWUzZTZlZmMzMGE1ZGE3YzJkYWYwNGZlNDgxY2U4MDcwMmQ0ZjQ0Y2UwYWExZjQyNjExNTYyZWU3MTE3OWM2MiIsInNwa2kiOiJNRmt3RXdZSEtvWkl6ajBDQVFZSUtvWkl6ajBEQVFjRFFnQUVRZWFJdXlpX3hTTTRLYU45YzlkeUo4dzh4SEdwU1JmVnlBVnlaT1JxM3prdkJfLThtd2Q1b3RlNkxad21wV3hKNnRWX29ZZG5yV1dyYV8yemN0U1dQQSIsInNwa2lfc2hhMjU2IjoiYjVhOGY4NTNiOGNhZGYwMmFmYjg1Y2RhZDc1MzI3MmFlZmUzMjcwMTEyYzRiMGMwNTdiOWJiZWM3YzdiM2ZmOSIsInVzZXJBZ2VudCI6Ik1vemlsbGEvNS4wIChpUGhvbmUpIFNhZmFyaeKAqHRhYiBlbmQiLCJ2IjoiY29zLXdlYi1lbnJvbGwtYXBwcm92ZS8yIn0\"}",
+  "pendingJson": "{\"enrollId\":\"KdD5Tc1Ak9pdRkHi5hKXKA\",\"startedAt\":1786000000000,\"exp\":1786000300000,\"approval\":{\"aud\":\"11dd0120c7749ed08333b7a3bcf4986558cbcd2b31d7f86987d70996d177e737\",\"challenge\":\"_3mvrtVrboNgLAegNPwh9Y59V8iIHH_4PEGj-sJY-1Y\",\"enrollId\":\"KdD5Tc1Ak9pdRkHi5hKXKA\",\"enrolledAt\":1786000000000,\"epoch\":0,\"exp\":1786000300000,\"fingerprint\":\"23EC-3A39-A716-17E2\",\"kid\":\"I-w6OacWF-L3WYg_pbXcYh\",\"kver\":1,\"label\":\"Miles’s iPhone \\\"Duo\\\" \\\\ é\",\"origin\":\"https://example-mac.tail00000a.ts.net:3144\",\"passkey_credential_id\":\"cred-I-w6OacWF-L3WYg_pbXcYh\",\"passkey_spki_sha256\":\"7dd18021c637449398d8248e6ca43525d04b149b4f8ba575895a09d20d48629c\",\"phoneNonce\":\"iwuG50ProA1HchLk78BUhnvNalWzWc2MnBy2Dpckoco\",\"remote\":\"100.64.0.9\",\"rotates\":null,\"sas\":\"689266\",\"sasCommit\":\"3d3d0610d2f2cfbf1955854c8b5ad5e452f4107255b3544ccec45aa843103404\",\"spki\":\"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEB8solc2SonkavtD1lHETj_TzJAQQJ-ORoPqWUQAmq-wBIZVd4nS_fBztizqYMaREUpXutbLSmX0WspckECOTjg\",\"spki_sha256\":\"23ec3a39a71617e2f759883fa5b5dc621bebea1e1068f4955bb2273545922c1e\",\"userAgent\":\"Mozilla/5.0 (iPhone) Safari tab end\",\"v\":\"cos-web-enroll-approve/2\"},\"approvalJcs\":\"eyJhdWQiOiIxMWRkMDEyMGM3NzQ5ZWQwODMzM2I3YTNiY2Y0OTg2NTU4Y2JjZDJiMzFkN2Y4Njk4N2Q3MDk5NmQxNzdlNzM3IiwiY2hhbGxlbmdlIjoiXzNtdnJ0VnJib05nTEFlZ05Qd2g5WTU5VjhpSUhIXzRQRUdqLXNKWS0xWSIsImVucm9sbElkIjoiS2RENVRjMUFrOXBkUmtIaTVoS1hLQSIsImVucm9sbGVkQXQiOjE3ODYwMDAwMDAwMDAsImVwb2NoIjowLCJleHAiOjE3ODYwMDAzMDAwMDAsImZpbmdlcnByaW50IjoiMjNFQy0zQTM5LUE3MTYtMTdFMiIsImtpZCI6IkktdzZPYWNXRi1MM1dZZ19wYlhjWWgiLCJrdmVyIjoxLCJsYWJlbCI6Ik1pbGVz4oCZcyBpUGhvbmUgXCJEdW9cIiBcXCDDqSIsIm9yaWdpbiI6Imh0dHBzOi8vZXhhbXBsZS1tYWMudGFpbDAwMDAwYS50cy5uZXQ6MzE0NCIsInBhc3NrZXlfY3JlZGVudGlhbF9pZCI6ImNyZWQtSS13Nk9hY1dGLUwzV1lnX3BiWGNZaCIsInBhc3NrZXlfc3BraV9zaGEyNTYiOiI3ZGQxODAyMWM2Mzc0NDkzOThkODI0OGU2Y2E0MzUyNWQwNGIxNDliNGY4YmE1NzU4OTVhMDlkMjBkNDg2MjljIiwicGhvbmVOb25jZSI6Iml3dUc1MFByb0ExSGNoTGs3OEJVaG52TmFsV3pXYzJNbkJ5MkRwY2tvY28iLCJyZW1vdGUiOiIxMDAuNjQuMC45Iiwicm90YXRlcyI6bnVsbCwic2FzIjoiNjg5MjY2Iiwic2FzQ29tbWl0IjoiM2QzZDA2MTBkMmYyY2ZiZjE5NTU4NTRjOGI1YWQ1ZTQ1MmY0MTA3MjU1YjM1NDRjY2VjNDVhYTg0MzEwMzQwNCIsInNwa2kiOiJNRmt3RXdZSEtvWkl6ajBDQVFZSUtvWkl6ajBEQVFjRFFnQUVCOHNvbGMyU29ua2F2dEQxbEhFVGpfVHpKQVFRSi1PUm9QcVdVUUFtcS13QklaVmQ0blNfZkJ6dGl6cVlNYVJFVXBYdXRiTFNtWDBXc3Bja0VDT1RqZyIsInNwa2lfc2hhMjU2IjoiMjNlYzNhMzlhNzE2MTdlMmY3NTk4ODNmYTViNWRjNjIxYmViZWExZTEwNjhmNDk1NWJiMjI3MzU0NTkyMmMxZSIsInVzZXJBZ2VudCI6Ik1vemlsbGEvNS4wIChpUGhvbmUpIFNhZmFyaeKAqHRhYiBlbmQiLCJ2IjoiY29zLXdlYi1lbnJvbGwtYXBwcm92ZS8yIn0\"}",
   "expect": {
-    "sas": "514394",
-    "fingerprint": "B5A8-F853-B8CA-DF02",
-    "kid": "taj4U7jK3wKvuFza11MnKu",
+    "sas": "689266",
+    "fingerprint": "23EC-3A39-A716-17E2",
+    "kid": "I-w6OacWF-L3WYg_pbXcYh",
     "label": "Miles’s iPhone \"Duo\" \\ é",
     "userAgent": "Mozilla/5.0 (iPhone) Safari tab end",
     "remote": "100.64.0.9",
     "epoch": 0,
-    "nodeAnchorSig": "LnFiVGAClvyCjb-4Ih5KsOaI9YzFHE8GpLJmpGgTCANkU0noXSvfHcOCZ5UgxELVNvHi_Av4c5aiV-AHyqdN6g",
+    "nodeAnchorSig": "6UqE7rVy0zRnKQdh_q29NkDbkTvXUPv3mjeuydKth6M99KAeZh4JmNkE4jHFJz_7CpM125tWfjAicT9miR-2hQ",
     "approveAccepted": true
   },
   "sasVector": {
-    "challenge": "vDQ7deR90FpipeRfhc2wwoCa_dsqRxCHTBtz_91MmKE",
-    "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQeaIuyi_xSM4KaN9c9dyJ8w8xHGpSRfVyAVyZORq3zkvB_-8mwd5ote6LZwmpWxJ6tV_oYdnrWWra_2zctSWPA",
-    "r": "YNuyqXmziUkGKi9R4xFCUrLOFZfDZEbJQ6Iekg0v-0U",
-    "sas": "685708"
+    "challenge": "DNCfdAMtmN6SDgqzkQzc1F2lD8BBqphiKmkq9VCWuDI",
+    "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEB8solc2SonkavtD1lHETj_TzJAQQJ-ORoPqWUQAmq-wBIZVd4nS_fBztizqYMaREUpXutbLSmX0WspckECOTjg",
+    "r": "nS83qbNIPpBfz5l5103TMtCbfTiTmKnHSeTne16oGeg",
+    "sas": "609202"
   },
   "revocation": {
     "epoch": 0,
     "list": [
       {
-        "kid": "dSNU7Ey8oLyKkYVUumJct6",
+        "kid": "72OiYm8qmNIyxun_eaVNty",
         "label": "iPhone",
-        "fingerprint": "7523-54EC-4CBC-A0BC",
+        "fingerprint": "EF63-A262-6F2A-98D2",
         "enrolledAt": 1786000000000,
         "kver": 1,
         "lastUsedAt": null,
@@ -102,9 +102,9 @@
         "revokeReason": "lost"
       },
       {
-        "kid": "b_vpdT8uMLAqw631FXXJgH",
+        "kid": "aI4nh5JWbtruPano3cRQqP",
         "label": "iPhone",
-        "fingerprint": "6FFB-E975-3F2E-30B0",
+        "fingerprint": "688E-2787-9256-6EDA",
         "enrolledAt": 1786000000000,
         "kver": 1,
         "lastUsedAt": null,
@@ -114,9 +114,9 @@
         "revokeReason": "lost"
       },
       {
-        "kid": "BUglmzMoEvOUhrWE2Vg5PS",
+        "kid": "-eeKXeF4cnFD4IjeG8EMPt",
         "label": "iPhone",
-        "fingerprint": "0548-259B-3328-12F3",
+        "fingerprint": "F9E7-8A5D-E178-7271",
         "enrolledAt": 1786000000000,
         "kver": 1,
         "lastUsedAt": null,
@@ -126,15 +126,15 @@
     ],
     "revocations": [
       {
-        "kid": "b_vpdT8uMLAqw631FXXJgH",
-        "revokedAt": 1786000001000
+        "kid": "72OiYm8qmNIyxun_eaVNty",
+        "revokedAt": 1786000002000
       },
       {
-        "kid": "dSNU7Ey8oLyKkYVUumJct6",
-        "revokedAt": 1786000002000
+        "kid": "aI4nh5JWbtruPano3cRQqP",
+        "revokedAt": 1786000001000
       }
     ],
-    "digest": "5edcc10a6d39bc7d101d0c03beb06aa5c5e791c6cd34c132e0476c46f5ff3d25"
+    "digest": "cb0a49f369b865e36dc16935b9c4acb3ba2c85e3b5879b86d13e66194439a23c"
   },
   "jcs": [
     {
