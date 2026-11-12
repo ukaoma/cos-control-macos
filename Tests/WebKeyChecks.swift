@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Security
 
 // Phone approvals (Sources/WebKeyCore.swift and HelperSources/PairingCore.swift's WebKeyHelperCore), compiled on their own
 // (Tests/run-web-key.sh). Vectors come from the SERVER's code (Tests/fixtures/web-key/golden.json, made by
@@ -25,6 +26,17 @@ func viaJSONValue(_ value: Any) -> Any {
     if let a = value as? [Any] { return a.map(viaJSONValue) }
     if let o = value as? [String: Any] { return o.mapValues(viaJSONValue) }
     return value
+}
+
+/// A control for the signer TLS checks only: what this Mac's keychain trust (system, admin and user domains, no custom
+/// anchors) says about a chain, which is how Apple's curl decides. Reads trust settings, never a keychain item or a key.
+func keychainTrusts(_ chain: [Data], host: String) -> Bool {
+    let certificates = chain.compactMap { SecCertificateCreateWithData(nil, $0 as CFData) }
+    var made: SecTrust?
+    guard !certificates.isEmpty, certificates.count == chain.count,
+          SecTrustCreateWithCertificates(certificates as CFArray, SecPolicyCreateSSL(true, host as CFString), &made) == errSecSuccess,
+          let trust = made, SecTrustSetNetworkFetchAllowed(trust, false) == errSecSuccess else { return false }
+    return SecTrustEvaluateWithError(trust, nil)
 }
 
 final class MemoryStore: WebKeySecureStore, @unchecked Sendable {
@@ -137,6 +149,11 @@ struct WebKeyChecks {
         reconcile()
         helperCore()
         assets()
+        signerTLSTrust(fixtures: URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent("tls", isDirectory: true))
+        signerTLSLine()
+        reasonParity(g)
+        phoneApprovalsSwitch()
+        await phoneApprovalsOff()
         await cancellation()
         await flow(pending: pending, anchorG: anchorG, anchorDER: anchorDER, anchorRaw: anchorRaw, selfDns: selfDns)
         await recoveryFlow(anchorRaw: anchorRaw, selfDns: selfDns)
@@ -506,6 +523,361 @@ struct WebKeyChecks {
         try? FileManager.default.removeItem(at: dir)
     }
 
+    /// Option A (lead 2026-11-11 21:31): the phone approvals switch, Settings PK-02. The helper's rules (PhoneApprovalsCore,
+    /// HelperSources/PairingCore.swift) and the app's (PhoneApprovalsSwitch, Sources/WebKeyCore.swift).
+    static func phoneApprovalsSwitch() {
+        let phone = "100.101.102.103"
+        // The helper's arguments: on with a tailnet IPv4, or off, and nothing else.
+        check(PhoneApprovalsCore.change(["on", phone]) == .on(device: phone) && PhoneApprovalsCore.change(["off"]) == .off,
+              "phone switch args", "on with this phone's tailnet address, or off")
+        for bad in [["on"], ["on", "192.168.1.20"], ["on", "100.128.0.1"], ["on", "100.64.0.1,100.64.0.2"], ["on", phone, "x"], ["off", phone], ["yes"], []] {
+            check(PhoneApprovalsCore.change(bad) == nil, "phone switch args", "refused: \(bad)")
+        }
+        // Off WRITES COS_WEB_KEY_AUTHORITY=0 (a removed key would let a .env line turn it back on); on sets both keys.
+        let on = PhoneApprovalsCore.environment(.on(device: phone)), off = PhoneApprovalsCore.environment(.off)
+        check(on.set == ["COS_WEB_KEY_AUTHORITY": "1", "COS_WEB_KEY_DEVICES": phone] && on.remove.isEmpty, "phone switch on", "on sets the flag and the one phone")
+        check(off.set == ["COS_WEB_KEY_AUTHORITY": "0"] && off.remove == ["COS_WEB_KEY_DEVICES"] && !off.remove.contains("COS_WEB_KEY_AUTHORITY"),
+              "phone switch off writes 0", "off writes the flag as 0 and removes only the phone list")
+        check(PhoneApprovalsCore.change(fromEnvironment: on.set) == .on(device: phone) && PhoneApprovalsCore.change(fromEnvironment: off.set) == .off
+              && PhoneApprovalsCore.change(fromEnvironment: ["COS_VIDEO_UPLOAD_V2": "1"]) == nil, "phone switch proof",
+              "both apply paths prove a phone approvals write, and only that")
+        // The restarted server's own status proves the change.
+        check(PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: ["enabled": true])
+              && PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: ["enabled": true, "mode": "authority"]), "phone switch proof", "on: 200 and enabled")
+        check(!PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: ["enabled": false, "mode": "bootstrap"])
+              && !PhoneApprovalsCore.proven(.on(device: phone), status: 404, body: nil)
+              && !PhoneApprovalsCore.proven(.on(device: phone), status: nil, body: nil)
+              && !PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: ["enabled": true, "mode": "bootstrap"]), "phone switch proof",
+              "on is not proven by bootstrap, a 404, no answer, or a contradiction")
+        check(PhoneApprovalsCore.proven(.off, status: 404, body: nil) && PhoneApprovalsCore.proven(.off, status: 200, body: ["enabled": false, "mode": "bootstrap"])
+              && !PhoneApprovalsCore.proven(.off, status: 200, body: ["enabled": true]), "phone switch proof", "off: anything but an enabled server")
+        // The app: only this account's iPhones with a tailnet address, by name.
+        let peers: [PhoneApprovalsSwitch.Peer] = [
+            .init(os: "iOS", dns: "zed-iphone.tail00000a.ts.net", ipv4: "100.64.0.12", sameUser: true),
+            .init(os: "iOS", dns: "amy-iphone.tail00000a.ts.net", ipv4: "100.64.0.11", sameUser: true),
+            .init(os: "iOS", dns: "guest-iphone.tail00000a.ts.net", ipv4: "100.64.0.13", sameUser: false),
+            .init(os: "macOS", dns: "example-mac.tail00000a.ts.net", ipv4: "100.64.0.10", sameUser: true),
+            .init(os: "iOS", dns: "no-v4.tail00000a.ts.net", ipv4: nil, sameUser: true),
+            .init(os: "iOS", dns: "odd.tail00000a.ts.net", ipv4: "192.168.1.9", sameUser: true),
+        ]
+        check(PhoneApprovalsSwitch.phones(peers) == [.init(name: "amy-iphone", ipv4: "100.64.0.11"), .init(name: "zed-iphone", ipv4: "100.64.0.12")],
+              "phone switch phones", "this account's iPhones with a tailnet IPv4, by name; never a guest's phone, a Mac or an odd address")
+        // Shown only for a server with the reopened phone approvals; the app and the helper agree on that server.
+        check(PhoneApprovalsSwitch.minimumServer == PhoneApprovalsCore.minimumServer, "phone switch server floor", "the app and the helper name the same server")
+        check(PhoneApprovalsSwitch.shown(serverVersion: PhoneApprovalsSwitch.minimumServer) && PhoneApprovalsSwitch.shown(serverVersion: "8.0.0")
+              && !PhoneApprovalsSwitch.shown(serverVersion: "7.0.28") && !PhoneApprovalsSwitch.shown(serverVersion: "7.0.29") && !PhoneApprovalsSwitch.shown(serverVersion: nil)
+              && !PhoneApprovalsSwitch.shown(serverVersion: "7.0") && !PhoneApprovalsSwitch.shown(serverVersion: "7.0.30-rc1"),
+              "phone switch server floor", "at or above the floor only; unknown or malformed versions hide the row")
+        // On is the server's own answer; bootstrap (registration only) and off read as off.
+        check(PhoneApprovalsSwitch.isOn(.authority) && !PhoneApprovalsSwitch.isOn(.bootstrap) && !PhoneApprovalsSwitch.isOn(.off),
+              "phone switch on reads the server", "only authority mode is on")
+        let amy = PhoneApprovalsSwitch.Phone(name: "amy-iphone", ipv4: "100.64.0.11")
+        check(PhoneApprovalsSwitch.arguments(on: true, phone: amy) == ["on", "100.64.0.11"] && PhoneApprovalsSwitch.arguments(on: false, phone: amy) == ["off"]
+              && PhoneApprovalsSwitch.arguments(on: true, phone: nil) == nil
+              && PhoneApprovalsSwitch.arguments(on: true, phone: .init(name: "x", ipv4: "192.168.1.9")) == nil,
+              "phone switch args", "on needs a phone on the tailnet; off takes nothing")
+        // The confirmation names the phone and says plainly that the Mac's name becomes public in certificate logs.
+        let message = PhoneApprovalsSwitch.confirmOnMessage(amy, macName: "example-mac.tail00000a.ts.net")
+        check(PhoneApprovalsSwitch.confirmOnTitle(amy).contains("amy-iphone") && message.contains("amy-iphone")
+              && message.contains("example-mac.tail00000a.ts.net") && message.contains("becomes public in certificate logs")
+              && message.contains("restarts the server"), "phone switch confirm", "the phone, the Mac's name, public certificate logs, the restart")
+        let copy = [PhoneApprovalsSwitch.confirmOnTitle(amy), message, PhoneApprovalsSwitch.confirmOnMessage(amy, macName: nil), PhoneApprovalsSwitch.confirmOffTitle,
+                    PhoneApprovalsSwitch.confirmOffMessage, PhoneApprovalsSwitch.label, PhoneApprovalsSwitch.labelOn, PhoneApprovalsSwitch.detail, PhoneApprovalsSwitch.noPhone]
+        check(copy.allSatisfy { !$0.isEmpty && !$0.contains("—") && !$0.contains("COS_") }, "phone switch confirm", "plain copy: no em dash, no variable names")
+        check(PhoneApprovalsSwitch.detail.hasPrefix("Off unless you turn it on."), "phone switch off by default", "the row says it is off by default")
+        check(PhoneApprovalsSwitch.title(on: false) == "Turn on phone approvals" && PhoneApprovalsSwitch.title(on: true) == "Phone approvals are on",
+              "phone switch title follows the switch", "the title asks only while it is off, and says it is on once it is")
+        // Like the nine restart rows: never live while work runs or another change is in progress.
+        check(PhoneApprovalsSwitch.applyAllowed(locked: false, workActive: false) && !PhoneApprovalsSwitch.applyAllowed(locked: true, workActive: false)
+              && !PhoneApprovalsSwitch.applyAllowed(locked: false, workActive: true) && !PhoneApprovalsSwitch.applyAllowed(locked: true, workActive: true),
+              "phone switch waits for work", "an apply is live only with nothing in progress and no running work")
+    }
+
+    /// Option A (lead ruling 2026-11-12 10:32): Off revokes every phone at once, whatever work runs; only its =0 restart waits.
+    @MainActor
+    static func phoneApprovalsOff() async {
+        final class Mem: PhoneApprovalsPendingStore {
+            var value: PhoneApprovalsPendingOff?
+            func load() -> PhoneApprovalsPendingOff? { value }
+            func save(_ pending: PhoneApprovalsPendingOff) { value = pending }
+            func clear() { value = nil }
+        }
+        // With a meeting running: the revoke runs now, the =0 restart does not, and the wait is saved.
+        let mem = Mem()
+        var revokes = 0, applies = 0
+        var savedBeforeRevoke = false
+        let busy = await PhoneApprovalsOff.run(store: mem, now: 7, revokeAll: { savedBeforeRevoke = mem.load() != nil; revokes += 1; return true },
+                                               locked: { false }, workActive: { true }, apply: { applies += 1 })
+        check(revokes == 1 && busy.revokedAll, "phone off revokes at once", "Off's Revoke all runs while work runs")
+        check(applies == 0 && mem.load() == PhoneApprovalsPendingOff(revokedAll: true, savedAt: 7),
+              "phone off restart waits", "the =0 restart waits for running work, and the wait is saved")
+        check(savedBeforeRevoke, "phone off saved first", "the wait is saved before the revoke, so a quit during it keeps the =0")
+        // The work ends: the saved =0 applies; another change in progress still waits.
+        check(!PhoneApprovalsOff.resume(store: mem, locked: true, workActive: false, apply: { applies += 1 }) && applies == 0
+              && PhoneApprovalsOff.resume(store: mem, locked: false, workActive: false, apply: { applies += 1 }) && applies == 1,
+              "phone off restart waits", "the saved =0 applies once nothing is in progress and no work runs")
+        // A failed restart keeps the wait; a proved one clears it.
+        PhoneApprovalsOff.finished(store: mem, helperSucceeded: false)
+        check(mem.load() != nil, "phone off failed restart keeps the wait", "only a proved restart clears it")
+        PhoneApprovalsOff.finished(store: mem, helperSucceeded: true)
+        check(mem.load() == nil && !PhoneApprovalsOff.resume(store: mem, locked: false, workActive: false, apply: { applies += 1 }) && applies == 1,
+              "phone off failed restart keeps the wait", "a proved restart clears it, and nothing applies again")
+        // Nothing running: the revoke and the restart both run now.
+        let idle = Mem()
+        var order: [String] = []
+        _ = await PhoneApprovalsOff.run(store: idle, now: 8, revokeAll: { order.append("revoke"); return true },
+                                        locked: { false }, workActive: { false }, apply: { order.append("apply") })
+        check(order == ["revoke", "apply"], "phone off revokes at once", "with nothing running, the revoke and then the restart")
+        // A Revoke all that did not reach the server never reads as stopped.
+        let failed = await PhoneApprovalsOff.run(store: Mem(), now: 9, revokeAll: { false }, locked: { false }, workActive: { true }, apply: {})
+        let failedLine = PhoneApprovalsOff.line(failed, waiting: true)
+        check(!failed.revokedAll && !failedLine.contains("are stopped") && failedLine.contains("may still approve"),
+              "phone off failed revoke is not stopped", "the row says a phone may still approve")
+        check(PhoneApprovalsOff.line(.init(revokedAll: true, savedAt: 1), waiting: false) == PhoneApprovalsOff.stopped
+              && PhoneApprovalsOff.line(.init(revokedAll: true, savedAt: 1), waiting: true).hasSuffix(PhoneApprovalsOff.waits),
+              "phone off line", "stopped, and the wait only while it waits")
+        // The confirm says it before he confirms: every phone is removed and must be enrolled again.
+        let off = PhoneApprovalsSwitch.confirmOffMessage
+        check(off.contains("Every enrolled phone is removed") && off.contains("enroll each phone again"), "phone off confirm",
+              "the Off confirm says every phone is removed and must be enrolled again")
+        check([PhoneApprovalsOff.stopped, PhoneApprovalsOff.notStopped, PhoneApprovalsOff.waits, off, PhoneApprovalsSwitch.confirmOff]
+                .allSatisfy { !$0.isEmpty && !$0.contains("—") && !$0.contains("COS_") }, "phone off confirm", "plain copy")
+        // The app's store survives a new store object (UserDefaults), and clears.
+        let suite = "cos.web-key-checks.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        DefaultsPhoneApprovalsPendingStore(defaults: defaults).save(.init(revokedAll: false, savedAt: 42))
+        let reread = DefaultsPhoneApprovalsPendingStore(defaults: defaults)
+        check(reread.load() == PhoneApprovalsPendingOff(revokedAll: false, savedAt: 42), "phone off wait is saved", "a new store reads the saved wait")
+        reread.clear()
+        check(DefaultsPhoneApprovalsPendingStore(defaults: defaults).load() == nil, "phone off wait is saved", "clear removes it")
+        defaults.removePersistentDomain(forName: suite)
+    }
+
+    /// SR-11 (2026-11-11): golden.json's signerTlsReasons, written by gen_control_golden.mts from the SERVER's own
+    /// SIGNER_TLS_REASONS, equal Control's sentence keys plus "ok" (which never gets a sentence: it means trusted).
+    static func reasonParity(_ g: [String: Any]) {
+        let server = g["signerTlsReasons"] as? [String] ?? []
+        let control = Set(WebKeySignerTLS.sentences.keys).union(["ok"])
+        check(!server.isEmpty && server.count == Set(server).count && Set(server) == control, "signer reasons match the server",
+              "the server's list \(server.sorted()) equals Control's sentences plus ok \(control.sorted())")
+    }
+
+    /// 0.5.390: the server's `signerTls` (server 7.0.20, web-key-signer-tls.ts SignerTlsStatus) drives one plain line.
+    static func signerTLSLine() {
+        let origin = "https://example-mac.tail00000a.ts.net:3144", now = Date(timeIntervalSince1970: 1_794_300_000)
+        func body(_ tls: [String: Any]?) -> [String: Any] {
+            var b: [String: Any] = ["enabled": true, "origin": origin]
+            if let tls { b["signerTls"] = tls }
+            return b
+        }
+        func tls(trusted: Bool, reason: String, host: Any = "example-mac.tail00000a.ts.net", notAfter: Any = "2027-02-08T17:38:32.000Z",
+                 lastError: Any = NSNull(), storedRefused: Any = NSNull()) -> [String: Any] {
+            ["trusted": trusted, "reason": reason, "host": host, "notAfter": notAfter, "lastError": lastError, "checkedAt": NSNull(), "nextCheckAt": NSNull(),
+             "storedRefused": storedRefused]
+        }
+        // Server reopen: signerTls.storedRefused, why a hand-placed pair was refused, from the same one list.
+        let stillOff = tls(trusted: false, reason: "tailnet_https_certs_off", host: NSNull(), notAfter: NSNull(), storedRefused: "stored_owner")
+        check(WebKeySignerTLS.storedRefused(body: body(stillOff), now: now) == WebKeySignerTLS.sentences["stored_owner"]
+              && WebKeySignerTLS.problem(body: body(stillOff), now: now) == WebKeySignerTLS.certsOff, "signer stored refusal",
+              "a refused hand-placed pair gets its own sentence beside the main line")
+        check(WebKeySignerTLS.storedRefused(body: body(tls(trusted: true, reason: "ok", storedRefused: "cert_untrusted")), now: now)
+              == WebKeySignerTLS.sentences["cert_untrusted"], "signer stored refusal", "shown even while another pair serves trusted")
+        check(WebKeySignerTLS.storedRefused(body: body(tls(trusted: false, reason: "pending")), now: now) == nil
+              && WebKeySignerTLS.storedRefused(body: body(nil), now: now) == nil
+              && WebKeySignerTLS.storedRefused(body: body(tls(trusted: false, reason: "pending", storedRefused: "")), now: now) == nil,
+              "signer stored refusal", "null, missing or empty: no second line")
+        check(WebKeySignerTLS.storedRefused(body: body(tls(trusted: false, reason: "stored_writable", host: NSNull(), notAfter: NSNull(), storedRefused: "stored_writable")), now: now) == nil,
+              "signer stored refusal", "never the same sentence twice: the main line already says it")
+        check(WebKeySignerTLS.storedRefused(body: body(tls(trusted: false, reason: "pending", storedRefused: "made_up_reason_7020")), now: now) == WebKeySignerTLS.fallback,
+              "signer stored refusal", "an unknown code gets the plain fallback, never the code")
+        check(WebKeySignerTLS.problem(body: body(nil), now: now) == nil, "signer cert line", "a server without signerTls gets no line")
+        check(WebKeySignerTLS.problem(body: body(tls(trusted: true, reason: "ok")), now: now) == nil, "signer cert line", "trusted for the origin's host: no line")
+        check(WebKeySignerTLS.problem(body: body(tls(trusted: true, reason: "ok", lastError: "tailscale_cert_failed")), now: now) == nil,
+              "signer cert line", "a renewal error behind a serving pair is not shown (lastError is not read)")
+        check(WebKeySignerTLS.problem(body: body(tls(trusted: false, reason: "tailnet_https_certs_off", host: NSNull(), notAfter: NSNull())), now: now)
+              == "Turn on HTTPS Certificates in your Tailscale admin console.", "signer cert line", "the tailnet toggle off says exactly what to do")
+        check(WebKeySignerTLS.problem(body: body(tls(trusted: false, reason: "tailscale_cli_gui_unavailable", host: NSNull(), notAfter: NSNull())), now: now)
+              == WebKeySignerTLS.line("tailscale_cli_gui_unavailable") && WebKeySignerTLS.line("tailscale_cli_gui_unavailable").contains("Tailscale app"),
+              "signer cert line", "the CLI that cannot run gets its own sentence")
+        check(WebKeySignerTLS.problem(body: body(tls(trusted: true, reason: "ok", host: "other-mac.tail00000a.ts.net")), now: now) != nil,
+              "signer cert line", "trusted for another host is not trusted for this origin")
+        check(WebKeySignerTLS.problem(body: body(tls(trusted: true, reason: "ok", notAfter: "2026-11-01T00:00:00.000Z")), now: now) != nil,
+              "signer cert line", "trusted but past notAfter is not trusted")
+        check(WebKeySignerTLS.problem(body: body(tls(trusted: true, reason: "ok", notAfter: NSNull())), now: now) != nil,
+              "signer cert line", "trusted with no notAfter is not trusted")
+        check(WebKeySignerTLS.date("2027-02-08T17:38:32.000Z") != nil && WebKeySignerTLS.date("2027-02-08T17:38:32Z") != nil && WebKeySignerTLS.date("soon") == nil,
+              "signer cert line", "the server's ISO times parse, with or without milliseconds")
+        // The codes come from the ONE list in Sources/WebKeyCore.swift, never a copy here (Tests/web-key-pins.py).
+        let reasons = Array(WebKeySignerTLS.sentences.keys)
+        check(!reasons.isEmpty && reasons.allSatisfy { WebKeySignerTLS.line($0) == WebKeySignerTLS.sentences[$0] && WebKeySignerTLS.line($0) != WebKeySignerTLS.fallback },
+              "signer cert line", "every listed reason gets its own sentence, not the fallback")
+        check(WebKeySignerTLS.line("made_up_reason_7020") == WebKeySignerTLS.fallback && WebKeySignerTLS.line(nil) == WebKeySignerTLS.fallback
+              && WebKeySignerTLS.problem(body: body(tls(trusted: false, reason: "made_up_reason_7020", host: NSNull(), notAfter: NSNull())), now: now)
+              == WebKeySignerTLS.fallback, "signer cert line", "a code the server adds later, or none, gets the plain fallback, never the code")
+        check((Array(WebKeySignerTLS.sentences.values) + [WebKeySignerTLS.fallback]).allSatisfy { !$0.isEmpty && !$0.contains("—") && !$0.contains("_") },
+              "signer cert line", "plain sentences: no codes, no em dashes")
+    }
+
+    /// 0.5.390 (QA 2026-11-09 open question 2): the signer audit's TLS trust (HelperSources/PairingCore.swift, SignerTLSCore).
+    /// Real Let's Encrypt chains (public certificates from LE's own test sites, Tests/fixtures/web-key/tls) at a pinned date
+    /// inside both leaves' validity, and a throwaway root, a second root and a ts.net leaf that Tests/run-web-key.sh mints
+    /// for this run (COS_WEB_KEY_TLS_DIR; no key is committed). No network: the evaluator never fetches.
+    static func signerTLSTrust(fixtures: URL) {
+        func chain(_ url: URL) -> [Data] { SignerTLSCore.certificates((try? String(contentsOf: url, encoding: .utf8)) ?? "") }
+        func cert(_ der: Data) -> SecCertificate? { SecCertificateCreateWithData(nil, der as CFData) }
+        func pem(_ der: Data) -> String {
+            "-----BEGIN CERTIFICATE-----\n" + der.base64EncodedString(options: [.lineLength64Characters, .endLineWithLineFeed]) + "\n-----END CERTIFICATE-----"
+        }
+        let tsHost = "example-mac.tail00000a.ts.net"
+
+        // The split: the ts.net signer host is judged by the system roots; localhost and IP literals keep the managed cert.
+        check(SignerTLSCore.trust(host: tsHost) == .systemRoots, "audit trust split", "the ts.net signer host is judged by the system roots")
+        for host in ["localhost", "127.0.0.1", "100.112.156.116", "::1", "[::1]"] {
+            check(SignerTLSCore.trust(host: host) == .managedCert, "audit trust split", "\(host) keeps the managed certificate")
+        }
+        for host in ["", "tail00000a.ts.net", "Example-Mac.tail00000a.ts.net", "mac.tail00000a.ts.net.", "mac.ts.net.example.com",
+                     "api.gotcos.com", "example.com", "999.1.1.1", "mac_studio.tail00000a.ts.net"] {
+            check(SignerTLSCore.trust(host: host) == nil, "audit trust split", "\(host.isEmpty ? "(empty)" : host) gets no trust at all")
+        }
+
+        // curl's arguments: no CA file for the ts.net host (Apple's curl would only ADD it to the keychain's trust), and the
+        // chain it received is written out; never --insecure for either.
+        let system = SignerTLSCore.curlTrustArguments(.systemRoots, managedCert: "/m/cert.pem")
+        let managed = SignerTLSCore.curlTrustArguments(.managedCert, managedCert: "/m/cert.pem")
+        check(!system.contains("--cacert") && !system.contains("/m/cert.pem") && !system.contains("--capath"),
+              "audit curl trust args", "the ts.net fetch passes no CA file")
+        check(system == ["--write-out", "%{http_code}\n%{num_certs}\n%{certs}"], "audit curl trust args",
+              "the ts.net fetch writes out curl's own chain count, then the chain it received")
+        check(managed == ["--cacert", "/m/cert.pem", "--write-out", "%{http_code}"], "audit curl trust args",
+              "localhost and IP fetches keep --cacert with the managed certificate")
+        for arguments in [system, managed] {
+            check(!arguments.contains("--insecure") && !arguments.contains("-k"), "audit curl trust args", "never --insecure: curl keeps its own checks")
+        }
+
+        // curl's answer: the status is the first line; the chain is every certificate block after it, leaf first.
+        let x1 = chain(fixtures.appendingPathComponent("valid-isrgrootx1.letsencrypt.org.pem"))
+        let x2 = chain(fixtures.appendingPathComponent("valid-isrgrootx2.letsencrypt.org.pem"))
+        check(x1.count == 3 && x2.count == 3, "audit fixtures", "both committed Let's Encrypt chains parse: leaf, intermediate, cross-signed root")
+        guard x2.count == 3, x1.count == 3 else { return }
+        let written = "200\n2\nSubject:CN = valid-isrgrootx2.letsencrypt.org\nIssuer:CN = YE1\nCert:" + pem(x2[0]) + "\nSubject:CN = YE1\nCert:" + pem(x2[1]) + "\n"
+        let answer = SignerTLSCore.curlAnswer(written)
+        check(answer.code == "200" && answer.chain == [x2[0], x2[1]], "audit curl answer", "status first, then the received chain, leaf first")
+        check(SignerTLSCore.curlAnswer("200").code == "200" && SignerTLSCore.curlAnswer("200").chain.isEmpty, "audit curl answer", "a bare status has no chain")
+        check(SignerTLSCore.curlAnswer("404\n1\n" + pem(x2[0])).code == "404", "audit curl answer", "the code is the first line, never a later one")
+        let garbled = "200\n1\nCert:-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----\nCert:" + pem(x2[0])
+        check(SignerTLSCore.curlAnswer(garbled).chain == [x2[0]], "audit curl answer", "a block that is not base64 is dropped, never half read")
+
+        // SR-02: a PEM block inside a certificate extension. The fixture is Apple curl 8.7.1's real write-out for a throwaway
+        // ts.net leaf whose extension 1.3.6.1.4.1.55555.1 holds the public LE X2 leaf (num_certs 2, three PEM blocks, the
+        // injected one FIRST). The count must refuse it, or the injected public leaf would be judged as this connection's.
+        let injected = (try? String(contentsOf: fixtures.appendingPathComponent("curl-certinfo-injected.txt"), encoding: .utf8)) ?? ""
+        check(SignerTLSCore.certificates(injected).count == 3 && SignerTLSCore.certificates(injected).first == x2[0]
+              && injected.split(separator: "\n", maxSplits: 2).dropFirst().first == "2",
+              "audit refuses injected blocks", "control: the real curl output carries 3 PEM blocks, the injected LE leaf first, for curl's count of 2")
+        check(SignerTLSCore.curlAnswer(injected).code == "200" && SignerTLSCore.curlAnswer(injected).chain.isEmpty, "audit refuses injected blocks",
+              "more PEM blocks than curl's own %{num_certs}: no chain at all, so the audit refuses signer_tls")
+        check(!SignerTLSCore.trusted(chain: SignerTLSCore.curlAnswer(injected).chain, host: "valid-isrgrootx2.letsencrypt.org",
+                                     at: ISO8601DateFormatter().date(from: "2026-12-01T00:00:00Z")!, anchors: SignerTLSCore.systemRoots()),
+              "audit refuses injected blocks", "even for the injected leaf's own name and date, the empty chain is not trusted")
+        check(SignerTLSCore.curlAnswer("200\nSubject:CN = x\nCert:" + pem(x2[0])).chain.isEmpty
+              && SignerTLSCore.curlAnswer("200\n0\nCert:" + pem(x2[0])).chain.isEmpty
+              && SignerTLSCore.curlAnswer("200\n1\nCert:" + pem(x2[0]) + "\nCert:" + pem(x2[1])).chain.isEmpty,
+              "audit refuses injected blocks", "no count line, a zero count, or fewer counted than found: no chain")
+
+        // SR-07: curl's own TLS failures are a TLS problem.
+        check([35, 51, 58, 60].allSatisfy { SignerTLSCore.curlFailureReason(exit: $0) == "signer_tls" }, "audit curl tls exits",
+              "curl exits 35, 51, 58 and 60 say signer_tls")
+        check([1, 6, 7, 22, 28, 63].allSatisfy { SignerTLSCore.curlFailureReason(exit: $0) == "served_signer_assets" }, "audit curl tls exits",
+              "any other failure (HTTP error 22, timeout 28, connect 7, too big 63) stays served_signer_assets")
+
+        // The system trust domain: both ISRG roots, and never a locally added root (this Mac's admin domain trusts mkcert's).
+        let roots = SignerTLSCore.systemRoots()
+        let names = roots.compactMap { SecCertificateCopySubjectSummary($0) as String? }
+        check(roots.count >= 50 && names.contains("ISRG Root X1") && names.contains("ISRG Root X2"), "audit system roots",
+              "the roots macOS ships, with Let's Encrypt's X1 and X2 (\(roots.count) roots)")
+        check(!names.contains(where: { $0.lowercased().contains("mkcert") }), "audit system roots", "no locally added root, mkcert's included")
+
+        // The threat itself, on this Mac: an mkcert-issued chain this Mac's keychain TRUSTS is refused by the system roots
+        // alone. Public certificates only: the managed leaf (~/.cos-glasses/certs/cert.pem, issued for localhost among its
+        // names) and the mkcert root as the admin trust domain lists it. Never the private key beside either. The host is a
+        // name the leaf really carries, so the anchor is the only reason left to refuse it; a ts.net-named mkcert leaf has
+        // the same anchor. Skipped, and said so, on a Mac without mkcert.
+        var adminList: CFArray?
+        let admin = SecTrustSettingsCopyCertificates(.admin, &adminList) == errSecSuccess ? (adminList as? [SecCertificate] ?? []) : []
+        let mkcertRoot = admin.first { (SecCertificateCopySubjectSummary($0) as String?)?.hasPrefix("mkcert ") == true }
+        let managedLeaf = chain(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cos-glasses/certs/cert.pem")).first
+        if let mkcertRoot, let managedLeaf {
+            let mk = [managedLeaf, SecCertificateCopyData(mkcertRoot) as Data]
+            check(keychainTrusts(mk, host: "localhost"), "audit refuses mkcert", "control: this Mac's keychain trusts the managed mkcert chain for localhost")
+            check(!SignerTLSCore.trusted(chain: mk, host: "localhost", at: Date(), anchors: roots), "audit refuses mkcert",
+                  "the keychain-trusted mkcert chain is refused by the system roots alone")
+            check(SignerTLSCore.trusted(chain: mk, host: "localhost", at: Date(), anchors: [mkcertRoot]), "audit refuses mkcert",
+                  "control: the same chain verifies when its own root is the anchor, so the anchor is the only reason")
+            check(!SignerTLSCore.trusted(chain: mk, host: tsHost, at: Date(), anchors: roots), "audit refuses mkcert",
+                  "the mkcert chain judged for the ts.net signer name is refused")
+            print("RAN [audit refuses mkcert]: this Mac's managed mkcert chain, read at run time and never stored")
+        } else {
+            // Never silent: Tests/run-web-key.sh counts SKIP lines and reports them.
+            print("SKIP [audit refuses mkcert]: no admin-trusted mkcert root or no managed certificate on this Mac")
+        }
+
+        // Real chains at a date inside both leaves' validity: the system roots ALONE accept them, for their own names only.
+        let pinned = ISO8601DateFormatter().date(from: "2026-12-01T00:00:00Z")!
+        check(SignerTLSCore.trusted(chain: x1, host: "valid-isrgrootx1.letsencrypt.org", at: pinned, anchors: roots), "audit public chain",
+              "an ISRG Root X1 chain verifies against the system roots alone")
+        check(SignerTLSCore.trusted(chain: x2, host: "valid-isrgrootx2.letsencrypt.org", at: pinned, anchors: roots), "audit public chain",
+              "an ISRG Root X2 chain (ECDSA P-256, like Tailscale's) verifies against the system roots alone")
+        check(!SignerTLSCore.trusted(chain: x2, host: tsHost, at: pinned, anchors: roots), "audit hostname", "a valid public chain for another name is refused")
+        check(!SignerTLSCore.trusted(chain: x2, host: "valid-isrgrootx2.letsencrypt.org", at: ISO8601DateFormatter().date(from: "2027-03-01T00:00:00Z")!, anchors: roots),
+              "audit expiry", "a public leaf is refused after its notAfter")
+
+        // A throwaway root and leaf: the evaluator passes a good chain, and refuses every other anchor, name and date.
+        let tls = ProcessInfo.processInfo.environment["COS_WEB_KEY_TLS_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+        let root = tls.flatMap { chain($0.appendingPathComponent("root.pem")).first }.flatMap(cert)
+        let other = tls.flatMap { chain($0.appendingPathComponent("other.pem")).first }.flatMap(cert)
+        let minted = tls.map { chain($0.appendingPathComponent("leaf-chain.pem")) } ?? []
+        check(root != nil && other != nil && minted.count == 2, "audit fixtures", "Tests/run-web-key.sh minted a throwaway root, a second root and a ts.net leaf")
+        guard let root, let other, minted.count == 2 else { return }
+        let leafHost = tsHost, now = Date()
+        // The machine-independent twin of the mkcert check, always run: a root the caller holds (what the old --cacert
+        // added) vouches for a leaf with the EXACT ts.net signer name; under the system roots alone the chain is refused.
+        check(SignerTLSCore.trusted(chain: minted, host: tsHost, at: now, anchors: [root]), "audit refuses an extra root",
+              "control: with the caller's root as the anchor the ts.net chain verifies, so the anchor is the only reason")
+        check(!SignerTLSCore.trusted(chain: minted, host: tsHost, at: now, anchors: roots), "audit refuses an extra root",
+              "the same ts.net chain is refused under the system roots alone")
+        check(!SignerTLSCore.trusted(chain: x2, host: "valid-isrgrootx2.letsencrypt.org", at: pinned, anchors: [root]), "audit anchors only",
+              "a publicly trusted chain is refused when its root is not among the anchors (the keychain's trust never counts)")
+        check(SignerTLSCore.trusted(chain: minted, host: leafHost, at: now, anchors: [root]), "audit evaluator", "a good chain for its host, under its own root, verifies")
+        check(!SignerTLSCore.trusted(chain: minted, host: "other-mac.tail00000a.ts.net", at: now, anchors: [root]), "audit hostname",
+              "the same chain for another ts.net name is refused")
+        check(!SignerTLSCore.trusted(chain: minted, host: leafHost, at: now, anchors: roots), "audit anchors only", "a root this Mac made is never a system root")
+        check(!SignerTLSCore.trusted(chain: minted, host: leafHost, at: now, anchors: [other]), "audit anchors only", "another root does not vouch for this chain")
+        check(!SignerTLSCore.trusted(chain: minted, host: leafHost, at: now.addingTimeInterval(40 * 86_400), anchors: [root]), "audit expiry",
+              "the leaf is refused after its notAfter")
+        check(!SignerTLSCore.trusted(chain: Array(repeating: minted[0], count: 9), host: leafHost, at: now, anchors: [root]),
+              "audit chain bounds", "more than 8 certificates: refused, though SecTrust takes the padded chain")
+
+        // The three empty inputs, each on an input that is otherwise VALID (the controls above pass these same chains,
+        // dates and anchors), so the empty value is the only reason left to refuse. Each prints why: "input" is the
+        // guard; anything else is SecTrust refusing on its own (Q1 and the lead, 14:27).
+        func refusedWithEvidence(_ tag: String, _ result: (trusted: Bool, why: String)) -> Bool {
+            print("EVIDENCE [\(tag)]: trusted=\(result.trusted) why=\(result.why)")
+            return !result.trusted
+        }
+        check(refusedWithEvidence("audit empty host", SignerTLSCore.evaluate(chain: minted, host: "", at: now, anchors: [root])), "audit empty host",
+              "a valid chain under its own root, with host \"\": refused")
+        check(refusedWithEvidence("audit empty host", SignerTLSCore.evaluate(chain: x2, host: "", at: pinned, anchors: roots)), "audit empty host",
+              "the public LE X2 chain inside its validity, system roots, host \"\": refused")
+        check(refusedWithEvidence("audit empty anchors", SignerTLSCore.evaluate(chain: x2, host: "valid-isrgrootx2.letsencrypt.org", at: pinned, anchors: [])),
+              "audit empty anchors", "the public LE X2 chain (ISRG Root X2 is a system root) with an EMPTY anchor list: refused, never the system roots")
+        check(refusedWithEvidence("audit empty anchors", SignerTLSCore.evaluate(chain: x1, host: "valid-isrgrootx1.letsencrypt.org", at: pinned, anchors: [])),
+              "audit empty anchors", "the public LE X1 chain with an EMPTY anchor list: refused")
+        check(refusedWithEvidence("audit empty chain", SignerTLSCore.evaluate(chain: [], host: "valid-isrgrootx2.letsencrypt.org", at: pinned, anchors: roots)),
+              "audit empty chain", "no certificates at all: refused")
+        let control = SignerTLSCore.evaluate(chain: x2, host: "valid-isrgrootx2.letsencrypt.org", at: pinned, anchors: roots)
+        check(control.trusted && control.why == "ok", "audit empty anchors", "control: the same X2 chain, date and host with the system roots is trusted (why ok)")
+    }
+
     static func cancellation() async {
         let before = WebKeyBiometryAttempt(), first = Reasons()
         before.cancel()
@@ -740,6 +1112,21 @@ struct WebKeyChecks {
         await later.refresh()
         check(later.authority && !later.bootstrapOnly && later.protectionReady && !later.recoveryRequired && later.controlState?.anchorSpkiSha256 == sha
               && fake.count("keys") == 1, "bootstrap then authority needs no reset", "authority adopts the server's list for the bootstrap anchor")
+        check(later.signerTLSLine == nil, "signer cert line", "a server that reports no signerTls shows no line")
+        // 0.5.390: the server's signerTls drives one plain line, in authority mode only.
+        let certsOff: [String: Any] = ["trusted": false, "reason": "tailnet_https_certs_off", "host": NSNull(), "notAfter": NSNull(),
+                                       "lastError": "tailnet_https_certs_off", "checkedAt": NSNull(), "nextCheckAt": NSNull(), "storedRefused": "stored_symlink"]
+        fake.answers["status"] = (200, ["ok": true, "enabled": true, "anchorRegistered": true, "anchorMature": true, "aud": aud, "origin": origin, "epoch": 4,
+                                        "signerTls": certsOff])
+        await later.refresh()
+        check(later.authority && later.signerTLSLine == WebKeySignerTLS.certsOff, "signer cert line", "authority with the tailnet toggle off says so")
+        check(later.signerTLSStoredLine == WebKeySignerTLS.sentences["stored_symlink"], "signer stored refusal",
+              "authority shows why the hand-placed pair was refused")
+        fake.answers["status"] = (200, ["ok": true, "enabled": false, "mode": "bootstrap", "anchorRegistered": true, "anchorMature": true, "aud": aud, "origin": origin,
+                                        "epoch": 4, "signerTls": certsOff])
+        await later.refresh()
+        check(later.bootstrapOnly && later.signerTLSLine == nil, "signer cert line", "bootstrap never shows it")
+        check(later.bootstrapOnly && later.signerTLSStoredLine == nil, "signer stored refusal", "bootstrap never shows the stored refusal")
         // A server that says enabled true with mode bootstrap is a contradiction: hidden, as with both off.
         fake.answers["status"] = (200, ["ok": true, "enabled": true, "mode": "bootstrap", "anchorRegistered": true, "aud": aud, "origin": origin, "epoch": 4])
         await later.refresh()
@@ -976,8 +1363,9 @@ struct WebKeyChecks {
         fake.onCall = { op, _ in
             if op == "revoke-all" { epochBeforeHTTP = mem.items[WebKeyStateStore.mirrorAccount].flatMap(WebKeyControlState.parse)?.epoch }
         }
-        await state.revokeAll()
+        let revokedAllConfirmed = await state.revokeAll()
         check(epochBeforeHTTP == 1, "epoch intent before HTTP", "the protected epoch advances before the first revoke-all POST")
+        check(!revokedAllConfirmed, "phone off failed revoke is not stopped", "Revoke all reports false when the server does not answer 200")
         fake.onCall = nil
         check(state.controlState?.epoch == 1, "W5 revoke all fails closed", "Control's epoch is ahead of the server's")
         // A rolled-back state FILE is rewritten from the keychain on the next refresh.
@@ -990,6 +1378,32 @@ struct WebKeyChecks {
         check(fresh.controlState?.epoch == 1 && fresh.controlState?.revokedKids.contains(card.kid) == true
               && WebKeyControlState.parse(FileManager.default.contents(atPath: fileURL.path) ?? Data())?.sameRecord(as: kept) == true,
               "W5 rewritten from keychain", "a rolled-back file is rewritten from the keychain")
+        // Security review 2026-11-12, blocker 2: a store that cannot save never stops the server call, and nothing claims off.
+        mem.failWrite = true
+        fake.calls = []
+        fake.answers["revoke-all"] = (500, ["ok": false])
+        let noSaveNoServer = await state.revokeAll()
+        // At least once: the refresh after it sends revoke-all again when Control's epoch is ahead (W5). A revoke-all that
+        // skipped the server (RV-2) never reaches its refresh either, so it sends none.
+        check(fake.count("revoke-all") >= 1, "revoke all reaches the server", "a failing store still sends revoke-all")
+        check(!noSaveNoServer && state.message?.contains("stay off") == false && state.message?.contains("may still approve") == true,
+              "revoke says what failed", "neither saved nor confirmed: the message says a phone may still approve")
+        fake.answers["revoke-all"] = (200, ["ok": true])
+        let serverOnly = await state.revokeAll()
+        check(serverOnly && state.message == "The server revoked it. Control could not record the revocation.",
+              "revoke says what failed", "confirmed by the server, not saved by Control: says both")
+        fake.calls = []
+        fake.answers["revoke"] = (500, ["ok": false])
+        let revokedOne = await state.revoke(card.kid)
+        check(fake.count("revoke") == 1, "revoke reaches the server", "a failing store still sends revoke")
+        check(!revokedOne && state.message?.contains("may still approve") == true, "revoke says what failed", "a revoke nobody recorded says so")
+        mem.failWrite = false
+        fake.answers["revoke"] = (200, ["ok": true])
+        fake.answers["revoke-all"] = (500, ["ok": false])
+        check(WebKeyRevokeOutcome.message(serverConfirmed: true, localSaved: true, localProblem: nil) == nil
+              && WebKeyRevokeOutcome.message(serverConfirmed: false, localSaved: true, localProblem: nil)?.contains("stay off") == true
+              && WebKeyRevokeOutcome.message(serverConfirmed: false, localSaved: false, localProblem: WebKeyRevokeOutcome.noAnchor)?.hasPrefix(WebKeyRevokeOutcome.noAnchor) == true,
+              "revoke says what failed", "off is claimed only when the server confirmed or Control saved; the no-anchor case names itself")
         try? FileManager.default.removeItem(at: dir)
     }
 }

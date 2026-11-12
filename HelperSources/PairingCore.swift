@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Security
 
 // Glasses pairing (contract 2026-10-09, server 6.67.0). Pure: no process is spawned, no file is read and nothing is
 // fetched here. `cos-control-helper tailscale-status | tailscale-whois | pairing-code | pairing-status |
@@ -448,4 +449,187 @@ enum WebKeyAssetsCore {
         guard resource.path == resource.resolvingSymlinksInPath().path else { return nil }
         return (app, resource)
     }
+}
+
+// MARK: - The signer audit's TLS trust (0.5.390; QA 2026-11-09 open question 2)
+
+/// How Control's signer-file audit (HelperSources/main.swift, webKeyAssetAudit) trusts the HTTPS origin it fetches from.
+///
+/// The ts.net signer host is checked against the certificate authorities macOS ships, for that host name: close to what
+/// the phone needs, not equal to it (SR-06: with custom anchors SecTrust applies no Certificate Transparency or by-date
+/// distrust rules, and revocation is off). curl alone cannot say even that here. Apple's /usr/bin/curl adds any --cacert to the keychain's trust instead of
+/// replacing it (the B2 builder's probe, 2026-11-09), and the keychain also trusts the admin-domain mkcert root for SSL,
+/// whose private key is a user-readable file. So for the ts.net host curl writes out the chain it received, and
+/// `trusted` judges that chain against the system trust domain ALONE, with the SSL policy for the host name. localhost
+/// and IP targets keep Control's managed certificate. Pure: no process, file or network.
+enum SignerTLSCore {
+    /// The signer host shape the audit has always required: two or more labels, then ts.net, lower case.
+    static let tsNetPattern = #"\A[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+\.ts\.net\z"#
+    static func isTSNetHost(_ host: String) -> Bool {
+        host.utf8.count <= 253 && host.range(of: tsNetPattern, options: .regularExpression) != nil
+    }
+
+    enum Trust: Equatable, Sendable {
+        /// The ts.net signer host: the system trust domain alone, over the chain curl received (`trusted`).
+        case systemRoots
+        /// localhost and IP literals: Control's managed (mkcert) certificate, as before.
+        case managedCert
+    }
+
+    static func trust(host: String) -> Trust? {
+        if isTSNetHost(host) { return .systemRoots }
+        if host == "localhost" || TailscaleCore.isIPv4(host) || isIPv6Literal(host) { return .managedCert }
+        return nil
+    }
+
+    static func isIPv6Literal(_ host: String) -> Bool {
+        let bare = host.hasPrefix("[") && host.hasSuffix("]") ? String(host.dropFirst().dropLast()) : host
+        var address = in6_addr()
+        return bare.contains(":") && inet_pton(AF_INET6, bare, &address) == 1
+    }
+
+    /// curl's trust and write-out arguments for one fetch. Never --insecure: curl keeps its own chain and hostname checks
+    /// either way. For the ts.net host there is no --cacert (it would only add to the keychain's trust), and curl writes
+    /// the status, its own count of the chain, then the chain it received, so the audit judges THAT connection's chain.
+    static func curlTrustArguments(_ trust: Trust, managedCert: String) -> [String] {
+        switch trust {
+        case .systemRoots: return ["--write-out", "%{http_code}\n%{num_certs}\n%{certs}"]
+        case .managedCert: return ["--cacert", managedCert, "--write-out", "%{http_code}"]
+        }
+    }
+
+    /// curl's --write-out answer: the status code (line 1) and, for the ts.net host, the chain, leaf first. SR-02: curl's
+    /// certinfo prints every extension value raw, so a leaf can carry extra PEM blocks ahead of its own; settled on Apple
+    /// curl 8.7.1, Tests/fixtures/web-key/tls/curl-certinfo-injected.txt (num_certs 2, 3 blocks, the injected one first).
+    /// So the chain is EMPTY (and judged untrusted) unless the PEM blocks number exactly curl's own %{num_certs} (line 2).
+    static func curlAnswer(_ output: String) -> (code: String, chain: [Data]) {
+        let lines = output.split(separator: "\n", maxSplits: 2, omittingEmptySubsequences: false)
+        let code = lines.first.map(String.init) ?? ""
+        let blocks = certificates(output)
+        guard lines.count >= 2, let declared = Int(lines[1]), declared > 0, declared == blocks.count else { return (code, []) }
+        return (code, blocks)
+    }
+
+    /// SR-07: curl's own TLS failures are a TLS problem, not a byte mismatch. 35 handshake, 51 and 60 the peer's
+    /// certificate or name, 58 a local certificate problem. Anything else that is not 0 is served_signer_assets, as before.
+    static let tlsExitCodes: Set<Int32> = [35, 51, 58, 60]
+    static func curlFailureReason(exit: Int32) -> String { tlsExitCodes.contains(exit) ? "signer_tls" : "served_signer_assets" }
+
+    /// The DER of every well-formed CERTIFICATE PEM block, in order. curl's certinfo text around them is ignored.
+    static func certificates(_ text: String) -> [Data] {
+        guard text.utf8.count <= 256 * 1024,
+              let expression = try? NSRegularExpression(pattern: #"-----BEGIN CERTIFICATE-----\r?\n([A-Za-z0-9+/=\r\n]+?)-----END CERTIFICATE-----"#) else { return [] }
+        let source = text as NSString
+        return expression.matches(in: text, range: NSRange(location: 0, length: source.length)).compactMap { match in
+            let body = source.substring(with: match.range(at: 1)).filter { $0 != "\r" && $0 != "\n" }
+            guard let der = Data(base64Encoded: body), !der.isEmpty else { return nil }
+            return der
+        }
+    }
+
+    /// The trust anchors macOS ships: the system trust domain only. Never the admin or user domains, where the mkcert root
+    /// (SSL) and any other locally added root live.
+    static func systemRoots() -> [SecCertificate] {
+        var list: CFArray?
+        guard SecTrustSettingsCopyCertificates(.system, &list) == errSecSuccess, let roots = list as? [SecCertificate] else { return [] }
+        return roots
+    }
+
+    /// Whether `chain` (leaf first) verifies for `host` at `date` against `anchors` ALONE: the SSL policy with the host
+    /// name, anchors only, no network fetch. The audit passes systemRoots() and its ts.net host; the checks also pass a
+    /// throwaway root, and real Let's Encrypt chains at a pinned date.
+    static func trusted(chain: [Data], host: String, at date: Date, anchors: [SecCertificate]) -> Bool {
+        evaluate(chain: chain, host: host, at: date, anchors: anchors).trusted
+    }
+
+    /// trusted(), with why it said no: "input" (the guard), "certificate" (a block that is not DER), "create" or "setup"
+    /// (SecTrust would not take the inputs), or SecTrust's own error. The checks print it as evidence; the audit reads only
+    /// the Bool.
+    static func evaluate(chain: [Data], host: String, at date: Date, anchors: [SecCertificate]) -> (trusted: Bool, why: String) {
+        // chain.count <= 8 is load-bearing: SecTrust accepts a padded chain (mutant TLS-14). The empty-input checks are
+        // defence in depth, equivalent by observation on Darwin 27.2 (2026-11-10, otherwise-valid inputs, guard removed):
+        // an empty host gets "certificate name does not match input" (no skipped name check), an empty anchor list gets
+        // "ISRG Root X2 certificate is not trusted" (no fall back to the system roots), an empty chain gets create -50.
+        // This code does not rely on that; "audit empty host", "audit empty anchors" and "audit empty chain" hold it.
+        guard !chain.isEmpty, chain.count <= 8, !anchors.isEmpty, !host.isEmpty else { return (false, "input") }
+        var certificates: [SecCertificate] = []
+        for der in chain {
+            guard let certificate = SecCertificateCreateWithData(nil, der as CFData) else { return (false, "certificate") }
+            certificates.append(certificate)
+        }
+        var made: SecTrust?
+        let created = SecTrustCreateWithCertificates(certificates as CFArray, SecPolicyCreateSSL(true, host as CFString), &made)
+        guard created == errSecSuccess, let trust = made else { return (false, "create \(created)") }
+        guard SecTrustSetAnchorCertificates(trust, anchors as CFArray) == errSecSuccess,
+              SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess,
+              SecTrustSetNetworkFetchAllowed(trust, false) == errSecSuccess,
+              SecTrustSetVerifyDate(trust, date as CFDate) == errSecSuccess else { return (false, "setup") }
+        var error: CFError?
+        let accepted = SecTrustEvaluateWithError(trust, &error)
+        return (accepted, accepted ? "ok" : "SecTrust: " + (error.map { CFErrorCopyDescription($0) as String } ?? "no error"))
+    }
+}
+
+// MARK: - The phone approvals switch (option A, lead 2026-11-11 21:31)
+
+/// `cos-control-helper set-phone-approvals on <tailnet IPv4> | off`: the Settings switch (PK-02) turns phone approvals on
+/// for one named phone, or off, through the managed provider environment (allowlist, drain lease, restart, proof,
+/// rollback), never by a session editing ~/.cos-glasses/.env. Pure rules here; HelperSources/main.swift runs them.
+///
+/// Off WRITES COS_WEB_KEY_AUTHORITY=0. The server loads ~/.cos-glasses/.env only for keys the LaunchAgent did not set
+/// (server/env.ts), so removing the key would let a hand-written .env line turn phone approvals back on.
+enum PhoneApprovalsCore {
+    static let authorityKey = "COS_WEB_KEY_AUTHORITY"
+    static let devicesKey = "COS_WEB_KEY_DEVICES"
+    /// The first server with the reopened phone approvals (SR-01 to SR-12). The integrator sets it to the integrated
+    /// server's version; PhoneApprovalsSwitch.minimumServer (Sources/WebKeyCore.swift) must equal it (a check holds both).
+    static let minimumServer = "7.0.30"
+
+    enum Change: Equatable, Sendable {
+        case on(device: String)
+        case off
+    }
+
+    /// `on <IPv4 in 100.64.0.0/10>` or `off`, and nothing else: no list, no name, no other address.
+    static func change(_ arguments: [String]) -> Change? {
+        switch arguments.count {
+        case 1 where arguments[0] == "off": return .off
+        case 2 where arguments[0] == "on":
+            let device = arguments[1]
+            return TailscaleCore.isTailnet(device) ? .on(device: device) : nil
+        default: return nil
+        }
+    }
+
+    /// The provider environment to set and the keys to remove. Off writes "0" and only removes the devices list.
+    static func environment(_ change: Change) -> (set: [String: String], remove: Set<String>) {
+        switch change {
+        case .on(let device): return ([authorityKey: "1", devicesKey: device], [])
+        case .off: return ([authorityKey: "0"], [devicesKey])
+        }
+    }
+
+    /// The restarted server proves the change through GET /api/web-key/status. On: 200, enabled true, authority mode
+    /// (mode absent or "authority"). The origin is not required: a boot-time miss of the tailnet name is refreshed later
+    /// (S1), and the Phone approvals line says so. Off: anything but an enabled authority answer (no route is a 404).
+    static func proven(_ change: Change, status: Int?, body: [String: Any]?) -> Bool {
+        let enabled = status == 200 && body?["enabled"] as? Bool == true
+        let mode = body?["mode"]
+        let authority = enabled && (mode == nil || mode as? String == "authority")
+        switch change {
+        case .on: return authority
+        case .off: return !enabled
+        }
+    }
+
+    /// The change a provider-environment write makes, so both apply paths run requirePhoneApprovals after the restart.
+    static func change(fromEnvironment values: [String: String]) -> Change? {
+        switch values[authorityKey] {
+        case "1"?: return values[devicesKey].map { .on(device: $0) }
+        case "0"?: return .off
+        default: return nil
+        }
+    }
+
+    static let usage = "Use set-phone-approvals on <this phone's Tailscale IPv4 address>, or set-phone-approvals off."
 }
