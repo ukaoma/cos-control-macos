@@ -36,7 +36,8 @@ struct MeetingLibraryBody: View {
                     selectedDay: model.libraryDay,
                     tint: ActivitySection.meetings.tint,
                     onShift: { model.shiftLibraryMonth($0) },
-                    onSelectDay: { model.selectLibraryDay($0) }
+                    onSelectDay: { model.selectLibraryDay($0) },
+                    today: ControllerModel.currentMeetingDay()
                 )
             }
             toolbar
@@ -244,6 +245,21 @@ struct MeetingLibraryBody: View {
                 .frame(maxWidth: 420)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(30)
+        } else if model.visibleLibraryMeetings.isEmpty, !model.isLibraryQueryActive, let today = model.libraryDay,
+                  today == ControllerModel.currentMeetingDay() {
+            // Anand parity item 4 (as Control Web 7.0.30): an empty today says so, with one tap to the latest earlier day.
+            let last = MeetingTodayWords.latestDayBefore(today, days: model.libraryDays.map { (date: $0.date, count: $0.count) })
+            VStack(spacing: 10) {
+                Text(MeetingTodayWords.emptyToday)
+                    .font(COSType.body(12))
+                    .foregroundStyle(.secondary)
+                Button(MeetingTodayWords.jump(to: last, today: today)) {
+                    if let last { model.selectLibraryDay(last) } else { model.shiftLibraryMonth(-1) }
+                }
+                .buttonStyle(COSQuietButtonStyle())
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(30)
         } else if model.visibleLibraryMeetings.isEmpty {
             Text(emptyCopy)
                 .font(COSType.body(12))
@@ -404,6 +420,8 @@ struct MeetingMonthCalendar: View {
     let tint: Color
     let onShift: (Int) -> Void
     let onSelectDay: (String?) -> Void
+    /// Anand parity item 4: today's YYYY-MM-DD. Its cell is ringed and can be picked even with no meetings.
+    var today: String? = nil
 
     var body: some View {
         let counts = LibraryMeetingDay.countsByDate(days)
@@ -449,6 +467,11 @@ struct MeetingMonthCalendar: View {
                                 RoundedRectangle(cornerRadius: 6)
                                     .fill(selectedDay == cell.date ? tint.opacity(0.18) : Color.clear)
                             )
+                            // Today is marked, as the web's ring.
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(cell.date == today ? tint : Color.clear, lineWidth: 1.2)
+                            )
                             // THE WHOLE CELL IS THE TARGET. With a plain
                             // button style SwiftUI hit-tests only the RENDERED
                             // content, so a clear background is not clickable:
@@ -458,9 +481,9 @@ struct MeetingMonthCalendar: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .disabled(count == 0)
-                        .opacity(count == 0 ? 0.38 : 1)
-                        .accessibilityLabel("\(cell.date)\(count == 0 ? ", no meetings" : ", \(count) meetings")")
+                        .disabled(count == 0 && cell.date != today)
+                        .opacity(count == 0 && cell.date != today ? 0.38 : 1)
+                        .accessibilityLabel("\(cell.date)\(cell.date == today ? ", today" : "")\(count == 0 ? ", no meetings" : ", \(count) meetings")")
                     } else {
                         Color.clear.frame(minHeight: 28)
                     }
