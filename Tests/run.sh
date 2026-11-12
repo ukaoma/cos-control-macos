@@ -7406,9 +7406,9 @@ if "} else if let markdownID {" not in card or "Text(highlighted(text, query: hi
 detail = body(activity, "private func messageDetail(")
 # 0.5.380: the COS answer's lens lists are structured in the card's Markdown view only (as on Control Web); the card
 # itself gets the stored answer, so Copy answer copies it as stored (final QA W1).
-if 'messageBlock(label: "COS", text: turn.text, lensLists: true,\n                             tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id)' not in detail:
+if 'messageBlock(label: "COS", text: turn.text, lensLists: true,\n                             tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id, side: .cos)' not in detail:
     fail("[messages] Recent's COS card passes its turn id and the stored answer")
-if 'messageBlock(label: "You", text: turn.query,\n                             tint: ActivitySection.messages.tint, highlight: recentQuery)\n' not in detail:
+if 'messageBlock(label: "You", text: turn.query,\n                             tint: ActivitySection.messages.tint, highlight: recentQuery,\n                             side: .you, caption: MessageSides.youCaption(time: turn.timeLabel))\n' not in detail:
     fail("[messages] Recent's YOU card stays as typed")
 chat = body(activity, "@ViewBuilder private func archiveChatDetail(")
 if 'markdownID: "archive:\\(date)/\\(index)/\\(message.id)")' not in chat:
