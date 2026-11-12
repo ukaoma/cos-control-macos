@@ -13836,6 +13836,32 @@ enum MeetingCopyWords {
     }
 }
 
+/// Anand parity item 4 (2026-11-12): Meetings opens on today, in Control Web 7.0.30's words (meetings.js emptyToday, app.js
+/// plainDay): "No meetings today." and one tap to the latest earlier day with meetings, or to last month.
+enum MeetingTodayWords {
+    static let emptyToday = "No meetings today."
+    static let lastMonth = "Go to last month"
+    private static let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+    /// "Today", else "Nov 7", or "Nov 7, 2025" in another year, from a YYYY-MM-DD (the web's plainDay). Anything else as it was.
+    static func plainDay(_ day: String, today: String) -> String {
+        let parts = day.split(separator: "-").compactMap { Int($0) }
+        guard day.count == 10, parts.count == 3, (1...12).contains(parts[1]), (1...31).contains(parts[2]) else { return day }
+        if day == today { return "Today" }
+        let sameYear = today.hasPrefix(String(format: "%04d-", parts[0]))
+        return months[parts[1] - 1] + " \(parts[2])" + (sameYear ? "" : ", \(parts[0])")
+    }
+
+    /// The latest day before `today` that has meetings, among `days` (YYYY-MM-DD with a count).
+    static func latestDayBefore(_ today: String, days: [(date: String, count: Int)]) -> String? {
+        days.filter { $0.count > 0 && $0.date < today }.map(\.date).max()
+    }
+
+    static func jump(to day: String?, today: String) -> String {
+        day.map { "Go to " + plainDay($0, today: today) } ?? lastMonth
+    }
+}
+
 enum TodayHome {
     // MARK: Settings (UserDefaults keys; Settings > Activity)
 

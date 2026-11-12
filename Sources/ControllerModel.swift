@@ -9038,11 +9038,10 @@ final class ControllerModel: ObservableObject {
             } else {
                 libraryDays = days
             }
+            // Anand parity item 4 (2026-11-12, as Control Web 7.0.30): Meetings opens on today, with or without meetings; an empty
+            // today says so and offers the latest earlier day (MeetingTodayWords).
             if !libraryDayAutoApplied, libraryMonth == Self.currentMeetingMonth() {
-                let today = Self.currentMeetingDay()
-                if libraryDays.contains(where: { $0.date == today && $0.count > 0 }) {
-                    libraryDay = today
-                }
+                libraryDay = Self.currentMeetingDay()
                 libraryDayAutoApplied = true
             }
             libraryError = nil
