@@ -1655,9 +1655,11 @@ struct TailscaleFacts: Equatable, Sendable {
         return facts
     }
 
-    /// An online iPhone signed in as this Mac's own user. Someone else's phone on a shared tailnet never counts.
+    /// An online phone (iOS or Android; Anand fix a, 2026-11-12) signed in as this Mac's own user. Someone else's phone on a
+    /// shared tailnet never counts.
+    static let phoneOS: Set<String> = ["ios", "android"]
     var phone: TailscalePeerFacts? {
-        peers.first { $0.sameUser && $0.online && $0.os.lowercased() == "ios" }
+        peers.first { $0.sameUser && $0.online && Self.phoneOS.contains($0.os.lowercased()) }
     }
 }
 
@@ -1782,7 +1784,9 @@ struct GlassesFacts: Equatable, Sendable {
 
 enum GlassesRules {
     static let tailscaleDownload = URL(string: "https://tailscale.com/download/mac")!
-    static let tailscaleAppStore = "https://apps.apple.com/app/tailscale/id1470499037"
+    /// One QR for any phone (Anand fix a, 2026-11-12): Tailscale's download page sends each phone to its own store.
+    static let tailscalePhoneDownload = "https://tailscale.com/download"
+    static let tailscalePhoneCaption = "Point your phone's camera here to get Tailscale from the App Store or Google Play."
     static let tailscaleBundles = ["io.tailscale.ipn.macsys", "io.tailscale.ipn.macos"]
     /// After Allow, the phone has this long to make its first authenticated call before the row offers a new code.
     /// Control's own choice: the server holds a pending claim 60 s and has no limit after delivery.
@@ -1791,7 +1795,7 @@ enum GlassesRules {
     static let nameLimit = 40
     /// 0.5.368 (Miles 2026-11-04, 09:05): he pointed the iPhone Camera at this QR expecting a sign-in and got a web search.
     /// The pairing QR is the COS Glasses app's code, so its row and caption say so; Open COS on your phone is the Camera's.
-    static let pairSubtitle = "Scan this inside the COS Glasses app. The iPhone Camera can't read it."
+    static let pairSubtitle = "Scan this inside the COS Glasses app. Your phone's camera can't read it."
     static let pairCaption = "Open the COS Glasses app, then hold your phone so the code fills the screen."
 
     enum Stage: Equatable, Sendable {
@@ -1927,7 +1931,7 @@ enum GlassesRules {
     }
 
     static func phoneRow(_ facts: GlassesFacts) -> SetupRow {
-        var row = SetupRow(id: .tailscalePhone, title: "Tailscale on your iPhone", status: "Checking…",
+        var row = SetupRow(id: .tailscalePhone, title: "Tailscale on your phone", status: "Checking…",
                            unlocks: "Sign in with the same account as this Mac", detail: nil, done: false)
         row.counted = false
         guard let ts = facts.tailscale else { return row }
@@ -1937,10 +1941,10 @@ enum GlassesRules {
             row.done = true
         } else if !ts.running {
             row.status = "Mac first"
-            row.detail = "Set up Tailscale on this Mac first, then on your iPhone."
+            row.detail = "Set up Tailscale on this Mac first, then on your phone."
         } else {
             row.status = "Not seen yet"
-            row.detail = "Get Tailscale from the App Store and sign in. This turns green when your iPhone is online."
+            row.detail = "Get Tailscale from the App Store or Google Play and sign in. This turns green when your phone is online."
         }
         return row
     }
@@ -2288,7 +2292,7 @@ struct PhoneSignInCode: Equatable, Sendable {
 enum PhoneSignInRules {
     /// The web page's login error points here by this exact name.
     static let title = "Open COS on your phone"
-    static let subtitle = "Point your iPhone Camera here. Safari opens COS already signed in."
+    static let subtitle = "Point your phone's camera here. Its browser opens COS already signed in."
     static let qrNote = "Works once, for 2 minutes. Only on your tailnet."
     /// Shown when the glasses pairing QR is drawn below (0.5.368: this row comes first), so the two are never mixed up.
     static let notGlasses = "The QR below is for the COS Glasses app, not the Camera."

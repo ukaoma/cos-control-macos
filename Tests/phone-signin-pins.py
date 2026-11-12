@@ -111,7 +111,7 @@ need("askedThisAppearance = true" in body(state, "func mint() async {") and "ask
 need(len(re.findall(r"serverTooOld = true", state)) == 1 and "if text == PhoneSignInRules.needsUpdate { serverTooOld = true }" in state, "old server hides",
      "only needs_update (and a 404, which reads as it) hides the row")
 row = body(views_file, "struct PhoneSignInRow: View {")
-need('QRCodeView(text: handoff.url, side: 228, label: "Sign-in QR for Safari on your iPhone", cached: false)' in row, "qr not cached",
+need('QRCodeView(text: handoff.url, side: 228, label: "Sign-in QR for your phone\'s browser", cached: false)' in row, "qr not cached",
      "the phone QR skips the image cache, at the glasses QR's size")
 make = body(views_file, "static func make(_ text: String, cached: Bool = true) -> NSImage? {")
 need("if cached, let hit = cache[text] { return hit }" in make and "guard cached else { return result }" in make
@@ -125,7 +125,7 @@ need('QRCodeView(text: qr, side: 228, label: "Pairing code \\(code.display)").fr
      "glasses QR labeled", "the glasses pairing QR, its code, host and Show a new code")
 need("Text(GlassesRules.pairCaption)" in card and "Hold your phone so the code fills the screen\"" not in views_file, "glasses QR labeled", "the caption under the pairing QR names the app")
 glasses_words = dict(re.findall(r'static let (\w+) = "([^"]*)"', body(model_file, "enum GlassesRules {")))
-need(glasses_words.get("pairSubtitle") == "Scan this inside the COS Glasses app. The iPhone Camera can't read it.", "glasses QR labeled", "the pairing row's subtitle")
+need(glasses_words.get("pairSubtitle") == "Scan this inside the COS Glasses app. Your phone's camera can't read it.", "glasses QR labeled", "the pairing row's subtitle")
 need(glasses_words.get("pairCaption") == "Open the COS Glasses app, then hold your phone so the code fills the screen.", "glasses QR labeled", "the pairing caption")
 need('title: "Connect your glasses", status: "Checking…",\n                           unlocks: GlassesRules.pairSubtitle,' in model_file, "glasses QR labeled", "Connect your glasses shows the subtitle")
 for name in ("pairSubtitle", "pairCaption"):
@@ -169,7 +169,7 @@ need(glasses.index("PhoneSignInBlock(") < glasses.index("SetupDeviceChoice(") < 
      "qr order", "Open COS on your phone sits above the device choice and the glasses rows")
 render = body(code("Tests/PhoneSignInRender.swift"), "struct DevicesCard: View {")
 need(render.index("PhoneSignInBlock(") < render.index("SetupDeviceChoice(") < render.index("GlassesSetupRows("), "qr order", "the render draws the page's order")
-item = re.search(r'\.init\("UT-29", "Open COS on your phone", "Point your iPhone Camera here\. Safari opens COS already signed in\.", old: "", group: "glasses\.phone",\s*advanced: false, mount: \.group, keywords: \[([^\]]*)\]\)', catalog)
+item = re.search(r'\.init\("UT-29", "Open COS on your phone", "Point your phone\'s camera here\. Its browser opens COS already signed in\.", old: "", group: "glasses\.phone",\s*advanced: false, mount: \.group, keywords: \[([^\]]*)\]\)', catalog)
 need(item is not None, "catalog row", "UT-29 in Phone and web, not Advanced, with the row's words")
 keywords = set(re.findall(r'"([^"]+)"', item.group(1))) if item else set()
 need({"phone", "browser", "sign in", "web", "qr", "control web"} <= keywords, "catalog row", f"the keywords {sorted(keywords)}")
@@ -180,7 +180,7 @@ need(catalog.index('.init("UT-29"') > catalog.index("static let extras: [Setting
 rules = body(model_file, "enum PhoneSignInRules {")
 words = dict(re.findall(r'static let (\w+) = "([^"]*)"', rules))
 need(words.get("title") == "Open COS on your phone", "copy", "the title the web page names")
-need(words.get("subtitle") == "Point your iPhone Camera here. Safari opens COS already signed in.", "copy", "the subtitle")
+need(words.get("subtitle") == "Point your phone's camera here. Its browser opens COS already signed in.", "copy", "the subtitle")
 need(words.get("notGlasses") == "The QR below is for the COS Glasses app, not the Camera.", "copy", "the note when the glasses rows follow")
 need(words.get("qrNote") == "Works once, for 2 minutes. Only on your tailnet.", "copy", "under the QR")
 need(words.get("codeNote") == "Type this on the sign-in page. Works once, for 5 minutes.", "copy", "under the code")

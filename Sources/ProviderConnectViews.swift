@@ -506,8 +506,8 @@ struct GlassesSetupRows: View {
             GlassesRowView(row: rows[1]) {
                 if !rows[1].done {
                     HStack(alignment: .center, spacing: 12) {
-                        QRCodeView(text: GlassesRules.tailscaleAppStore, side: 112, label: "Tailscale App Store link")
-                        Text("Point your iPhone Camera here to open Tailscale in the App Store.")
+                        QRCodeView(text: GlassesRules.tailscalePhoneDownload, side: 112, label: "Tailscale download link")
+                        Text(GlassesRules.tailscalePhoneCaption)
                             .font(COSType.body(10.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -645,7 +645,7 @@ struct PhoneSignInRow: View {
             }
             .accessibilityElement(children: .combine)
             if let handoff = state.handoff {
-                QRCodeView(text: handoff.url, side: 228, label: "Sign-in QR for Safari on your iPhone", cached: false).frame(maxWidth: .infinity)
+                QRCodeView(text: handoff.url, side: 228, label: "Sign-in QR for your phone's browser", cached: false).frame(maxWidth: .infinity)
                 Text(PhoneSignInRules.qrNote).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted).frame(maxWidth: .infinity)
             } else if let line = state.line {
                 Text(line).font(COSType.body(12)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)

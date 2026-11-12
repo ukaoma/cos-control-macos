@@ -119,7 +119,7 @@ pin('Button("Update Server") { model.perform("update") }' in glasses_rows and "c
     and "model.status.installed && model.status.managedContract && model.status.ownershipVerified" in glasses_rows, "glasses update", "the real server update with the panel's gates (QA 2026-10-09 W1)")
 pin("visible: windowHolder.onScreen(panelVisible: model.panelVisible)" in glasses_rows and "window.occlusionState.contains(.visible)" in connect_views
     and "!window.isMiniaturized" in connect_views, "glasses visibility", "polls only while its window is on screen (QA 2026-10-09 W3)")
-pin('label: "Pairing code \\(code.display)"' in glasses_rows and 'label: "Tailscale App Store link"' in glasses_rows, "glasses voiceover", "the QRs say what they are")
+pin('label: "Pairing code \\(code.display)"' in glasses_rows and 'label: "Tailscale download link"' in glasses_rows, "glasses voiceover", "the QRs say what they are")
 
 pin("let next = SetupGuideRules.next(rows)" in connect_views and "$0.counted }" in body(connect, "    static func progress(", "\n    }\n"), "glasses uncounted", "progress and Next skip uncounted rows")
 pin('Text(GlassesRules.pairCaption)' in connect_views and 'static let pairCaption = "Open the COS Glasses app, then hold your phone so the code fills the screen."' in connect
