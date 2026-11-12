@@ -115,11 +115,11 @@ pin('filter.correctionLevel = "Q"' in connect_views and "CIFilter.qrCodeGenerato
 qr_side = re.search(r"QRCodeView\(text: qr, side: (\d+)", connect_views)
 pin(qr_side is not None and int(qr_side.group(1)) >= 220, "glasses qr", "the pairing QR is at least 220 pt")
 glasses_rows = body(connect_views, "struct GlassesSetupRows: View {", "\n/// One Glasses row")
-pin('Button("Update Server") { model.perform("update") }' in glasses_rows and "checkForAppUpdateManually" not in glasses_rows
+pin('Button("Update Server") { model.updateServer(from: ServerUpdateCaller.glassesPairing) }' in glasses_rows and "checkForAppUpdateManually" not in glasses_rows
     and "model.status.installed && model.status.managedContract && model.status.ownershipVerified" in glasses_rows, "glasses update", "the real server update with the panel's gates (QA 2026-10-09 W1)")
 pin("visible: windowHolder.onScreen(panelVisible: model.panelVisible)" in glasses_rows and "window.occlusionState.contains(.visible)" in connect_views
     and "!window.isMiniaturized" in connect_views, "glasses visibility", "polls only while its window is on screen (QA 2026-10-09 W3)")
-pin('label: "Pairing code \\(code.display)"' in glasses_rows and 'label: "Tailscale App Store link"' in glasses_rows, "glasses voiceover", "the QRs say what they are")
+pin('label: "Pairing code \\(code.display)"' in glasses_rows and 'label: "Tailscale download link"' in glasses_rows, "glasses voiceover", "the QRs say what they are")
 
 pin("let next = SetupGuideRules.next(rows)" in connect_views and "$0.counted }" in body(connect, "    static func progress(", "\n    }\n"), "glasses uncounted", "progress and Next skip uncounted rows")
 pin('Text(GlassesRules.pairCaption)' in connect_views and 'static let pairCaption = "Open the COS Glasses app, then hold your phone so the code fills the screen."' in connect
@@ -232,6 +232,31 @@ pin(before(install_fn, "installStarting.insert(provider)", "await runInTerminal(
     "C3", "the install is marked starting before the Terminal wait, and a second call returns")
 pin("facts.permissionsNeedCount = PermissionGuideRules.setupNeedCount(permissionGuide.rows, newInstall: InstallCohort.isNewInstall)" in connect_views,
     "E1", "Finish setup counts the 0.5.387 permission rows only on a new install")
+
+# Anand fix c (2026-11-12): Update Server shows its result where it was pressed, in plain words; the helper does not reinstall
+# the newest release and stops before the switch when every installed AI is signed out.
+meetings, window = read("Sources/ActivityMeetings.swift"), read("Sources/ActivityWindow.swift")
+everything = model + views + connect_views + meetings + window
+pin(everything.count('perform("update")') == 1 and 'serverUpdateResult = nil\n        perform("update")' in model, "update from its caller",
+    "every Update Server goes through updateServer(from:)")
+callers = {"settings": views, "glassesPairing": connect_views, "phoneSignIn": connect_views, "sessionHooks": window,
+           "meetingImports": meetings, "meetingSuggestions": meetings}
+for name, src in callers.items():
+    pin(f"model.updateServer(from: ServerUpdateCaller.{name})" in src and f"ServerUpdateResultLine(model: model, caller: ServerUpdateCaller.{name})" in src,
+        "update from its caller", f"{name}: the button and its result line")
+fail_branch = body(model, '                } else if command == "update" {', '                } else {')
+pin("finishServerUpdate(message: nil, error: error.localizedDescription)" in fail_branch and "self.error = serverUpdateResult?.line" in fail_branch,
+    "update plain failure", "the alert says the plain line; the helper text stays under the button")
+pin(".announcementRequested" in body(model, "    private func finishServerUpdate(", "\n    }\n"), "update announced", "VoiceOver hears the result")
+install = body(helper, "    private func install(requestedVersion: String, workDirectory: String?, update: Bool = false) throws {", "        var switchStarted = false")
+pin('case "update": try withMutationLock { try install(requestedVersion: "latest", workDirectory: loadManifest()?.workDirectory, update: true) }' in helper
+    and "if update, let current = loadManifest()?.version, current == release.version," in install
+    and "== .managedHealthy {" in install and "emit(ok: true, message: Self.upToDateMessage(current), details: details)\n            return" in install,
+    "update up to date", "a healthy server on the newest release is not reinstalled")
+pin("        if update {\n            progress(\"Checking that an AI is signed in…\")\n            if let warning = Self.signInRefusal(updateSignIns(), otherProvider: resolveAgentBinary() != nil) {\n                progress(warning)\n            }" in install
+    and "throw HelperError.message(refusal)" not in install
+    and before(install, "Self.signInRefusal(", "let generation = try stageGeneration("), "update sign-in first", "the sign-in check runs before anything is staged or switched")
+pin('case "install"' in helper and "try install(requestedVersion: requested, workDirectory: work)\n" in helper, "install unchanged", "Install keeps reinstalling as before")
 
 if failed:
     print("\n".join(failed), file=sys.stderr)

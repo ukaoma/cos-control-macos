@@ -520,7 +520,7 @@ final class COSControlHelper {
             let work = option("--workdir", in: args)
             try install(requestedVersion: requested, workDirectory: work)
         }
-        case "update": try withMutationLock { try install(requestedVersion: "latest", workDirectory: loadManifest()?.workDirectory) }
+        case "update": try withMutationLock { try install(requestedVersion: "latest", workDirectory: loadManifest()?.workDirectory, update: true) }
         case "adopt": try withMutationLock {
             let requested = option("--version", in: args) ?? "latest"
             try adoptLegacy(requestedVersion: requested)
@@ -1512,7 +1512,9 @@ final class COSControlHelper {
         )
     }
 
-    private func install(requestedVersion: String, workDirectory: String?) throws {
+    /// `update` (Update Server, Anand fix c, 2026-11-12): a healthy server already on the newest release is not reinstalled, and
+    /// an update where no installed AI is signed in stops before anything changes (the proof below would only roll it back).
+    private func install(requestedVersion: String, workDirectory: String?, update: Bool = false) throws {
         try ensureDirectories()
         // Capture a legacy/in-place selection before removing its ownership
         // marker or replacing the plist during adoption.
@@ -1534,6 +1536,21 @@ final class COSControlHelper {
         progress("Resolving npm release…")
         let release = try resolveVersion(requestedVersion)
         try requireLatestMovesForward(requested: requestedVersion, resolved: release.version)
+        if update, let current = loadManifest()?.version, current == release.version,
+           runtimeState(snapshot: ownership, maintenance: maintenanceStatus(), health: request("/api/health", timeout: 12)?.body) == .managedHealthy {
+            var details = statusDetails()
+            details["upToDate"] = true
+            emit(ok: true, message: Self.upToDateMessage(current), details: details)
+            return
+        }
+        // Q1 (fix d risk): warn, never refuse, until a real signed-out run proves the sign-in read. The proof below still keeps a
+        // new server only when one AI answers; this line only says early why it may not.
+        if update {
+            progress("Checking that an AI is signed in…")
+            if let warning = Self.signInRefusal(updateSignIns(), otherProvider: resolveAgentBinary() != nil) {
+                progress(warning)
+            }
+        }
         try requireVideoUploadDowngradeSafe(targetVersion: release.version)
         try requireKeyLanesDowngradeSafe(targetVersion: release.version)
         let generation = try stageGeneration(version: release.version, integrity: release.integrity)
@@ -9297,13 +9314,95 @@ final class COSControlHelper {
         guard let path = findExecutable(name) else { return ("warning", "Not installed") }
         let version = (try? execute(path, ["--version"], timeout: 5)).flatMap { $0.code == 0 ? $0.output.split(separator: "\n").first.map(String.init) : nil } ?? "version unavailable"
         var auth = "auth status unavailable"
-        if name == "codex", let result = try? execute(path, ["login", "status"], timeout: 6) {
-            auth = result.output.lowercased().contains("logged in") && !result.output.lowercased().contains("not logged in") ? "signed in" : "sign-in required"
-        } else if name == "claude", let result = try? execute(path, ["auth", "status", "--json"], timeout: 6) {
-            auth = result.output.contains("\"loggedIn\":true") || result.output.contains("\"loggedIn\": true") ? "signed in" : "sign-in check required"
-        }
+        if let label = cliAuthLabel(name, path: path) { auth = label }
         let detail = redacted ? "\(version) · \(auth)" : "\(version) · \(auth) · \(redactPath(path))"
-        return (auth == "sign-in required" ? "warning" : "ok", detail)
+        return (Self.authWarns(auth) ? "warning" : "ok", detail)
+    }
+
+    /// A CLI's sign-in label (Run checks and Update Server's pre-check), or nil when the CLI has no status call or did not answer.
+    private func cliAuthLabel(_ name: String, path: String) -> String? {
+        if name == "codex", let result = try? execute(path, ["login", "status"], timeout: 6) {
+            return result.output.lowercased().contains("logged in") && !result.output.lowercased().contains("not logged in") ? "signed in" : Self.authSignedOut
+        }
+        if name == "claude", let result = try? execute(path, ["auth", "status", "--json"], timeout: 6) {
+            return Self.claudeAuthLabel(code: result.code, output: result.output)
+        }
+        return nil
+    }
+
+    /// Update Server's pre-check: each installed Claude and Codex with its sign-in label ("auth status unavailable" when it did
+    /// not answer, which never refuses).
+    private func updateSignIns() -> [String: String] {
+        var labels: [String: String] = [:]
+        for name in detectedManagedProviders() {
+            guard let path = findExecutable(name) else { continue }
+            labels[name] = cliAuthLabel(name, path: path) ?? "auth status unavailable"
+        }
+        return labels
+    }
+
+    /// Anand fix c (2026-11-12): nothing newer exists.
+    static func upToDateMessage(_ version: String) -> String {
+        "Server \(version) is up to date. It is the newest published release, so nothing was installed."
+    }
+
+    /// Anand fix c (2026-11-12): stop before the switch only when every installed AI says it is signed out or expired. A CLI that
+    /// did not answer, or any other AI (Cursor), can still prove the new server, so it never refuses. The rule that one AI must
+    /// answer a real test question before a new server is kept does not change.
+    static func signInRefusal(_ labels: [String: String], otherProvider: Bool) -> String? {
+        guard !otherProvider, !labels.isEmpty, labels.values.allSatisfy(authWarns) else { return nil }
+        let names = labels.keys.sorted().map { $0.capitalized }
+        let who = names.count == 1 ? names[0] : names.dropLast().joined(separator: ", ") + " or " + names[names.count - 1]
+        return "No AI on this Mac reads as signed in. COS keeps the new server only if one answers a test question, "
+            + "so sign in to \(who) if the update stops."
+    }
+
+    /// Run checks' labels for a CLI's sign-in. Only these two warn; "sign-in check required" (no answer we can read) stays ok,
+    /// so an older CLI or a slow status call never shows a false warning.
+    static let authSignedOut = "sign-in required"
+    static let authExpired = "sign-in expired"
+    static func authWarns(_ label: String) -> Bool { label == authSignedOut || label == authExpired }
+
+    /// `claude auth status --json` (D4, 2026-11-12, from the lead's reading of the Claude Code docs): exit 1 is signed out;
+    /// exit 0 is signed in unless loginExpiresAt (CLI 2.1.318 and later) has passed, because loggedIn only means a token is
+    /// present. An older CLI has no loginExpiresAt and reads signed in as before. Any other exit, or output that is not the
+    /// status JSON, is "sign-in check required". The output can carry stderr lines, so the JSON object is cut out of it.
+    static func claudeAuthLabel(code: Int32, output: String, now: Date = Date()) -> String {
+        // Q1 (fix d risk): exit 1 is signed out only when the output says so (the status JSON with loggedIn false, or "not logged
+        // in"). An older CLI that exits 1 because it has no `auth status --json` stays a quiet check, never a false warning.
+        if code == 1 {
+            if output.lowercased().contains("not logged in") { return authSignedOut }
+            if let open = output.firstIndex(of: "{"), let close = output.lastIndex(of: "}"), open < close,
+               let data = String(output[open...close]).data(using: .utf8),
+               let status = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], status["loggedIn"] as? Bool == false {
+                return authSignedOut
+            }
+            return "sign-in check required"
+        }
+        guard code == 0, let open = output.firstIndex(of: "{"), let close = output.lastIndex(of: "}"), open < close,
+              let data = String(output[open...close]).data(using: .utf8),
+              let status = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let loggedIn = status["loggedIn"] as? Bool else { return "sign-in check required" }
+        guard loggedIn else { return authSignedOut }
+        if let expires = authExpiry(status["loginExpiresAt"]), expires <= now { return authExpired }
+        return "signed in"
+    }
+
+    /// loginExpiresAt as an ISO 8601 string, or seconds or milliseconds since 1970; nil when absent or unreadable.
+    static func authExpiry(_ value: Any?) -> Date? {
+        if let text = value as? String {
+            let iso = ISO8601DateFormatter()
+            iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = iso.date(from: text) { return date }
+            iso.formatOptions = [.withInternetDateTime]
+            return iso.date(from: text)
+        }
+        if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
+            let raw = number.doubleValue
+            guard raw > 0 else { return nil }
+            return Date(timeIntervalSince1970: raw > 100_000_000_000 ? raw / 1000 : raw)
+        }
+        return nil
     }
 
     /// Parse `agent about` without ever retaining User Email.
@@ -28255,6 +28354,44 @@ final class COSControlHelper {
             try expect(launchPathDirectories(node: "/usr/bin/true").contains(URL(fileURLWithPath: found).deletingLastPathComponent().path),
                        "the server's launch PATH includes the folder of the codex COS found")
             try? fm.removeItem(at: home.appendingPathComponent("Applications/ChatGPT.app"))
+        }
+
+        // Run checks flags a signed-out or expired Claude (D4, 2026-11-12); an answer it cannot read never warns.
+        do {
+            let now = Date(timeIntervalSince1970: 1_800_000_000)
+            let label = { (code: Int32, output: String) in Self.claudeAuthLabel(code: code, output: output, now: now) }
+            try expect(label(1, "{\"loggedIn\":false}") == Self.authSignedOut && label(1, "Not logged in. Run claude to sign in.") == Self.authSignedOut
+                       && Self.authWarns(Self.authSignedOut),
+                       "claude auth: exit 1 that says so is signed out, and it warns")
+            try expect(label(1, "error: unknown command 'auth'") == "sign-in check required" && label(1, "") == "sign-in check required",
+                       "claude auth: exit 1 from an older CLI with no auth status stays a quiet check")
+            try expect(label(0, "{\"loggedIn\":false}") == Self.authSignedOut, "claude auth: loggedIn false is signed out")
+            try expect(label(0, "{\"loggedIn\":true,\"loginExpiresAt\":\"2027-01-15T08:00:00Z\"}") == Self.authExpired
+                       && label(0, "{\"loggedIn\":true,\"loginExpiresAt\":1700000000000}") == Self.authExpired
+                       && label(0, "{\"loggedIn\":true,\"loginExpiresAt\":1700000000}") == Self.authExpired
+                       && Self.authWarns(Self.authExpired),
+                       "claude auth: a loginExpiresAt already past is expired (ISO, milliseconds, seconds), and it warns")
+            try expect(label(0, "{\"loggedIn\":true,\"loginExpiresAt\":\"2027-03-15T08:00:00.000Z\"}") == "signed in"
+                       && label(0, "{\"loggedIn\":true,\"loginExpiresAt\":1900000000000}") == "signed in",
+                       "claude auth: a loginExpiresAt still ahead is signed in")
+            try expect(label(0, "note: update available\n{\"loggedIn\": true}\n") == "signed in",
+                       "claude auth: an older CLI with no loginExpiresAt reads signed in, with stderr around the JSON")
+            try expect(label(0, "Usage: claude [options]") == "sign-in check required" && label(2, "{\"loggedIn\":true}") == "sign-in check required"
+                       && label(0, "{\"loggedIn\":\"yes\"}") == "sign-in check required" && !Self.authWarns("sign-in check required"),
+                       "claude auth: unreadable output or another exit stays a quiet check")
+            // Update Server (Anand fix c): stop before the switch only when every installed AI is signed out or expired.
+            try expect(Self.signInRefusal(["claude": Self.authSignedOut, "codex": Self.authSignedOut], otherProvider: false)
+                       == "No AI on this Mac reads as signed in. COS keeps the new server only if one answers a test question, so sign in to Claude or Codex if the update stops."
+                       && Self.signInRefusal(["claude": Self.authExpired], otherProvider: false)?.hasSuffix("so sign in to Claude if the update stops.") == true,
+                       "update sign-in: every installed AI signed out or expired is warned about before the switch, naming them")
+            try expect(Self.signInRefusal(["claude": Self.authSignedOut, "codex": "signed in"], otherProvider: false) == nil
+                       && Self.signInRefusal(["claude": Self.authSignedOut, "codex": "auth status unavailable"], otherProvider: false) == nil
+                       && Self.signInRefusal(["claude": "sign-in check required"], otherProvider: false) == nil,
+                       "update sign-in: one AI signed in, or one that did not answer, warns nothing")
+            try expect(Self.signInRefusal(["claude": Self.authSignedOut], otherProvider: true) == nil && Self.signInRefusal([:], otherProvider: false) == nil,
+                       "update sign-in: Cursor, or no Claude or Codex at all, warns nothing")
+            try expect(Self.upToDateMessage("7.0.29") == "Server 7.0.29 is up to date. It is the newest published release, so nothing was installed.",
+                       "update: nothing newer says so")
         }
 
         emit(ok: true, message: "\(passed) deterministic helper tests passed", details: ["tests": passed])

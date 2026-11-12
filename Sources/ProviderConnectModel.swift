@@ -300,6 +300,14 @@ enum SetupFailureWords {
     /// nil when `error` is not the proof failure. "Sign in to X" ONLY when every reason the helper gave is not signed in
     /// (Q1, final review); a usage limit, a timeout or a missing binary says "Check X". The helper's text stays below.
     static func plain(_ error: String) -> String? {
+        guard let verdict = verdict(error) else { return nil }
+        return "Setup stopped: none of your AIs answered a test request. "
+            + (verdict.allSignedOut ? "Sign in to \(verdict.who), then press Try again." : "Check \(verdict.who), then press Try again.")
+    }
+
+    /// The proof failure's who and whether every reason was not signed in; nil when `error` is not the proof failure. Setup and
+    /// Update Server (ServerUpdateWords) word it for their own button.
+    static func verdict(_ error: String) -> (who: String, allSignedOut: Bool)? {
         guard error.contains(marker) else { return nil }
         let found = skips(error)
         let names = found.map(\.provider.cliName)
@@ -309,9 +317,50 @@ enum SetupFailureWords {
         case 1: who = names[0]
         default: who = names.dropLast().joined(separator: ", ") + " or " + names.last!
         }
-        let allSignedOut = !found.isEmpty && found.allSatisfy { $0.reason == notSignedIn }
-        return "Setup stopped: none of your AIs answered a test request. "
-            + (allSignedOut ? "Sign in to \(who), then press Try again." : "Check \(who), then press Try again.")
+        return (who, !found.isEmpty && found.allSatisfy { $0.reason == notSignedIn })
+    }
+}
+
+/// Anand fix c (2026-11-12): the places Update Server is pressed. Each shows the result beside its own button.
+enum ServerUpdateCaller {
+    static let settings = "settings"
+    static let glassesPairing = "glasses-pairing"
+    static let phoneSignIn = "phone-sign-in"
+    static let sessionHooks = "session-hooks"
+    static let meetingImports = "meeting-imports"
+    static let meetingSuggestions = "meeting-suggestions"
+}
+
+struct ServerUpdateResult: Equatable, Sendable {
+    let caller: String
+    let line: String
+    /// The helper's own text, under the plain line, when the line is ours.
+    let detail: String?
+    let failed: Bool
+}
+
+/// Anand fix c (2026-11-12): Update Server's result in plain words. A success is the helper's own sentence ("installed and
+/// verified", or up to date). A failure says what happened; the helper's text stays below it. The rule that one AI must answer
+/// a test question before a new server is kept does not change.
+enum ServerUpdateWords {
+    static let didNotFinish = "The update did not finish. What COS did is below."
+
+    static func success(_ message: String, caller: String) -> ServerUpdateResult {
+        ServerUpdateResult(caller: caller, line: message.isEmpty ? "The server is updated." : message, detail: nil, failed: false)
+    }
+
+    static func failure(_ error: String, caller: String) -> ServerUpdateResult {
+        // The helper's won't-move-backward refusal is already plain, and nothing changed.
+        if error.hasPrefix("This Mac runs server ") {
+            return ServerUpdateResult(caller: caller, line: error, detail: nil, failed: true)
+        }
+        if let verdict = SetupFailureWords.verdict(error) {
+            let line = "The update did not finish: none of your AIs answered a test request. "
+                + (verdict.allSignedOut ? "Sign in to \(verdict.who), then press Update Server again."
+                   : "Check \(verdict.who), then press Update Server again.")
+            return ServerUpdateResult(caller: caller, line: line, detail: error, failed: true)
+        }
+        return ServerUpdateResult(caller: caller, line: didNotFinish, detail: error, failed: true)
     }
 }
 
@@ -1655,9 +1704,11 @@ struct TailscaleFacts: Equatable, Sendable {
         return facts
     }
 
-    /// An online iPhone signed in as this Mac's own user. Someone else's phone on a shared tailnet never counts.
+    /// An online phone (iOS or Android; Anand fix a, 2026-11-12) signed in as this Mac's own user. Someone else's phone on a
+    /// shared tailnet never counts.
+    static let phoneOS: Set<String> = ["ios", "android"]
     var phone: TailscalePeerFacts? {
-        peers.first { $0.sameUser && $0.online && $0.os.lowercased() == "ios" }
+        peers.first { $0.sameUser && $0.online && Self.phoneOS.contains($0.os.lowercased()) }
     }
 }
 
@@ -1782,7 +1833,9 @@ struct GlassesFacts: Equatable, Sendable {
 
 enum GlassesRules {
     static let tailscaleDownload = URL(string: "https://tailscale.com/download/mac")!
-    static let tailscaleAppStore = "https://apps.apple.com/app/tailscale/id1470499037"
+    /// One QR for any phone (Anand fix a, 2026-11-12): Tailscale's download page sends each phone to its own store.
+    static let tailscalePhoneDownload = "https://tailscale.com/download"
+    static let tailscalePhoneCaption = "Point your phone's camera here to get Tailscale from the App Store or Google Play."
     static let tailscaleBundles = ["io.tailscale.ipn.macsys", "io.tailscale.ipn.macos"]
     /// After Allow, the phone has this long to make its first authenticated call before the row offers a new code.
     /// Control's own choice: the server holds a pending claim 60 s and has no limit after delivery.
@@ -1791,7 +1844,7 @@ enum GlassesRules {
     static let nameLimit = 40
     /// 0.5.368 (Miles 2026-11-04, 09:05): he pointed the iPhone Camera at this QR expecting a sign-in and got a web search.
     /// The pairing QR is the COS Glasses app's code, so its row and caption say so; Open COS on your phone is the Camera's.
-    static let pairSubtitle = "Scan this inside the COS Glasses app. The iPhone Camera can't read it."
+    static let pairSubtitle = "Scan this inside the COS Glasses app. Your phone's camera can't read it."
     static let pairCaption = "Open the COS Glasses app, then hold your phone so the code fills the screen."
 
     enum Stage: Equatable, Sendable {
@@ -1927,7 +1980,7 @@ enum GlassesRules {
     }
 
     static func phoneRow(_ facts: GlassesFacts) -> SetupRow {
-        var row = SetupRow(id: .tailscalePhone, title: "Tailscale on your iPhone", status: "Checking…",
+        var row = SetupRow(id: .tailscalePhone, title: "Tailscale on your phone", status: "Checking…",
                            unlocks: "Sign in with the same account as this Mac", detail: nil, done: false)
         row.counted = false
         guard let ts = facts.tailscale else { return row }
@@ -1937,10 +1990,10 @@ enum GlassesRules {
             row.done = true
         } else if !ts.running {
             row.status = "Mac first"
-            row.detail = "Set up Tailscale on this Mac first, then on your iPhone."
+            row.detail = "Set up Tailscale on this Mac first, then on your phone."
         } else {
             row.status = "Not seen yet"
-            row.detail = "Get Tailscale from the App Store and sign in. This turns green when your iPhone is online."
+            row.detail = "Get Tailscale from the App Store or Google Play and sign in. This turns green when your phone is online."
         }
         return row
     }
@@ -2288,7 +2341,7 @@ struct PhoneSignInCode: Equatable, Sendable {
 enum PhoneSignInRules {
     /// The web page's login error points here by this exact name.
     static let title = "Open COS on your phone"
-    static let subtitle = "Point your iPhone Camera here. Safari opens COS already signed in."
+    static let subtitle = "Point your phone's camera here. Its browser opens COS already signed in."
     static let qrNote = "Works once, for 2 minutes. Only on your tailnet."
     /// Shown when the glasses pairing QR is drawn below (0.5.368: this row comes first), so the two are never mixed up.
     static let notGlasses = "The QR below is for the COS Glasses app, not the Camera."
@@ -2301,7 +2354,11 @@ enum PhoneSignInRules {
     static let tryAgain = "Try again"
     static let making = "Making a QR…"
     static let noTailnet = "Turn on Tailscale on this Mac."
-    /// Kept for the stage name and the checks; never drawn since 0.5.368, when the whole row hides instead (serverTooOld).
+    /// Anand fix b (2026-11-12): on every device path, what the QR needs. The glasses path said "same account" only on its own
+    /// Tailscale rows; Just my Mac never named the phone.
+    static let bothDevices = "Tailscale goes on this Mac and on your phone, signed in to the same account."
+    /// On a server before 6.99.3 (serverTooOld). 0.5.368 hid the whole row instead; since Anand fix b (2026-11-12) the row
+    /// says this, with the panel's own Update Server (PhoneSignInOldServer).
     static let needsUpdate = "Update the server to use this."
     static let notReady = "This works once the COS server is running and verified."
     static let noToken = "COS has no pairing token yet. Set up the server first."
@@ -2517,6 +2574,15 @@ final class PhoneSignInState: ObservableObject {
         if serverTooOld && askedThisAppearance { return }
         guard !minting, PhoneSignInRules.due(handoff: handoff, lastAttempt: lastAttempt, retryAfter: retryAfter, now: t) else { return }
         await mint()
+    }
+
+    /// Anand fix b (2026-11-12): the server changed (Update Server finished, or another version answers), so an old-server
+    /// verdict is asked again on the next tick, even within this appearance. The verdict itself stays until an answer clears it.
+    func recheckAfterServerChange() {
+        guard serverTooOld else { return }
+        askedThisAppearance = false
+        lastAttempt = nil
+        retryAfter = 0
     }
 
     /// The row went off screen: the QR, the code and their lines go, and a reply still in flight is dropped.

@@ -521,6 +521,22 @@ struct ProviderConnectChecks {
         let three = "no AI provider proved a real query (Claude skipped: a; Codex skipped: b; Cursor skipped: c)"
         check(SetupFailureWords.plain(three)?.hasSuffix("Check Claude Code, Codex or Cursor Agent, then press Try again.") == true, "C1 failure words", SetupFailureWords.plain(three) ?? "nil")
         check(SetupFailureWords.plain("no AI provider proved a real query (no provider could be proved)")?.hasSuffix("Check your AI, then press Try again.") == true, "C1 failure words", "none named")
+        // Anand fix c (2026-11-12): Update Server's result in plain words, at the button it was pressed from.
+        let upd = ServerUpdateWords.failure(helper, caller: ServerUpdateCaller.glassesPairing)
+        check(upd.failed && upd.caller == "glasses-pairing" && upd.detail == helper
+              && upd.line == "The update did not finish: none of your AIs answered a test request. Sign in to Claude Code, then press Update Server again.",
+              "update words", upd.line)
+        check(ServerUpdateWords.failure(mixed, caller: "settings").line.hasSuffix("Check Claude Code or Codex, then press Update Server again."), "update words", "a mixed proof failure says Check")
+        let backward = "This Mac runs server 7.0.30, which is newer than 7.0.29, the latest published release. COS will not move it backward, so nothing changed."
+        check(ServerUpdateWords.failure(backward, caller: "settings").line == backward, "update words", "the won't-move-backward refusal as it is")
+        let raw = "Update failed. Control restored the previous version. Original error: npm ERR! code ETIMEDOUT"
+        let other = ServerUpdateWords.failure(raw, caller: "phone-sign-in")
+        check(other.line == "The update did not finish. What COS did is below." && other.detail == raw, "update words", "any other failure: plain line, helper text below")
+        let ok = ServerUpdateWords.success("Server 7.0.29 is up to date. It is the newest published release, so nothing was installed.", caller: "session-hooks")
+        check(!ok.failed && ok.caller == "session-hooks" && ok.line.hasPrefix("Server 7.0.29 is up to date.") && ok.detail == nil, "update words", "up to date says so")
+        check(ServerUpdateWords.success("", caller: "settings").line == "The server is updated.", "update words", "an empty helper message still says something")
+        let allUpdateWords = [upd.line, other.line, ServerUpdateWords.didNotFinish]
+        check(allUpdateWords.allSatisfy { !$0.contains("\u{2014}") && !$0.contains("\u{2192}") && !$0.contains("Miles") }, "update words", "no dash, arrow or name")
         let parsed = SetupFailureWords.skips(mixed)
         check(parsed.count == 2 && parsed[0].provider == .claude && parsed[0].reason == "not signed in" && parsed[1].provider == .codex && parsed[1].reason == "timed out",
               "C1 failure words", "the helper's reasons are read per AI")
@@ -968,7 +984,7 @@ extension ProviderConnectChecks {
               "phone retry", "a failure waits 10 s")
         check(R.left(299.2) == "5:00 left" && R.left(61) == "1:01 left" && R.left(0.2) == "0:01 left" && R.left(-3) == "0:00 left", "phone left", R.left(299.2))
         // The copy, as the web page and the brief name it.
-        check(R.title == "Open COS on your phone" && R.subtitle == "Point your iPhone Camera here. Safari opens COS already signed in."
+        check(R.title == "Open COS on your phone" && R.subtitle == "Point your phone's camera here. Its browser opens COS already signed in."
               && R.notGlasses == "The QR below is for the COS Glasses app, not the Camera."
               && R.qrNote == "Works once, for 2 minutes. Only on your tailnet." && R.codeNote == "Type this on the sign-in page. Works once, for 5 minutes."
               && R.showCode == "Show a sign-in code" && R.newQR == "Show a new QR" && R.noTailnet == "Turn on Tailscale on this Mac."
@@ -978,7 +994,7 @@ extension ProviderConnectChecks {
             check(!text.contains("—") && !text.contains("–") && !text.contains("→") && !text.contains("->"), "phone copy", "no dash or arrow: \(text)")
         }
         // 0.5.368: the glasses pairing QR says it is for the COS Glasses app; the row and the caption under the QR.
-        check(GlassesRules.pairSubtitle == "Scan this inside the COS Glasses app. The iPhone Camera can't read it."
+        check(GlassesRules.pairSubtitle == "Scan this inside the COS Glasses app. Your phone's camera can't read it."
               && GlassesRules.pairCaption == "Open the COS Glasses app, then hold your phone so the code fills the screen."
               && GlassesRules.connectRow(GlassesFacts()).unlocks == GlassesRules.pairSubtitle, "glasses qr copy", GlassesRules.connectRow(GlassesFacts()).unlocks)
         for text in [GlassesRules.pairSubtitle, GlassesRules.pairCaption] {
@@ -1067,6 +1083,23 @@ extension ProviderConnectChecks {
         state.hide()
         await state.tick()
         check(state.serverTooOld, "phone old server hides", "hidden again")
+        // Anand fix b (2026-11-12): Update Server finished while the row is up: the server change asks again in this appearance.
+        let beforeChange = fake.count("web-handoff")
+        clock = clock.addingTimeInterval(30)
+        await state.tick()
+        check(fake.count("web-handoff") == beforeChange, "phone old server rechecks", "no ask before the server changes: \(fake.calls)")
+        fake.answers["web-handoff"] = handoffDetails(expires: clock.addingTimeInterval(120))
+        state.recheckAfterServerChange()
+        await state.tick()
+        check(fake.count("web-handoff") == beforeChange + 1 && !state.serverTooOld && state.handoff != nil, "phone old server rechecks",
+              "a server change asks at once and the QR shows: \(fake.calls)")
+        state.recheckAfterServerChange()
+        await state.tick()
+        check(fake.count("web-handoff") == beforeChange + 1, "phone old server rechecks", "a server change with the row already showing asks nothing extra")
+        fake.answers["web-handoff"] = handoffDetails(expires: clock, phone: "needs_update")
+        state.hide()
+        await state.tick()
+        check(state.serverTooOld, "phone old server hides", "hidden again after the recheck")
         state.hide()
         fake.answers["web-handoff"] = handoffDetails(expires: clock.addingTimeInterval(120))
         await state.tick()
@@ -1143,9 +1176,9 @@ extension ProviderConnectChecks {
 
 /// `tailscale-status` details as the helper prints them (HelperSources/PairingCore.swift), from this Mac's real shape.
 func tailscaleDetails(installed: Bool = true, running: Bool = true, backend: String? = "Running", phoneOnline: Bool = true,
-                      phoneSameUser: Bool = true, error: String? = nil) -> String {
+                      phoneSameUser: Bool = true, phoneOS: String = "iOS", error: String? = nil) -> String {
     let peers = installed && backend != nil ? """
-    [{"os":"iOS","dns":"example-iphone.tail00000a.ts.net","ipv4":"100.64.0.11","online":\(phoneOnline),"sameUser":\(phoneSameUser)},
+    [{"os":"\(phoneOS)","dns":"example-iphone.tail00000a.ts.net","ipv4":"100.64.0.11","online":\(phoneOnline),"sameUser":\(phoneSameUser)},
      {"os":"macOS","dns":"example-laptop.tail00000a.ts.net","ipv4":"100.64.0.12","online":false,"sameUser":true}]
     """ : "[]"
     return """
@@ -1239,12 +1272,19 @@ extension ProviderConnectChecks {
         check(stopped.action == .openTailscale && stopped.detail?.contains("Open the Tailscale app") == true, "mac row unreadable", "\(stopped)")
         let on = GlassesRules.macRow(gfacts())
         check(on.done && on.status == "Running" && on.detail?.contains("100.64.0.10") == true && on.action == .none, "mac row running", "\(on)")
-        // Tailscale on your iPhone.
+        // Tailscale on your phone.
         let phone = GlassesRules.phoneRow(gfacts())
         check(phone.done && phone.detail == "example-iphone is on your tailnet" && phone.unlocks == "Sign in with the same account as this Mac", "phone row", "\(phone)")
         check(!GlassesRules.phoneRow(gfacts(tailscale: tailscaleDetails(phoneOnline: false))).done, "phone row", "offline phone")
         check(!GlassesRules.phoneRow(gfacts(tailscale: tailscaleDetails(phoneSameUser: false))).done, "phone row", "another user's phone")
-        check(GlassesRules.tailscaleAppStore == "https://apps.apple.com/app/tailscale/id1470499037", "phone row", "the App Store link")
+        check(GlassesRules.tailscalePhoneDownload == "https://tailscale.com/download", "phone row", "one download link for any phone")
+        // Anand fix a (2026-11-12): any phone, not only an iPhone, and the words say phone.
+        check(GlassesRules.phoneRow(gfacts(tailscale: tailscaleDetails(phoneOS: "android"))).done, "phone row any phone", "an Android phone counts")
+        check(!GlassesRules.phoneRow(gfacts(tailscale: tailscaleDetails(phoneOS: "linux"))).done, "phone row any phone", "a Linux machine is not a phone")
+        check(phone.title == "Tailscale on your phone", "phone row any phone", phone.title)
+        let unseen = GlassesRules.phoneRow(gfacts(tailscale: tailscaleDetails(phoneOnline: false)))
+        check(unseen.detail == "Get Tailscale from the App Store or Google Play and sign in. This turns green when your phone is online.", "phone row any phone", unseen.detail ?? "nil")
+        check(GlassesRules.tailscalePhoneCaption == "Point your phone's camera here to get Tailscale from the App Store or Google Play.", "phone row any phone", "the QR caption")
         // Connect your glasses: every stage.
         let now = pairingBase
         check(GlassesRules.stage(gfacts(running: false)) == .serverOff && GlassesRules.connectRow(gfacts(running: false)).afterSetup, "connect row", "server off")

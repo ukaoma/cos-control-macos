@@ -2408,8 +2408,11 @@ done
 # execution in ModelsContract; this pins that the reason is actually assigned.
 /usr/bin/grep -qE '^[[:space:]]*contentUnavailable = reason$' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'MeetingContent.unavailableMessage(reason)' "$ROOT/Sources/Views.swift"
-# The clipboard must never quote a size the confirmation disagrees with.
-/usr/bin/grep -q 'content.fullChars / 1024' "$ROOT/Sources/Views.swift"
+# The clipboard must never quote a size the confirmation disagrees with. Since 543e697 the button's KB comes from
+# MeetingCopyWords.label (Models.swift), fed content.fullChars, with the confirmation's max(1, chars / 1024).
+/usr/bin/grep -q -F 'fullChars: content.fullChars)' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q -F 'max(1, fullChars / 1024)) KB)' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q -F 'max(1, (full ? c.fullChars : c.summaryChars) / 1024)' "$ROOT/Sources/ControllerModel.swift"
 
 # Talk time decodes with no `?? 0` (same no-safe-default rule as coverage), and
 # is rendered ONLY behind nameAsserted or a typed interval row — showing minutes for
@@ -6813,7 +6816,7 @@ if "model.meetingImportRouteActive || model.meetingSuggestionsRouteActive" not i
 # 4. COPY. Each of these is the sentence the release plan specifies, verbatim.
 for needle, why in (
     ('"Update the COS server to 6.47.0"', "route_absent names the version"),
-    ('Button("Update Server") { model.perform("update") }', "route_absent carries the Update Server affordance"),
+    ('Button("Update Server") { model.updateServer(from: ServerUpdateCaller.meetingImports) }', "route_absent carries the Update Server affordance"),
     ('"Your COS pipeline already brings in Fireflies meetings."', "a pipeline Mac says why it does not import"),
     ('"Individual answers are saved in advise mode. Consolidate meetings runs a separate cleanup that can update your files."',
      "individual advise-mode answers and the separate file-changing cleanup must be distinguished"),
@@ -7404,9 +7407,9 @@ if "} else if let markdownID {" not in card or "Text(highlighted(text, query: hi
 detail = body(activity, "private func messageDetail(")
 # 0.5.380: the COS answer's lens lists are structured in the card's Markdown view only (as on Control Web); the card
 # itself gets the stored answer, so Copy answer copies it as stored (final QA W1).
-if 'messageBlock(label: "COS", text: turn.text, lensLists: true,\n                             tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id)' not in detail:
+if 'messageBlock(label: "COS", text: turn.text, lensLists: true,\n                             tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id, side: .cos)' not in detail:
     fail("[messages] Recent's COS card passes its turn id and the stored answer")
-if 'messageBlock(label: "You", text: turn.query,\n                             tint: ActivitySection.messages.tint, highlight: recentQuery)\n' not in detail:
+if 'messageBlock(label: "You", text: turn.query,\n                             tint: ActivitySection.messages.tint, highlight: recentQuery,\n                             side: .you, caption: MessageSides.youCaption)\n' not in detail:
     fail("[messages] Recent's YOU card stays as typed")
 chat = body(activity, "@ViewBuilder private func archiveChatDetail(")
 if 'markdownID: "archive:\\(date)/\\(index)/\\(message.id)")' not in chat:
@@ -7548,7 +7551,7 @@ if "1 follow-up queued. It sends when this session is available." not in compose
 banner = body(window, "@ViewBuilder private var sessionHooksBanner: some View")
 if 'state == "missing" || state == "drift" || state == "script_outdated" || state == "route_absent"' not in banner:
     fail("the banner shows for missing, drift, script_outdated and route_absent only")
-if 'Button("Update Server") { model.perform("update") }' not in banner:
+if 'Button("Update Server") { model.updateServer(from: ServerUpdateCaller.sessionHooks) }' not in banner:
     fail("a pre-6.48.0 server offers Update Server, never Install")
 if "model.installSessionHooks()" not in banner or '.buttonStyle(COSQuietButtonStyle(tone: .featured))' not in banner:
     fail("Install hooks is the featured action")

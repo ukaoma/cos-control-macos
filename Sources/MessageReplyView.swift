@@ -105,25 +105,14 @@ struct MessageReplyBlock: View {
 
     // MARK: A reply sent from this Mac
 
+    /// Pick A (2026-11-12, sides): his reply right in the reader's bubble, captioned; the answer left by COS's mark.
     private func replyRow(_ reply: DropIt.Ask) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(reply.words)
-                    .font(COSType.body(13))
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                if !reply.files.isEmpty {
-                    Text(reply.files.map(\.name).joined(separator: ", "))
-                        .font(COSType.body(11))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Text("Replied on this Mac")
-                    .font(COSType.body(10.5))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(10)
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(ActivitySection.messages.tint.opacity(0.10)))
+        VStack(alignment: .leading, spacing: 8) {
+            ActivityMessageCard(label: "You", text: reply.words, tint: ActivitySection.messages.tint, side: .you,
+                                caption: reply.files.isEmpty ? "Replied on this Mac"
+                                    : "Replied on this Mac, with " + reply.files.map(\.name).joined(separator: ", "))
+            HStack(alignment: .top, spacing: 10) {
+            DropItAvatar(size: 30).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(DropIt.askTitle(reply))
@@ -139,9 +128,10 @@ struct MessageReplyBlock: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .padding(.leading, 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
     }
 
     static func stateWord(_ reply: DropIt.Ask) -> String {

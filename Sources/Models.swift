@@ -13822,6 +13822,138 @@ enum MessageReply {
 /// the Needs you header, the brief, the cards and the tabs show comes from one function here, so Tests/ActivityTodayChecks
 /// executes each rule and pins that they agree. A source Control has not loaded is nil, never a made-up 0. Zero LLM: the
 /// brief is fixed templates over these counts.
+/// Anand parity item 1 (2026-11-12, as Control Web 7.0.30's Back by path): where Back goes in the Activity window. Each change
+/// of section is a step (where it came from, where it arrived). Back on the step's arrival, or on that section's list, returns
+/// to where it came from; anywhere deeper, Back keeps the section's own parent chain. Back's own moves are never recorded.
+struct ActivityPlace: Equatable, Sendable {
+    /// ActivitySection's raw value; nil is the Activity home.
+    var section: String?
+    var turnID: String? = nil
+    var archiveDate: String? = nil
+    var speakerSessionID: String? = nil
+    var voiceName: String? = nil
+    var libraryRecordID: String? = nil
+    var sessionID: String? = nil
+    /// Q1 FIX 2 (2026-11-12): a detail Back by path does not track is open (a memory, a lesson, a graph entry, a thread, a task,
+    /// the cue review, the COS chat or its History, a media preview, an archive chat, a live transcript, Import, Suggestions, the
+    /// dictionary, dictation). It makes the place differ from the list a jump arrived at, so Back closes that detail first.
+    var detail = false
+
+    /// The open item, as one key; nil on a section's list or the home.
+    var item: String? {
+        let parts = [turnID, archiveDate, speakerSessionID, voiceName, libraryRecordID, sessionID]
+        return parts.allSatisfy { $0 == nil } ? nil : parts.map { $0 ?? "" }.joined(separator: "|")
+    }
+}
+
+struct ActivityBackStep: Equatable, Sendable {
+    let from: ActivityPlace
+    let to: ActivityPlace
+}
+
+enum ActivityBackPath {
+    /// Steps Back remembers (35ac0a4's 30; Q1 FIX 1: the web's Back is history with no cap, and 12 caps only its trail line).
+    static let limit = 30
+    /// Earlier steps the trail shows at most (the web's NAV_TRAIL_MAX, 12).
+    static let trailLimit = 12
+
+    /// The path after the place changed from `old` to `new`. A step when the section changed, or when one item opened from
+    /// another in the same section (lead 2026-11-12: a session from a session, a meeting from a meeting); never for Back's own
+    /// move. A pick from the sidebar or Home (`pick`, the place it goes to) starts a fresh path and is not a step; the pick is
+    /// spent once the window arrives there.
+    static func record(_ path: [ActivityBackStep], old: ActivityPlace, new: ActivityPlace, goingBack: Bool,
+                       pick: ActivityPlace? = nil) -> (path: [ActivityBackStep], pick: ActivityPlace?) {
+        if let pick, new.section == pick.section { return ([], nil) }
+        let crossed = old.section != new.section
+        let itemToItem = !crossed && old.item != nil && new.item != nil && old.item != new.item
+        guard !goingBack, crossed || itemToItem else { return (path, pick) }
+        return (Array((path + [ActivityBackStep(from: old, to: new)]).suffix(limit)), pick)
+    }
+
+    /// Miles's pick B (2026-11-12, "the trail row"): the places a trail shows, oldest first, ending with `current`; empty when
+    /// Back would not go along the path (then the bar keeps its location text). It reads the same steps as Back, never a
+    /// second record.
+    /// Only on a page opened along the path, never on a section's list (the web: "Not shown on a pane's list").
+    static func trail(_ path: [ActivityBackStep], current: ActivityPlace, hasDetail: Bool) -> [ActivityPlace] {
+        guard hasDetail, step(path, current: current, hasDetail: hasDetail) != nil else { return [] }
+        return path.suffix(trailLimit).map(\.from) + [current]
+    }
+
+    /// One line that never wraps: when a trail has more than `room` places it keeps the first and the last `room - 2`, with
+    /// nil where the middle was shortened. The indices are into the trail.
+    static func shortened(_ count: Int, room: Int = 4) -> [Int?] {
+        guard count > room, room >= 3 else { return Array(0..<count).map { Optional($0) } }
+        return [0, nil] + Array((count - (room - 2))..<count).map { Optional($0) }
+    }
+
+    /// Back's word for where it goes: the section's title, or `home` for the Activity home. One place, so a later pick of the
+    /// breadcrumb design changes it once.
+    static func word(_ step: ActivityBackStep, titles: (String) -> String?, home: String) -> String {
+        step.from.section.flatMap(titles) ?? home
+    }
+
+    /// The step Back takes from `current`, or nil for the section's own parent chain.
+    static func step(_ path: [ActivityBackStep], current: ActivityPlace, hasDetail: Bool) -> ActivityBackStep? {
+        guard current.section != nil, let top = path.last, top.to.section == current.section else { return nil }
+        return current == top.to || !hasDetail ? top : nil
+    }
+
+    /// The path after Back moved by its own parent chain from `before` to `after` across sections (a meeting back to its
+    /// speaker review, a linked session back to Work): the step that move undid goes too.
+    static func settle(_ path: [ActivityBackStep], before: String?, after: String?) -> [ActivityBackStep] {
+        guard before != after, let top = path.last, top.to.section == before, top.from.section == after else { return path }
+        return Array(path.dropLast())
+    }
+}
+
+/// Miles's pick A (2026-11-12, "sides"): the message reader's words. Provisional until W1 posts the web's strings.
+enum MessageSides {
+    /// Under his bubble, as the web (7.0.30): "You", hidden from VoiceOver, which hears "You said" before the words.
+    static let youCaption = "You"
+    static let youSaid = "You said"
+    static let cosSaid = "COS said"
+}
+
+/// Anand parity item 3 (2026-11-12): the Speakers review's copy buttons, in Control Web 7.0.30's words (speakers.js): "Copy
+/// summary", "Copy full (N KB)", and "Copied" on the tapped one for 2.5 s.
+enum MeetingCopyWords {
+    static let summary = "summary"
+    static let full = "full"
+    static let copied = "Copied"
+    static let copiedSeconds: Double = 2.5
+
+    static func label(_ kind: String, copied: String?, fullChars: Int) -> String {
+        if copied == kind { return Self.copied }
+        return kind == full ? "Copy full (\(max(1, fullChars / 1024)) KB)" : "Copy summary"
+    }
+}
+
+/// Anand parity item 4 (2026-11-12): Meetings opens on today, in Control Web 7.0.30's words (meetings.js emptyToday, app.js
+/// plainDay): "No meetings today." and one tap to the latest earlier day with meetings, or to last month.
+enum MeetingTodayWords {
+    static let emptyToday = "No meetings today."
+    static let lastMonth = "Go to last month"
+    private static let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+    /// "Today", else "Nov 7", or "Nov 7, 2025" in another year, from a YYYY-MM-DD (the web's plainDay). Anything else as it was.
+    static func plainDay(_ day: String, today: String) -> String {
+        let parts = day.split(separator: "-").compactMap { Int($0) }
+        guard day.count == 10, parts.count == 3, (1...12).contains(parts[1]), (1...31).contains(parts[2]) else { return day }
+        if day == today { return "Today" }
+        let sameYear = today.hasPrefix(String(format: "%04d-", parts[0]))
+        return months[parts[1] - 1] + " \(parts[2])" + (sameYear ? "" : ", \(parts[0])")
+    }
+
+    /// The latest day before `today` that has meetings, among `days` (YYYY-MM-DD with a count).
+    static func latestDayBefore(_ today: String, days: [(date: String, count: Int)]) -> String? {
+        days.filter { $0.count > 0 && $0.date < today }.map(\.date).max()
+    }
+
+    static func jump(to day: String?, today: String) -> String {
+        day.map { "Go to " + plainDay($0, today: today) } ?? lastMonth
+    }
+}
+
 enum TodayHome {
     // MARK: Settings (UserDefaults keys; Settings > Activity)
 
