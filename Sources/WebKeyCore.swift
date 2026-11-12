@@ -512,7 +512,7 @@ enum PhoneApprovalsSwitch {
     static func confirmOnTitle(_ phone: Phone) -> String { "Turn on phone approvals for \(phone.name)?" }
     static func confirmOnMessage(_ phone: Phone, macName: String?) -> String {
         let mac = macName.map { "Your Mac's Tailscale name, \($0)," } ?? "Your Mac's Tailscale name"
-        return "\(phone.name) can then approve agent actions with its passkey and Face ID, after you enroll it here with Touch ID. "
+        return "\(phone.name) can then approve agent actions with its passkey and user verification on one of your Apple devices, after you enroll it here with Touch ID. "
             + "\(mac) becomes public in certificate logs when its first certificate is issued, and stays public. "
             + "COS restarts the server to turn this on."
     }
@@ -593,6 +593,28 @@ enum PhoneApprovalsOff {
     static let stopped = "Phone approvals are stopped. Every phone was removed."
     static let notStopped = "Revoke all did not reach the server, so a phone may still approve until the server restarts with approvals off."
     static let waits = "The restart waits for running work."
+}
+
+// MARK: - What a revoke says (security review 2026-11-12, blocker 2)
+
+/// Nothing claims phone approvals are off unless the server confirmed the revoke or Control's protected record was saved.
+/// Every other case names what failed.
+enum WebKeyRevokeOutcome {
+    static let noAnchor = "This Mac has no approval key, so Control kept no record of it"
+    static let unreadable = "Control could not read its protected phone record"
+    static let otherKey = "The protected phone record belongs to another key"
+    static let epochFull = "Control could not advance the protected phone record"
+    static let notRecorded = "Control could not record the revocation"
+
+    static func message(serverConfirmed: Bool, localSaved: Bool, localProblem: String?) -> String? {
+        let problem = localProblem ?? notRecorded
+        switch (serverConfirmed, localSaved) {
+        case (true, true): return nil
+        case (true, false): return "The server revoked it. \(problem)."
+        case (false, true): return "Revoked in Control. The server did not confirm, so phone approvals stay off until it does."
+        case (false, false): return "\(problem), and the server did not confirm. A phone may still approve. Try again."
+        }
+    }
 }
 
 // MARK: - The listener audit (review W9)
@@ -1475,48 +1497,71 @@ final class WebKeyState: ObservableObject {
         await refresh()
     }
 
-    private func protectedRevocationBase(anchorSha: String) -> WebKeyControlState? {
+    /// Control's protected record to revoke on top of, or why there is none (said as it is, never "approvals stay off").
+    private func protectedRevocationBase(anchorSha: String) -> (state: WebKeyControlState?, problem: String?) {
         let saved: WebKeyControlState
         switch store.load() {
         case .ok(let state): saved = state
         case .repaired(let state, let rewrote) where rewrote: saved = state
-        default: message = "Control could not read its protected phone record. Phone approvals stay off."; return nil
+        default: return (nil, WebKeyRevokeOutcome.unreadable)
         }
-        guard saved.anchorSpkiSha256 == anchorSha else { message = "The protected phone record belongs to another key. Phone approvals stay off."; return nil }
-        return saved
+        guard saved.anchorSpkiSha256 == anchorSha else { return (nil, WebKeyRevokeOutcome.otherKey) }
+        return (saved, nil)
     }
 
-    /// Persist local revocation BEFORE awaiting the server; a crash or cancellation cannot erase the user's intent.
-    func revoke(_ kid: String) async {
-        guard mode == .authority, visible, !busy, let anchor,
-              kid.range(of: #"\A[A-Za-z0-9_-]{22}\z"#, options: .regularExpression) != nil else { return }
+    /// Security review 2026-11-12, blocker 2: the server's revoke is called in every case; it needs no anchor. Control's
+    /// protected record is still written first when it can be, so a crash or cancellation cannot erase the intent, and each
+    /// failure is said as what it is (WebKeyRevokeOutcome). True only when the server answered 200.
+    @discardableResult
+    func revoke(_ kid: String) async -> Bool {
+        guard mode == .authority, visible, !busy,
+              kid.range(of: #"\A[A-Za-z0-9_-]{22}\z"#, options: .regularExpression) != nil else { return false }
         busy = true; defer { busy = false }
         protectionReady = false; card = nil; typedCode = ""
-        let sha = WebKeyHash.sha256Hex(anchor.publicKeyDER)
-        guard var s = protectedRevocationBase(anchorSha: sha) else { return }
-        if !s.revokedKids.contains(kid) { s = WebKeyControlState(epoch: s.epoch, revoked: s.revoked + [WebKeyRevocation(kid: kid, revokedAt: nowMs())], anchorSpkiSha256: sha, updatedAt: nowMs()) }
-        guard store.save(s) else { message = "Control could not record the revocation. Phone approvals stay off."; return }
-        controlState = s
+        var local: (saved: Bool, problem: String?) = (false, WebKeyRevokeOutcome.noAnchor)
+        if let anchor {
+            let sha = WebKeyHash.sha256Hex(anchor.publicKeyDER)
+            let base = protectedRevocationBase(anchorSha: sha)
+            if var s = base.state {
+                if !s.revokedKids.contains(kid) { s = WebKeyControlState(epoch: s.epoch, revoked: s.revoked + [WebKeyRevocation(kid: kid, revokedAt: nowMs())], anchorSpkiSha256: sha, updatedAt: nowMs()) }
+                if store.save(s) { controlState = s; local = (true, nil) } else { local = (false, WebKeyRevokeOutcome.notRecorded) }
+            } else {
+                local = (false, base.problem)
+            }
+        }
         let answer = await ask("revoke", body: WebKeyJCS.bytes(["kid": kid, "reason": "revoked_in_control"] as [String: Any]))
-        if answer?.status != 200 { message = "Revoked in Control. The server did not confirm, so phone approvals stay off until it does." }
+        let confirmed = answer?.status == 200
+        let outcome = WebKeyRevokeOutcome.message(serverConfirmed: confirmed, localSaved: local.saved, localProblem: local.problem)
         if !Task.isCancelled { await refresh() }
+        // Said after the read, so the refresh's own line cannot hide what this revoke did.
+        if let outcome { message = outcome }
+        return confirmed
     }
 
-    /// True only when the server answered 200 (option A's Off reads it: a false never reads as stopped).
+    /// Like revoke: the server's revoke-all is called in every case, after Control's epoch moves when it can. True only when
+    /// the server answered 200 (option A's Off reads it: a false never reads as stopped).
     @discardableResult
     func revokeAll() async -> Bool {
-        guard mode == .authority, visible, !busy, let anchor else { return false }
+        guard mode == .authority, visible, !busy else { return false }
         busy = true; defer { busy = false }
         protectionReady = false; card = nil; typedCode = ""
-        let sha = WebKeyHash.sha256Hex(anchor.publicKeyDER)
-        guard let base = protectedRevocationBase(anchorSha: sha) else { return false }
-        guard base.epoch < WebKeyJCS.maxSafe else { message = "Control could not advance the protected phone record. Phone approvals stay off."; return false }
-        let s = WebKeyControlState(epoch: base.epoch + 1, revoked: base.revoked, anchorSpkiSha256: sha, updatedAt: nowMs())
-        guard store.save(s) else { message = "Control could not record the revocation. Phone approvals stay off."; return false }
-        controlState = s
+        var local: (saved: Bool, problem: String?) = (false, WebKeyRevokeOutcome.noAnchor)
+        if let anchor {
+            let sha = WebKeyHash.sha256Hex(anchor.publicKeyDER)
+            let base = protectedRevocationBase(anchorSha: sha)
+            if let saved = base.state, saved.epoch < WebKeyJCS.maxSafe {
+                let s = WebKeyControlState(epoch: saved.epoch + 1, revoked: saved.revoked, anchorSpkiSha256: sha, updatedAt: nowMs())
+                if store.save(s) { controlState = s; local = (true, nil) } else { local = (false, WebKeyRevokeOutcome.notRecorded) }
+            } else {
+                local = (false, base.problem ?? WebKeyRevokeOutcome.epochFull)
+            }
+        }
         let answer = await ask("revoke-all", body: Data("{}".utf8))
-        if answer?.status != 200 { message = "Revoked in Control. The server did not confirm, so phone approvals stay off until it does." }
+        let confirmed = answer?.status == 200
+        let outcome = WebKeyRevokeOutcome.message(serverConfirmed: confirmed, localSaved: local.saved, localProblem: local.problem)
         if !Task.isCancelled { await refresh() }
-        return answer?.status == 200
+        // Said after the read, so the refresh's own line cannot hide what this revoke did.
+        if let outcome { message = outcome }
+        return confirmed
     }
 }

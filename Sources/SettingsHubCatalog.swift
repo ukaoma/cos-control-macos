@@ -201,7 +201,7 @@ enum SettingsHubCatalog {
         // helper's web-revoke-all. Under Open COS on your phone, in Basic and All, hidden with the phone sign-in on a server without it.
         .init("WB-01", "Sign out every browser", "Ends every Control Web sign-in on phones and browsers. You can sign in again from here.", old: "", group: "glasses.phone",
               advanced: false, mount: .group, keywords: ["sign out", "browser", "phone", "revoke", "log out", "control web", "sessions", "everywhere"]),
-        .init("PK-01", "Phone approvals", "Approve agent actions from your iPhone with its passkey and Face ID. Touch ID on this Mac enrolls the phone.", old: "", group: "glasses.phone",
+        .init("PK-01", "Phone approvals", "Approve agent actions with your iPhone's passkey and user verification on one of your Apple devices. Touch ID on this Mac enrolls the phone.", old: "", group: "glasses.phone",
               advanced: false, mount: .group, keywords: ["phone key", "approvals", "approve", "touch id", "enroll", "revoke", "web key", "passkey"]),
         // Option A (lead 2026-11-11 21:31): the switch that turns phone approvals on for one phone, or off. Full Settings only:
         // deliberately NOT in basicIDs. Its words are PhoneApprovalsSwitch.label and detail (Sources/WebKeyCore.swift).

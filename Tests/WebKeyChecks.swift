@@ -1376,6 +1376,30 @@ struct WebKeyChecks {
         check(fresh.controlState?.epoch == 1 && fresh.controlState?.revokedKids.contains(card.kid) == true
               && WebKeyControlState.parse(FileManager.default.contents(atPath: fileURL.path) ?? Data())?.sameRecord(as: kept) == true,
               "W5 rewritten from keychain", "a rolled-back file is rewritten from the keychain")
+        // Security review 2026-11-12, blocker 2: a store that cannot save never stops the server call, and nothing claims off.
+        mem.failWrite = true
+        fake.calls = []
+        fake.answers["revoke-all"] = (500, ["ok": false])
+        let noSaveNoServer = await state.revokeAll()
+        check(fake.count("revoke-all") == 1, "revoke all reaches the server", "a failing store still sends revoke-all")
+        check(!noSaveNoServer && state.message?.contains("stay off") == false && state.message?.contains("may still approve") == true,
+              "revoke says what failed", "neither saved nor confirmed: the message says a phone may still approve")
+        fake.answers["revoke-all"] = (200, ["ok": true])
+        let serverOnly = await state.revokeAll()
+        check(serverOnly && state.message == "The server revoked it. Control could not record the revocation.",
+              "revoke says what failed", "confirmed by the server, not saved by Control: says both")
+        fake.calls = []
+        fake.answers["revoke"] = (500, ["ok": false])
+        let revokedOne = await state.revoke(card.kid)
+        check(fake.count("revoke") == 1, "revoke reaches the server", "a failing store still sends revoke")
+        check(!revokedOne && state.message?.contains("may still approve") == true, "revoke says what failed", "a revoke nobody recorded says so")
+        mem.failWrite = false
+        fake.answers["revoke"] = (200, ["ok": true])
+        fake.answers["revoke-all"] = (500, ["ok": false])
+        check(WebKeyRevokeOutcome.message(serverConfirmed: true, localSaved: true, localProblem: nil) == nil
+              && WebKeyRevokeOutcome.message(serverConfirmed: false, localSaved: true, localProblem: nil)?.contains("stay off") == true
+              && WebKeyRevokeOutcome.message(serverConfirmed: false, localSaved: false, localProblem: WebKeyRevokeOutcome.noAnchor)?.hasPrefix(WebKeyRevokeOutcome.noAnchor) == true,
+              "revoke says what failed", "off is claimed only when the server confirmed or Control saved; the no-anchor case names itself")
         try? FileManager.default.removeItem(at: dir)
     }
 }

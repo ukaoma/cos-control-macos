@@ -34,7 +34,7 @@ struct WebKeySettingsBlock: View {
 
 enum WebKeyCopy {
     static let title = "Phone approvals"
-    static let subtitle = "Approve agent actions from your iPhone with its passkey and Face ID. Touch ID on this Mac enrolls the phone."
+    static let subtitle = "Approve agent actions with your iPhone's passkey and user verification on one of your Apple devices. Touch ID on this Mac enrolls the phone."
     static let create = "Create key with Touch ID"
     static let register = "Register with Touch ID"
     static let foreign = "The server holds an approval key this Mac did not make. Registering this Mac's key replaces it and revokes every phone key."

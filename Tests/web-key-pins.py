@@ -327,12 +327,18 @@ need("applyAllowed" not in switch_view[toggle_at:toggle_end] and ".destructive(P
      and off_section.count("PhoneApprovalsSwitch.applyAllowed(") == 1,
      "phone off revokes at once", "the Off toggle, its confirm and Off's Revoke all never ask applyAllowed; only the =0 restart waits")
 # Devices: a phone's Revoke and Revoke all are live calls, never behind the running-work guard.
-revoke_fn = body_of(core, core.index("    func revoke(_ kid: String) async {"))
+revoke_fn = body_of(core, core.index("    func revoke(_ kid: String) async -> Bool {"))
 revoke_all_fn = body_of(core, core.index("    func revokeAll() async -> Bool {"))
 need(views.count("Button(WebKeyCopy.revoke) { Task { await state.revoke(row.kid) } }.buttonStyle(COSTextButtonStyle()).disabled(state.busy)") == 1
      and views.count('.destructive("Revoke all") { Task { await state.revokeAll() } }') == 1
      and not any(w in revoke_fn + revoke_all_fn for w in ("applyAllowed", "workActive", "restartWork")),
      "devices revoke is live", "a phone's Revoke and Revoke all are live calls, never behind the running-work guard")
+# Security review 2026-11-12, blocker 2: neither revoke returns before the server call for want of an anchor or a saved
+# record. The only early return is the authority/visible/busy guard; the server call is unconditional after it.
+need(all(fn.count("return false") == 1 and "if let anchor {" in fn and "guard let anchor" not in fn and "local.saved else" not in fn
+         for fn in (revoke_fn, revoke_all_fn)) and "stay off" not in body_of(core, core.index("enum WebKeyRevokeOutcome {")).replace(
+         'case (false, true): return "Revoked in Control. The server did not confirm, so phone approvals stay off until it does."', ""),
+     "revoke needs no anchor", "revoke and revoke-all call the server in every case, and only a saved record may say approvals stay off")
 # Condition 4: Off touches nothing that enrolls or approves a phone, so enrolling keeps today's Touch ID and code.
 need(not any(t in off_section for t in ("approve(", "startApproval", "typedCode", ".card", "WebKeyApproveGate")),
      "phone off keeps enrollment gated", "Off never touches enrollment or approval; enrolling keeps its Touch ID and code")
