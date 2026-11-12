@@ -308,14 +308,34 @@ need(helper.count('case "set-phone-approvals": try withMutationLock { try setPho
      and set_fn.count("versionAtLeast($0.version, PhoneApprovalsCore.minimumServer)") == 1 and set_fn.count("PhoneApprovalsCore.change(arguments)") == 1
      and helper.count("PhoneApprovalsCore.change(fromEnvironment: values)") == 3 and helper.count("try requirePhoneApprovals(phoneApprovals)") == 3,
      "phone switch wiring", "set-phone-approvals parses with PhoneApprovalsCore, checks the server floor, and proves the change on every apply path")
-# Like the nine restart rows (Settings Release A): the toggle-off, the Turn on button and both confirm actions ask
-# applyAllowed with the panel's own restartWork and serverSettingsLocked, so nothing applies while work runs.
+# Like the nine restart rows (Settings Release A): turning ON (the Turn on button and its confirm) asks applyAllowed with the
+# panel's own restartWork and serverSettingsLocked, so it never starts while work runs. The third use only draws Off's
+# waiting line; it applies nothing.
 guard = "PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active)"
-apply_lines = [l for l in switch_view.splitlines() if "model.setPhoneApprovals(" in l]
-need(switch_view.count(guard) == 4 and len(apply_lines) == 2 and all(l.strip().startswith("if " + guard + " { model.setPhoneApprovals(") for l in apply_lines)
-     and ".labelsHidden().toggleStyle(COSSwitchStyle()).disabled(locked)" in switch_view
+on_lines = [l for l in switch_view.splitlines() if "model.setPhoneApprovals(on: true" in l]
+need(switch_view.count(guard) == 3 and len(on_lines) == 1 and on_lines[0].strip().startswith("if " + guard + " { model.setPhoneApprovals(on: true")
+     and ".labelsHidden().toggleStyle(COSSwitchStyle()).disabled(locked || pendingOff != nil)" in switch_view
      and phone.count("work: restartWork, locked: serverSettingsLocked) }") == 1,
-     "phone switch waits for work", "the toggle, the button and both confirms wait for running work, with the panel's restartWork")
+     "phone switch waits for work", "turning on waits for running work, with the panel's restartWork")
+# Option A (lead ruling 2026-11-12 10:32): Off never asks applyAllowed. The toggle opens the confirm, the confirm runs
+# PhoneApprovalsOff.run, and its Revoke all comes before the only applyAllowed in the Off code, the =0 restart's (resume).
+off_section = body_of(core, core.index("enum PhoneApprovalsOff {"))
+run_fn = body_of(off_section, off_section.index("@MainActor static func run("))
+need("applyAllowed" not in switch_view[toggle_at:toggle_end] and ".destructive(PhoneApprovalsSwitch.confirmOff) { turnOff() }" in switch_view
+     and "applyAllowed" not in body_of(switch_view, switch_view.index("private func turnOff()"))
+     and "applyAllowed" not in run_fn and 0 <= run_fn.find("await revokeAll()") < run_fn.find("resume(")
+     and off_section.count("PhoneApprovalsSwitch.applyAllowed(") == 1,
+     "phone off revokes at once", "the Off toggle, its confirm and Off's Revoke all never ask applyAllowed; only the =0 restart waits")
+# Devices: a phone's Revoke and Revoke all are live calls, never behind the running-work guard.
+revoke_fn = body_of(core, core.index("    func revoke(_ kid: String) async {"))
+revoke_all_fn = body_of(core, core.index("    func revokeAll() async -> Bool {"))
+need(views.count("Button(WebKeyCopy.revoke) { Task { await state.revoke(row.kid) } }.buttonStyle(COSTextButtonStyle()).disabled(state.busy)") == 1
+     and views.count('.destructive("Revoke all") { Task { await state.revokeAll() } }') == 1
+     and not any(w in revoke_fn + revoke_all_fn for w in ("applyAllowed", "workActive", "restartWork")),
+     "devices revoke is live", "a phone's Revoke and Revoke all are live calls, never behind the running-work guard")
+# Condition 4: Off touches nothing that enrolls or approves a phone, so enrolling keeps today's Touch ID and code.
+need(not any(t in off_section for t in ("approve(", "startApproval", "typedCode", ".card", "WebKeyApproveGate")),
+     "phone off keeps enrollment gated", "Off never touches enrollment or approval; enrolling keeps its Touch ID and code")
 # The render seed (Tests/PhoneApprovalsRender.swift) is fixture-only: background work off, and nothing in Sources calls it.
 seed_fn = body_of(views, views.index("    static func renderFixture(model: ControllerModel, state: WebKeyState"))
 sources_all = "".join(p.read_text(encoding="utf-8") for p in sorted((root / "Sources").glob("*.swift")))

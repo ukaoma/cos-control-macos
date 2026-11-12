@@ -97,8 +97,13 @@ struct PhoneApprovalsSwitchRow: View {
     @State private var picked: PhoneApprovalsSwitch.Phone?
     @State private var confirmOn = false
     @State private var confirmOff = false
-    /// A turn-off (or an apply) found running work: the row says it waits.
+    /// A turn-on found running work: the row says it waits.
     @State private var held = false
+    /// Option A: Off's saved wait (PhoneApprovalsOff), read from UserDefaults when the row appears.
+    @State private var pendingOff: PhoneApprovalsPendingOff?
+    /// The helper is running Off's =0 restart; when it finishes, a proved restart clears the wait.
+    @State private var applyingOff = false
+    private var pendingStore: DefaultsPhoneApprovalsPendingStore { DefaultsPhoneApprovalsPendingStore() }
 
     private var on: Bool { PhoneApprovalsSwitch.isOn(state.mode) }
     private var phones: [PhoneApprovalsSwitch.Phone] {
@@ -116,17 +121,19 @@ struct PhoneApprovalsSwitchRow: View {
                 }
                 Spacer(minLength: 0)
                 // The switch only opens a step: on asks for a phone, off asks to confirm. It never applies by itself.
-                Toggle(PhoneApprovalsSwitch.label, isOn: Binding(get: { on || choosing }, set: { wanted in
+                // Off never waits for running work (option A): its confirm removes every phone at once, and only the =0
+                // restart after it waits. While that restart waits, the switch reads off and stays put.
+                Toggle(PhoneApprovalsSwitch.label, isOn: Binding(get: { (on && pendingOff == nil) || choosing }, set: { wanted in
                     if wanted, !on {
                         choosing = true
                         Task { await pairing.refreshTailscale() }
-                    } else if !wanted, on {
-                        if PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active) { confirmOff = true } else { held = true }
+                    } else if !wanted, on, pendingOff == nil {
+                        confirmOff = true
                     } else if !wanted {
                         choosing = false; picked = nil; held = false
                     }
                 }))
-                .labelsHidden().toggleStyle(COSSwitchStyle()).disabled(locked)
+                .labelsHidden().toggleStyle(COSSwitchStyle()).disabled(locked || pendingOff != nil)
             }
             if choosing && !on {
                 if phones.isEmpty {
@@ -141,6 +148,11 @@ struct PhoneApprovalsSwitchRow: View {
                         .buttonStyle(TodayButtonStyle(small: true))
                         .disabled(picked == nil || !PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active))
                 }
+            }
+            if let pendingOff {
+                Text(PhoneApprovalsOff.line(pendingOff, waiting: !model.busy && !PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active)))
+                    .font(COSType.body(12)).foregroundStyle(pendingOff.revokedAll ? TodayInk.sub : COSPalette.amber)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if work.active && (choosing || held) {
                 Text(RestartApply.waitsForWork + (work.uploads > 0 ? " " + RestartApply.uploadOpen : ""))
@@ -157,16 +169,39 @@ struct PhoneApprovalsSwitchRow: View {
                 if PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active) { model.setPhoneApprovals(on: true, phone: picked) } else { held = true }
             }, .cancel()])
         .cosConfirm(PhoneApprovalsSwitch.confirmOffTitle, isPresented: $confirmOff, message: PhoneApprovalsSwitch.confirmOffMessage,
-            actions: [.destructive(PhoneApprovalsSwitch.confirmOff) {
-                if PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active) { model.setPhoneApprovals(on: false, phone: nil) } else { held = true }
-            }, .cancel()])
+            actions: [.destructive(PhoneApprovalsSwitch.confirmOff) { turnOff() }, .cancel()])
         // After the helper's restart (or any other operation): read the server again, so On and the amber line follow it.
         .onChange(of: model.busy) { _, busy in
             guard !busy else { return }
             choosing = false; picked = nil
+            if applyingOff {
+                applyingOff = false
+                PhoneApprovalsOff.finished(store: pendingStore, helperSucceeded: model.error == nil)
+                pendingOff = pendingStore.load()
+            }
             Task { await state.refresh() }
         }
-        .onChange(of: work.active) { _, active in if !active { held = false } }
+        .onChange(of: work.active) { _, active in if !active { held = false; resumeOff() } }
+        .onAppear { pendingOff = pendingStore.load(); resumeOff() }
+    }
+
+    /// Option A: Revoke all now, whatever work runs, then the =0 restart, which waits for running work.
+    private func turnOff() {
+        Task {
+            pendingOff = await PhoneApprovalsOff.run(store: pendingStore, now: Int64((Date().timeIntervalSince1970 * 1000).rounded(.down)),
+                                                     revokeAll: { await state.revokeAll() }, locked: { locked }, workActive: { work.active },
+                                                     apply: applyOff)
+        }
+    }
+
+    private func resumeOff() {
+        guard pendingOff != nil, !applyingOff else { return }
+        PhoneApprovalsOff.resume(store: pendingStore, locked: locked, workActive: work.active, apply: applyOff)
+    }
+
+    private func applyOff() {
+        applyingOff = true
+        model.setPhoneApprovals(on: false, phone: nil)
     }
 
     /// Offscreen renders only (Tests/PhoneApprovalsRender.swift): the row opened on one step, as a click would leave it, with

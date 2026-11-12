@@ -153,6 +153,7 @@ struct WebKeyChecks {
         signerTLSLine()
         reasonParity(g)
         phoneApprovalsSwitch()
+        await phoneApprovalsOff()
         await cancellation()
         await flow(pending: pending, anchorG: anchorG, anchorDER: anchorDER, anchorRaw: anchorRaw, selfDns: selfDns)
         await recoveryFlow(anchorRaw: anchorRaw, selfDns: selfDns)
@@ -588,6 +589,66 @@ struct WebKeyChecks {
         check(PhoneApprovalsSwitch.applyAllowed(locked: false, workActive: false) && !PhoneApprovalsSwitch.applyAllowed(locked: true, workActive: false)
               && !PhoneApprovalsSwitch.applyAllowed(locked: false, workActive: true) && !PhoneApprovalsSwitch.applyAllowed(locked: true, workActive: true),
               "phone switch waits for work", "an apply is live only with nothing in progress and no running work")
+    }
+
+    /// Option A (lead ruling 2026-11-12 10:32): Off revokes every phone at once, whatever work runs; only its =0 restart waits.
+    @MainActor
+    static func phoneApprovalsOff() async {
+        final class Mem: PhoneApprovalsPendingStore {
+            var value: PhoneApprovalsPendingOff?
+            func load() -> PhoneApprovalsPendingOff? { value }
+            func save(_ pending: PhoneApprovalsPendingOff) { value = pending }
+            func clear() { value = nil }
+        }
+        // With a meeting running: the revoke runs now, the =0 restart does not, and the wait is saved.
+        let mem = Mem()
+        var revokes = 0, applies = 0
+        var savedBeforeRevoke = false
+        let busy = await PhoneApprovalsOff.run(store: mem, now: 7, revokeAll: { savedBeforeRevoke = mem.load() != nil; revokes += 1; return true },
+                                               locked: { false }, workActive: { true }, apply: { applies += 1 })
+        check(revokes == 1 && busy.revokedAll, "phone off revokes at once", "Off's Revoke all runs while work runs")
+        check(applies == 0 && mem.load() == PhoneApprovalsPendingOff(revokedAll: true, savedAt: 7),
+              "phone off restart waits", "the =0 restart waits for running work, and the wait is saved")
+        check(savedBeforeRevoke, "phone off saved first", "the wait is saved before the revoke, so a quit during it keeps the =0")
+        // The work ends: the saved =0 applies; another change in progress still waits.
+        check(!PhoneApprovalsOff.resume(store: mem, locked: true, workActive: false, apply: { applies += 1 }) && applies == 0
+              && PhoneApprovalsOff.resume(store: mem, locked: false, workActive: false, apply: { applies += 1 }) && applies == 1,
+              "phone off restart waits", "the saved =0 applies once nothing is in progress and no work runs")
+        // A failed restart keeps the wait; a proved one clears it.
+        PhoneApprovalsOff.finished(store: mem, helperSucceeded: false)
+        check(mem.load() != nil, "phone off failed restart keeps the wait", "only a proved restart clears it")
+        PhoneApprovalsOff.finished(store: mem, helperSucceeded: true)
+        check(mem.load() == nil && !PhoneApprovalsOff.resume(store: mem, locked: false, workActive: false, apply: { applies += 1 }) && applies == 1,
+              "phone off failed restart keeps the wait", "a proved restart clears it, and nothing applies again")
+        // Nothing running: the revoke and the restart both run now.
+        let idle = Mem()
+        var order: [String] = []
+        _ = await PhoneApprovalsOff.run(store: idle, now: 8, revokeAll: { order.append("revoke"); return true },
+                                        locked: { false }, workActive: { false }, apply: { order.append("apply") })
+        check(order == ["revoke", "apply"], "phone off revokes at once", "with nothing running, the revoke and then the restart")
+        // A Revoke all that did not reach the server never reads as stopped.
+        let failed = await PhoneApprovalsOff.run(store: Mem(), now: 9, revokeAll: { false }, locked: { false }, workActive: { true }, apply: {})
+        let failedLine = PhoneApprovalsOff.line(failed, waiting: true)
+        check(!failed.revokedAll && !failedLine.contains("are stopped") && failedLine.contains("may still approve"),
+              "phone off failed revoke is not stopped", "the row says a phone may still approve")
+        check(PhoneApprovalsOff.line(.init(revokedAll: true, savedAt: 1), waiting: false) == PhoneApprovalsOff.stopped
+              && PhoneApprovalsOff.line(.init(revokedAll: true, savedAt: 1), waiting: true).hasSuffix(PhoneApprovalsOff.waits),
+              "phone off line", "stopped, and the wait only while it waits")
+        // The confirm says it before he confirms: every phone is removed and must be enrolled again.
+        let off = PhoneApprovalsSwitch.confirmOffMessage
+        check(off.contains("Every enrolled phone is removed") && off.contains("enroll each phone again"), "phone off confirm",
+              "the Off confirm says every phone is removed and must be enrolled again")
+        check([PhoneApprovalsOff.stopped, PhoneApprovalsOff.notStopped, PhoneApprovalsOff.waits, off, PhoneApprovalsSwitch.confirmOff]
+                .allSatisfy { !$0.isEmpty && !$0.contains("—") && !$0.contains("COS_") }, "phone off confirm", "plain copy")
+        // The app's store survives a new store object (UserDefaults), and clears.
+        let suite = "cos.web-key-checks.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        DefaultsPhoneApprovalsPendingStore(defaults: defaults).save(.init(revokedAll: false, savedAt: 42))
+        let reread = DefaultsPhoneApprovalsPendingStore(defaults: defaults)
+        check(reread.load() == PhoneApprovalsPendingOff(revokedAll: false, savedAt: 42), "phone off wait is saved", "a new store reads the saved wait")
+        reread.clear()
+        check(DefaultsPhoneApprovalsPendingStore(defaults: defaults).load() == nil, "phone off wait is saved", "clear removes it")
+        defaults.removePersistentDomain(forName: suite)
     }
 
     /// SR-11 (2026-11-11): golden.json's signerTlsReasons, written by gen_control_golden.mts from the SERVER's own
@@ -1300,8 +1361,9 @@ struct WebKeyChecks {
         fake.onCall = { op, _ in
             if op == "revoke-all" { epochBeforeHTTP = mem.items[WebKeyStateStore.mirrorAccount].flatMap(WebKeyControlState.parse)?.epoch }
         }
-        await state.revokeAll()
+        let revokedAllConfirmed = await state.revokeAll()
         check(epochBeforeHTTP == 1, "epoch intent before HTTP", "the protected epoch advances before the first revoke-all POST")
+        check(!revokedAllConfirmed, "phone off failed revoke is not stopped", "Revoke all reports false when the server does not answer 200")
         fake.onCall = nil
         check(state.controlState?.epoch == 1, "W5 revoke all fails closed", "Control's epoch is ahead of the server's")
         // A rolled-back state FILE is rewritten from the keychain on the next refresh.

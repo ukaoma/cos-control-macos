@@ -493,8 +493,9 @@ enum PhoneApprovalsSwitch {
         return parts.compactMap { $0 }
     }
 
-    /// Like the nine restart rows (RestartApply.applyEnabled, Settings Release A): an apply is live only with no other change
-    /// in progress and no running work, so turning this on or off never interrupts a meeting or leaves the drain gate closed.
+    /// Like the nine restart rows (RestartApply.applyEnabled, Settings Release A): turning ON, and Off's =0 restart, are live
+    /// only with no other change in progress and no running work, so neither interrupts a meeting or leaves the drain gate
+    /// closed. Off's Revoke all, and the Devices card's Revoke and Revoke all, never ask this (PhoneApprovalsOff).
     static func applyAllowed(locked: Bool, workActive: Bool) -> Bool { !locked && !workActive }
 
     /// On means the server serves phone approvals now. Bootstrap (registration only) and off read as off.
@@ -517,11 +518,81 @@ enum PhoneApprovalsSwitch {
     }
     static let confirmOn = "Turn on and restart"
     static let confirmOffTitle = "Turn off phone approvals?"
-    static let confirmOffMessage = "COS restarts the server with phone approvals off. Enrolled phones stay listed until you revoke them, and none can approve while this is off."
-    static let confirmOff = "Turn off and restart"
+    static let confirmOffMessage = "Every enrolled phone is removed now and stops approving at once. If you turn this on again, enroll each phone again with Touch ID. COS then restarts the server with phone approvals off, after any running work."
+    static let confirmOff = "Remove phones and turn off"
     static let label = "Turn on phone approvals"
     static let detail = "Off unless you turn it on. Lets one of your iPhones approve agent actions. Restarts the server."
     static let noPhone = "No iPhone on your Tailscale account yet. Sign in to Tailscale on the phone, then check again."
+}
+
+// MARK: - Turning phone approvals off (option A, lead ruling 2026-11-12 10:32)
+
+/// Off must stop approvals at once, and the server reads COS_WEB_KEY_AUTHORITY only when it starts. So Off runs the live
+/// Revoke all first: every enrolled phone stops approving now and must be enrolled again with Touch ID and the code. Then it
+/// writes =0 through the managed restart. Only that restart waits for running work (PhoneApprovalsSwitch.applyAllowed); the
+/// revoke never does, and neither do the Devices card's Revoke and Revoke all. The wait is saved in UserDefaults, so it
+/// survives a quit or a Mac restart, and the row shows it until the helper proves the server restarted with approvals off.
+struct PhoneApprovalsPendingOff: Equatable, Sendable {
+    /// The live Revoke all reached the server and it answered 200. When false, the row never says approvals are stopped.
+    var revokedAll: Bool
+    var savedAt: Int64
+}
+
+@MainActor protocol PhoneApprovalsPendingStore: AnyObject {
+    func load() -> PhoneApprovalsPendingOff?
+    func save(_ pending: PhoneApprovalsPendingOff)
+    func clear()
+}
+
+/// The app's store: UserDefaults, which survives a quit or a Mac restart.
+@MainActor final class DefaultsPhoneApprovalsPendingStore: PhoneApprovalsPendingStore {
+    static let key = "cos.phoneApprovals.pendingOff"
+    let defaults: UserDefaults
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    func load() -> PhoneApprovalsPendingOff? {
+        guard let row = defaults.dictionary(forKey: Self.key), let revoked = row["revokedAll"] as? Bool,
+              let at = (row["savedAt"] as? NSNumber)?.int64Value else { return nil }
+        return PhoneApprovalsPendingOff(revokedAll: revoked, savedAt: at)
+    }
+    func save(_ pending: PhoneApprovalsPendingOff) {
+        defaults.set(["revokedAll": pending.revokedAll, "savedAt": NSNumber(value: pending.savedAt)] as [String: Any], forKey: Self.key)
+    }
+    func clear() { defaults.removeObject(forKey: Self.key) }
+}
+
+enum PhoneApprovalsOff {
+    /// Off, after its confirm. The intent is saved before the revoke, so a quit during it still leaves the =0 waiting. The
+    /// revoke runs whatever work is running; only the =0 restart asks applyAllowed, after the revoke, with the work as it is then.
+    @MainActor static func run(store: any PhoneApprovalsPendingStore, now: Int64, revokeAll: () async -> Bool,
+                               locked: () -> Bool, workActive: () -> Bool, apply: () -> Void) async -> PhoneApprovalsPendingOff {
+        store.save(PhoneApprovalsPendingOff(revokedAll: false, savedAt: now))
+        let pending = PhoneApprovalsPendingOff(revokedAll: await revokeAll(), savedAt: now)
+        store.save(pending)
+        resume(store: store, locked: locked(), workActive: workActive(), apply: apply)
+        return pending
+    }
+
+    /// The saved =0 applies once nothing is in progress and no work runs: right after the revoke, when the row appears, and
+    /// when running work ends. Returns whether it applied now.
+    @MainActor @discardableResult
+    static func resume(store: any PhoneApprovalsPendingStore, locked: Bool, workActive: Bool, apply: () -> Void) -> Bool {
+        guard store.load() != nil, PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: workActive) else { return false }
+        apply()
+        return true
+    }
+
+    /// The helper finished the =0 restart. Only a proved restart (no error) clears the wait; a failed one keeps it.
+    @MainActor static func finished(store: any PhoneApprovalsPendingStore, helperSucceeded: Bool) {
+        if helperSucceeded { store.clear() }
+    }
+
+    /// The row's line while Off waits or runs. A failed Revoke all never reads as stopped.
+    static func line(_ pending: PhoneApprovalsPendingOff, waiting: Bool) -> String {
+        (pending.revokedAll ? stopped : notStopped) + (waiting ? " " + waits : "")
+    }
+    static let stopped = "Phone approvals are stopped. Every phone was removed."
+    static let notStopped = "Revoke all did not reach the server, so a phone may still approve until the server restarts with approvals off."
+    static let waits = "The restart waits for running work."
 }
 
 // MARK: - The listener audit (review W9)
@@ -1431,18 +1502,21 @@ final class WebKeyState: ObservableObject {
         if !Task.isCancelled { await refresh() }
     }
 
-    func revokeAll() async {
-        guard mode == .authority, visible, !busy, let anchor else { return }
+    /// True only when the server answered 200 (option A's Off reads it: a false never reads as stopped).
+    @discardableResult
+    func revokeAll() async -> Bool {
+        guard mode == .authority, visible, !busy, let anchor else { return false }
         busy = true; defer { busy = false }
         protectionReady = false; card = nil; typedCode = ""
         let sha = WebKeyHash.sha256Hex(anchor.publicKeyDER)
-        guard let base = protectedRevocationBase(anchorSha: sha) else { return }
-        guard base.epoch < WebKeyJCS.maxSafe else { message = "Control could not advance the protected phone record. Phone approvals stay off."; return }
+        guard let base = protectedRevocationBase(anchorSha: sha) else { return false }
+        guard base.epoch < WebKeyJCS.maxSafe else { message = "Control could not advance the protected phone record. Phone approvals stay off."; return false }
         let s = WebKeyControlState(epoch: base.epoch + 1, revoked: base.revoked, anchorSpkiSha256: sha, updatedAt: nowMs())
-        guard store.save(s) else { message = "Control could not record the revocation. Phone approvals stay off."; return }
+        guard store.save(s) else { message = "Control could not record the revocation. Phone approvals stay off."; return false }
         controlState = s
         let answer = await ask("revoke-all", body: Data("{}".utf8))
         if answer?.status != 200 { message = "Revoked in Control. The server did not confirm, so phone approvals stay off until it does." }
         if !Task.isCancelled { await refresh() }
+        return answer?.status == 200
     }
 }
