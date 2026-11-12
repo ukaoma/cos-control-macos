@@ -9108,7 +9108,13 @@ extension ActivityWindow {
                 let mode = TodayHome.railMode(windowWidth: width)
                 HStack(spacing: 0) {
                     // Settings as the hub: its sidebar takes the rail's place, and "‹ Today" leaves it.
-                    if !settingsHubShowing { todayRail(mode: mode, frame: frame, now: timeline.date) }
+                    // The rail never makes the row taller than the window (Reply renders 2026-11-12: at 1119x760 the full rail
+                    // needed more height, the content column grew with it, and the pinned Reply card fell below the window).
+                    if !settingsHubShowing {
+                        todayRail(mode: mode, frame: frame, now: timeline.date)
+                            .frame(maxHeight: geometry.size.height, alignment: .top)
+                            .clipped()
+                    }
                     VStack(spacing: 0) {
                         if (canGoBack || connectedWorkTest) && !settingsHubShowing { navigationBar; Divider() }
                         activityContent(today: frame, width: width, now: timeline.date)

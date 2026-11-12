@@ -13,6 +13,8 @@ def body(text, start, end):
     return text[i:j] if i >= 0 and j > i else ""
 
 detail = body(win, "    private func messageDetail(_ turn: GlassesTurn) -> some View {", "\n    /// Offered on its own when the keyword answer")
+need("                        todayRail(mode: mode, frame: frame, now: timeline.date)\n                            .frame(maxHeight: geometry.size.height, alignment: .top)\n                            .clipped()" in win,
+     "[window] the rail never makes the row taller than the window, so the pinned card stays on screen")
 # Anand parity (lead 2026-11-12, as the web's reader): the Reply card is pinned under the scroll; this Mac's replies read in the
 # scroll under the answer.
 mount = 'MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, onAppear: wireMessageReply, part: .composer)\n            .id("reply:" + turn.id)'

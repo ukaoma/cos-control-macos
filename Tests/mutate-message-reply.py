@@ -53,6 +53,8 @@ MUTANTS = [
 ''', "", "[reader] this Mac's replies read under the answer"),
     ("card-squeezed", "pins", W, "            .fixedSize(horizontal: false, vertical: true)\n            .padding(.horizontal, 28).padding(.vertical, 12)",
      "            .padding(.horizontal, 28).padding(.vertical, 12)", "[reader] the pinned card keeps its full height"),
+    ("rail-unclamped", "pins", W, "                            .frame(maxHeight: geometry.size.height, alignment: .top)\n                            .clipped()\n", "",
+     "[window] the rail never makes the row taller than the window"),
     ("replies-twice", "pins", V, "            if part == .all, !replies.isEmpty {", "            if !replies.isEmpty {", "[reader] the pinned card holds the box"),
     ("effort-always", "pins", V, "        if !efforts.isEmpty {\n", "        if true {\n", "[effort] Effort shows only when the server serves efforts"),
     ("effort-ungated", "pins", W, "MessageReply.effortOffered(e, provider: handoff.models[index].provider, efforts: handoff.efforts) ? e : nil", "e",
