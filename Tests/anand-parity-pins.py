@@ -39,8 +39,19 @@ win = read("Sources/ActivityWindow.swift")
 go = body(win, "    private func goBack() {", "\n    /// Open one archived day.")
 need("if let step = backStep {\n            tookStep = true\n            backPath.removeLast()\n            returnTo(step.from)\n            return\n        }" in go
      and go.find("if let step = backStep {") < go.find("if section == .sessions, showingLinkedSession {"), "[back] Back goes back along the path first")
-need("backMoving = true" in go and "if section == sectionBefore { backMoving = false }" in go
-     and "else if !tookStep { backPath = ActivityBackPath.settle(" in go, "[back] Back's own moves are not steps")
+need("backMoving = true" in go and "if currentPlace == placeBefore { backMoving = false }" in go
+     and "if section != sectionBefore, !tookStep { backPath = ActivityBackPath.settle(" in go
+     and "            // Back's own move has landed (one change per move): the next change is a step again.\n            backMoving = false" in win,
+     "[back] Back's own moves are not steps")
+# Miles's pick B: the trail row.
+crumb = body(win, "    @ViewBuilder private var breadcrumb: some View {", "\n    }\n")
+need("let trail = backStep == nil ? [] : ActivityBackPath.trail(backPath, current: currentPlace, hasDetail: hasDetail)" in crumb
+     and "if trail.isEmpty { locationCrumb } else { trailRow(trail) }" in crumb, "[trail] the trail shows only while Back goes along the path")
+row = body(win, "    private func trailRow(_ trail: [ActivityPlace]) -> some View {", "\n    /// A place's word in the trail")
+need("Button(word) { goBackAlongPath(to: index) }" in row and "if let index, index == trail.count - 1 {" in row
+     and "ActivityBackPath.shortened(trail.count)" in row and ".lineLimit(1)" in row, "[trail] earlier places are links, this page last, one line")
+along = body(win, "    private func goBackAlongPath(to index: Int) {", "\n    }\n")
+need("backMoving = true" in along and "backPath = Array(backPath.prefix(index))" in along and "returnTo(place)" in along, "[trail] a link goes back to that place")
 need(".onChange(of: currentPlace) { old, new in\n            let recorded = ActivityBackPath.record(backPath, old: old, new: new, goingBack: backMoving, pick: backPick)\n            backPath = recorded.path\n            backPick = recorded.pick" in win,
      "[back] every change of section is a step")
 # A pick from the sidebar (the rail), the home's cards, Home and the shortcuts starts a fresh path.
