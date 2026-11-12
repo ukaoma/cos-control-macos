@@ -539,9 +539,25 @@ struct WebKeyChecks {
             return b
         }
         func tls(trusted: Bool, reason: String, host: Any = "example-mac.tail00000a.ts.net", notAfter: Any = "2027-02-08T17:38:32.000Z",
-                 lastError: Any = NSNull()) -> [String: Any] {
-            ["trusted": trusted, "reason": reason, "host": host, "notAfter": notAfter, "lastError": lastError, "checkedAt": NSNull(), "nextCheckAt": NSNull()]
+                 lastError: Any = NSNull(), storedRefused: Any = NSNull()) -> [String: Any] {
+            ["trusted": trusted, "reason": reason, "host": host, "notAfter": notAfter, "lastError": lastError, "checkedAt": NSNull(), "nextCheckAt": NSNull(),
+             "storedRefused": storedRefused]
         }
+        // Server reopen: signerTls.storedRefused, why a hand-placed pair was refused, from the same one list.
+        let stillOff = tls(trusted: false, reason: "tailnet_https_certs_off", host: NSNull(), notAfter: NSNull(), storedRefused: "stored_owner")
+        check(WebKeySignerTLS.storedRefused(body: body(stillOff), now: now) == WebKeySignerTLS.sentences["stored_owner"]
+              && WebKeySignerTLS.problem(body: body(stillOff), now: now) == WebKeySignerTLS.certsOff, "signer stored refusal",
+              "a refused hand-placed pair gets its own sentence beside the main line")
+        check(WebKeySignerTLS.storedRefused(body: body(tls(trusted: true, reason: "ok", storedRefused: "cert_untrusted")), now: now)
+              == WebKeySignerTLS.sentences["cert_untrusted"], "signer stored refusal", "shown even while another pair serves trusted")
+        check(WebKeySignerTLS.storedRefused(body: body(tls(trusted: false, reason: "pending")), now: now) == nil
+              && WebKeySignerTLS.storedRefused(body: body(nil), now: now) == nil
+              && WebKeySignerTLS.storedRefused(body: body(tls(trusted: false, reason: "pending", storedRefused: "")), now: now) == nil,
+              "signer stored refusal", "null, missing or empty: no second line")
+        check(WebKeySignerTLS.storedRefused(body: body(tls(trusted: false, reason: "stored_writable", host: NSNull(), notAfter: NSNull(), storedRefused: "stored_writable")), now: now) == nil,
+              "signer stored refusal", "never the same sentence twice: the main line already says it")
+        check(WebKeySignerTLS.storedRefused(body: body(tls(trusted: false, reason: "pending", storedRefused: "made_up_reason_7020")), now: now) == WebKeySignerTLS.fallback,
+              "signer stored refusal", "an unknown code gets the plain fallback, never the code")
         check(WebKeySignerTLS.problem(body: body(nil), now: now) == nil, "signer cert line", "a server without signerTls gets no line")
         check(WebKeySignerTLS.problem(body: body(tls(trusted: true, reason: "ok")), now: now) == nil, "signer cert line", "trusted for the origin's host: no line")
         check(WebKeySignerTLS.problem(body: body(tls(trusted: true, reason: "ok", lastError: "tailscale_cert_failed")), now: now) == nil,
@@ -967,15 +983,18 @@ struct WebKeyChecks {
         check(later.signerTLSLine == nil, "signer cert line", "a server that reports no signerTls shows no line")
         // 0.5.390: the server's signerTls drives one plain line, in authority mode only.
         let certsOff: [String: Any] = ["trusted": false, "reason": "tailnet_https_certs_off", "host": NSNull(), "notAfter": NSNull(),
-                                       "lastError": "tailnet_https_certs_off", "checkedAt": NSNull(), "nextCheckAt": NSNull()]
+                                       "lastError": "tailnet_https_certs_off", "checkedAt": NSNull(), "nextCheckAt": NSNull(), "storedRefused": "stored_symlink"]
         fake.answers["status"] = (200, ["ok": true, "enabled": true, "anchorRegistered": true, "anchorMature": true, "aud": aud, "origin": origin, "epoch": 4,
                                         "signerTls": certsOff])
         await later.refresh()
         check(later.authority && later.signerTLSLine == WebKeySignerTLS.certsOff, "signer cert line", "authority with the tailnet toggle off says so")
+        check(later.signerTLSStoredLine == WebKeySignerTLS.sentences["stored_symlink"], "signer stored refusal",
+              "authority shows why the hand-placed pair was refused")
         fake.answers["status"] = (200, ["ok": true, "enabled": false, "mode": "bootstrap", "anchorRegistered": true, "anchorMature": true, "aud": aud, "origin": origin,
                                         "epoch": 4, "signerTls": certsOff])
         await later.refresh()
         check(later.bootstrapOnly && later.signerTLSLine == nil, "signer cert line", "bootstrap never shows it")
+        check(later.bootstrapOnly && later.signerTLSStoredLine == nil, "signer stored refusal", "bootstrap never shows the stored refusal")
         // A server that says enabled true with mode bootstrap is a contradiction: hidden, as with both off.
         fake.answers["status"] = (200, ["ok": true, "enabled": true, "mode": "bootstrap", "anchorRegistered": true, "aud": aud, "origin": origin, "epoch": 4])
         await later.refresh()

@@ -214,6 +214,15 @@ mutants = [
      'guard result.code == 0 else { return refused("served_signer_assets") }', "[audit curl tls exits wiring]"),
     # SR-11: the server's reason list in golden.json must equal Control's sentences plus "ok".
     ("TLS-41 the server lists a code Control does not know", G, '    "cert_daily_cap",\n', "", "[signer reasons match the server]"),
+    # Server reopen: signerTls.storedRefused, the hand-placed pair's refusal.
+    ("TLS-42 the stored refusal shows in bootstrap", C, "signerTLSStoredLine = served == .authority ? WebKeySignerTLS.storedRefused(body: status.body, now: now()) : nil",
+     "signerTLSStoredLine = WebKeySignerTLS.storedRefused(body: status.body, now: now())", "[signer stored refusal]"),
+    ("TLS-43 the stored refusal repeats the main line", C, "return sentence == problem(body: body, now: now) ? nil : sentence", "return sentence",
+     "[signer stored refusal]"),
+    ("TLS-44 the storedRefused field is never read", C, 'let code = tls["storedRefused"] as? String, !code.isEmpty else { return nil }',
+     'let code = tls["storedRefusal"] as? String, !code.isEmpty else { return nil }', "[signer stored refusal]"),
+    ("TLS-45 the view draws it without authority (pins)", V, "if state.authority, let stored = state.signerTLSStoredLine {", "if let stored = state.signerTLSStoredLine {",
+     "[signer stored refusal wiring]"),
 ]
 
 only = [part for part in os.environ.get("MUTATE_ONLY", "").split("|") if part]

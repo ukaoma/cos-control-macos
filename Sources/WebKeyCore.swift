@@ -387,6 +387,15 @@ enum WebKeySignerTLS {
         return line(tls["reason"] as? String)
     }
 
+    /// Server reopen (2026-11-11): `signerTls.storedRefused`, why the server refused the last certificate pair placed by
+    /// hand in its folder (a stored_* code, cert_untrusted and so on), so the refusal is visible at acceptance. One sentence
+    /// from the same list; nil when the server reports none, or when it would repeat the line `problem` already shows.
+    static func storedRefused(body: [String: Any], now: Date) -> String? {
+        guard let tls = body["signerTls"] as? [String: Any], let code = tls["storedRefused"] as? String, !code.isEmpty else { return nil }
+        let sentence = line(code)
+        return sentence == problem(body: body, now: now) ? nil : sentence
+    }
+
     /// THE one list of the server's not-trusted reason codes (the server's SIGNER_TLS_REASONS minus "ok",
     /// server/lib/web-key-signer-tls.ts; golden.json carries the server's list and the reasonParity check compares them)
     /// and one plain sentence each. These codes are written nowhere else in Control (Tests/web-key-pins.py). A code the
@@ -934,6 +943,8 @@ final class WebKeyState: ObservableObject {
     @Published private(set) var recoveryRequired = false
     /// 0.5.390: why the phone's HTTPS origin is not trusted yet (WebKeySignerTLS), authority only; nil when it is.
     @Published private(set) var signerTLSLine: String?
+    /// Server reopen: why a hand-placed certificate pair was refused (WebKeySignerTLS.storedRefused), authority only.
+    @Published private(set) var signerTLSStoredLine: String?
     private(set) var anchor: (any WebKeyAnchorSigner)?
     private var origin: String?
     private var readID: UUID?
@@ -988,6 +999,7 @@ final class WebKeyState: ObservableObject {
         mode = served
         // 0.5.390: one plain line when the server says 3144's certificate is not trusted. Authority only.
         signerTLSLine = served == .authority ? WebKeySignerTLS.problem(body: status.body, now: now()) : nil
+        signerTLSStoredLine = served == .authority ? WebKeySignerTLS.storedRefused(body: status.body, now: now()) : nil
         anchorMature = status.body["anchorMature"] as? Bool == true
         loadLocalAnchor()
         let serverAud = status.body["aud"] as? String
@@ -1020,6 +1032,7 @@ final class WebKeyState: ObservableObject {
         anchorRegisteredHere = false; foreignAnchor = false; protectionReady = false
         controlState = nil; audit = nil; origin = nil; anchorMature = false; recoveryRequired = false
         signerTLSLine = nil
+        signerTLSStoredLine = nil
     }
 
     /// Bootstrap, right after THIS run registered the anchor (the same condition as authority's rebind): start Control's

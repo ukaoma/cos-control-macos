@@ -269,6 +269,12 @@ need(refresh_fn.count(line_set) == 1 and 0 <= refresh_fn.find(line_set) < refres
      "signer cert line wiring", "set on every read before the bootstrap return, nil unless authority")
 clear_fn = body_of(core, core.index("    private func clear()"))
 need(clear_fn.count("signerTLSLine = nil") == 1, "signer cert line wiring", "cleared with the rest when the server stops serving")
+# Server reopen: the stored-pair refusal (signerTls.storedRefused), same gate, same block, same reset.
+stored_set = "signerTLSStoredLine = served == .authority ? WebKeySignerTLS.storedRefused(body: status.body, now: now()) : nil"
+need(views.count("state.signerTLSStoredLine") == 1 and anchor_view.count("if state.authority, let stored = state.signerTLSStoredLine {") == 1
+     and refresh_fn.count(stored_set) == 1 and 0 <= refresh_fn.find(stored_set) < refresh_fn.find("if served == .bootstrap {")
+     and clear_fn.count("signerTLSStoredLine = nil") == 1,
+     "signer stored refusal wiring", "drawn once in the anchor section with authority on, set before the bootstrap return, cleared with the rest")
 # 0.5.390: the server's not-trusted reason codes live in ONE Swift list, WebKeySignerTLS.sentences (copied from the server's
 # SignerTlsReason; file and line in PK-C_report.md). No second table, the checks read the list, unknown codes fall back.
 sent_at = core.find("static let sentences: [String: String] = [")

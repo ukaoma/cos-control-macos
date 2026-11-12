@@ -95,6 +95,10 @@ private struct WebKeyAnchorSection: View {
             if state.authority, let line = state.signerTLSLine {
                 Text(line).font(COSType.body(12)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
             }
+            // Server reopen: why a certificate pair placed by hand in the server's folder was refused. Authority only.
+            if state.authority, let stored = state.signerTLSStoredLine {
+                Text(stored).font(COSType.body(12)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+            }
             if let fingerprint = state.anchorFingerprint {
                 WebKeyLine(label: "This Mac", value: fingerprint, mono: true)
             }
