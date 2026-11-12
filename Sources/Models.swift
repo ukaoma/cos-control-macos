@@ -13822,6 +13822,49 @@ enum MessageReply {
 /// the Needs you header, the brief, the cards and the tabs show comes from one function here, so Tests/ActivityTodayChecks
 /// executes each rule and pins that they agree. A source Control has not loaded is nil, never a made-up 0. Zero LLM: the
 /// brief is fixed templates over these counts.
+/// Anand parity item 1 (2026-11-12, as Control Web 7.0.30's Back by path): where Back goes in the Activity window. Each change
+/// of section is a step (where it came from, where it arrived). Back on the step's arrival, or on that section's list, returns
+/// to where it came from; anywhere deeper, Back keeps the section's own parent chain. Back's own moves are never recorded.
+struct ActivityPlace: Equatable, Sendable {
+    /// ActivitySection's raw value; nil is the Activity home.
+    var section: String?
+    var turnID: String? = nil
+    var archiveDate: String? = nil
+    var speakerSessionID: String? = nil
+    var voiceName: String? = nil
+    var libraryRecordID: String? = nil
+    var sessionID: String? = nil
+}
+
+struct ActivityBackStep: Equatable, Sendable {
+    let from: ActivityPlace
+    let to: ActivityPlace
+}
+
+enum ActivityBackPath {
+    /// Steps kept; the oldest go first.
+    static let limit = 30
+
+    /// The path after the place changed from `old` to `new`: a new step when the section changed and Back did not make the move.
+    static func record(_ path: [ActivityBackStep], old: ActivityPlace, new: ActivityPlace, goingBack: Bool) -> [ActivityBackStep] {
+        guard !goingBack, old.section != new.section else { return path }
+        return Array((path + [ActivityBackStep(from: old, to: new)]).suffix(limit))
+    }
+
+    /// The step Back takes from `current`, or nil for the section's own parent chain.
+    static func step(_ path: [ActivityBackStep], current: ActivityPlace, hasDetail: Bool) -> ActivityBackStep? {
+        guard current.section != nil, let top = path.last, top.to.section == current.section else { return nil }
+        return current == top.to || !hasDetail ? top : nil
+    }
+
+    /// The path after Back moved by its own parent chain from `before` to `after` across sections (a meeting back to its
+    /// speaker review, a linked session back to Work): the step that move undid goes too.
+    static func settle(_ path: [ActivityBackStep], before: String?, after: String?) -> [ActivityBackStep] {
+        guard before != after, let top = path.last, top.to.section == before, top.from.section == after else { return path }
+        return Array(path.dropLast())
+    }
+}
+
 /// Anand parity item 3 (2026-11-12): the Speakers review's copy buttons, in Control Web 7.0.30's words (speakers.js): "Copy
 /// summary", "Copy full (N KB)", and "Copied" on the tapped one for 2.5 s.
 enum MeetingCopyWords {

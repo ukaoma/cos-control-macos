@@ -33,6 +33,24 @@ need("Text(MeetingTodayWords.emptyToday)" in meetings and "Button(MeetingTodayWo
      and "if let last { model.selectLibraryDay(last) } else { model.shiftLibraryMonth(-1) }" in meetings,
      "[today] an empty today says so, with one tap to the latest earlier day or last month")
 
+# Item 1: Back by path in the Activity window.
+win = read("Sources/ActivityWindow.swift")
+go = body(win, "    private func goBack() {", "\n    /// Open one archived day.")
+need("if let step = backStep {\n            tookStep = true\n            backPath.removeLast()\n            returnTo(step.from)\n            return\n        }" in go
+     and go.find("if let step = backStep {") < go.find("if section == .sessions, showingLinkedSession {"), "[back] Back goes back along the path first")
+need("backMoving = true" in go and "if section == sectionBefore { backMoving = false }" in go
+     and "else if !tookStep { backPath = ActivityBackPath.settle(" in go, "[back] Back's own moves are not steps")
+need(".onChange(of: currentPlace) { old, new in\n            backPath = ActivityBackPath.record(backPath, old: old, new: new, goingBack: backMoving)" in win,
+     "[back] every change of section is a step")
+need("!isolatedWorkPreview, !meetingReturnToWork, meetingReturnSpeakerSessionID == nil" in body(win, "    private var backStep: ActivityBackStep? {", "\n    }\n"),
+     "[back] the Work preview and the meeting returns keep their own Back")
+need(".help(backLabel)" in win and '.accessibilityLabel(backStep == nil ? "Back" : backLabel)' in win
+     and 'return "Back to " + (step.from.section.flatMap(ActivitySection.init(rawValue:))?.title ?? "Activity home")' in win,
+     "[back] Back says where it goes")
+ret = body(win, "    private func returnTo(_ place: ActivityPlace) {", "\n    }\n")
+need("model.openSpeakerReview(sessionId: id)" in ret and "model.openLibraryMeeting(row)" in ret and "model.openClaudeSession(row)" in ret
+     and "selectedTurnID = id" in ret and "Task { await load(target) }" in ret, "[back] the item that was open comes back")
+
 if fails:
     print("\n".join("anand parity pin FAILED " + f for f in fails)); sys.exit(1)
 print("anand parity pins: passed")
