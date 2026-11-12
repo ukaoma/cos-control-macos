@@ -26,7 +26,8 @@ need(views.count("MeetingCopyWords.label(MeetingCopyWords.summary, copied: model
 load = body(model, "            if !libraryDayAutoApplied, libraryMonth == Self.currentMeetingMonth() {", "            libraryError = nil")
 need("libraryDay = Self.currentMeetingDay()" in load and "count > 0" not in load, "[today] Meetings opens on today, with or without meetings")
 cal = body(meetings, "struct MeetingMonthCalendar: View {", "\n}\n")
-need(".stroke(cell.date == today ? tint : Color.clear, lineWidth: 1.2)" in cal, "[today] today is ringed")
+need(".stroke(cell.date == today ? tint : Color.clear, lineWidth: 1.5)" in cal and "selectedDay == cell.date || cell.date == today ? .semibold" in cal,
+     "[today] today is ringed")
 need(".disabled(count == 0 && cell.date != today)" in cal and '\\(cell.date == today ? ", today" : "")' in cal,
      "[today] an empty today can be picked, and VoiceOver says today")
 need("today: ControllerModel.currentMeetingDay()" in meetings, "[today] the calendar is told today")
@@ -46,10 +47,18 @@ need("backMoving = true" in go and "if currentPlace == placeBefore { backMoving 
 # Miles's pick B: the trail row.
 crumb = body(win, "    @ViewBuilder private var breadcrumb: some View {", "\n    }\n")
 need("let trail = backStep == nil ? [] : ActivityBackPath.trail(backPath, current: currentPlace, hasDetail: hasDetail)" in crumb
-     and "if trail.isEmpty { locationCrumb } else { trailRow(trail) }" in crumb, "[trail] the trail shows only while Back goes along the path")
-row = body(win, "    private func trailRow(_ trail: [ActivityPlace]) -> some View {", "\n    /// A place's word in the trail")
+     and "if trail.isEmpty { locationCrumb } else {" in crumb, "[trail] the trail shows only while Back goes along the path")
+need("ViewThatFits(in: .horizontal) {\n                trailRow(trail, room: trail.count)\n                trailRow(trail, room: 6)\n                trailRow(trail, room: 5)\n                trailRow(trail, room: 4)" in crumb,
+     "[trail] one line: steps leave from the middle as it narrows")
+row = body(win, "    private func trailRow(_ trail: [ActivityPlace], room: Int) -> some View {", "\n    /// A place's word in the trail")
 need("Button(word) { goBackAlongPath(to: index) }" in row and "if let index, index == trail.count - 1 {" in row
-     and "ActivityBackPath.shortened(trail.count)" in row and ".lineLimit(1)" in row, "[trail] earlier places are links, this page last, one line")
+     and "ActivityBackPath.shortened(trail.count, room: room)" in row and ".lineLimit(1)" in row and ".fixedSize()" in row,
+     "[trail] earlier places are links, this page last, one line")
+need(".accessibilityValue(trail.map(trailWord).joined(separator: \", \"))" in row, "[trail] left-out steps stay readable by VoiceOver")
+words = body(win, "    private func trailWord(_ place: ActivityPlace) -> String {", "\n    }\n")
+need('return "Naming voices"' in words and 'return "Meeting"' in words and 'return "Session"' in words and '"Message #\\($0)"' in words
+     and "MeetingTodayWords.plainDay(day, today: ControllerModel.currentMeetingDay())" in words and "detailTitle" not in words,
+     "[trail] steps named by kind, as the web, this page too")
 along = body(win, "    private func goBackAlongPath(to index: Int) {", "\n    }\n")
 need("backMoving = true" in along and "backPath = Array(backPath.prefix(index))" in along and "returnTo(place)" in along, "[trail] a link goes back to that place")
 need(".onChange(of: currentPlace) { old, new in\n            let recorded = ActivityBackPath.record(backPath, old: old, new: new, goingBack: backMoving, pick: backPick)\n            backPath = recorded.path\n            backPick = recorded.pick" in win,
@@ -72,22 +81,23 @@ need("model.openSpeakerReview(sessionId: id)" in ret and "model.openLibraryMeeti
 
 # Miles's pick A: sides in the message reader.
 detail = body(win, "    private func messageDetail(_ turn: GlassesTurn) -> some View {", "\n    /// Offered on its own when the keyword answer")
-need("side: .you, caption: MessageSides.youCaption(time: turn.timeLabel))" in detail and 'markdownID: "turn:" + turn.id, side: .cos)' in detail,
+need("side: .you, caption: MessageSides.youCaption)" in detail and 'markdownID: "turn:" + turn.id, side: .cos)' in detail,
      "[sides] his words right, COS left, in the reader")
 card = body(win, "struct ActivityMessageCard: View {", "\n    private var card: some View {")
 need(".fill(DropInk.youBg)" in card and ".stroke(DropInk.youEdgeReader, lineWidth: 1)" in card and "DropInk.youInk" in card
      and ".frame(maxWidth: .infinity, alignment: .trailing)" in card, "[sides] his words in the COS chat's own bubble, on the right")
-need("DropItAvatar(size: 26)" in card and 'ActivityCopyMenu(label: "Copy answer"' in card, "[sides] COS by its mark, Copy answer kept")
+need("DropItAvatar(size: 30)" in card and ".accessibilityLabel(MessageSides.youSaid + \": \" + text)" in card
+     and ".accessibilityLabel(MessageSides.cosSaid)" in card and ".accessibilityHidden(caption == MessageSides.youCaption)" in card and 'ActivityCopyMenu(label: "Copy answer"' in card, "[sides] COS by its mark, Copy answer kept")
 need("var side: Side = .card" in card, "[sides] every other caller keeps the card")
 # The reader's bubble edge reaches 3 to 1 in light (0xab8436 on the page 0xf5f0e6 is 3.04), dark unchanged; the COS chat keeps
 # its own edge. And this Mac's replies sit on the same sides.
 dropit = read("Sources/DropItViews.swift")
-need("static let youEdgeReader = pair(0xab8436, 0x56422c)" in dropit and "static let youBorder = pair(0xe3cfa6, 0x56422c)" in dropit,
+need("static let youEdgeReader = pair(0xa27937, 0x6e5937)" in dropit and "static let youBorder = pair(0xe3cfa6, 0x56422c)" in dropit,
      "[sides] the reader's bubble edge is 3 to 1 in light, dark unchanged, the chat's own edge kept")
 replyview = read("Sources/MessageReplyView.swift")
 row = body(replyview, "    private func replyRow(_ reply: DropIt.Ask) -> some View {", "\n    static func stateWord(")
 need("ActivityMessageCard(label: \"You\", text: reply.words, tint: ActivitySection.messages.tint, side: .you," in row
-     and "DropItAvatar(size: 26)" in row, "[sides] this Mac's replies sit on the same sides")
+     and "DropItAvatar(size: 30)" in row, "[sides] this Mac's replies sit on the same sides")
 if fails:
     print("\n".join("anand parity pin FAILED " + f for f in fails)); sys.exit(1)
 print("anand parity pins: passed")
