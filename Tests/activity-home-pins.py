@@ -173,7 +173,9 @@ need(not re.search(r"NSSound|NSBeep|AudioServices|playCompletion|beginPetComplet
 # 7. Cards: a tap opens the section; desks are Buttons inside (a Button card would swallow them); captions are gone; the
 #    descriptions are the cards' help text; at most two sub lines; no number until it loads; the strip keeps its row.
 grid = body(win, "private func homeGrid(", "private func activityHomeCard(")
-need(".onTapGesture { select(item) }" in grid and "Button { select(item) }" not in grid, "[desk click] the card is a tap, so its desks take their own clicks")
+# 9f770f5 (Back by path) routes the card through pickSection, which records the step before it selects; still a tap, never a Button.
+need(".onTapGesture { pickSection(item) }" in grid and "Button { pickSection(item) }" not in grid and "Button { select(item) }" not in grid,
+     "[desk click] the card is a tap, so its desks take their own clicks")
 need(".help(item.summary)" in grid, "[captions] the description is the card's help text")
 card = body(win, "private func activityHomeCard(", "private func leadLine(")
 need(".uppercased()" not in card and "tracking(" not in card, "[captions] no mono caps caption on a card")
