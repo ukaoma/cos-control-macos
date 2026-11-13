@@ -136,7 +136,7 @@ need("if GlassesRules.shouldComeForward(old: old, new: new) { windowHolder.comeF
 need("Text(GlassesRules.pairCaption)" in card and "Hold your phone so the code fills the screen\"" not in views_file, "glasses QR labeled", "the caption under the pairing QR names the app")
 glasses_words = dict(re.findall(r'static let (\w+) = "([^"]*)"', body(model_file, "enum GlassesRules {")))
 need(glasses_words.get("pairSubtitle") == "Type this code in the COS Glasses app on your phone.", "glasses QR labeled", "the pairing row's subtitle")
-need(glasses_words.get("pairCaption") == "Or, in the COS Glasses app, choose Take a photo of the code. It takes one photo. Your phone's camera app can't read it.", "glasses QR labeled", "the pairing caption")
+need(glasses_words.get("pairCaption") == "Or take one photo of it inside the COS Glasses app (Scan, or Take a photo of the code). Your phone's camera app can't read it.", "glasses QR labeled", "the pairing caption")
 need('title: "Connect your glasses", status: "Checking…",\n                           unlocks: GlassesRules.pairSubtitle,' in model_file, "glasses QR labeled", "Connect your glasses shows the subtitle")
 for name in ("pairSubtitle", "pairCaption"):
     need(not re.search("[—–→]|->", glasses_words.get(name, "")), "glasses QR labeled", f"no em dash, en dash or arrow: {name}")

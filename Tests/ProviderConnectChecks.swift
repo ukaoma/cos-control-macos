@@ -999,7 +999,7 @@ extension ProviderConnectChecks {
         // 0.5.368: the glasses pairing QR says it is for the COS Glasses app; the row and the caption under the QR.
         // 0.5.390 line (Miles 2026-11-12): the code is typed first; the QR is the second way in and says it is one photo.
         check(GlassesRules.pairSubtitle == "Type this code in the COS Glasses app on your phone."
-              && GlassesRules.pairCaption == "Or, in the COS Glasses app, choose Take a photo of the code. It takes one photo. Your phone's camera app can't read it."
+              && GlassesRules.pairCaption == "Or take one photo of it inside the COS Glasses app (Scan, or Take a photo of the code). Your phone's camera app can't read it."
               && GlassesRules.connectRow(GlassesFacts()).unlocks == GlassesRules.pairSubtitle, "glasses qr copy", GlassesRules.connectRow(GlassesFacts()).unlocks)
         check(!GlassesRules.pairSubtitle.lowercased().contains("scan") && !GlassesRules.pairCaption.lowercased().contains("fills the screen"),
               "glasses qr copy", "nothing describes a live scanner")
@@ -1299,7 +1299,11 @@ extension ProviderConnectChecks {
         let tailnet = card([ts])
         check(GlassesRules.longCode(tailnet) == "K7Q2M9XD2S5BJQ" && GlassesRules.shownCode(tailnet) == "K7Q2-M9XD-2S5-BJQ", "long code card", GlassesRules.shownCode(tailnet))
         check(GlassesRules.shownCode(tailnet).hasPrefix(tailnet.display + "-"), "long code card", "the first two groups are the server's own code, for a phone app from before it")
-        check(GlassesRules.addressLine(tailnet) == "Older COS Glasses app? Type the first 8 characters and this Mac address: 100.108.149.114", "long code card", GlassesRules.addressLine(tailnet) ?? "nil")
+        // 0.5.392: the public phone app (through 6.11.682) asks for 8 characters and a Mac address. The line gives it both
+        // as they are typed: the server's own code (never the 14) and the address without the usual port.
+        check(GlassesRules.addressLine(tailnet) == "If the app asks for a Mac address, type K7Q2-M9XD and 100.108.149.114", "long code card", GlassesRules.addressLine(tailnet) ?? "nil")
+        check(GlassesRules.addressLine(tailnet)?.contains(" \(tailnet.display) ") == true && GlassesRules.addressLine(tailnet)?.contains(GlassesRules.shownCode(tailnet)) == false
+              && GlassesRules.addressLine(tailnet)?.lowercased().contains("older") == false, "long code card", "the address line names the server's 8 characters, not the 14, and does not call the app older")
         check(GlassesRules.wifiCode(tailnet) == nil, "long code card", "no Wi-Fi code while Wi-Fi pairing is off")
         // Wi-Fi pairing switched on: the main code still names Tailscale, and a second one names this Wi-Fi.
         let both = card([ts, lan])

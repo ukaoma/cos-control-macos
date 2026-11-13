@@ -1988,9 +1988,10 @@ enum GlassesRules {
     /// 0.5.390 line (Miles 2026-11-12): the code is typed first now. On a fresh phone the photo routes found no code in
     /// six tries and the address beside the code was small, grey and unlabelled. The row names the code; the QR is the
     /// second way in and its caption says it is one photo taken inside the app, never a live scan and never the phone's
-    /// own camera.
+    /// own camera. 0.5.392: the caption names the button by both of its names, Scan (the public app through 6.11.682)
+    /// and Take a photo of the code (6.11.683 on), because the old caption named a button the public app does not have.
     static let pairSubtitle = "Type this code in the COS Glasses app on your phone."
-    static let pairCaption = "Or, in the COS Glasses app, choose Take a photo of the code. It takes one photo. Your phone's camera app can't read it."
+    static let pairCaption = "Or take one photo of it inside the COS Glasses app (Scan, or Take a photo of the code). Your phone's camera app can't read it."
     static let pairCopy = "Copy"
     static let pairCopied = "Copied"
     static let pairCopiedNote = "Copied. On an iPhone signed in to the same Apple ID as this Mac, tap Paste in the COS Glasses app."
@@ -2013,12 +2014,14 @@ enum GlassesRules {
     /// "Mac address 100.64.0.10" (with the port only when it is not the usual one), for the lines that still need it.
     static func addressText(_ host: PairingHost) -> String { host.port == PairLongCode.port ? host.host : host.text }
 
-    /// Under the code. With the long code: one labelled line for a phone app from before it. Without: the address is
-    /// needed by every phone, and says so.
+    /// Under the code. With the long code: one line for a phone app that asks for a Mac address (the public app through
+    /// 6.11.682 takes 8 characters and the address). 0.5.392 (lane O1, appcast gate 2026-11-12): it names the 8 characters
+    /// themselves, so nobody counts across the dashes, and it no longer calls the current public app "older". Without
+    /// the long code: the address is needed by every phone, and says so.
     static func addressLine(_ code: PairingCode) -> String? {
         guard let host = code.hosts.first else { return nil }
         return longCode(code) != nil
-            ? "Older COS Glasses app? Type the first 8 characters and this Mac address: \(addressText(host))"
+            ? "If the app asks for a Mac address, type \(code.display) and \(addressText(host))"
             : "Type the code and this Mac address in the app: \(addressText(host))"
     }
 
