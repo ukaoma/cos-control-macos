@@ -25,19 +25,36 @@ import Vision
         }
         let arguments = Array(CommandLine.arguments.dropFirst())
         UserDefaults.standard.set(true, forKey: TodayHome.enabledKey)
+        // Vision loads its text model on the first request in a process: about 33 s here (02:36 to 03:50, every process).
+        // Paid once up front on a blank image, so the 6 s bound on each pre-scroll read measures drawing, not the model load.
+        let warm = Date()
+        if let blank = CGContext(data: nil, width: 64, height: 32, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?.makeImage() {
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            try? VNImageRequestHandler(cgImage: blank, options: [:]).perform([request])
+        }
+        print(String(format: "text recognition warmed in %.2f s", Date().timeIntervalSince(warm)))
         switch arguments.first {
         case "check":
+            // `check N` runs the four legs N times in one process (stability series); run.sh runs them once.
+            let rounds = max(1, Int(arguments.dropFirst().first ?? "1") ?? 1)
             var failures: [String] = []
-            // Both frames: the classic window, and the Today rail beside the pane (Miles's).
-            for surface in Surface.allCases {
-                for rail in [false, true] {
-                    UserDefaults.standard.set(rail, forKey: TodayHome.enabledKey)
-                    let result = drive(surface, size: NSSize(width: 760, height: 560), out: nil)
-                    let name = "\(surface.rawValue), Today rail \(rail ? "on" : "off")"
-                    print(name + ": " + result.report)
-                    if let failure = result.failure { failures.append(name + ": " + failure) }
+            var slowest = 0.0
+            for round in 1...rounds {
+                // Both frames: the classic window, and the Today rail beside the pane (Miles's).
+                for surface in Surface.allCases {
+                    for rail in [false, true] {
+                        UserDefaults.standard.set(rail, forKey: TodayHome.enabledKey)
+                        let result = drive(surface, size: NSSize(width: 760, height: 560), out: nil)
+                        slowest = max(slowest, lastRead)
+                        let name = (rounds > 1 ? "round \(round), " : "") + "\(surface.rawValue), Today rail \(rail ? "on" : "off")"
+                        print(name + ": " + result.report)
+                        if let failure = result.failure { failures.append(name + ": " + failure) }
+                    }
                 }
             }
+            print(String(format: "%d round(s) of 4 legs, %d failing; slowest pre-scroll read %.2f s", rounds, failures.count, slowest))
             if !failures.isEmpty {
                 for failure in failures { fputs("Meetings scroll check FAILED: \(failure)\n", stderr) }
                 exit(1)
@@ -51,8 +68,18 @@ import Vision
                 let parts = text.split(separator: "x").compactMap { Double($0) }
                 precondition(parts.count == 2, "a size reads WxH: \(text)")
                 for surface in Surface.allCases {
-                    let result = drive(surface, size: NSSize(width: parts[0], height: parts[1]), out: out)
+                    let size = NSSize(width: parts[0], height: parts[1])
+                    let result = drive(surface, size: size, out: out)
                     print(surface.rawValue + " " + result.report + (result.failure.map { " | FAIL: \($0)" } ?? " | PASS"))
+                    // The loading state inside the page: the build-up reads its size, so it has a floor there.
+                    let window = Self.window(surface, model: Self.model(surface, loading: true))
+                    window.appearance = NSAppearance(named: .darkAqua)
+                    window.setFrameOrigin(.zero)
+                    window.setContentSize(size)
+                    settle(window, seconds: 1.5)
+                    snap(window, out: out, name: "\(surface.rawValue)-\(Int(size.width))x\(Int(size.height))-loading.png")
+                    window.contentViewController = nil
+                    window.close()
                 }
             }
         default:
@@ -64,18 +91,24 @@ import Vision
     /// fixed above it: Work's header, its controls and the back row).
     enum Surface: String, CaseIterable { case meetings, workPicker = "work-picker" }
 
-    static func model() -> ControllerModel {
+    /// Text only that surface draws, asserted before the first wheel event, so a leg can never pass on the other surface.
+    static func marker(_ surface: Surface) -> String {
+        surface == .meetings ? "Saved calls by day" : "Choose a saved meeting"
+    }
+
+    static func model(_ surface: Surface, loading: Bool = false) -> ControllerModel {
         let model = ControllerModel(startBackgroundWork: false)
         let day = ControllerModel.currentMeetingDay()
         let month = ControllerModel.currentMeetingMonth()
         model.libraryMonth = month
+        model.activityOpenSection = surface == .meetings ? .meetings : nil
+        guard !loading else { model.libraryLoading = true; return model }
         model.libraryMeetings = titles.enumerated().compactMap { index, title in
             LibraryMeeting(.object(["filename": .string("\(day)_Meeting_\(index).md"), "month": .string(month),
                                     "domain": .string("quilt"), "title": .string(title), "date": .string(day)]))
         }
         model.libraryDays = [LibraryMeetingDay(date: day, count: titles.count)]
         model.libraryDay = day
-        model.activityOpenSection = .meetings
         return model
     }
 
@@ -91,20 +124,37 @@ import Vision
     /// the top of the content. SwiftUI builds no accessibility tree for a window that is never ordered in (the walk saw
     /// one element), and a frame from layout would also count a row that is clipped away. Text that is drawn is on screen.
     static func find(_ needle: String, in window: NSWindow) -> NSRect? {
-        guard let content = window.contentView, let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return nil }
+        recognised(in: window).first { $0.text.contains(needle) }?.frame
+    }
+
+    /// Every line of text drawn in the window, with its frame in points from the top of the content.
+    static func recognised(in window: NSWindow) -> [(text: String, frame: NSRect)] {
+        guard let content = window.contentView, let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return [] }
         content.cacheDisplay(in: content.bounds, to: rep)
-        guard let image = rep.cgImage else { return nil }
+        guard let image = rep.cgImage else { return [] }
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = false
         try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
         let size = content.bounds.size
-        for observation in request.results ?? [] {
-            guard let text = observation.topCandidates(1).first?.string, text.contains(needle) else { continue }
+        return (request.results ?? []).compactMap { observation in
+            guard let text = observation.topCandidates(1).first?.string else { return nil }
             let box = observation.boundingBox
-            return NSRect(x: box.minX * size.width, y: (1 - box.maxY) * size.height, width: box.width * size.width, height: box.height * size.height)
+            return (text, NSRect(x: box.minX * size.width, y: (1 - box.maxY) * size.height, width: box.width * size.width, height: box.height * size.height))
         }
-        return nil
+    }
+
+    /// Waits for `needle` to be DRAWN: reads the window's text every 0.25 s until it appears or `bound` seconds pass. Returns
+    /// its frame, the seconds it took, and, on giving up, the text that was drawn instead.
+    static func waitForDrawn(_ needle: String, in window: NSWindow, bound: TimeInterval = 6) -> (frame: NSRect?, seconds: Double, instead: [String]) {
+        let start = Date()
+        var lines: [(text: String, frame: NSRect)] = []
+        while true {
+            lines = recognised(in: window)
+            if let hit = lines.first(where: { $0.text.contains(needle) }) { return (hit.frame, Date().timeIntervalSince(start), []) }
+            if Date().timeIntervalSince(start) >= bound { return (nil, Date().timeIntervalSince(start), lines.map(\.text)) }
+            settle(window, seconds: 0.25)
+        }
     }
 
     /// One wheel notch through the window, as the trackpad sends it: a CGEvent scroll in pixels at a point in the window.
@@ -121,19 +171,29 @@ import Vision
         return true
     }
 
+    static var lastRead = 0.0
+
     static func describe(_ rect: NSRect?) -> String {
         guard let rect else { return "not drawn" }
         return "y \(Int(rect.minY))-\(Int(rect.maxY))"
     }
 
-    static func drive(_ surface: Surface, size: NSSize, out: URL?) -> (report: String, failure: String?) {
-        let model = model()
+    /// The app's window (ActivityWindowPresenter.makeWindow). For the picker, a NEW hosting controller with the picker
+    /// fixture, sized as the app's: swapping rootView on the built one keeps its @State (section, picker), so it would
+    /// still draw what it first drew (Q1, 01:12).
+    static func window(_ surface: Surface, model: ControllerModel) -> NSWindow {
         let window = ActivityWindowPresenter.makeWindow(model: model)
         if surface == .workPicker {
-            model.activityOpenSection = nil
-            guard let controller = window.contentViewController as? NSHostingController<ActivityWindow> else { return ("", "Activity is not hosted") }
-            controller.rootView = ActivityWindow.workMeetingPickerFixture(model: model)
+            let host = NSHostingController(rootView: ActivityWindow.workMeetingPickerFixture(model: model))
+            host.sizingOptions = ActivityWindowPresenter.hostingSizing
+            window.contentViewController = host
         }
+        return window
+    }
+
+    static func drive(_ surface: Surface, size: NSSize, out: URL?) -> (report: String, failure: String?) {
+        let model = Self.model(surface)
+        let window = Self.window(surface, model: model)
         window.appearance = NSAppearance(named: .darkAqua)
         window.setFrameOrigin(.zero)
         window.setContentSize(size)
@@ -141,11 +201,20 @@ import Vision
         defer { window.contentViewController = nil; window.close() }
         let contentHeight = window.contentView?.bounds.height ?? 0
         let first = titles[0]
+        // The surface's own text must be DRAWN before the first wheel event: a positive signal, polled, never a fixed sleep
+        // (a single read missed once under load, 02:36). Bounded at 6 s; on giving up, what was drawn instead is reported.
+        let drawn = waitForDrawn(marker(surface), in: window)
+        let surfaceShown = drawn.frame
+        let readNote = surfaceShown != nil
+            ? String(format: "read in %.2f s", drawn.seconds)
+            : String(format: "NOT read in %.2f s; drawn instead: %@", drawn.seconds, drawn.instead.prefix(24).joined(separator: " | "))
+        lastRead = drawn.seconds
         let before = find(first, in: window)
         let home = find("Home", in: window)
         if let out { snap(window, out: out, name: "\(surface.rawValue)-\(Int(size.width))x\(Int(size.height))-\(UserDefaults.standard.bool(forKey: TodayHome.enabledKey) ? "rail" : "classic")-before.png") }
-        // The middle of the pane, right of the rail: on a pane that cannot scroll it lands on the calendar.
-        let point = NSPoint(x: size.width * 0.6, y: size.height * 0.45)
+        // On the surface's own drawn title, the first thing a person scrolls over (in AppKit's coordinates, 0 at the bottom).
+        // Where it is fixed (67f9d4d) there is no scroll view under it.
+        let point = surfaceShown.map { NSPoint(x: $0.midX, y: contentHeight - $0.midY) } ?? NSPoint(x: size.width * 0.6, y: size.height * 0.45)
         let hit = window.contentView?.hitTest(point)
         var scrollView: NSView? = hit
         while let view = scrollView, !(view is NSScrollView) { scrollView = view.superview }
@@ -164,10 +233,14 @@ import Vision
         let geometry = scroller.map { "clip y \(Int($0.contentView.bounds.origin.y)), document \(Int($0.documentView?.frame.height ?? -1)) pt in \(Int($0.contentView.bounds.height)) pt" } ?? "no scroll view"
         let after = find(first, in: window)
         if let out { snap(window, out: out, name: "\(surface.rawValue)-\(Int(size.width))x\(Int(size.height))-\(UserDefaults.standard.bool(forKey: TodayHome.enabledKey) ? "rail" : "classic")-after.png") }
-        let report = "\(Int(size.width))x\(Int(size.height)): content \(Int(contentHeight)) pt, top bar ends \(describe(home)), "
+        let viewport = (scrollView as? NSScrollView)?.contentView.bounds.height ?? 0
+        let report = "\(Int(size.width))x\(Int(size.height)): \"\(marker(surface))\" \(describe(surfaceShown)) before the wheel (\(readNote)), viewport \(Int(viewport)) pt, content \(Int(contentHeight)) pt, top bar ends \(describe(home)), "
             + "first row before \(describe(before)), wheel sent \(sent)x-60 px over \(scrollView.map { String(describing: type(of: $0)) } ?? "no scroll view"), "
             + "first row after \(describe(after)); \(geometry)"
+        guard surfaceShown != nil else { return (report, "\"\(marker(surface))\" is not drawn before the wheel: this leg is not on \(surface.rawValue)") }
         guard built else { return (report, "the wheel events could not be built") }
+        // A row reachable through a slit is not reachable: the scroll view under the pointer shows at least two rows.
+        guard viewport >= 120 else { return (report, "the scroll view under the pointer is \(Int(viewport)) pt tall, under 120 pt (about two rows)") }
         guard home != nil else { return (report, "the top bar's Home is not drawn, so there is no bar to measure below") }
         guard let after else { return (report, "after \(sent) wheel notches the first meeting row is not drawn (the list is not on screen)") }
         if after.minY < barBottom || after.maxY > contentHeight {

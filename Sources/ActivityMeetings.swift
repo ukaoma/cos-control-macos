@@ -7,8 +7,10 @@ import SwiftUI
 struct MeetingLibraryBody: View {
     @ObservedObject var model: ControllerModel
     var selectionOnly = false
-    /// 0.5.393: the Activity pane scrolls as one page (ActivityWindow.meetingsList), so the list draws its rows in that
-    /// page instead of a ScrollView of its own, which would have no height there. Work's picker keeps its own scroll.
+    /// 0.5.393: both hosts scroll the body as one page (ActivityWindow.meetingsList, and Work's meeting picker in
+    /// WorkWorkspaceView.detailPane), so the list draws its rows in that page: one scroll, not a scroll inside a scroll.
+    /// What makes the rows reachable is the page's ScrollView (a nested one would take its content's height there too:
+    /// the mutant setting this false in the picker survived). Off (the default), the list keeps its own ScrollView.
     var scrollsInPage = false
     let onOpen: (LibraryMeeting) -> Void
     @State private var confirmRecoverAllOrphans = false
