@@ -171,10 +171,10 @@ struct PhoneApprovalsSwitchRow: View {
                 if phones.isEmpty {
                     Text(PhoneApprovalsSwitch.noPhone).font(COSType.body(12)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
                 } else {
-                    Picker("Phone", selection: $picked) {
-                        Text("Choose a phone").tag(PhoneApprovalsSwitch.Phone?.none)
-                        ForEach(phones, id: \.self) { phone in Text(phone.name).tag(Optional(phone)) }
-                    }
+                    // The GOTCOS dropdown (Tests/run.sh, stock controls): never a bare Picker.
+                    COSDropdown("Phone", selection: $picked,
+                                options: [COSDropdownOption(PhoneApprovalsSwitch.Phone?.none, "Choose a phone", placeholder: true)]
+                                    + phones.map { COSDropdownOption(Optional($0), $0.name) })
                     .frame(maxWidth: 280, alignment: .leading)
                     Button(PhoneApprovalsSwitch.confirmOn) { if let picked { confirm.shown = onRequest(picked) } }
                         .buttonStyle(TodayButtonStyle(small: true))
