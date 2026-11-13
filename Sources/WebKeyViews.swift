@@ -34,7 +34,7 @@ struct WebKeySettingsBlock: View {
 
 enum WebKeyCopy {
     static let title = "Phone approvals"
-    static let subtitle = "Approve agent actions from your iPhone with its passkey and Face ID. Touch ID on this Mac enrolls the phone."
+    static let subtitle = "Approve agent actions with your iPhone's passkey and user verification on one of your Apple devices. Touch ID on this Mac enrolls the phone."
     static let create = "Create key with Touch ID"
     static let register = "Register with Touch ID"
     static let foreign = "The server holds an approval key this Mac did not make. Registering this Mac's key replaces it and revokes every phone key."
@@ -79,6 +79,175 @@ private struct WebKeyLine: View {
     }
 }
 
+/// Option A (lead 2026-11-11 21:31): Settings PK-02, "Turn on phone approvals", in full Settings only (never Basic; the
+/// mount checks hubRowDrawn and PK-02 is not a basic row). Off by default: the toggle itself never applies anything.
+/// Turning it on shows this account's iPhones (Tailscale) and a confirmation that names the phone and says the Mac's name
+/// becomes public in certificate logs; turning it off asks too. Either way the helper restarts the server through the
+/// managed path, and the Phone approvals block below shows the amber certificate line until the certificate is ready.
+/// Like the nine restart rows (RestartApply, Settings Release A), nothing applies while work runs or another change is in
+/// progress: the row says it waits instead (PhoneApprovalsSwitch.applyAllowed).
+/// PK-02's confirm, drawn by the Settings page (ControlPanel.panelWithPhoneConfirm) like the server confirms, never inside
+/// the row: a dialog taller than the row spilled over the blocks around it (renders at 5122a8f, card-3 and card-6).
+@MainActor final class PhoneApprovalsConfirm: ObservableObject {
+    struct Request {
+        let title: String
+        let message: String
+        let actions: [COSConfirmAction]
+    }
+    @Published var shown: Request?
+    init() {}
+}
+
+struct PhoneApprovalsSwitchRow: View {
+    @ObservedObject var model: ControllerModel
+    @ObservedObject var state: WebKeyState
+    @ObservedObject var pairing: GlassesPairingState
+    /// The panel's restartWork and serverSettingsLocked, the same two the nine restart rows read.
+    let work: RestartApply.Work
+    let locked: Bool
+    /// The page's confirm: the row asks, the page draws it.
+    @ObservedObject var confirm: PhoneApprovalsConfirm
+    @State private var choosing = false
+    @State private var picked: PhoneApprovalsSwitch.Phone?
+    /// A turn-on found running work: the row says it waits.
+    @State private var held = false
+    /// Option A: Off's saved wait (PhoneApprovalsOff), read from UserDefaults when the row appears.
+    @State private var pendingOff: PhoneApprovalsPendingOff?
+    /// The helper is running Off's =0 restart; when it finishes, a proved restart clears the wait.
+    @State private var applyingOff = false
+    private var pendingStore: DefaultsPhoneApprovalsPendingStore { DefaultsPhoneApprovalsPendingStore() }
+
+    private var on: Bool { PhoneApprovalsSwitch.isOn(state.mode) }
+    private var phones: [PhoneApprovalsSwitch.Phone] {
+        PhoneApprovalsSwitch.phones((pairing.tailscale?.peers ?? []).map {
+            PhoneApprovalsSwitch.Peer(os: $0.os, dns: $0.dns, ipv4: $0.ipv4, sameUser: $0.sameUser)
+        })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(PhoneApprovalsSwitch.title(on: on && pendingOff == nil)).font(COSType.body(13.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
+                    Text(PhoneApprovalsSwitch.detail).font(COSType.body(12)).foregroundStyle(TodayInk.sub).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                // The switch only opens a step: on asks for a phone, off asks to confirm. It never applies by itself.
+                // Off never waits for running work (option A): its confirm removes every phone at once, and only the =0
+                // restart after it waits. While that restart waits, the switch reads off and stays put.
+                // No visible label: COSSwitchStyle draws its label and ignores .labelsHidden(), and the row's own title
+                // already says it (renders at 5122a8f, card-7 and card-8, showed it twice). VoiceOver keeps the name.
+                Toggle(isOn: Binding(get: { (on && pendingOff == nil) || choosing }, set: { wanted in
+                    if wanted, !on {
+                        choosing = true
+                        Task { await pairing.refreshTailscale() }
+                    } else if !wanted, on, pendingOff == nil {
+                        confirm.shown = offRequest()
+                    } else if !wanted {
+                        choosing = false; picked = nil; held = false
+                    }
+                })) { EmptyView() }
+                .accessibilityLabel(PhoneApprovalsSwitch.label).toggleStyle(COSSwitchStyle()).disabled(locked || pendingOff != nil)
+            }
+            if choosing && !on {
+                if phones.isEmpty {
+                    Text(PhoneApprovalsSwitch.noPhone).font(COSType.body(12)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Picker("Phone", selection: $picked) {
+                        Text("Choose a phone").tag(PhoneApprovalsSwitch.Phone?.none)
+                        ForEach(phones, id: \.self) { phone in Text(phone.name).tag(Optional(phone)) }
+                    }
+                    .frame(maxWidth: 280, alignment: .leading)
+                    Button(PhoneApprovalsSwitch.confirmOn) { if let picked { confirm.shown = onRequest(picked) } }
+                        .buttonStyle(TodayButtonStyle(small: true))
+                        .disabled(picked == nil || !PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active))
+                }
+            }
+            if let pendingOff {
+                Text(PhoneApprovalsOff.line(pendingOff, waiting: !model.busy && !PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active)))
+                    .font(COSType.body(12)).foregroundStyle(pendingOff.revokedAll ? TodayInk.sub : COSPalette.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if work.active && (choosing || held) {
+                Text(RestartApply.waitsForWork + (work.uploads > 0 ? " " + RestartApply.uploadOpen : ""))
+                    .font(COSType.body(12)).foregroundStyle(TodayInk.sub).fixedSize(horizontal: false, vertical: true)
+            }
+            if model.busy, let progress = model.operationProgress {
+                Text(progress).font(COSType.body(12)).foregroundStyle(TodayInk.sub).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // After the helper's restart (or any other operation): read the server again, so On and the amber line follow it.
+        .onChange(of: model.busy) { _, busy in
+            guard !busy else { return }
+            choosing = false; picked = nil
+            if applyingOff {
+                applyingOff = false
+                PhoneApprovalsOff.finished(store: pendingStore, helperSucceeded: model.error == nil)
+                pendingOff = pendingStore.load()
+            }
+            Task { await state.refresh() }
+        }
+        .onChange(of: work.active) { _, active in if !active { held = false; resumeOff() } }
+        .onAppear { pendingOff = pendingStore.load(); resumeOff() }
+    }
+
+    /// Turn on for this phone: the page draws it. The apply still asks applyAllowed at the click.
+    func onRequest(_ phone: PhoneApprovalsSwitch.Phone) -> PhoneApprovalsConfirm.Request {
+        PhoneApprovalsConfirm.Request(
+            title: PhoneApprovalsSwitch.confirmOnTitle(phone),
+            message: PhoneApprovalsSwitch.confirmOnMessage(phone, macName: pairing.tailscale?.selfDNS),
+            actions: [.normal(PhoneApprovalsSwitch.confirmOn) {
+                if PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active) { model.setPhoneApprovals(on: true, phone: picked) } else { held = true }
+            }, .cancel()])
+    }
+
+    /// Turn off: the page draws it. Off never asks applyAllowed (option A).
+    func offRequest() -> PhoneApprovalsConfirm.Request {
+        PhoneApprovalsConfirm.Request(
+            title: PhoneApprovalsSwitch.confirmOffTitle, message: PhoneApprovalsSwitch.confirmOffMessage,
+            actions: [.destructive(PhoneApprovalsSwitch.confirmOff) { turnOff() }, .cancel()])
+    }
+
+    /// Option A: Revoke all now, whatever work runs, then the =0 restart, which waits for running work.
+    private func turnOff() {
+        Task {
+            pendingOff = await PhoneApprovalsOff.run(store: pendingStore, now: Int64((Date().timeIntervalSince1970 * 1000).rounded(.down)),
+                                                     revokeAll: { await state.revokeAll() }, locked: { locked }, workActive: { work.active },
+                                                     apply: applyOff)
+        }
+    }
+
+    private func resumeOff() {
+        guard pendingOff != nil, !applyingOff else { return }
+        PhoneApprovalsOff.resume(store: pendingStore, locked: locked, workActive: work.active, apply: applyOff)
+    }
+
+    private func applyOff() {
+        applyingOff = true
+        model.setPhoneApprovals(on: false, phone: nil)
+    }
+
+    /// Offscreen renders only (Tests/PhoneApprovalsRender.swift): the row opened on one step, as a click would leave it, with
+    /// the model's background work off. Nothing here applies anything; the confirm's buttons are drawn, never pressed.
+    enum FixtureStep { case choosing(PhoneApprovalsSwitch.Phone?), confirmOn(PhoneApprovalsSwitch.Phone), confirmOff }
+    static func renderFixture(model: ControllerModel, state: WebKeyState, pairing: GlassesPairingState, work: RestartApply.Work = .init(),
+                              confirm: PhoneApprovalsConfirm, step: FixtureStep) -> PhoneApprovalsSwitchRow {
+        precondition(!model.backgroundWorkEnabled)
+        var row = PhoneApprovalsSwitchRow(model: model, state: state, pairing: pairing, work: work, locked: false, confirm: confirm)
+        switch step {
+        case .choosing(let phone):
+            row._choosing = State(initialValue: true); row._picked = State(initialValue: phone)
+        case .confirmOn(let phone):
+            row._choosing = State(initialValue: true); row._picked = State(initialValue: phone)
+            confirm.shown = row.onRequest(phone)
+        case .confirmOff:
+            confirm.shown = row.offRequest()
+        }
+        return row
+    }
+}
+
 private struct WebKeyAnchorSection: View {
     @ObservedObject var state: WebKeyState
     @State private var confirmReset = false
@@ -91,6 +260,14 @@ private struct WebKeyAnchorSection: View {
                 Text(state.bootstrapOnly ? WebKeyCopy.bootstrapSubtitle : WebKeyCopy.subtitle).font(COSType.body(13)).foregroundStyle(TodayInk.sub).fixedSize(horizontal: false, vertical: true)
             }
             .accessibilityElement(children: .combine)
+            // 0.5.390: the server says the phone's HTTPS origin is not trusted yet (WebKeySignerTLS). Authority only.
+            if state.authority, let line = state.signerTLSLine {
+                Text(line).font(COSType.body(12)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+            }
+            // Server reopen: why a certificate pair placed by hand in the server's folder was refused. Authority only.
+            if state.authority, let stored = state.signerTLSStoredLine {
+                Text(stored).font(COSType.body(12)).foregroundStyle(COSPalette.amber).fixedSize(horizontal: false, vertical: true)
+            }
             if let fingerprint = state.anchorFingerprint {
                 WebKeyLine(label: "This Mac", value: fingerprint, mono: true)
             }

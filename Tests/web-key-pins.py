@@ -177,7 +177,9 @@ need("if !state.anchorRegisteredHere && !state.foreignAnchor {" in anchor_view a
      "confirmed replace", "replacing another key runs only from its confirmation")
 
 # 7. GOTCOS theme: no stock toggles; a field is plain plus cosField.
-need("Toggle(" not in views or "COSCheckStyle()" in views, "theme", "a toggle here uses COSCheckStyle")
+toggle_styles = re.findall(r"\.toggleStyle\(([^()]*(?:\(\))?)\)", views)
+need(views.count("Toggle(") == len(toggle_styles) and all(s in ("COSCheckStyle()", "COSSwitchStyle()") for s in toggle_styles), "theme",
+     f"every toggle here uses a COS style (COSCheckStyle or COSSwitchStyle), never a stock one: {toggle_styles}")
 need(".textFieldStyle(.plain)" in views and ".cosField()" in views, "theme", "the code field is the COS field")
 
 # 8. Secrets: the app never reads the token or .env; the helper does.
@@ -214,9 +216,188 @@ need("WebKeyAssetsCore.bundleResource" in audit_fn and '"--verify", "--deep", "-
      and "WebKeyAssetsCore.pins(pinData, version: installed.version)" in audit_fn
      and "WebKeyAssetsCore.manifest" in audit_fn and "WebKeyAssetsCore.verified(served, sha: sha)" in audit_fn,
      "immutable asset wiring", "a sealed own-bundle pin governs installed and served bytes")
-need('"--cacert", managedCert.path' in audit_fn and '"--resolve", host + ":3144:127.0.0.1"' in audit_fn
-     and '"--noproxy", "*"' in audit_fn and '"--max-redirs", "0"' in audit_fn and '"--insecure"' not in audit_fn,
+need('"--resolve", host + ":3144:127.0.0.1"' in audit_fn
+     and '"--noproxy", "*"' in audit_fn and '"--max-redirs", "0"' in audit_fn and '"--insecure"' not in audit_fn and '"-k"' not in audit_fn,
      "signer TLS wiring", "normal TLS to the owned loopback signer, without proxy or redirects")
+
+# 0.5.390 (QA 2026-11-09 open question 2): the ts.net signer host is trusted the way the phone trusts it, by the system roots
+# ALONE over the chain each fetch received; never Apple curl's --cacert-plus-keychain. Counted, so a deleted line fails.
+need(audit_fn.count("SignerTLSCore.trust(host: host) == .systemRoots") == 1 and ".ts\\.net\\z" not in audit_fn
+     and audit_fn.find("SignerTLSCore.trust(host: host) == .systemRoots") < audit_fn.find('return refused("reported_integrity")'),
+     "audit gate is the split", "the origin guard asks SignerTLSCore.trust, with no second copy of the host pattern")
+need(audit_fn.count("SignerTLSCore.curlTrustArguments(.systemRoots, managedCert: managedCert.path)") == 1 and '"--cacert"' not in audit_fn
+     and '"--write-out"' not in audit_fn,
+     "audit curl trust args wiring", "the fetch takes its trust and write-out from SignerTLSCore, and the audit passes no CA file")
+anchors_at = audit_fn.find("let anchors = SignerTLSCore.systemRoots()")
+answer_at = audit_fn.find("let answer = SignerTLSCore.curlAnswer(result.output)")
+judged = 'guard SignerTLSCore.trusted(chain: answer.chain, host: host, at: Date(), anchors: anchors) else { return refused("signer_tls") }'
+judged_at = audit_fn.find(judged)
+bytes_at = audit_fn.find("WebKeyAssetsCore.verified(served, sha: sha)")
+need(audit_fn.count(judged) == 1 and 0 <= anchors_at < audit_fn.find("for (path, sha) in signerFiles") < answer_at < judged_at < bytes_at,
+     "audit judges each chain", "system roots before the loop; every fetch's own chain is judged before its bytes count")
+trusted_fn = body_of(pairing, pairing.index("static func trusted(chain: [Data], host: String, at date: Date, anchors: [SecCertificate]) -> Bool"))
+evaluate_fn = body_of(pairing, pairing.index("static func evaluate(chain: [Data], host: String, at date: Date, anchors: [SecCertificate]) -> (trusted: Bool, why: String)"))
+need(trusted_fn.strip("{} \n") == "evaluate(chain: chain, host: host, at: date, anchors: anchors).trusted",
+     "audit evaluator wiring", "trusted() is exactly evaluate()'s answer, so the evidence lines describe what the audit runs")
+need(evaluate_fn.count("SecPolicyCreateSSL(true, host as CFString)") == 1 and evaluate_fn.count("SecTrustSetAnchorCertificates(trust, anchors as CFArray)") == 1
+     and evaluate_fn.count("SecTrustSetAnchorCertificatesOnly(trust, true)") == 1 and evaluate_fn.count("SecTrustSetNetworkFetchAllowed(trust, false)") == 1
+     and evaluate_fn.count("SecTrustSetVerifyDate(trust, date as CFDate)") == 1 and evaluate_fn.count("SecTrustEvaluateWithError(trust, &error)") == 1,
+     "audit evaluator wiring", "SSL policy with the host name, the given anchors ONLY, no network fetch, the given date")
+roots_fn = body_of(pairing, pairing.index("static func systemRoots() -> [SecCertificate]"))
+need(roots_fn.count("SecTrustSettingsCopyCertificates(.system, &list)") == 1 and ".admin" not in pairing and ".user" not in roots_fn,
+     "audit system roots wiring", "the system trust domain only, never admin or user")
+args_fn = body_of(pairing, pairing.index("static func curlTrustArguments(_ trust: Trust, managedCert: String) -> [String]"))
+system_case = args_fn[args_fn.find("case .systemRoots:"):args_fn.find("case .managedCert:")]
+need(args_fn.find("case .systemRoots:") >= 0 and "--cacert" not in system_case and "%{certs}" in system_case and "%{num_certs}" in system_case
+     and "--insecure" not in args_fn,
+     "audit curl trust args", "the ts.net case has no CA file and writes out curl's chain count and the chain")
+# SR-02 and SR-07 (reopen, 2026-11-11): the count gate lives in curlAnswer, and the audit maps curl's exit through one table.
+answer_fn = body_of(pairing, pairing.index("static func curlAnswer(_ output: String) -> (code: String, chain: [Data])"))
+need(answer_fn.count("declared == blocks.count else { return (code, []) }") == 1, "audit refuses injected blocks",
+     "curlAnswer returns no chain unless the PEM blocks number curl's own %{num_certs}")
+need(audit_fn.count("guard result.code == 0 else { return refused(SignerTLSCore.curlFailureReason(exit: result.code)) }") == 1
+     and 'result.code == 0 else { return refused("served_signer_assets") }' not in audit_fn,
+     "audit curl tls exits wiring", "a curl failure is named by SignerTLSCore.curlFailureReason, never a fixed served_signer_assets")
+# SR-06: the audit approximates the phone, it does not equal it; release notes must not say otherwise.
+notes = ((root / "Resources/WhatsNew.json").read_text(encoding="utf-8") + (root / "CHANGELOG.md").read_text(encoding="utf-8")).lower()
+need("way your iphone does" not in notes and "the way the iphone does" not in notes, "audit copy",
+     "notes say 'checked against the certificate authorities macOS ships', never 'the way your iPhone does'")
+# 0.5.390: one plain line from the server's signerTls, authority only, inside the existing anchor section.
+anchor_view = body_of(views, views.index("private struct WebKeyAnchorSection: View"))
+need(views.count("state.signerTLSLine") == 1 and anchor_view.count("if state.authority, let line = state.signerTLSLine {") == 1,
+     "signer cert line wiring", "drawn once, in the anchor section, only with authority on")
+line_set = "signerTLSLine = served == .authority ? WebKeySignerTLS.problem(body: status.body, now: now()) : nil"
+need(refresh_fn.count(line_set) == 1 and 0 <= refresh_fn.find(line_set) < refresh_fn.find("if served == .bootstrap {"),
+     "signer cert line wiring", "set on every read before the bootstrap return, nil unless authority")
+clear_fn = body_of(core, core.index("    private func clear()"))
+need(clear_fn.count("signerTLSLine = nil") == 1, "signer cert line wiring", "cleared with the rest when the server stops serving")
+# Server reopen: the stored-pair refusal (signerTls.storedRefused), same gate, same block, same reset.
+stored_set = "signerTLSStoredLine = served == .authority ? WebKeySignerTLS.storedRefused(body: status.body, now: now()) : nil"
+need(views.count("state.signerTLSStoredLine") == 1 and anchor_view.count("if state.authority, let stored = state.signerTLSStoredLine {") == 1
+     and refresh_fn.count(stored_set) == 1 and 0 <= refresh_fn.find(stored_set) < refresh_fn.find("if served == .bootstrap {")
+     and clear_fn.count("signerTLSStoredLine = nil") == 1,
+     "signer stored refusal wiring", "drawn once in the anchor section with authority on, set before the bootstrap return, cleared with the rest")
+
+# Option A (lead 2026-11-11 21:31): the phone approvals switch, Settings PK-02.
+# Full Settings only: never a basic row, and the mount asks hubRowDrawn (false in Basic) and the server floor.
+basic_block = catalog[catalog.index("static let basicIDs: Set<String> = ["):catalog.index("static let basicRange")]
+pk02_at = catalog.find('.init("PK-02"')
+need('"PK-02"' not in basic_block and catalog.index("static let extras: [SettingsHubItem] = [") < pk02_at < catalog.index("static let items: [SettingsHubItem] = [")
+     and re.search(r'\.init\("PK-02", "Turn on phone approvals", [^\n]*group: "glasses\.phone",\s*advanced: false, mount: \.group', catalog) is not None
+     and phone.count('if hubRowDrawn("PK-02"), PhoneApprovalsSwitch.shown(serverVersion: model.status.version) {') == 1
+     and phone.count('.settingsHubAnchor("PK-02")') == 1 and main_views.count("PhoneApprovalsSwitchRow(") == 1,
+     "phone switch full settings only", "PK-02 is an extras row in Phone and web, not in Basic, drawn only where hubRowDrawn and the server floor allow")
+# Off by default: the toggle never applies anything; only the two confirmations call setPhoneApprovals, and nothing else in
+# the helper writes the flag (one allowlist entry, then PhoneApprovalsCore's own constants).
+switch_view = body_of(views, views.index("struct PhoneApprovalsSwitchRow: View"))
+toggle_at = switch_view.find("Toggle(isOn: Binding(get: { (on && pendingOff == nil) || choosing }")
+toggle_end = switch_view.find(".accessibilityLabel(PhoneApprovalsSwitch.label)", toggle_at)
+# The row's title follows the switch, off while Off's restart waits (lead 11:40).
+need("Text(PhoneApprovalsSwitch.title(on: on && pendingOff == nil))" in switch_view and "Text(PhoneApprovalsSwitch.label)" not in switch_view,
+     "phone switch title follows the switch", "the row's title says on only while the server is on and no Off waits")
+# The switch draws no second label (COSSwitchStyle ignores .labelsHidden()); VoiceOver keeps the name.
+need(0 <= toggle_at and switch_view.count("Toggle(") == 1 and "})) { EmptyView() }\n                .accessibilityLabel(PhoneApprovalsSwitch.label)" in switch_view,
+     "phone switch label once", "the switch has no visible label of its own; the row's title says it, and VoiceOver keeps the name")
+need(views.count("model.setPhoneApprovals(") == 2 and switch_view.count("PhoneApprovalsConfirm.Request(") == 2 and 0 <= toggle_at < toggle_end
+     and "setPhoneApprovals" not in switch_view[toggle_at:toggle_end]
+     and helper.count('"COS_WEB_KEY_AUTHORITY"') == 1 and helper.count('"COS_WEB_KEY_DEVICES"') == 1
+     and pairing.count('static let authorityKey = "COS_WEB_KEY_AUTHORITY"') == 1,
+     "phone switch off by default", "the switch only opens a step; the confirmations apply it; no default writes the flag")
+# Off WRITES COS_WEB_KEY_AUTHORITY=0, and the helper applies exactly what PhoneApprovalsCore.environment says, on both paths.
+set_fn = body_of(helper, helper.index("private func setPhoneApprovals(_ arguments: [String]) throws"))
+need(pairing.count('case .off: return ([authorityKey: "0"], [devicesKey])') == 1
+     and set_fn.count("environment.set, removingKeys: environment.remove") == 2,
+     "phone switch off writes 0", "off sets the flag to 0 and removes only the phone list, through both apply paths")
+# The helper wiring: one verb under the mutation lock, the server floor, the proof after every apply path.
+need(helper.count('case "set-phone-approvals": try withMutationLock { try setPhoneApprovals(Array(args.dropFirst())) }') == 1
+     and set_fn.count("versionAtLeast($0, PhoneApprovalsCore.minimumServer)") == 1
+     and set_fn.count("versionAtLeast($0.version, PhoneApprovalsCore.minimumServer)") == 1 and set_fn.count("PhoneApprovalsCore.change(arguments)") == 1
+     and helper.count("PhoneApprovalsCore.change(fromEnvironment: values)") == 3 and helper.count("try requirePhoneApprovals(phoneApprovals)") == 3,
+     "phone switch wiring", "set-phone-approvals parses with PhoneApprovalsCore, checks the server floor, and proves the change on every apply path")
+# Like the nine restart rows (Settings Release A): turning ON (the Turn on button and its confirm) asks applyAllowed with the
+# panel's own restartWork and serverSettingsLocked, so it never starts while work runs. The third use only draws Off's
+# waiting line; it applies nothing.
+guard = "PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active)"
+on_lines = [l for l in switch_view.splitlines() if "model.setPhoneApprovals(on: true" in l]
+need(switch_view.count(guard) == 3 and len(on_lines) == 1 and on_lines[0].strip().startswith("if " + guard + " { model.setPhoneApprovals(on: true")
+     and ".accessibilityLabel(PhoneApprovalsSwitch.label).toggleStyle(COSSwitchStyle()).disabled(locked || pendingOff != nil)" in switch_view
+     and phone.count("work: restartWork, locked: serverSettingsLocked, confirm: phoneConfirm) }") == 1,
+     "phone switch waits for work", "turning on waits for running work, with the panel's restartWork")
+# Option A (lead ruling 2026-11-12 10:32): Off never asks applyAllowed. The toggle opens the confirm, the confirm runs
+# PhoneApprovalsOff.run, and its Revoke all comes before the only applyAllowed in the Off code, the =0 restart's (resume).
+off_section = body_of(core, core.index("enum PhoneApprovalsOff {"))
+run_fn = body_of(off_section, off_section.index("@MainActor static func run("))
+need("applyAllowed" not in switch_view[toggle_at:toggle_end] and ".destructive(PhoneApprovalsSwitch.confirmOff) { turnOff() }" in switch_view
+     and "applyAllowed" not in body_of(switch_view, switch_view.index("private func turnOff()"))
+     and "applyAllowed" not in run_fn and 0 <= run_fn.find("await revokeAll()") < run_fn.find("resume(")
+     and off_section.count("PhoneApprovalsSwitch.applyAllowed(") == 1,
+     "phone off revokes at once", "the Off toggle, its confirm and Off's Revoke all never ask applyAllowed; only the =0 restart waits")
+# Devices: a phone's Revoke and Revoke all are live calls, never behind the running-work guard.
+revoke_fn = body_of(core, core.index("    func revoke(_ kid: String) async -> Bool {"))
+revoke_all_fn = body_of(core, core.index("    func revokeAll() async -> Bool {"))
+need(views.count("Button(WebKeyCopy.revoke) { Task { await state.revoke(row.kid) } }.buttonStyle(COSTextButtonStyle()).disabled(state.busy)") == 1
+     and views.count('.destructive("Revoke all") { Task { await state.revokeAll() } }') == 1
+     and not any(w in revoke_fn + revoke_all_fn for w in ("applyAllowed", "workActive", "restartWork")),
+     "devices revoke is live", "a phone's Revoke and Revoke all are live calls, never behind the running-work guard")
+# Security review 2026-11-12, blocker 2: neither revoke returns before the server call for want of an anchor or a saved
+# record. The only early return is the authority/visible/busy guard; the server call is unconditional after it.
+need(all(fn.count("return false") == 1 and "if let anchor {" in fn and "guard let anchor" not in fn and "local.saved else" not in fn
+         for fn in (revoke_fn, revoke_all_fn)) and "stay off" not in body_of(core, core.index("enum WebKeyRevokeOutcome {")).replace(
+         'case (false, true): return "Revoked in Control. The server did not confirm, so phone approvals stay off until it does."', ""),
+     "revoke needs no anchor", "revoke and revoke-all call the server in every case, and only a saved record may say approvals stay off")
+# PK-02's two confirms are drawn by the page (lead 10:47), like the server confirms: the row draws none, the panel one.
+phone_stage = body_of(main_views, main_views.index("private var panelWithPhoneConfirm: some View {"))
+need(".cosConfirm(" not in switch_view and "phoneConfirm.shown?.actions ?? [.cancel()]" in phone_stage and "panelWithServerConfirm" in phone_stage
+     and main_views.count("    var body: some View {\n        panelWithPhoneConfirm\n") == 1
+     and main_views.count("@StateObject private var phoneConfirm = PhoneApprovalsConfirm()") == 1,
+     "phone confirm at the page", "PK-02's confirms are drawn at the page, never inside the row")
+# Condition 4: Off touches nothing that enrolls or approves a phone, so enrolling keeps today's Touch ID and code.
+need(not any(t in off_section for t in ("approve(", "startApproval", "typedCode", ".card", "WebKeyApproveGate")),
+     "phone off keeps enrollment gated", "Off never touches enrollment or approval; enrolling keeps its Touch ID and code")
+# The render seed (Tests/PhoneApprovalsRender.swift) is fixture-only: background work off, and nothing in Sources calls it.
+seed_fn = body_of(views, views.index("    static func renderFixture(model: ControllerModel, state: WebKeyState"))
+sources_all = "".join(p.read_text(encoding="utf-8") for p in sorted((root / "Sources").glob("*.swift")))
+need(seed_fn.count("precondition(!model.backgroundWorkEnabled)") == 1 and sources_all.count("renderFixture(model: ControllerModel, state: WebKeyState") == 1
+     and sources_all.count("PhoneApprovalsSwitchRow.renderFixture(") == 0 and "setPhoneApprovals" not in seed_fn,
+     "phone switch render seed", "the render seed needs background work off, applies nothing, and nothing in the app calls it")
+# The renders Miles reviews draw the Phone and web card in the app's order: UT-29, PK-02, PK-01, WB-01.
+render_card = body_of(code("Tests/PhoneApprovalsRender.swift"), code("Tests/PhoneApprovalsRender.swift").index("struct PhoneCard: View {"))
+render_order = [render_card.find(s) for s in ("PhoneSignInBlock(", "SettingsHubBlock { row }", "WebKeySettingsBlock(", "SettingsHubWebRevokeRow(")]
+app_order = [phone.find(s) for s in ('.settingsHubAnchor("UT-29")', '.settingsHubAnchor("PK-02")', '.settingsHubAnchor("PK-01")', "SettingsHubWebRevokeRow(")]
+need(all(i >= 0 for i in render_order + app_order) and render_order == sorted(render_order) and app_order == sorted(app_order),
+     "phone switch render order", "the render's Phone and web card and the app's both run UT-29, PK-02, PK-01, WB-01")
+# 0.5.390: the server's not-trusted reason codes live in ONE Swift list, WebKeySignerTLS.sentences (copied from the server's
+# SignerTlsReason; file and line in PK-C_report.md). No second table, the checks read the list, unknown codes fall back.
+sent_at = core.find("static let sentences: [String: String] = [")
+sent_open = core.find("= [", sent_at) + 3 if sent_at >= 0 else -1
+sent_end = core.find("\n    ]\n", sent_open) if sent_open > 2 else -1
+sent_src = core[sent_open:sent_end] if sent_end > sent_open else ""
+codes = re.findall(r'^\s*"([a-z_]+)":', sent_src, flags=re.M)
+# Outside the list a code may appear only in uses that are not a reason: "pending" is also a helper op and a body key.
+outside = (core[:sent_open] + core[sent_end:] + views) if sent_src else ""
+not_reasons = {"pending": ['ask("pending")', 'answer.body["pending"]']}
+stray = [c for c in codes if outside.count(f'"{c}"') != sum(outside.count(u) for u in not_reasons.get(c, []))]
+need(len(codes) >= 13 and len(set(codes)) == len(codes) and all((core + views).count(f'"{c}":') == 1 for c in codes) and not stray,
+     "signer reasons one list", f"each of the {len(codes)} codes is written once, as a key of WebKeySignerTLS.sentences, and nowhere else (stray: {stray})")
+line_fn = body_of(core, core.index("static func line(_ reason: String?) -> String"))
+need("sentences[$0]" in line_fn and line_fn.count("?? fallback") == 1 and "switch" not in line_fn and "case " not in line_fn,
+     "signer reasons one list", "line() looks the code up in the list and otherwise falls back")
+checks_src = code("Tests/WebKeyChecks.swift")
+need(checks_src.count("let reasons = Array(WebKeySignerTLS.sentences.keys)") == 1 and 'line("made_up_reason_7020") == WebKeySignerTLS.fallback' in checks_src,
+     "signer reasons one list", "the checks read the codes from the list, never a copy, and try a made-up code")
+# SR-11 (2026-11-11): golden.json carries the SERVER's reason list, written by the generator from the server module.
+gen = (root / "Tests/fixtures/web-key/gen_control_golden.mts").read_text(encoding="utf-8")
+need(checks_src.count("        reasonParity(g)\n") == 1 and "signerTlsReasons: [...signerTls.SIGNER_TLS_REASONS]," in gen
+     and "server/lib/web-key-signer-tls.ts" in gen,
+     "signer reasons match the server", "the generator writes the server's SIGNER_TLS_REASONS into golden.json and the checks compare it")
+# Any tailnet name other than the neutral tail00000a is treated as real; the pin never spells a real one out.
+private_name = re.compile(r"\btail(?!00000a\b)[0-9a-z]{6}\b|ukaoma", re.I)
+need(private_name.search(checks_src) is None,
+     "no private names in tests", "this repo is public: no real tailnet or Mac name in the checks")
+# SR-12 (reopen): the same for every text fixture of this lane, golden.json included.
+fixture_files = sorted(p for p in (root / "Tests/fixtures/web-key").rglob("*") if p.is_file() and p.suffix in {".json", ".txt", ".pem", ".mts", ".md"})
+named = [str(p.relative_to(root)) for p in fixture_files if private_name.search(p.read_text(encoding="utf-8", errors="replace"))]
+need(fixture_files and not named, "no private names in tests", f"no real tailnet or Mac name in Tests/fixtures/web-key (found in: {named})")
 need('.onDisappear { state.cancelActions() }' in block and 'state.startApproval()' in card_view,
      "approval lifetime wiring", "disappearing Settings cancels the tracked action")
 need('visible && anchorRegisteredHere && protectionReady && controlState != nil' in core,

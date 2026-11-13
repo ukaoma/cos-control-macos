@@ -62,10 +62,19 @@ pin("static func destructive(_ label: String, _ run: @escaping @MainActor () -> 
     "a destructive action is built without Return")
 pin("COSConfirmAction.returnDefault(in: actions)?.id" in confirm and "actions.first(where: { $0.kind == .normal && $0.takesReturn })" in confirm
     and ".kind == .destructive && $0.takesReturn" not in confirm, "the Return default is a normal action only")
-chain = body(views, "    private var panelWithServerConfirm: some View {", "    var body: some View {")
+# The window ends at the next stage (PK-02's phone confirm, D2 ebd9d76), not at the body: it holds the server stage alone.
+chain = body(views, "    private var panelWithServerConfirm: some View {", "    private var panelWithPhoneConfirm: some View {")
 pin(chain.count(".cosConfirm(") == 1 and "panelWithSecondaryConfirms" in chain and "serverConfirmActions" in chain,
     "one confirm for the four server actions, in a stage of its own after the secondary one (the type-checker's limit)")
-pin("panelWithServerConfirm\n        .cosConfirm(\n            pendingOpenPetsRow" in views, "the body continues from the new stage")
+# PK-02's confirm is a fifth stage of its own state, wrapped around the server stage. Each confirm disables the page under it
+# (COSConfirm), and the body draws the outermost stage, so the phone confirm and a server confirm never show together.
+phone_stage = body(views, "    private var panelWithPhoneConfirm: some View {", "    var body: some View {")
+pin(phone_stage.count(".cosConfirm(") == 1 and "        panelWithServerConfirm\n        .cosConfirm(\n" in phone_stage
+    and "isPresented: Binding(get: { phoneConfirm.shown != nil }, set: { if !$0 { phoneConfirm.shown = nil } })" in phone_stage
+    and "serverConfirm" not in phone_stage.replace("panelWithServerConfirm", "") and "        content.disabled(isPresented)\n" in confirm,
+    "the phone confirm is one confirm in its own stage, on its own state, over a disabled page")
+pin(views.count("    var body: some View {\n        panelWithPhoneConfirm\n        .cosConfirm(\n            pendingOpenPetsRow") == 1,
+    "the body continues from the new stage")
 actions = body(views, "    private var serverConfirmActions: [COSConfirmAction] {", "    private func requestQuit() {")
 pin(".destructive(SettingsConfirmCopy.action(pending))" in actions and actions.count("model.perform(") == 3 and "AppQuit.request()" in actions,
     "Stop, Roll back and Repair run, and Quit happens, only inside the confirm's destructive action")

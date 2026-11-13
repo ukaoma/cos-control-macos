@@ -69,7 +69,7 @@ struct GlassesCard: View {
         let cases: [(String, [String: String], Bool, Bool, CGFloat)] = [
             ("glasses-1-tailscale-not-installed", ["tailscale-status": tailscale(installed: false, running: false), "pairing-status": status(), "pairing-code": code(qr: false)], true, true, 600),
             ("glasses-2-phone-missing", ["tailscale-status": tailscale(phone: false), "pairing-status": status(), "pairing-code": code()], true, true, 1000),
-            ("glasses-3-qr-shown", ["tailscale-status": tailscale(), "pairing-status": status(), "pairing-code": code()], true, true, 680),
+            ("glasses-3-qr-shown", ["tailscale-status": tailscale(), "pairing-status": status(), "pairing-code": code()], true, true, 800),
             ("glasses-4-pending-allow", ["tailscale-status": tailscale(), "pairing-status": status(pending: "100.64.0.11"), "pairing-code": code(), "whois": whois], true, true, 380),
             ("glasses-5-paired", ["tailscale-status": tailscale(), "pairing-status": status(claim: true, firstAuth: true), "pairing-code": code(), "whois": whois], true, true, 300),
             ("glasses-7-pending-other-account", ["tailscale-status": tailscale(), "pairing-status": status(pending: "100.64.0.13"), "pairing-code": code(), "whois": whoisOther], true, true, 420),

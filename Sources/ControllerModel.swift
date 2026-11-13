@@ -2269,6 +2269,13 @@ final class ControllerModel: ObservableObject {
         perform("set-meeting-preview", arguments: [enabled ? "on" : "off"])
     }
 
+    /// Option A, Settings PK-02: phone approvals on for one phone, or off, after the row's confirmation. The arguments come
+    /// only from PhoneApprovalsSwitch.arguments; the helper validates them again (PhoneApprovalsCore.change).
+    func setPhoneApprovals(on: Bool, phone: PhoneApprovalsSwitch.Phone?) {
+        guard let arguments = PhoneApprovalsSwitch.arguments(on: on, phone: phone) else { return }
+        perform("set-phone-approvals", arguments: arguments)
+    }
+
     // ── Morning brief (server 6.43.0) ──
     //
     // The server owns the schedule and the source list; Control is a settings

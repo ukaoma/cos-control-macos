@@ -516,6 +516,10 @@ struct GlassesSetupRows: View {
             GlassesRowView(row: rows[2]) { connectBody(facts) }
         }
         .background(WindowProbe(holder: windowHolder))
+        // S4: a phone has just asked. The window comes forward so the 60 seconds are not spent behind another one.
+        .onChange(of: facts.status?.pending?.nonce) { old, new in
+            if GlassesRules.shouldComeForward(old: old, new: new) { windowHolder.comeForward() }
+        }
         .task(id: polls) {
             guard polls else { return }
             // Polls (and makes codes) only while this copy of the section is on screen: the menu-bar panel open, or its
@@ -560,27 +564,70 @@ struct GlassesSetupRows: View {
         }
     }
 
+    /// 0.5.390 line (Miles 2026-11-12, direction A plus paste). The code is the largest thing on the card and carries this
+    /// Mac's address, so the phone needs nothing else; Copy puts it on the clipboard for an iPhone on the same Apple ID.
+    /// The QR is the second way in, under the code, at the contract's size. The address is no longer small, grey and
+    /// unlabelled beside the code (S10): one labelled line keeps it for a phone app from before the long code.
     @ViewBuilder private func codeCard(_ code: PairingCode) -> some View {
+        let shown = GlassesRules.shownCode(code)
         VStack(alignment: .leading, spacing: 8) {
-            if let qr = code.qr {
-                QRCodeView(text: qr, side: 228, label: "Pairing code \(code.display)").frame(maxWidth: .infinity)
-            }
-            Text(GlassesRules.pairCaption)
-                .font(COSType.body(11)).foregroundStyle(.secondary).frame(maxWidth: .infinity)
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(code.display).font(COSType.mono(17, weight: .bold)).textSelection(.enabled)
-                if let host = code.hosts.first {
-                    Text(host.text).font(COSType.mono(10.5)).foregroundStyle(.secondary).textSelection(.enabled)
+            // Redrawn every second for the time left; the time itself comes from the pairing state's own clock.
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                VStack(alignment: .leading, spacing: 8) {
+                    if GlassesRules.showsNewCodeNote(replacedAt: pairing.codeReplacedAt, now: pairing.now()) {
+                        Text(GlassesRules.newCodeNote)
+                            .font(COSType.body(11, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, 8).padding(.vertical, 5)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(COSPalette.amber.opacity(0.16), in: RoundedRectangle(cornerRadius: 6))
+                    }
+                    HStack(alignment: .center, spacing: 10) {
+                        Text(shown).font(COSType.mono(22, weight: .bold)).textSelection(.enabled)
+                            .lineLimit(1).minimumScaleFactor(0.7)
+                            .accessibilityLabel("Pairing code \(shown)")
+                        Spacer(minLength: 0)
+                        Button(copiedCode == shown ? GlassesRules.pairCopied : GlassesRules.pairCopy) { copy(shown) }
+                            .buttonStyle(COSPrimaryButtonStyle())
+                            .accessibilityLabel("Copy the pairing code")
+                    }
+                    if copiedCode == shown {
+                        Text(GlassesRules.pairCopiedNote)
+                            .font(COSType.body(10.5)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    Text(GlassesRules.expiryLine(code.expiresAt, now: pairing.now())).font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
                 }
-                Spacer(minLength: 0)
             }
-            Text("Works once, until \(GlassesRules.time(code.expiresAt)).").font(COSType.body(10.5)).foregroundStyle(COSPalette.muted)
             HStack(spacing: 12) {
                 Button("Show a new code") { Task { await pairing.showNewCode() } }.buttonStyle(COSTextButtonStyle())
                 Spacer(minLength: 0)
             }
+            if let qr = code.qr {
+                Divider()
+                QRCodeView(text: qr, side: 228, label: "Pairing code \(code.display)").frame(maxWidth: .infinity)
+                Text(GlassesRules.pairCaption)
+                    .font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if let line = GlassesRules.addressLine(code) {
+                Text(line).font(COSType.body(11)).foregroundStyle(.secondary).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let wifi = GlassesRules.wifiCode(code) {
+                Text(GlassesRules.wifiLine(wifi)).font(COSType.body(11)).foregroundStyle(.secondary).textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             lanToggle
         }
+    }
+
+    /// The code Copy last copied (so the button and its line belong to that code only).
+    @State private var copiedCode: String?
+
+    private func copy(_ shown: String) {
+        let board = NSPasteboard.general
+        board.clearContents()
+        board.setString(shown, forType: .string)
+        copiedCode = shown
     }
 
     private var lanToggle: some View {
@@ -610,6 +657,13 @@ struct GlassesSetupRows: View {
                 Button("Deny") { Task { await pairing.decide(allow: false) } }.buttonStyle(COSTextButtonStyle())
                     .accessibilityLabel("Deny \(who)")
                 Spacer(minLength: 0)
+                // S4: the phone shows the same seconds. The server stops waiting when they run out.
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    if let left = GlassesRules.allowLeft(pending, now: pairing.now()) {
+                        Text(left).font(COSType.mono(11, weight: .semibold)).foregroundStyle(COSPalette.amber)
+                            .accessibilityLabel("Time left to answer: \(left)")
+                    }
+                }
             }
             .disabled(pairing.deciding)
         }
@@ -740,6 +794,13 @@ struct PhoneSignInOldServer: View {
     func onScreen(panelVisible: Bool) -> Bool {
         guard let window else { return panelVisible }
         return window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible)
+    }
+
+    /// S4: brings the card's window to the front for a pairing request. Never in a test or render run.
+    func comeForward() {
+        guard ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] == nil, let window else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
     }
 
     /// Opens the installed Tailscale app (standalone or App Store build). False when neither is installed.

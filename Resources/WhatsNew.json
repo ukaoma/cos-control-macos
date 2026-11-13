@@ -1,8 +1,20 @@
 {
-  "version": "0.5.389",
+  "version": "0.5.391",
   "whatsNew": {
-    "summary": "A session that ends its turn with a question now shows as waiting, and you can answer it from COS Control. Plus everything in 0.5.388.",
+    "summary": "Reply from the message reader, Back goes the way you came, and one code connects your glasses. Phone approvals ship switched off. Plus everything in 0.5.389.",
     "sections": [
+      {
+        "title": "0.5.391",
+        "items": [
+          "Reply to a message from the message reader. Pick the model (Opus first) and, where the server offers it, the effort. Replies share Today's limits: 20 runs a day, and a 15-minute pause after 3 failed runs.",
+          "Back goes the way you came, up to 30 steps, and closes an open detail first. After a jump, a trail of the earlier steps shows in the toolbar, each one a link back.",
+          "In the message reader and archive chats, your words and COS's answer sit on opposite sides.",
+          "Meetings opens on today, ringed, with one tap to the latest earlier day that has meetings. Speakers' buttons read Copy summary and Copy full, and say Copied.",
+          "Connect your glasses with one 14-character code, shown large with Copy. The phone can paste it and connect on its own; nothing connects until you click Allow.",
+          "Update Server says up to date instead of reinstalling, and Run checks warns when Claude's sign-in has expired. The phone row says your phone, not iPhone.",
+          "Phone approvals ship switched off. On server 7.0.30 or newer, Settings (All view) shows a Turn on phone approvals row; it stays off unless you turn it on."
+        ]
+      },
       {
         "title": "0.5.389",
         "items": [

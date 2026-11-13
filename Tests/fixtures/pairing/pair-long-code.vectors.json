@@ -1,0 +1,213 @@
+{
+  "format": "cos-pair-long-code-1",
+  "note": "Written only by make_vectors.py (COS repo, wk46_2026/glasses_onboarding/long_code). The phone and the Mac each recompute every row. Never edit by hand.",
+  "alphabet": "0123456789ABCDEFGHJKMNPQRSTVWXYZ",
+  "codeLength": 8,
+  "longLength": 14,
+  "port": 3141,
+  "check": {
+    "field": "GF(32)",
+    "polynomial": 37,
+    "alpha": 2,
+    "rule": "XOR over i = 0..12 of alpha^(i+1) * value[i]"
+  },
+  "ranges": [
+    {
+      "name": "tailscale",
+      "cidr": "100.64.0.0/10",
+      "base": 0,
+      "size": 4194304
+    },
+    {
+      "name": "lan10",
+      "cidr": "10.0.0.0/8",
+      "base": 4194304,
+      "size": 16777216
+    },
+    {
+      "name": "lan172",
+      "cidr": "172.16.0.0/12",
+      "base": 20971520,
+      "size": 1048576
+    },
+    {
+      "name": "lan192",
+      "cidr": "192.168.0.0/16",
+      "base": 22020096,
+      "size": 65536
+    }
+  ],
+  "total": 22085632,
+  "displayGroups": [
+    4,
+    4,
+    3,
+    3
+  ],
+  "valid": [
+    {
+      "code": "K7Q2M9XD",
+      "host": "100.108.149.114",
+      "long": "K7Q2M9XD2S5BJQ",
+      "display": "K7Q2-M9XD-2S5-BJQ"
+    },
+    {
+      "code": "H6JPYSW5",
+      "host": "100.108.149.114",
+      "long": "H6JPYSW52S5BJR",
+      "display": "H6JP-YSW5-2S5-BJR"
+    },
+    {
+      "code": "FWKZ97E0",
+      "host": "100.83.140.84",
+      "long": "FWKZ97E01732MD",
+      "display": "FWKZ-97E0-173-2MD"
+    },
+    {
+      "code": "00000000",
+      "host": "100.64.0.0",
+      "long": "00000000000000",
+      "display": "0000-0000-000-000"
+    },
+    {
+      "code": "ZZZZZZZZ",
+      "host": "100.127.255.255",
+      "long": "ZZZZZZZZ3ZZZZV",
+      "display": "ZZZZ-ZZZZ-3ZZ-ZZV"
+    },
+    {
+      "code": "K7Q2M9XD",
+      "host": "10.0.0.0",
+      "long": "K7Q2M9XD400009",
+      "display": "K7Q2-M9XD-400-009"
+    },
+    {
+      "code": "K7Q2M9XD",
+      "host": "10.255.255.255",
+      "long": "K7Q2M9XDKZZZZA",
+      "display": "K7Q2-M9XD-KZZ-ZZA"
+    },
+    {
+      "code": "3V8N1TQA",
+      "host": "10.0.1.23",
+      "long": "3V8N1TQA4008QE",
+      "display": "3V8N-1TQA-400-8QE"
+    },
+    {
+      "code": "K7Q2M9XD",
+      "host": "172.16.0.0",
+      "long": "K7Q2M9XDM0000N",
+      "display": "K7Q2-M9XD-M00-00N"
+    },
+    {
+      "code": "K7Q2M9XD",
+      "host": "172.31.255.255",
+      "long": "K7Q2M9XDMZZZZ6",
+      "display": "K7Q2-M9XD-MZZ-ZZ6"
+    },
+    {
+      "code": "K7Q2M9XD",
+      "host": "192.168.0.0",
+      "long": "K7Q2M9XDN0000F",
+      "display": "K7Q2-M9XD-N00-00F"
+    },
+    {
+      "code": "K7Q2M9XD",
+      "host": "192.168.255.255",
+      "long": "K7Q2M9XDN1ZZZM",
+      "display": "K7Q2-M9XD-N1Z-ZZM"
+    },
+    {
+      "code": "9G4WB0CX",
+      "host": "192.168.1.204",
+      "long": "9G4WB0CXN00EC9",
+      "display": "9G4W-B0CX-N00-EC9"
+    }
+  ],
+  "invalid": [
+    {
+      "input": "T7Q2M9XD2S5BJQ",
+      "reason": "typo",
+      "why": "character 1 is wrong"
+    },
+    {
+      "input": "K7Q2MGXD2S5BJQ",
+      "reason": "typo",
+      "why": "character 6 is wrong"
+    },
+    {
+      "input": "K7Q2M9XD205BJQ",
+      "reason": "typo",
+      "why": "character 10 is wrong"
+    },
+    {
+      "input": "K7Q2M9XD2S5BSQ",
+      "reason": "typo",
+      "why": "character 13 is wrong"
+    },
+    {
+      "input": "K7Q2M9XD2S5BJY",
+      "reason": "typo",
+      "why": "character 14 is wrong"
+    },
+    {
+      "input": "KQ72M9XD2S5BJQ",
+      "reason": "typo",
+      "why": "characters 2 and 3 are swapped"
+    },
+    {
+      "input": "K7Q2M9X2DS5BJQ",
+      "reason": "typo",
+      "why": "characters 8 and 9 are swapped"
+    },
+    {
+      "input": "K7Q2M9XD2SB5JQ",
+      "reason": "typo",
+      "why": "characters 11 and 12 are swapped"
+    },
+    {
+      "input": "K7Q2M9XDN20008",
+      "reason": "typo",
+      "why": "the address part is past the last range"
+    },
+    {
+      "input": "K7Q2M9XDZZZZZ3",
+      "reason": "typo",
+      "why": "the address part is the largest 25-bit number"
+    },
+    {
+      "input": "K7Q2M9XD2S5BJ",
+      "reason": "bad_code",
+      "why": "13 characters"
+    },
+    {
+      "input": "K7Q2M9XD2S5BJQ0",
+      "reason": "bad_code",
+      "why": "15 characters"
+    },
+    {
+      "input": "K7Q2M9UD2S5BJQ",
+      "reason": "bad_code",
+      "why": "U is not in the alphabet"
+    },
+    {
+      "input": "",
+      "reason": "bad_code",
+      "why": "empty"
+    }
+  ],
+  "notEncodable": [
+    "8.8.8.8",
+    "100.63.255.255",
+    "100.128.0.0",
+    "172.15.255.255",
+    "172.32.0.0",
+    "192.169.0.1",
+    "11.0.0.1",
+    "010.1.1.1",
+    "100.108.149",
+    "100.108.149.256",
+    "mymac.local",
+    ""
+  ]
+}

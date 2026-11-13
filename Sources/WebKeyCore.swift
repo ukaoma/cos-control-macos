@@ -368,6 +368,260 @@ enum WebKeyServerMode: String, Equatable, Sendable {
     }
 }
 
+// MARK: - The signer origin's certificate (0.5.390, server 7.0.20 `signerTls`)
+
+/// The server's `signerTls` in authority mode (server/lib/web-key-signer-tls.ts): whether 3144 presents a publicly trusted,
+/// unexpired certificate for this Mac's tailnet name. Control reads it ONLY for one plain line in Phone approvals; trust in
+/// the served chain is the signer audit's own check (HelperSources/PairingCore.swift, SignerTLSCore). A server that does
+/// not report it gets no line.
+enum WebKeySignerTLS {
+    static let certsOff = "Turn on HTTPS Certificates in your Tailscale admin console."
+
+    /// nil when the server reports a trusted certificate for the origin's own host that has not expired, or reports
+    /// nothing; otherwise one sentence for its reason. The server's lastError is not read: it can outlive a working pair.
+    static func problem(body: [String: Any], now: Date) -> String? {
+        guard let tls = body["signerTls"] as? [String: Any] else { return nil }
+        let host = (body["origin"] as? String).flatMap(WebKeyProtocol.signerHost)
+        if tls["trusted"] as? Bool == true, let host, tls["host"] as? String == host,
+           let end = (tls["notAfter"] as? String).flatMap(date), end > now { return nil }
+        return line(tls["reason"] as? String)
+    }
+
+    /// Server reopen (2026-11-11): `signerTls.storedRefused`, why the server refused the last certificate pair placed by
+    /// hand in its folder (a stored_* code, cert_untrusted and so on), so the refusal is visible at acceptance. One sentence
+    /// from the same list; nil when the server reports none, or when it would repeat the line `problem` already shows.
+    static func storedRefused(body: [String: Any], now: Date) -> String? {
+        guard let tls = body["signerTls"] as? [String: Any], let code = tls["storedRefused"] as? String, !code.isEmpty else { return nil }
+        let sentence = line(code)
+        return sentence == problem(body: body, now: now) ? nil : sentence
+    }
+
+    /// THE one list of the server's not-trusted reason codes (the server's SIGNER_TLS_REASONS minus "ok",
+    /// server/lib/web-key-signer-tls.ts; golden.json carries the server's list and the reasonParity check compares them)
+    /// and one plain sentence each. These codes are written nowhere else in Control (Tests/web-key-pins.py). A code the
+    /// server adds later gets `fallback`, never a code on screen.
+    static let sentences: [String: String] = [
+        "pending": "COS is getting this Mac's Tailscale certificate for your phone.",
+        "tailnet_name_unknown": "COS does not know this Mac's Tailscale name yet. Check that Tailscale is connected.",
+        "tailnet_https_certs_off": certsOff,
+        "cert_domain_mismatch": "Tailscale lists no certificate name for this Mac. Check HTTPS Certificates in your Tailscale admin console.",
+        "tailscale_not_running": "Tailscale is not running on this Mac, so your phone cannot reach approvals.",
+        "tailscale_cli_missing": "Tailscale is not installed on this Mac, so your phone cannot reach approvals.",
+        "tailscale_cli_timeout": "Tailscale did not answer the COS server. COS tries again later.",
+        "tailscale_cli_gui_unavailable": "The COS server could not reach Tailscale on this Mac. Open the Tailscale app once; COS tries again later.",
+        "tailscale_status_failed": "Tailscale did not answer the COS server. COS tries again later.",
+        "tailscale_cert_failed": "Tailscale could not get this Mac's certificate. COS tries again later.",
+        "cert_invalid": "Tailscale's certificate did not check out, so COS is not using it.",
+        "cert_expired": "This Mac's Tailscale certificate expired. COS is getting a new one.",
+        "cert_store_failed": "COS could not save this Mac's Tailscale certificate.",
+        // Server reopen (2026-11-11): SR-03, SR-01, SR-05 and the stored-pair checks of SR-08.
+        "tailscale_output_too_large": "Tailscale's answer was too large for the COS server to read. COS tries again later.",
+        "cert_not_yet_valid": "This Mac's Tailscale certificate is not valid yet. Check the Mac's date and time.",
+        "cert_untrusted": "The certificate COS found is not publicly trusted, so COS is not using it.",
+        "cert_daily_cap": "COS asked Tailscale for a certificate too often today. It tries again tomorrow.",
+        "stored_symlink": "COS did not use the certificate files in its folder: one of them is a link.",
+        "stored_not_file": "COS did not use the certificate files in its folder: one of them is not a regular file.",
+        "stored_owner": "COS did not use the certificate files in its folder: they belong to another user.",
+        "stored_writable": "COS did not use the certificate files in its folder: other users can change them.",
+        "stored_too_large": "COS did not use the certificate files in its folder: one of them is too large.",
+        // S1's finding 5 (76f50e1): the stored key or its folder can be read by other users.
+        "stored_readable": "COS did not use the certificate files in its folder: other users can read the key.",
+    ]
+    static let fallback = "Your phone's secure connection to this Mac is not ready yet."
+
+    static func line(_ reason: String?) -> String { reason.flatMap { sentences[$0] } ?? fallback }
+
+    /// The server's ISO 8601 time (JavaScript's toISOString has milliseconds).
+    static func date(_ text: String) -> Date? {
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return withFraction.date(from: text) ?? ISO8601DateFormatter().date(from: text)
+    }
+}
+
+// MARK: - The phone approvals switch (option A, lead 2026-11-11 21:31)
+
+/// Settings PK-02, in full Settings only (never Basic): off by default; turning it on picks one of this account's iPhones
+/// from Tailscale and asks for a confirmation that names the phone and says the Mac's name becomes public in certificate
+/// logs. The helper verb `set-phone-approvals` applies it through the managed provider environment (PhoneApprovalsCore,
+/// HelperSources/PairingCore.swift). Whether it is on is read from the server's own status (WebKeyServerMode).
+enum PhoneApprovalsSwitch {
+    /// The first server with the reopened phone approvals; PhoneApprovalsCore.minimumServer must equal it (a check).
+    static let minimumServer = "7.0.30"
+
+    struct Peer: Equatable, Sendable {
+        var os: String
+        var dns: String
+        var ipv4: String?
+        var sameUser: Bool
+    }
+
+    struct Phone: Hashable, Sendable {
+        let name: String
+        let ipv4: String
+    }
+
+    /// This account's iOS devices with a Tailscale IPv4, by name. Another account's device or a Mac is never offered. Tailscale
+    /// reports an iPad as iOS too, so an iPad on this account is listed by its name; the person picks the phone.
+    static func phones(_ peers: [Peer]) -> [Phone] {
+        peers.compactMap { peer -> Phone? in
+            guard peer.os == "iOS", peer.sameUser, let ipv4 = peer.ipv4, isTailnetIPv4(ipv4) else { return nil }
+            let name = String(peer.dns.split(separator: ".").first ?? Substring(peer.dns))
+            return name.isEmpty ? nil : Phone(name: name, ipv4: ipv4)
+        }
+        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// 100.64.0.0/10, written plainly (the app does not compile the helper's TailscaleCore).
+    static func isTailnetIPv4(_ value: String) -> Bool {
+        let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return false }
+        let octets = parts.compactMap { part -> Int? in
+            guard !part.isEmpty, part.count <= 3, part.allSatisfy({ $0.isASCII && $0.isNumber }), !(part.count > 1 && part.first == "0") else { return nil }
+            return Int(part).flatMap { $0 <= 255 ? $0 : nil }
+        }
+        return octets.count == 4 && octets[0] == 100 && (64...127).contains(octets[1])
+    }
+
+    /// The row draws only for a server new enough to have the reopened phone approvals.
+    static func shown(serverVersion: String?) -> Bool {
+        guard let version = serverVersion.flatMap(numbers), let floor = numbers(minimumServer) else { return false }
+        return version.lexicographicallyPrecedes(floor) == false
+    }
+
+    private static func numbers(_ version: String) -> [Int]? {
+        let parts = version.split(separator: ".").map { Int($0) }
+        guard parts.count == 3, parts.allSatisfy({ $0 != nil }) else { return nil }
+        return parts.compactMap { $0 }
+    }
+
+    /// Like the nine restart rows (RestartApply.applyEnabled, Settings Release A): turning ON, and Off's =0 restart, are live
+    /// only with no other change in progress and no running work, so neither interrupts a meeting or leaves the drain gate
+    /// closed. Off's Revoke all, and the Devices card's Revoke and Revoke all, never ask this (PhoneApprovalsOff).
+    static func applyAllowed(locked: Bool, workActive: Bool) -> Bool { !locked && !workActive }
+
+    /// On means the server serves phone approvals now. Bootstrap (registration only) and off read as off.
+    static func isOn(_ mode: WebKeyServerMode) -> Bool { mode == .authority }
+
+    /// The helper's arguments: on needs a phone; off takes none.
+    static func arguments(on: Bool, phone: Phone?) -> [String]? {
+        if !on { return ["off"] }
+        guard let phone, isTailnetIPv4(phone.ipv4) else { return nil }
+        return ["on", phone.ipv4]
+    }
+
+    // Copy. Plain sentences, no em dashes (Tests/web-key-pins.py).
+    static func confirmOnTitle(_ phone: Phone) -> String { "Turn on phone approvals for \(phone.name)?" }
+    static func confirmOnMessage(_ phone: Phone, macName: String?) -> String {
+        let mac = macName.map { "Your Mac's Tailscale name, \($0)," } ?? "Your Mac's Tailscale name"
+        return "\(phone.name) can then approve agent actions with its passkey and user verification on one of your Apple devices, after you enroll it here with Touch ID. "
+            + "\(mac) becomes public in certificate logs when its first certificate is issued, and stays public. "
+            + "COS restarts the server to turn this on."
+    }
+    static let confirmOn = "Turn on and restart"
+    static let confirmOffTitle = "Turn off phone approvals?"
+    static let confirmOffMessage = "Every enrolled phone is removed now and stops approving at once. If you turn this on again, enroll each phone again with Touch ID. COS then restarts the server with phone approvals off, after any running work."
+    static let confirmOff = "Remove phones and turn off"
+    static let label = "Turn on phone approvals"
+    static let labelOn = "Phone approvals are on"
+    /// The row's title follows the switch (lead 11:40): "Turn on phone approvals" reads as an instruction once it is on.
+    static func title(on: Bool) -> String { on ? labelOn : label }
+    static let detail = "Off unless you turn it on. Lets one of your iPhones approve agent actions. Restarts the server."
+    static let noPhone = "No iPhone on your Tailscale account yet. Sign in to Tailscale on the phone, then check again."
+}
+
+// MARK: - Turning phone approvals off (option A, lead ruling 2026-11-12 10:32)
+
+/// Off must stop approvals at once, and the server reads COS_WEB_KEY_AUTHORITY only when it starts. So Off runs the live
+/// Revoke all first: every enrolled phone stops approving now and must be enrolled again with Touch ID and the code. Then it
+/// writes =0 through the managed restart. Only that restart waits for running work (PhoneApprovalsSwitch.applyAllowed); the
+/// revoke never does, and neither do the Devices card's Revoke and Revoke all. The wait is saved in UserDefaults, so it
+/// survives a quit or a Mac restart, and the row shows it until the helper proves the server restarted with approvals off.
+struct PhoneApprovalsPendingOff: Equatable, Sendable {
+    /// The live Revoke all reached the server and it answered 200. When false, the row never says approvals are stopped.
+    var revokedAll: Bool
+    var savedAt: Int64
+}
+
+@MainActor protocol PhoneApprovalsPendingStore: AnyObject {
+    func load() -> PhoneApprovalsPendingOff?
+    func save(_ pending: PhoneApprovalsPendingOff)
+    func clear()
+}
+
+/// The app's store: UserDefaults, which survives a quit or a Mac restart.
+@MainActor final class DefaultsPhoneApprovalsPendingStore: PhoneApprovalsPendingStore {
+    static let key = "cos.phoneApprovals.pendingOff"
+    let defaults: UserDefaults
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    func load() -> PhoneApprovalsPendingOff? {
+        guard let row = defaults.dictionary(forKey: Self.key), let revoked = row["revokedAll"] as? Bool,
+              let at = (row["savedAt"] as? NSNumber)?.int64Value else { return nil }
+        return PhoneApprovalsPendingOff(revokedAll: revoked, savedAt: at)
+    }
+    func save(_ pending: PhoneApprovalsPendingOff) {
+        defaults.set(["revokedAll": pending.revokedAll, "savedAt": NSNumber(value: pending.savedAt)] as [String: Any], forKey: Self.key)
+    }
+    func clear() { defaults.removeObject(forKey: Self.key) }
+}
+
+enum PhoneApprovalsOff {
+    /// Off, after its confirm. The intent is saved before the revoke, so a quit during it still leaves the =0 waiting. The
+    /// revoke runs whatever work is running; only the =0 restart asks applyAllowed, after the revoke, with the work as it is then.
+    @MainActor static func run(store: any PhoneApprovalsPendingStore, now: Int64, revokeAll: () async -> Bool,
+                               locked: () -> Bool, workActive: () -> Bool, apply: () -> Void) async -> PhoneApprovalsPendingOff {
+        store.save(PhoneApprovalsPendingOff(revokedAll: false, savedAt: now))
+        let pending = PhoneApprovalsPendingOff(revokedAll: await revokeAll(), savedAt: now)
+        store.save(pending)
+        resume(store: store, locked: locked(), workActive: workActive(), apply: apply)
+        return pending
+    }
+
+    /// The saved =0 applies once nothing is in progress and no work runs: right after the revoke, when the row appears, and
+    /// when running work ends. Returns whether it applied now.
+    @MainActor @discardableResult
+    static func resume(store: any PhoneApprovalsPendingStore, locked: Bool, workActive: Bool, apply: () -> Void) -> Bool {
+        guard store.load() != nil, PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: workActive) else { return false }
+        apply()
+        return true
+    }
+
+    /// The helper finished the =0 restart. Only a proved restart (no error) clears the wait; a failed one keeps it.
+    @MainActor static func finished(store: any PhoneApprovalsPendingStore, helperSucceeded: Bool) {
+        if helperSucceeded { store.clear() }
+    }
+
+    /// The row's line while Off waits or runs. A failed Revoke all never reads as stopped.
+    static func line(_ pending: PhoneApprovalsPendingOff, waiting: Bool) -> String {
+        (pending.revokedAll ? stopped : notStopped) + (waiting ? " " + waits : "")
+    }
+    static let stopped = "Phone approvals are stopped. Every phone was removed."
+    static let notStopped = "Revoke all did not reach the server, so a phone may still approve until the server restarts with approvals off."
+    static let waits = "The restart waits for running work."
+}
+
+// MARK: - What a revoke says (security review 2026-11-12, blocker 2)
+
+/// Nothing claims phone approvals are off unless the server confirmed the revoke or Control's protected record was saved.
+/// Every other case names what failed.
+enum WebKeyRevokeOutcome {
+    static let noAnchor = "This Mac has no approval key, so Control kept no record of it"
+    static let unreadable = "Control could not read its protected phone record"
+    static let otherKey = "The protected phone record belongs to another key"
+    static let epochFull = "Control could not advance the protected phone record"
+    static let notRecorded = "Control could not record the revocation"
+
+    static func message(serverConfirmed: Bool, localSaved: Bool, localProblem: String?) -> String? {
+        let problem = localProblem ?? notRecorded
+        switch (serverConfirmed, localSaved) {
+        case (true, true): return nil
+        case (true, false): return "The server revoked it. \(problem)."
+        case (false, true): return "Revoked in Control. The server did not confirm, so phone approvals stay off until it does."
+        case (false, false): return "\(problem), and the server did not confirm. A phone may still approve. Try again."
+        }
+    }
+}
+
 // MARK: - The listener audit (review W9)
 
 /// Whether the server Control talks to also owns the signer ports, on every address: one PID, under the COS LaunchAgent,
@@ -872,6 +1126,10 @@ final class WebKeyState: ObservableObject {
     @Published private(set) var controlState: WebKeyControlState?
     @Published private(set) var protectionReady = false
     @Published private(set) var recoveryRequired = false
+    /// 0.5.390: why the phone's HTTPS origin is not trusted yet (WebKeySignerTLS), authority only; nil when it is.
+    @Published private(set) var signerTLSLine: String?
+    /// Server reopen: why a hand-placed certificate pair was refused (WebKeySignerTLS.storedRefused), authority only.
+    @Published private(set) var signerTLSStoredLine: String?
     private(set) var anchor: (any WebKeyAnchorSigner)?
     private var origin: String?
     private var readID: UUID?
@@ -924,6 +1182,9 @@ final class WebKeyState: ObservableObject {
         if origin != suppliedOrigin || mode != served { card = nil; typedCode = ""; audit = nil }
         origin = suppliedOrigin
         mode = served
+        // 0.5.390: one plain line when the server says 3144's certificate is not trusted. Authority only.
+        signerTLSLine = served == .authority ? WebKeySignerTLS.problem(body: status.body, now: now()) : nil
+        signerTLSStoredLine = served == .authority ? WebKeySignerTLS.storedRefused(body: status.body, now: now()) : nil
         anchorMature = status.body["anchorMature"] as? Bool == true
         loadLocalAnchor()
         let serverAud = status.body["aud"] as? String
@@ -955,6 +1216,8 @@ final class WebKeyState: ObservableObject {
         visible = false; card = nil; cardRefusal = nil; pendingWithoutAudit = false; keys = []; typedCode = ""
         anchorRegisteredHere = false; foreignAnchor = false; protectionReady = false
         controlState = nil; audit = nil; origin = nil; anchorMature = false; recoveryRequired = false
+        signerTLSLine = nil
+        signerTLSStoredLine = nil
     }
 
     /// Bootstrap, right after THIS run registered the anchor (the same condition as authority's rebind): start Control's
@@ -1239,45 +1502,71 @@ final class WebKeyState: ObservableObject {
         await refresh()
     }
 
-    private func protectedRevocationBase(anchorSha: String) -> WebKeyControlState? {
+    /// Control's protected record to revoke on top of, or why there is none (said as it is, never "approvals stay off").
+    private func protectedRevocationBase(anchorSha: String) -> (state: WebKeyControlState?, problem: String?) {
         let saved: WebKeyControlState
         switch store.load() {
         case .ok(let state): saved = state
         case .repaired(let state, let rewrote) where rewrote: saved = state
-        default: message = "Control could not read its protected phone record. Phone approvals stay off."; return nil
+        default: return (nil, WebKeyRevokeOutcome.unreadable)
         }
-        guard saved.anchorSpkiSha256 == anchorSha else { message = "The protected phone record belongs to another key. Phone approvals stay off."; return nil }
-        return saved
+        guard saved.anchorSpkiSha256 == anchorSha else { return (nil, WebKeyRevokeOutcome.otherKey) }
+        return (saved, nil)
     }
 
-    /// Persist local revocation BEFORE awaiting the server; a crash or cancellation cannot erase the user's intent.
-    func revoke(_ kid: String) async {
-        guard mode == .authority, visible, !busy, let anchor,
-              kid.range(of: #"\A[A-Za-z0-9_-]{22}\z"#, options: .regularExpression) != nil else { return }
+    /// Security review 2026-11-12, blocker 2: the server's revoke is called in every case; it needs no anchor. Control's
+    /// protected record is still written first when it can be, so a crash or cancellation cannot erase the intent, and each
+    /// failure is said as what it is (WebKeyRevokeOutcome). True only when the server answered 200.
+    @discardableResult
+    func revoke(_ kid: String) async -> Bool {
+        guard mode == .authority, visible, !busy,
+              kid.range(of: #"\A[A-Za-z0-9_-]{22}\z"#, options: .regularExpression) != nil else { return false }
         busy = true; defer { busy = false }
         protectionReady = false; card = nil; typedCode = ""
-        let sha = WebKeyHash.sha256Hex(anchor.publicKeyDER)
-        guard var s = protectedRevocationBase(anchorSha: sha) else { return }
-        if !s.revokedKids.contains(kid) { s = WebKeyControlState(epoch: s.epoch, revoked: s.revoked + [WebKeyRevocation(kid: kid, revokedAt: nowMs())], anchorSpkiSha256: sha, updatedAt: nowMs()) }
-        guard store.save(s) else { message = "Control could not record the revocation. Phone approvals stay off."; return }
-        controlState = s
+        var local: (saved: Bool, problem: String?) = (false, WebKeyRevokeOutcome.noAnchor)
+        if let anchor {
+            let sha = WebKeyHash.sha256Hex(anchor.publicKeyDER)
+            let base = protectedRevocationBase(anchorSha: sha)
+            if var s = base.state {
+                if !s.revokedKids.contains(kid) { s = WebKeyControlState(epoch: s.epoch, revoked: s.revoked + [WebKeyRevocation(kid: kid, revokedAt: nowMs())], anchorSpkiSha256: sha, updatedAt: nowMs()) }
+                if store.save(s) { controlState = s; local = (true, nil) } else { local = (false, WebKeyRevokeOutcome.notRecorded) }
+            } else {
+                local = (false, base.problem)
+            }
+        }
         let answer = await ask("revoke", body: WebKeyJCS.bytes(["kid": kid, "reason": "revoked_in_control"] as [String: Any]))
-        if answer?.status != 200 { message = "Revoked in Control. The server did not confirm, so phone approvals stay off until it does." }
+        let confirmed = answer?.status == 200
+        let outcome = WebKeyRevokeOutcome.message(serverConfirmed: confirmed, localSaved: local.saved, localProblem: local.problem)
         if !Task.isCancelled { await refresh() }
+        // Said after the read, so the refresh's own line cannot hide what this revoke did.
+        if let outcome { message = outcome }
+        return confirmed
     }
 
-    func revokeAll() async {
-        guard mode == .authority, visible, !busy, let anchor else { return }
+    /// Like revoke: the server's revoke-all is called in every case, after Control's epoch moves when it can. True only when
+    /// the server answered 200 (option A's Off reads it: a false never reads as stopped).
+    @discardableResult
+    func revokeAll() async -> Bool {
+        guard mode == .authority, visible, !busy else { return false }
         busy = true; defer { busy = false }
         protectionReady = false; card = nil; typedCode = ""
-        let sha = WebKeyHash.sha256Hex(anchor.publicKeyDER)
-        guard let base = protectedRevocationBase(anchorSha: sha) else { return }
-        guard base.epoch < WebKeyJCS.maxSafe else { message = "Control could not advance the protected phone record. Phone approvals stay off."; return }
-        let s = WebKeyControlState(epoch: base.epoch + 1, revoked: base.revoked, anchorSpkiSha256: sha, updatedAt: nowMs())
-        guard store.save(s) else { message = "Control could not record the revocation. Phone approvals stay off."; return }
-        controlState = s
+        var local: (saved: Bool, problem: String?) = (false, WebKeyRevokeOutcome.noAnchor)
+        if let anchor {
+            let sha = WebKeyHash.sha256Hex(anchor.publicKeyDER)
+            let base = protectedRevocationBase(anchorSha: sha)
+            if let saved = base.state, saved.epoch < WebKeyJCS.maxSafe {
+                let s = WebKeyControlState(epoch: saved.epoch + 1, revoked: saved.revoked, anchorSpkiSha256: sha, updatedAt: nowMs())
+                if store.save(s) { controlState = s; local = (true, nil) } else { local = (false, WebKeyRevokeOutcome.notRecorded) }
+            } else {
+                local = (false, base.problem ?? WebKeyRevokeOutcome.epochFull)
+            }
+        }
         let answer = await ask("revoke-all", body: Data("{}".utf8))
-        if answer?.status != 200 { message = "Revoked in Control. The server did not confirm, so phone approvals stay off until it does." }
+        let confirmed = answer?.status == 200
+        let outcome = WebKeyRevokeOutcome.message(serverConfirmed: confirmed, localSaved: local.saved, localProblem: local.problem)
         if !Task.isCancelled { await refresh() }
+        // Said after the read, so the refresh's own line cannot hide what this revoke did.
+        if let outcome { message = outcome }
+        return confirmed
     }
 }

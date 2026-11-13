@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // Connect your AI (Sources/ProviderConnectModel.swift), compiled on its own: the rows, the Get started gate, Sign in's
@@ -121,6 +122,8 @@ struct ProviderConnectChecks {
         voiceRows()
         await voiceFlow()
         await qaFixes()
+        pairLongCode()
+        await pairLongCodeFlow()
         glassesDecoding()
         glassesRows()
         glassesProgress()
@@ -994,10 +997,13 @@ extension ProviderConnectChecks {
             check(!text.contains("—") && !text.contains("–") && !text.contains("→") && !text.contains("->"), "phone copy", "no dash or arrow: \(text)")
         }
         // 0.5.368: the glasses pairing QR says it is for the COS Glasses app; the row and the caption under the QR.
-        check(GlassesRules.pairSubtitle == "Scan this inside the COS Glasses app. Your phone's camera can't read it."
-              && GlassesRules.pairCaption == "Open the COS Glasses app, then hold your phone so the code fills the screen."
+        // 0.5.390 line (Miles 2026-11-12): the code is typed first; the QR is the second way in and says it is one photo.
+        check(GlassesRules.pairSubtitle == "Type this code in the COS Glasses app on your phone."
+              && GlassesRules.pairCaption == "Or take one photo of it inside the COS Glasses app (Scan, or Take a photo of the code). Your phone's camera app can't read it."
               && GlassesRules.connectRow(GlassesFacts()).unlocks == GlassesRules.pairSubtitle, "glasses qr copy", GlassesRules.connectRow(GlassesFacts()).unlocks)
-        for text in [GlassesRules.pairSubtitle, GlassesRules.pairCaption] {
+        check(!GlassesRules.pairSubtitle.lowercased().contains("scan") && !GlassesRules.pairCaption.lowercased().contains("fills the screen"),
+              "glasses qr copy", "nothing describes a live scanner")
+        for text in [GlassesRules.pairSubtitle, GlassesRules.pairCaption, GlassesRules.pairCopiedNote, GlassesRules.newCodeNote, GlassesRules.wifiLine("X")] {
             check(!text.contains("—") && !text.contains("–") && !text.contains("→") && !text.contains("->"), "glasses qr copy", "no dash or arrow: \(text)")
         }
     }
@@ -1233,6 +1239,134 @@ extension ProviderConnectChecks {
     }
     static func code(boot: String = "boot-1", expires: Date = pairingBase.addingTimeInterval(300), qr: Bool = true) -> PairingCode {
         PairingCode.decode(PairingJSON.object(Data(codeDetails(boot: boot, expires: expires, qr: qr).utf8))!)!
+    }
+
+    // ── 0.5.390 line: the 14-character pairing code (lane O1, Miles 2026-11-12) ──
+    static func pairLongCode() {
+        // The fixture is written only by the Python reference in the COS repo; the phone's tests pin the same sha256.
+        let path = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ""
+        let data = FileManager.default.contents(atPath: path) ?? Data()
+        check(!data.isEmpty, "long code fixture", "readable at \(path)")
+        check(sha256Hex(data) == "29288b37d703c898399262a273e2343ffffa74788d046075aae32ff071ab52fd", "long code fixture",
+              "the same bytes the phone pins (cos-glasses-app src/lib/pair-long-code.test.ts): \(sha256Hex(data))")
+        let doc = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        check(doc["alphabet"] as? String == String(PairLongCode.alphabet) && doc["longLength"] as? Int == PairLongCode.longLength
+              && doc["port"] as? Int == PairLongCode.port && doc["total"] as? Int == PairLongCode.total, "long code fixture",
+              "alphabet, length, port and total agree: total \(PairLongCode.total)")
+        let valid = doc["valid"] as? [[String: String]] ?? []
+        check(valid.count >= 12, "long code vectors", "\(valid.count) valid rows")
+        for row in valid {
+            let code = row["code"] ?? "", host = row["host"] ?? "", long = row["long"] ?? "", display = row["display"] ?? ""
+            check(PairLongCode.encode(code: code, host: host) == long, "long code vectors", "encode \(code) \(host): \(PairLongCode.encode(code: code, host: host) ?? "nil") vs \(long)")
+            check(PairLongCode.decode(long) == .ok(code: code, host: host), "long code vectors", "decode \(long): \(PairLongCode.decode(long))")
+            check(PairLongCode.display(long) == display && long.hasPrefix(code), "long code vectors", "display \(PairLongCode.display(long)) vs \(display)")
+        }
+        for row in doc["invalid"] as? [[String: String]] ?? [] {
+            let got = PairLongCode.decode(row["input"] ?? "")
+            let want: PairLongCode.Decoded = row["reason"] == "typo" ? .typo : .badCode
+            check(got == want, "long code vectors", "\(row["why"] ?? ""): \(got)")
+        }
+        let none = doc["notEncodable"] as? [String] ?? []
+        check(none.count >= 10 && none.allSatisfy { PairLongCode.encode(code: "K7Q2M9XD", host: $0) == nil }, "long code vectors",
+              "an address a phone may not pair with has no code: \(none.filter { PairLongCode.encode(code: "K7Q2M9XD", host: $0) != nil })")
+        check(PairLongCode.encode(code: "K7Q2", host: "100.108.149.114") == nil && PairLongCode.encode(code: "K7Q2M9XU", host: "100.108.149.114") == nil,
+              "long code vectors", "a code that is not 8 valid characters has no long form")
+
+        // What the check character catches: every single wrong character and every swap of two different neighbours.
+        var tried = 0, missed = 0, swaps = 0
+        for row in valid {
+            let chars = Array(row["long"] ?? "")
+            for pos in chars.indices {
+                for ch in PairLongCode.alphabet where ch != chars[pos] {
+                    var changed = chars; changed[pos] = ch; tried += 1
+                    if case .ok = PairLongCode.decode(String(changed)) { missed += 1 }
+                }
+            }
+            for pos in 0..<(chars.count - 1) where chars[pos] != chars[pos + 1] {
+                var swapped = chars; swapped.swapAt(pos, pos + 1); swaps += 1
+                if case .ok = PairLongCode.decode(String(swapped)) { missed += 1 }
+            }
+        }
+        check(tried == valid.count * 14 * 31 && swaps > 100 && missed == 0, "long code check character", "tried \(tried), swaps \(swaps), missed \(missed)")
+        check(PairLongCode.normalize(" k7q2-m9xd–2s5 bjq ") == "K7Q2M9XD2S5BJQ" && PairLongCode.normalize("oIl") == "011", "long code normalize", PairLongCode.normalize(" k7q2-m9xd–2s5 bjq "))
+
+        // What the card shows. Tailscale first: the long code names it, Copy copies it, the address moves to one labelled line.
+        func card(_ hosts: [PairingHost]) -> PairingCode {
+            PairingCode(display: "K7Q2-M9XD", qr: "COS1/MAC/K7Q2M9XD/x/T3LQ5K", expiresAt: pairingBase.addingTimeInterval(300), bootId: "boot-1", hosts: hosts, lanArmedUntil: nil)
+        }
+        let ts = PairingHost(host: "100.108.149.114", port: 3141, kind: "tailscale")
+        let lan = PairingHost(host: "192.168.1.204", port: 3141, kind: "lan")
+        let tailnet = card([ts])
+        check(GlassesRules.longCode(tailnet) == "K7Q2M9XD2S5BJQ" && GlassesRules.shownCode(tailnet) == "K7Q2-M9XD-2S5-BJQ", "long code card", GlassesRules.shownCode(tailnet))
+        check(GlassesRules.shownCode(tailnet).hasPrefix(tailnet.display + "-"), "long code card", "the first two groups are the server's own code, for a phone app from before it")
+        // 0.5.392: the public phone app (through 6.11.682) asks for 8 characters and a Mac address. The line gives it both
+        // as they are typed: the server's own code (never the 14) and the address without the usual port.
+        check(GlassesRules.addressLine(tailnet) == "If the app asks for a Mac address, type K7Q2-M9XD and 100.108.149.114", "long code card", GlassesRules.addressLine(tailnet) ?? "nil")
+        check(GlassesRules.addressLine(tailnet)?.contains(" \(tailnet.display) ") == true && GlassesRules.addressLine(tailnet)?.contains(GlassesRules.shownCode(tailnet)) == false
+              && GlassesRules.addressLine(tailnet)?.lowercased().contains("older") == false, "long code card", "the address line names the server's 8 characters, not the 14, and does not call the app older")
+        check(GlassesRules.wifiCode(tailnet) == nil, "long code card", "no Wi-Fi code while Wi-Fi pairing is off")
+        // Wi-Fi pairing switched on: the main code still names Tailscale, and a second one names this Wi-Fi.
+        let both = card([ts, lan])
+        let wifi = GlassesRules.wifiCode(both) ?? ""
+        check(GlassesRules.shownCode(both) == "K7Q2-M9XD-2S5-BJQ" && wifi.hasPrefix("K7Q2-M9XD-") && wifi != GlassesRules.shownCode(both)
+              && PairLongCode.decode(PairLongCode.normalize(wifi)) == .ok(code: "K7Q2M9XD", host: "192.168.1.204"), "long code wifi", wifi)
+        check(GlassesRules.wifiLine(wifi) == "Phone on this Wi-Fi without Tailscale? Use this code: \(wifi)", "long code wifi", GlassesRules.wifiLine(wifi))
+        // No Tailscale, Wi-Fi on: the one code names the Wi-Fi address and there is no second line.
+        let onlyLan = card([lan])
+        check(PairLongCode.decode(GlassesRules.longCode(onlyLan) ?? "") == .ok(code: "K7Q2M9XD", host: "192.168.1.204") && GlassesRules.wifiCode(onlyLan) == nil, "long code wifi", GlassesRules.shownCode(onlyLan))
+        // A port the code cannot carry, or no host: the card falls back to the 8 characters and says the address is needed.
+        let oddPort = card([PairingHost(host: "100.108.149.114", port: 3241, kind: "tailscale")])
+        check(GlassesRules.longCode(oddPort) == nil && GlassesRules.shownCode(oddPort) == "K7Q2-M9XD"
+              && GlassesRules.addressLine(oddPort) == "Type the code and this Mac address in the app: 100.108.149.114:3241", "long code fallback", GlassesRules.addressLine(oddPort) ?? "nil")
+        check(GlassesRules.longCode(card([])) == nil && GlassesRules.addressLine(card([])) == nil && GlassesRules.shownCode(card([])) == "K7Q2-M9XD", "long code fallback", "no host: the server's code alone")
+
+        // S8: the time left, and the line when the code changes.
+        check(GlassesRules.expiryLine(pairingBase.addingTimeInterval(252), now: pairingBase) == "Works once. A new code appears in 4:12."
+              && GlassesRules.expiryLine(pairingBase.addingTimeInterval(0.4), now: pairingBase) == "Works once. A new code appears in 0:01."
+              && GlassesRules.expiryLine(pairingBase.addingTimeInterval(-3), now: pairingBase) == "Works once. A new code is on its way.", "code time left",
+              GlassesRules.expiryLine(pairingBase.addingTimeInterval(252), now: pairingBase))
+        check(GlassesRules.clock(60) == "1:00" && GlassesRules.clock(59.2) == "1:00" && GlassesRules.clock(9) == "0:09" && GlassesRules.clock(-5) == "0:00", "code time left", GlassesRules.clock(59.2))
+        check(!GlassesRules.showsNewCodeNote(replacedAt: nil, now: pairingBase)
+              && GlassesRules.showsNewCodeNote(replacedAt: pairingBase, now: pairingBase.addingTimeInterval(19))
+              && !GlassesRules.showsNewCodeNote(replacedAt: pairingBase, now: pairingBase.addingTimeInterval(20))
+              && !GlassesRules.showsNewCodeNote(replacedAt: pairingBase, now: pairingBase.addingTimeInterval(-1)), "new code note", "shown for 20 s after a change, never before one")
+        // S4: the same 60 seconds the phone counts, from when the phone asked.
+        let asked = PairingStatusFacts.Pending(nonce: "n", ip: "100.64.0.11", at: pairingBase)
+        check(GlassesRules.allowLeft(asked, now: pairingBase) == "1:00 left" && GlassesRules.allowLeft(asked, now: pairingBase.addingTimeInterval(8)) == "0:52 left"
+              && GlassesRules.allowLeft(asked, now: pairingBase.addingTimeInterval(600)) == "0:00 left"
+              && GlassesRules.allowLeft(PairingStatusFacts.Pending(nonce: "n", ip: "x", at: nil), now: pairingBase) == nil, "allow countdown",
+              GlassesRules.allowLeft(asked, now: pairingBase.addingTimeInterval(8)) ?? "nil")
+        check(GlassesRules.shouldComeForward(old: nil, new: "a") && GlassesRules.shouldComeForward(old: "a", new: "b")
+              && !GlassesRules.shouldComeForward(old: "a", new: "a") && !GlassesRules.shouldComeForward(old: "a", new: nil)
+              && !GlassesRules.shouldComeForward(old: nil, new: nil), "allow comes forward", "only when a phone has just asked")
+        var codeFacts = GlassesFacts(); codeFacts.serverRunning = true; codeFacts.pairingSupported = true; codeFacts.code = tailnet; codeFacts.now = pairingBase
+        check(GlassesRules.stage(codeFacts) == .code && GlassesRules.connectRow(codeFacts).status == "Ready", "glasses row", GlassesRules.connectRow(codeFacts).status)
+    }
+
+    /// S8 through the real pairing state: the card knows when the code it shows has changed to a different one.
+    static func pairLongCodeFlow() async {
+        let fake = FakePairingHelper()
+        var clock = pairingBase
+        let state = GlassesPairingState()
+        state.runHelper = { args in try fake.run(args) }
+        state.now = { clock }
+        fake.answers = ["tailscale-status": tailscaleDetails(), "pairing-status": statusDetails(code: nil), "pairing-code": codeDetails(expires: pairingBase.addingTimeInterval(300))]
+        await state.tick(index: 0, serverRunning: true, pairingSupported: true)
+        check(state.code?.display == "K7Q2-M9XD" && state.codeReplacedAt == nil, "new code note", "the first code on the card is not a new one")
+        clock = pairingBase.addingTimeInterval(30)
+        await state.showNewCode()
+        check(state.code?.display == "K7Q2-M9XD" && state.codeReplacedAt == nil, "new code note", "the same code again is not a change")
+        fake.answers["pairing-code"] = codeDetails(expires: pairingBase.addingTimeInterval(400))
+            .replacingOccurrences(of: "K7Q2-M9XD", with: "H6JP-YSW5").replacingOccurrences(of: "K7Q2M9XD", with: "H6JPYSW5")
+        clock = pairingBase.addingTimeInterval(60)
+        await state.showNewCode()
+        check(state.code?.display == "H6JP-YSW5" && state.codeReplacedAt == clock, "new code note", "a different code is stamped when it changed: \(String(describing: state.codeReplacedAt))")
+        check(GlassesRules.showsNewCodeNote(replacedAt: state.codeReplacedAt, now: clock.addingTimeInterval(5))
+              && state.code.map(GlassesRules.shownCode)?.hasPrefix("H6JP-YSW5-") == true, "new code note", "the card shows the new code and says it is new")
+    }
+
+    static func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     static func glassesDecoding() {
