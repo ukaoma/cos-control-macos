@@ -13,11 +13,11 @@ One build of four reviewed branches on 0.5.389: Reply in the message reader (lan
 - **Update Server:** shows its result where you pressed it, fails in plain words, says "up to date" instead of reinstalling the newest release, and only warns (no longer refuses) when no AI reads as signed in.
 - **Run checks:** warns when Claude says it is signed out or its sign-in has expired.
 - **Connect your glasses, one code:** the card shows one 14-character code, large, with Copy, and the time left under it. The code is the server's one-time 8-character code plus this Mac's private address and a check character, so a phone app that takes it can paste or type it and connect on its own. A phone app that asks for a Mac address (the public COS Glasses app through 6.11.682) gets one line under the code: "If the app asks for a Mac address, type <the 8 characters> and <this Mac's address>". The photo caption names the button by both its names: "Or take one photo of it inside the COS Glasses app (Scan, or Take a photo of the code)." A Wi-Fi second code appears only when you turn on the local network switch. COS Control comes forward when a phone asks to connect, and nothing connects until you click Allow. The row that said "Ready to scan" now says "Ready".
-- **Phone approvals are not in this build:** the "Turn on phone approvals" row cannot be shown or turned on from 0.5.392, on any server. Control requests no certificate, opens no listener and passes nothing to the server for them.
+- **Phone approvals cannot be turned on in this build:** phone approvals cannot be turned on from 0.5.392, on any server. A Mac whose server already has them on gets a row to turn them off. Control requests no certificate and opens no listener for them.
 - **Default-on changes:**
   - Everyone: the Reply card in the message reader (sharing Today's 20 runs a day and the 15-minute pause after 3 failures), Back by path with the trail, who said what by side, Meetings on today, the Speakers copy buttons, the Today rail height, "your phone" wording and the Tailscale lines, the Update Server and Run checks changes, the 14-character glasses code with Copy and its address line, and the window coming forward on a pairing request.
   - Nobody: phone approvals. No build requests a certificate.
-- **Rollback:** 0.5.389 (build 443). Control adds new remembered picks for the Reply card; 0.5.389 ignores them.
+- **Rollback:** 0.5.389 (build 443). Control adds new remembered picks for the Reply card, and one key, cos.phoneApprovals.pendingOff, written only when phone approvals are turned off from that row; 0.5.389 ignores them.
 
 ## 0.5.389 (build 443), a session that ends its turn with a question shows as waiting, and you can answer from COS Control
 
