@@ -6,13 +6,20 @@ import Vision
 /// window's own window (ActivityWindowPresenter.makeWindow), never ordered in, background work off, a scratch home, the
 /// Today rail on as on his Mac. A day with eight meetings is selected. Every meeting here is invented.
 ///
-///     check                   the gate: at 760x560 the scroll view under the surface's drawn title, moved 60 pt a notch
-///                             of the pane, brings the first meeting row fully on screen below the top bar
+///     check                   the gate: at 760x560, moving the scroll view under the surface's drawn title 60 pt at a
+///                             time brings the first meeting row fully on screen below the top bar
 ///     render <folder> WxH ... by hand: Meetings at each size before and after the same scroll, to PNGs, with the row's
 ///                             frame printed
 ///
 /// What ActivitySizing does not prove: it checks the window's minimum and maximum SIZE for every tab, never whether the
 /// content inside a tab can be reached at that size. This check scrolls the pane and reads where the row is drawn.
+///
+/// What THIS check cannot see: no real wheel event is sent (desktop safety, Tests/desktop-safety-check.py), so it does not
+/// prove AppKit routes a wheel to this scroll view: hit-testing, responder routing, or an overlay or gesture that swallows
+/// the wheel are unseen here. That was proven once with a real wheel on identical Sources (3ea7f1a, posted 2026-11-13 04:05:
+/// operations/personal/wk46_2026/production_hardening/lanes/D4_evidence/meetings_scroll/check_fix_x5.log and
+/// check_67f9d4d_r8.log in the COS repository). A change to what sits over these panes, or to their hit-testing, needs
+/// that proof again by hand.
 @main @MainActor struct MeetingsScrollCheck {
     static let titles = ["Bottle POS weekly", "Gina 1:1, content calendar", "Leadership sync", "October offer review",
                          "Team standup", "Design review", "Pricing page walkthrough", "Quarter close prep"]
