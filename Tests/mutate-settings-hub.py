@@ -249,6 +249,10 @@ MUTANTS = [
     ("pins: the release build leaves the hub out", R, '"$ROOT/Sources/SettingsHubCatalog.swift" "$ROOT/Sources/SettingsHubViews.swift" ', "",
      "leaves out the hub"),
     ("pins: the suite skips the checks", S, 'zsh "$ROOT/Tests/run-settings-hub.sh"\n', "", "runs the hub's checks"),
+    # 0.5.392 (lead ruling 2026-11-12 19:50): search never lists the phone approvals rows while they are unavailable.
+    ("pk: search lists the phone approvals rows again", C, " && !unavailableRows.contains($0.id) }", " }", "phone approvals unavailable"),
+    ("pk: search lists the switch again", C, 'static let unavailableRows: Set<String> = ["PK-01", "PK-02"]', 'static let unavailableRows: Set<String> = ["PK-01"]',
+     "phone approvals unavailable"),
 ]
 
 

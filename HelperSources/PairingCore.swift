@@ -584,6 +584,9 @@ enum PhoneApprovalsCore {
     /// The first server with the reopened phone approvals (SR-01 to SR-12). The integrator sets it to the integrated
     /// server's version; PhoneApprovalsSwitch.minimumServer (Sources/WebKeyCore.swift) must equal it (a check holds both).
     static let minimumServer = "7.0.30"
+    /// 0.5.392 (lead ruling 2026-11-12 19:50): this build never turns phone approvals on, even when the helper is run by hand.
+    /// Off still works, so a Mac that is already on can turn it off. Must equal PhoneApprovalsSwitch.available (a check).
+    static let available = false
 
     enum Change: Equatable, Sendable {
         case on(device: String)
@@ -600,6 +603,10 @@ enum PhoneApprovalsCore {
         default: return nil
         }
     }
+
+    /// Whether this build applies the change: off always; on only where phone approvals are available.
+    static func permits(_ change: Change) -> Bool { change == .off || available }
+    static let unavailable = "Phone approvals cannot be turned on in this version of COS Control."
 
     /// The provider environment to set and the keys to remove. Off writes "0" and only removes the devices list.
     static func environment(_ change: Change) -> (set: [String: String], remove: Set<String>) {

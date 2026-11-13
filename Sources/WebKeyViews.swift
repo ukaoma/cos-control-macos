@@ -98,6 +98,22 @@ private struct WebKeyLine: View {
     init() {}
 }
 
+/// Where Settings mounts PK-02 (PhoneApprovalsSwitch.mounted). It observes the server's mode, so a Mac whose server turns
+/// out to be on gets the Off row as soon as the Phone approvals block reads the status.
+struct PhoneApprovalsSwitchMount<Content: View>: View {
+    @ObservedObject var state: WebKeyState
+    let serverVersion: String?
+    let rowDrawn: Bool
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        if PhoneApprovalsSwitch.mounted(serverVersion: serverVersion, rowDrawn: rowDrawn, on: PhoneApprovalsSwitch.isOn(state.mode),
+                                        pendingOff: DefaultsPhoneApprovalsPendingStore().load() != nil) {
+            content()
+        }
+    }
+}
+
 struct PhoneApprovalsSwitchRow: View {
     @ObservedObject var model: ControllerModel
     @ObservedObject var state: WebKeyState
@@ -139,6 +155,8 @@ struct PhoneApprovalsSwitchRow: View {
                 // already says it (renders at 5122a8f, card-7 and card-8, showed it twice). VoiceOver keeps the name.
                 Toggle(isOn: Binding(get: { (on && pendingOff == nil) || choosing }, set: { wanted in
                     if wanted, !on {
+                        // 0.5.392: unavailable, so the switch never starts turning on (PhoneApprovalsSwitch.available).
+                        guard PhoneApprovalsSwitch.available else { return }
                         choosing = true
                         Task { await pairing.refreshTailscale() }
                     } else if !wanted, on, pendingOff == nil {

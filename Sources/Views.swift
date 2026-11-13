@@ -4328,7 +4328,9 @@ private extension ControlPanel {
                 .settingsHubAnchor("UT-29")
             // PK-02 (option A, lead 2026-11-11 21:31): Turn on phone approvals. Full Settings only (not a basic row, so
             // hubRowDrawn is false in Basic), off by default, and only for a server with the reopened phone approvals.
-            if hubRowDrawn("PK-02"), PhoneApprovalsSwitch.shown(serverVersion: model.status.version) {
+            // 0.5.392 (lead 19:50): unavailable at compile time; mounted only while the server is on or an Off waits, to turn
+            // it off (PhoneApprovalsSwitch.mounted, read by PhoneApprovalsSwitchMount, which follows the server's mode).
+            PhoneApprovalsSwitchMount(state: model.webKey, serverVersion: model.status.version, rowDrawn: hubRowDrawn("PK-02")) {
                 SettingsHubBlock { PhoneApprovalsSwitchRow(model: model, state: model.webKey, pairing: model.glassesPairing,
                                                            work: restartWork, locked: serverSettingsLocked, confirm: phoneConfirm) }
                     .settingsHubAnchor("PK-02")

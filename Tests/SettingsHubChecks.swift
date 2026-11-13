@@ -198,8 +198,17 @@ import Foundation
         // A match only a keyword can make.
         check(ids("byok") == ["KL-01"], "only the keyword finds byok (Your own key)")
         // The rows outside Settings are not searchable at all, not only left out of the sections.
-        check(SettingsHubCatalog.searchable.count == SettingsHubCatalog.all.count - 13
+        // 0.5.392: the two phone approvals rows are left out too (SettingsHubCatalog.unavailableRows).
+        check(SettingsHubCatalog.searchable.count == SettingsHubCatalog.all.count - 13 - SettingsHubCatalog.unavailableRows.count
               && SettingsHubCatalog.searchable.allSatisfy { $0.mount != .outside }, "rows outside Settings never show in search: all 13 are left out of the searchable set")
+        // 0.5.392 (lead ruling 2026-11-12 19:50): phone approvals cannot be turned on in this build, so search never lists the
+        // switch or the Phone approvals block, by its label, a word of its description or a keyword.
+        let phoneApprovalQueries = ["Turn on phone approvals", "phone approvals", "Phone approvals", "approve from phone", "approve agent actions",
+                                    "phone key", "passkey", "web key", "tailscale https", "certificate", "enroll", "touch id"]
+        check(SettingsHubCatalog.unavailableRows == ["PK-01", "PK-02"]
+              && phoneApprovalQueries.allSatisfy { query in !ids(query).contains { SettingsHubCatalog.unavailableRows.contains($0) } }
+              && SettingsHubCatalog.item("PK-02") != nil && SettingsHubCatalog.item("PK-01") != nil,
+              "phone approvals unavailable: search never lists the switch (PK-02) or the Phone approvals block (PK-01); both stay in the catalog")
         // Ranking: a label that starts with the word comes before a row whose description mentions it.
         check(SettingsHubSearch.results("restart").first(where: { $0.category == .system })?.items.first?.id == "C-01",
               "Restart ranks the server's Restart first in System, ahead of rows that only mention it")
