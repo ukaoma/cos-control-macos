@@ -1,3 +1,17 @@
+## 0.5.393 (build 447), Meetings scrolls past the calendar, and one QR in the whole app
+
+One build of 0.5.392 and two reviewed branches: the Meetings and Work picker scroll (lane D4) and the glasses pairing card (lane O1).
+
+- **Meetings scrolls as one page:** in a small window the header, the record row, the calendar and the filters took the whole Meetings pane and the day's meetings could not be reached. Now the whole pane scrolls under the toolbar (Home, Back and the trail), so the calendar scrolls away and the list follows it. The calendar works as before. This was already so in 0.5.389.
+- **Work's Review a meeting picker scrolls the same way:** under Work's header and Back to work, the picker's title, calendar, filters and list scroll as one page.
+- **Connect your glasses, no QR:** the card draws no pairing QR and no photo caption; the glasses pair by the code. The only QRs COS Control draws are for the phone's Camera: the browser sign-in and the Tailscale download. Under the code: "This code is typed, not scanned." and then the address line, word for word.
+- **A sentence removed:** "The QR below is for the COS Glasses app, not the Camera." It sat directly above the browser sign-in QR.
+- **Install line before the code:** until a phone is paired, the glasses rows show "COS Glasses on your phone", "Install the Even Realities app on your phone. In it, open Even Hub and add COS Glasses. The code below goes in that app." and "Get COS Glasses". First run, the Devices card and the Setup guide all show it. The Devices card's older "Glasses app / Get the app" row is gone; a search for Glasses app still opens the Devices card.
+- **Connect row subtitle per stage:** "Type this code in the COS Glasses app on your phone." only while a code shows; when paired, "The COS Glasses app on your phone is connected to this Mac."; otherwise "Pairs the COS Glasses app on your phone with this Mac." The Setup guide's hover line says to add COS Glasses from Even Hub and type the code (it said scan).
+- **Default-on changes:**
+  - Everyone: Meetings and Work's meeting picker scroll as one page; the glasses card shows no QR; the install line and the per-stage subtitle.
+- **Rollback:** 0.5.389 (build 443). Control stores nothing new for these.
+
 ## 0.5.392 (build 446), reply from the message reader, Back goes the way you came, and one code connects your glasses
 
 One build of four reviewed branches on 0.5.389: Reply in the message reader (lane D4), Anand's fixes (lane D4), the Connect your glasses card (lane O1), and the phone approvals work held back in this build (lane D2). 0.5.390 (build 444) and 0.5.391 (build 445) were built and retired; neither shipped.

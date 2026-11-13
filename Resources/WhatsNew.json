@@ -1,8 +1,16 @@
 {
-  "version": "0.5.392",
+  "version": "0.5.393",
   "whatsNew": {
-    "summary": "Reply from the message reader, Back goes the way you came, and one code connects your glasses. Plus everything in 0.5.389.",
+    "summary": "Reply from the message reader, Back goes the way you came, one code connects your glasses, and Meetings scrolls past the calendar. Plus everything in 0.5.389.",
     "sections": [
+      {
+        "title": "0.5.393",
+        "items": [
+          "Meetings scrolls as one page, so the day's meetings are always reachable below the calendar, even in a small window. Work's Review a meeting picker scrolls the same way.",
+          "Connect your glasses: the card shows the code to type and no QR, so the only QRs COS Control draws are for your phone's Camera. Under the code: This code is typed, not scanned.",
+          "Until a phone is paired, the glasses rows say to install the Even Realities app, add COS Glasses from Even Hub, and type the code there, with a Get COS Glasses link. The Devices card has that one link."
+        ]
+      },
       {
         "title": "0.5.392",
         "items": [
