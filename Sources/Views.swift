@@ -4348,7 +4348,9 @@ private extension ControlPanel {
                 SettingsHubBlock {
                     GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ = model.providerGuide.openURL($0) })
                 }
-                hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }
+                // 0.5.393 (lead, 2026-11-13): the "Glasses app / Get the app" row (SG-13) is gone from here. The glasses rows
+                // above carry "COS Glasses on your phone / Get COS Glasses" before the code, so the card has one link to the
+                // app. SG-13 stays in the catalog for search, which opens this card.
             }
             // 0.5.387 (recovery rows, lead 2026-11-09; Q1 review M2): the glasses app tells people to press Copy pairing token, so
             // unless the person chose "Just my Mac" it is on the card, in Basic and All (no stored choice counts: glasses users from

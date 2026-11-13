@@ -176,6 +176,12 @@ phone_card = glasses[glasses.index('hubCard("glasses.phone"'):glasses.index('hub
 devices = glasses[glasses.index('hubCard("glasses.devices"'):].split("} advanced: {", 1)[0]
 need("PhoneSignInBlock(model: model, state: model.phoneSignIn)" in phone_card, "mounted once", "in Phone and web, not Advanced")
 need("devicePath == .glasses {" not in phone_card and "PhoneSignInBlock(" not in devices, "every path", "the row is outside the glasses-only block")
+# 0.5.393 (lead, 2026-11-13): one link to the app on the Devices card. The older "Glasses app / Get the app" row is gone;
+# SG-13 stays in the catalog so search still opens the card.
+need('hubButton("SG-13"' not in panel and "glassesWizardURL" not in devices and "glassesAppURL" not in devices
+     and devices.count("GlassesSetupRows(") == 1 and glasses_rows.count("openURL(GuideExtras.glassesAppURL)") == 1, "one app link",
+     "the Devices card links to the app once, from the glasses rows")
+need('.init("SG-13", "Glasses app",' in catalog, "one app link", "search still finds the glasses app and opens the Devices card")
 # 0.5.368: on a server without the phone sign-in (before 6.99.3, or no route) the whole block hides, its glasses note with it.
 block = body(views_file, "struct PhoneSignInBlock: View {")
 need("let hidden = state.serverTooOld" in block

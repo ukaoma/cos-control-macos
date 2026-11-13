@@ -635,7 +635,7 @@ enum SettingsHubCatalog {
     /// - PK-01 Phone approvals: beside Open COS on your phone in Phone and web; it draws only while the server's phone-key flag
     ///   is on, so it costs nothing when off (peer request from the phone-key acceptance session).
     /// - DI-08 Allow typing in apps: dictation cannot type into another app without it.
-    /// - SG-13 Glasses app: drawn only on the glasses path, where getting the app is the next step.
+    /// - SG-13 Glasses app: search only since 0.5.393. Its row is gone; the glasses rows say how to get the app, before the code.
     /// - REACH-01 Pings and REACH-05 Quiet hours: the brief keeps these two of COS reaching out's 17 rows visible.
     /// - PM-05 to PM-07: the permission list is one block (PermissionGuideList), so Basic draws every row in it.
     /// - DR-01 Check results: the answer to Run checks, which is in Basic.

@@ -103,11 +103,10 @@ struct PhoneOnlyCard: View {
 }
 
 /// The page as ControlPanel.hubGlasses draws it on the glasses path (0.5.387 order): Phone and web with the phone row (UT-29),
-/// then Devices with the device choice, the glasses rows, Get the app (SG-13), and Advanced closed.
+/// then Devices with the device choice, the glasses rows, and Advanced closed.
 struct DevicesCard: View {
     @ObservedObject var model: ControllerModel
     var body: some View {
-        let app = SettingsHubCatalog.item("SG-13")!
         let advanced = SettingsHubCatalog.items(inGroup: "glasses.devices").filter(\.advanced).count
         HubPage { VStack(alignment: .leading, spacing: 26) {
             // 0.5.387: Phone and web is its own card, first on the page, then Devices.
@@ -117,7 +116,6 @@ struct DevicesCard: View {
             SettingsHubCard(group: SettingsHubCatalog.group("glasses.devices")!, advancedCount: advanced, advancedOpen: .constant(false)) {
                 SettingsHubBlock { SetupDeviceChoice(guide: model.setupGuide) }
                 SettingsHubBlock { GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ in }, polls: false) }
-                SettingsHubRow(label: app.label, detail: app.detail) { Button("Get the app") {}.buttonStyle(TodayButtonStyle(small: true)) }
             } advanced: { EmptyView() }
         } }
     }
