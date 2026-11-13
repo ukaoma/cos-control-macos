@@ -188,7 +188,9 @@ window = code("Sources/ActivityWindow.swift")
 # Final QA W1: the card gets the stored answer and structures it only for its Markdown view, so Copy answer (which copies
 # the card's `text`) copies the answer as stored.
 pin(window.count("LensAnswerStructure.structure(") == 1, "messages", "applied once, inside the COS card's Markdown view")
-pin("COSMarkdownView(text: lensLists ? LensAnswerStructure.structure(text) : text, cacheID: markdownID, bodySize: 13)" in window,
+# Miles's pick A (2026-11-12): the card and the reader's COS side draw the same structured text (markdownText).
+pin("private var markdownText: String { lensLists ? LensAnswerStructure.structure(text) : text }" in window
+    and window.count("COSMarkdownView(text: markdownText, cacheID: markdownID, bodySize: 13)") == 2,
     "messages", "the card's Markdown view draws the structured answer")
 pin('messageBlock(label: "COS", text: turn.text, lensLists: true,' in window, "messages", "the recent reader's COS answer")
 pin('messageBlock(label: "COS", text: message.text, lensLists: true,' in window, "messages", "the archive chat's COS answer")
@@ -196,7 +198,7 @@ card = window.split("struct ActivityMessageCard: View {", 1)[1].split("\n}\n", 1
 pin(card.count("LensAnswerStructure") == 1 and "    let text: String\n" in card and re.search(r"\b(let|var)\s+text\s*=", card) is None
     and '.modifier(ActivityCopyMenu(label: "Copy answer", text: markdownID == nil ? nil : text))' in card, "copy answer",
     "Copy answer copies the card's own stored text, which nothing in the card replaces with the structured one")
-pin('ActivityMessageCard(label: label, text: text, tint: tint, highlight: highlight, markdownID: markdownID, lensLists: lensLists)' in window,
+pin('ActivityMessageCard(label: label, text: text, tint: tint, highlight: highlight, markdownID: markdownID, lensLists: lensLists,\n                            side: side, caption: caption)' in window,
     "copy answer", "messageBlock hands the card the text it was given")
 # The COS chat (Drop it) answer card: the Mac side of the web chat card in Miles's 11/08 screenshot.
 dropit = code("Sources/DropItViews.swift")

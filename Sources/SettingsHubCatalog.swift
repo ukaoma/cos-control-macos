@@ -193,7 +193,7 @@ enum SettingsHubCatalog {
               keywords: ["meaning", "command k", "sessions", "consent", "jev", "subq"]),
         // 0.5.367 (server 6.99.3): Open COS on your phone, the QR and code that sign the phone's browser in to Control Web. The
         // web page's sign-in error names it. A hub row, not an inventory row.
-        .init("UT-29", "Open COS on your phone", "Point your iPhone Camera here. Safari opens COS already signed in.", old: "", group: "glasses.phone",
+        .init("UT-29", "Open COS on your phone", "Point your phone's camera here. Its browser opens COS already signed in.", old: "", group: "glasses.phone",
               advanced: false, mount: .group, keywords: ["phone", "browser", "sign in", "web", "qr", "control web", "safari", "sign-in code", "login"]),
         // Server 6.99.31 (COS_WEB_KEY_AUTHORITY, default off): Phone approvals, the Touch ID key that enrolls a phone for web
         // approvals. Drawn only while the server says the flag is on (Sources/WebKeyViews.swift). A hub row, not an inventory row.

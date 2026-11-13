@@ -2410,8 +2410,11 @@ done
 # execution in ModelsContract; this pins that the reason is actually assigned.
 /usr/bin/grep -qE '^[[:space:]]*contentUnavailable = reason$' "$ROOT/Sources/ControllerModel.swift"
 /usr/bin/grep -q 'MeetingContent.unavailableMessage(reason)' "$ROOT/Sources/Views.swift"
-# The clipboard must never quote a size the confirmation disagrees with.
-/usr/bin/grep -q 'content.fullChars / 1024' "$ROOT/Sources/Views.swift"
+# The clipboard must never quote a size the confirmation disagrees with. Since 543e697 the button's KB comes from
+# MeetingCopyWords.label (Models.swift), fed content.fullChars, with the confirmation's max(1, chars / 1024).
+/usr/bin/grep -q -F 'fullChars: content.fullChars)' "$ROOT/Sources/Views.swift"
+/usr/bin/grep -q -F 'max(1, fullChars / 1024)) KB)' "$ROOT/Sources/Models.swift"
+/usr/bin/grep -q -F 'max(1, (full ? c.fullChars : c.summaryChars) / 1024)' "$ROOT/Sources/ControllerModel.swift"
 
 # Talk time decodes with no `?? 0` (same no-safe-default rule as coverage), and
 # is rendered ONLY behind nameAsserted or a typed interval row — showing minutes for
@@ -3977,7 +3980,8 @@ meetings = (pathlib.Path(sys.argv[1]) / "Sources/ActivityMeetings.swift").read_t
 # Anchored on the day cell's OWN action, which is unique. A generic
 # RoundedRectangle anchor matched an unrelated button earlier in the file
 # and failed against correct code.
-block = re.search(r"onSelectDay\(selectedDay == cell\.date(.{0,1400}?)\.buttonStyle\(\.plain\)", meetings, re.S)
+# 2400, not 1400: since ce375ba (today is marked) the cell runs about 1,700 characters to its button style.
+block = re.search(r"onSelectDay\(selectedDay == cell\.date(.{0,2400}?)\.buttonStyle\(\.plain\)", meetings, re.S)
 if block is None: sys.exit("calendar: day-cell button block not found")
 if ".contentShape(" not in block.group(1):
     sys.exit("calendar: the day cell has no contentShape, so only the date glyph is clickable")
@@ -6815,7 +6819,7 @@ if "model.meetingImportRouteActive || model.meetingSuggestionsRouteActive" not i
 # 4. COPY. Each of these is the sentence the release plan specifies, verbatim.
 for needle, why in (
     ('"Update the COS server to 6.47.0"', "route_absent names the version"),
-    ('Button("Update Server") { model.perform("update") }', "route_absent carries the Update Server affordance"),
+    ('Button("Update Server") { model.updateServer(from: ServerUpdateCaller.meetingImports) }', "route_absent carries the Update Server affordance"),
     ('"Your COS pipeline already brings in Fireflies meetings."', "a pipeline Mac says why it does not import"),
     ('"Individual answers are saved in advise mode. Consolidate meetings runs a separate cleanup that can update your files."',
      "individual advise-mode answers and the separate file-changing cleanup must be distinguished"),
@@ -7399,19 +7403,22 @@ if 'case "error": failure.isEmpty ? "Failed"' not in label or "queued" not in la
 # 6. Messages (2026-10-09): a COS answer renders as Markdown, what you said stays as typed,
 # links open through SwiftUI's own action (web only), and the copies stay raw.
 card = body(activity, "struct ActivityMessageCard")
-if "COSMarkdownView(text: lensLists ? LensAnswerStructure.structure(text) : text, cacheID: markdownID" not in card:
+# Since fecb1a6 (who said what by side) the card and the COS side share markdownText, so the lens structuring lives there.
+if "private var markdownText: String { lensLists ? LensAnswerStructure.structure(text) : text }" not in card \
+        or card.count("COSMarkdownView(text: markdownText, cacheID: markdownID, bodySize: 13)") != 2:
     fail("[messages] the COS card renders through COSMarkdownView under its message id (a lens answer's lists structured there only)")
 if "} else if let markdownID {" not in card or "Text(highlighted(text, query: highlight))" not in card:
     fail("[messages] a card with no markdownID shows its text as typed (the YOU side)")
 detail = body(activity, "private func messageDetail(")
 # 0.5.380: the COS answer's lens lists are structured in the card's Markdown view only (as on Control Web); the card
 # itself gets the stored answer, so Copy answer copies it as stored (final QA W1).
-if 'messageBlock(label: "COS", text: turn.text, lensLists: true,\n                             tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id)' not in detail:
+if 'messageBlock(label: "COS", text: turn.text, lensLists: true,\n                             tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id, side: .cos)' not in detail:
     fail("[messages] Recent's COS card passes its turn id and the stored answer")
-if 'messageBlock(label: "You", text: turn.query,\n                             tint: ActivitySection.messages.tint, highlight: recentQuery)\n' not in detail:
+if 'messageBlock(label: "You", text: turn.query,\n                             tint: ActivitySection.messages.tint, highlight: recentQuery,\n                             side: .you, caption: MessageSides.youCaption)\n' not in detail:
     fail("[messages] Recent's YOU card stays as typed")
 chat = body(activity, "@ViewBuilder private func archiveChatDetail(")
-if 'markdownID: "archive:\\(date)/\\(index)/\\(message.id)")' not in chat:
+# Since ecfabdf (pick A in archive chats too) the call goes on to `side: .cos)` on its own line.
+if 'markdownID: "archive:\\(date)/\\(index)/\\(message.id)",\n                                             side: .cos)' not in chat:
     fail("[messages] an archived chat's COS card renders as Markdown, keyed by day, chat and position")
 # 0.5.374: the preview also gets a space between progress sentences that ran together (previewSpacing), then renders.
 if 'GlassesTurn.previewSpacing(COSMarkdownInlineCache.plain(turn.text))' not in body(activity, "private func messageRow(") or 'Text(preview)' not in body(activity, "private func messageRow("):
@@ -7550,7 +7557,7 @@ if "1 follow-up queued. It sends when this session is available." not in compose
 banner = body(window, "@ViewBuilder private var sessionHooksBanner: some View")
 if 'state == "missing" || state == "drift" || state == "script_outdated" || state == "route_absent"' not in banner:
     fail("the banner shows for missing, drift, script_outdated and route_absent only")
-if 'Button("Update Server") { model.perform("update") }' not in banner:
+if 'Button("Update Server") { model.updateServer(from: ServerUpdateCaller.sessionHooks) }' not in banner:
     fail("a pre-6.48.0 server offers Update Server, never Install")
 if "model.installSessionHooks()" not in banner or '.buttonStyle(COSQuietButtonStyle(tone: .featured))' not in banner:
     fail("Install hooks is the featured action")

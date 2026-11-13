@@ -511,6 +511,11 @@ struct ActivityWindow: View {
     @State private var chatQuery = ""
     @State private var chatMatchCursor = 0
     @State private var section: ActivitySection?
+    /// Back by path (Anand parity item 1): the steps between sections, and whether the move in flight is Back's own.
+    @State private var backPath: [ActivityBackStep] = []
+    @State private var backMoving = false
+    /// A sidebar or Home pick in flight: where it goes. Arriving there clears the path instead of making a step.
+    @State private var backPick: ActivityPlace?
     /// 0.5.278: Settings, "Show live meeting transcript" (the Meetings tab's live dot reads it).
     @AppStorage(LiveTranscript.enabledKey) private var showLiveTranscript = true
     @State private var showingSettings = false
@@ -672,6 +677,17 @@ struct ActivityWindow: View {
         return view
     }
 
+    /// Anand parity renders (D4, Tests/AnandParityRender.swift): a section, the message open in it and a recorded path, so the
+    /// trail row draws as it does after real jumps.
+    static func pathFixture(model: ControllerModel, section: ActivitySection, turnID: String? = nil, backPath: [ActivityBackStep]) -> ActivityWindow {
+        precondition(!model.backgroundWorkEnabled)
+        var view = ActivityWindow(model: model)
+        view._section = State(initialValue: section)
+        view._selectedTurnID = State(initialValue: turnID)
+        view._backPath = State(initialValue: backPath)
+        return view
+    }
+
     /// Full Activity shell for the offscreen settings regression fixture.
     static func settingsFixture(model: ControllerModel) -> ActivityWindow {
         precondition(!model.backgroundWorkEnabled)
@@ -794,6 +810,91 @@ struct ActivityWindow: View {
     }
 
     private var canGoBack: Bool { showingSettings || section != nil || hasDetail }
+
+    // MARK: Back by path (Anand parity item 1, 2026-11-12, as Control Web 7.0.30)
+
+    /// Where the window is now, for Back by path (ActivityBackPath in Models.swift).
+    private var currentPlace: ActivityPlace {
+        var place = ActivityPlace(section: section?.rawValue, turnID: selectedTurnID, archiveDate: selectedArchiveDate,
+                                  speakerSessionID: selectedSpeakerSessionID, voiceName: selectedVoiceName,
+                                  libraryRecordID: selectedLibraryRecordID, sessionID: selectedSessionID)
+        // Q1 FIX 2: an open detail the path does not track makes this place differ from the list a jump arrived at.
+        place.detail = hasDetail && place.item == nil
+        return place
+    }
+
+    /// The step Back takes now, when it goes back along the path instead of the section's parent chain. Never in the isolated
+    /// Work preview, nor for a meeting opened from Work or a speaker review (those return to it already).
+    private var backStep: ActivityBackStep? {
+        guard !showingSettings, !isolatedWorkPreview, !showingLinkedSession, !meetingReturnToWork, meetingReturnSpeakerSessionID == nil else { return nil }
+        return ActivityBackPath.step(backPath, current: currentPlace, hasDetail: hasDetail)
+    }
+
+    /// Where Back goes after a recorded jump, for help and VoiceOver; nil keeps "Back". The visible text stays "Back" on the Mac:
+    /// the trail beside it says where (Miles's pick B, lead 10:54).
+    private var backWord: String? {
+        backStep.map { step in
+            ActivityBackPath.word(step, titles: { ActivitySection(rawValue: $0)?.title }, home: todayEnabled && !isolatedWorkPreview ? "Today" : "Home")
+        }
+    }
+
+    /// The Back button's help and VoiceOver label: "Back to <where>" after a recorded jump.
+    /// Help and VoiceOver for Back, as the web (Q1 FIX 3): "Back to <where>", by the recorded jump, else the parent (the
+    /// section's list from a detail, the home from a list); "Back" only where there is nowhere to go.
+    private var backLabel: String {
+        if let word = backWord { return "Back to " + word }
+        let home = todayEnabled && !isolatedWorkPreview ? "Today" : "Home"
+        if showingSettings { return "Back to " + (section?.title ?? home) }
+        if hasDetail, let section { return "Back to " + section.title }
+        if section != nil { return "Back to " + home }
+        return "Back"
+    }
+
+    /// A pick from the sidebar, the home's cards, Home or a number shortcut: a fresh path (lead 2026-11-12).
+    private func pickSection(_ item: ActivitySection?) {
+        backPath = []
+        // Already there: nothing will move, so no pick is left waiting to clear a later Back.
+        let target = ActivityPlace(section: item?.rawValue)
+        backPick = currentPlace == target ? nil : target
+        let before = currentPlace
+        if let item { select(item) } else { goHome() }
+        // Q1 lower: select and goHome return early with a task detail open; nothing moved, so the pick must not wait to clear a
+        // later real path.
+        if currentPlace == before { backPick = nil }
+    }
+
+    /// Back along the path: the section it came from, and the item that was open there when it reopens by its ID.
+    private func returnTo(_ place: ActivityPlace) {
+        clearDetail()
+        let target = place.section.flatMap(ActivitySection.init(rawValue:))
+        withOptionalAnimation { section = target }
+        guard let target else { return }
+        switch target {
+        case .messages:
+            if let id = place.turnID { selectedTurnID = id }
+            else if let day = place.archiveDate { openArchiveDay(day) }
+        case .speakers:
+            if let id = place.speakerSessionID {
+                selectedSpeakerSessionID = id
+                if model.openReview?.sessionId != id { model.openSpeakerReview(sessionId: id) }
+            } else if let name = place.voiceName {
+                selectedVoiceName = name
+            }
+        case .meetings:
+            if let id = place.libraryRecordID, let row = model.libraryMeetings.first(where: { $0.id == id }) {
+                selectedLibraryRecordID = id
+                model.openLibraryMeeting(row)
+            }
+        case .sessions:
+            if let id = place.sessionID, let row = model.claudeSessions.first(where: { $0.id == id }) {
+                selectedSessionID = id
+                model.openClaudeSession(row)
+            }
+        default:
+            break
+        }
+        Task { await load(target) }
+    }
 
     private var activityFrame: some View {
         VStack(spacing: 0) {
@@ -1094,6 +1195,14 @@ struct ActivityWindow: View {
         )
         .background(ActivityEscapeHandler(onEscape: handleActivityEscape).frame(width: 0, height: 0))
         .onExitCommand { if !handleActivityEscape() { goBack() } }
+        // Back by path: every change of section is a step, unless Back made it.
+        .onChange(of: currentPlace) { old, new in
+            let recorded = ActivityBackPath.record(backPath, old: old, new: new, goingBack: backMoving, pick: backPick)
+            backPath = recorded.path
+            backPick = recorded.pick
+            // Back's own move has landed (one change per move): the next change is a step again.
+            backMoving = false
+        }
         // 0.5.385: the Prep composer took a Start prep's words and files; that meeting's Today draft goes.
         .onReceive(model.meetingPrep.$carriedLaunch) { launch in if let launch { todayPrep.carried(launch: launch) } }
         .onAppear { applyLaunchSection() }
@@ -1161,7 +1270,7 @@ struct ActivityWindow: View {
                 // Adaptive, like the header lockup. COSPalette.ink is a fixed dark meant
                 // for the brand tile; on the toolbar it renders black on espresso.
                 .foregroundStyle(.primary)
-            Button { goHome() } label: {
+            Button { pickSection(nil) } label: {
                 Label("Home", systemImage: "house")
             }
             .buttonStyle(COSQuietButtonStyle())
@@ -1174,7 +1283,8 @@ struct ActivityWindow: View {
             .buttonStyle(COSQuietButtonStyle())
             .disabled(!canGoBack)
             .keyboardShortcut(.leftArrow, modifiers: .command)
-            .help("Go back one step")
+            .help(backLabel)
+            .accessibilityLabel(backLabel)
 
             if showingSettings {
                 Text("COS Control › Settings").font(COSType.body(12, weight: .semibold))
@@ -1201,7 +1311,90 @@ struct ActivityWindow: View {
         .background(COSPalette.card.opacity(0.72))
     }
 
-    private var breadcrumb: some View {
+    /// Miles's pick B (2026-11-12, the trail row): while Back would go along the recorded path, the bar shows the way here, each
+    /// earlier place a link back to it and this page last; otherwise the location, as before.
+    @ViewBuilder private var breadcrumb: some View {
+        let trail = backStep == nil ? [] : ActivityBackPath.trail(backPath, current: currentPlace, hasDetail: hasDetail)
+        if trail.isEmpty { locationCrumb } else {
+            // One line, never wraps (as the web, 7.0.30): when it is too wide, steps leave from the middle; the first, the step
+            // before this page and this page always stay.
+            // One step leaves at a time, as the web's trailCut (Q1 FIX 3).
+            ViewThatFits(in: .horizontal) {
+                trailRow(trail, room: trail.count)
+                trailRow(trail, room: 12)
+                trailRow(trail, room: 11)
+                trailRow(trail, room: 10)
+                trailRow(trail, room: 9)
+                trailRow(trail, room: 8)
+                trailRow(trail, room: 7)
+                trailRow(trail, room: 6)
+                trailRow(trail, room: 5)
+                trailRow(trail, room: 4)
+            }
+        }
+    }
+
+    private func trailRow(_ trail: [ActivityPlace], room: Int) -> some View {
+        HStack(spacing: 6) {
+            ForEach(Array(ActivityBackPath.shortened(trail.count, room: room).enumerated()), id: \.offset) { position, index in
+                if position > 0 {
+                    Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold)).foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                }
+                if let index, index == trail.count - 1 {
+                    Text(trailWord(trail[index])).font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                } else if let index {
+                    let word = trailWord(trail[index])
+                    Button(word) { goBackAlongPath(to: index) }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11))
+                        .underline()
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help("Back to " + word)
+                        .accessibilityLabel("Back to " + word)
+                } else {
+                    Text("…").font(.system(size: 11)).foregroundStyle(.tertiary).accessibilityHidden(true)
+                }
+            }
+        }
+        .lineLimit(1)
+        .fixedSize()
+        .padding(.horizontal, 4)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("How you got here")
+        // Steps left out of the line stay readable by VoiceOver (the web's rule), in order.
+        .accessibilityValue(trail.map(trailWord).joined(separator: ", "))
+    }
+
+    /// A place's word in the trail, by kind, as server 7.0.30 names them (W1, COORD 13:40): a pane's list by its title, a
+    /// meeting "Meeting", a session "Session", the Speakers review "Naming voices", a message "Message #N", a day its raw date;
+    /// this page the same way, in bold.
+    private func trailWord(_ place: ActivityPlace) -> String {
+        let target = place.section.flatMap(ActivitySection.init(rawValue:))
+        guard let target else { return todayEnabled && !isolatedWorkPreview ? "Today" : "Home" }
+        if let id = place.turnID { return model.recentMessages.first { $0.id == id }?.no.map { "Message #\($0)" } ?? "Message" }
+        // A day by its raw date, as the web's crumb (messages.js:527; Q1 FIX 3 reverted c6f93c9's "Nov 10").
+        if let day = place.archiveDate { return day }
+        if let name = place.voiceName { return name }
+        if place.speakerSessionID != nil { return "Naming voices" }
+        if place.libraryRecordID != nil { return "Meeting" }
+        if place.sessionID != nil { return "Session" }
+        return target.title
+    }
+
+    /// A link in the trail: back to that place, dropping the steps after it.
+    private func goBackAlongPath(to index: Int) {
+        guard backPath.indices.contains(index) else { return }
+        let place = backPath[index].from
+        let placeBefore = currentPlace
+        backMoving = true
+        backPath = Array(backPath.prefix(index))
+        returnTo(place)
+        if currentPlace == placeBefore { backMoving = false }
+    }
+
+    private var locationCrumb: some View {
         HStack(spacing: 6) {
             Text("COS Control")
                 .font(COSType.body(11, weight: .semibold))
@@ -1283,8 +1476,8 @@ struct ActivityWindow: View {
         HStack(spacing: 6) {
             ForEach(Array(ActivitySection.allCases.enumerated()), id: \.element.id) { index, item in
                 Button {
-                    if reduceMotion { select(item) }
-                    else { withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) { select(item) } }
+                    if reduceMotion { pickSection(item) }
+                    else { withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) { pickSection(item) } }
                 } label: {
                     VStack(spacing: 7) {
                         HStack(spacing: 7) {
@@ -1406,6 +1599,23 @@ struct ActivityWindow: View {
 
     private func goBack() {
         if showingSettings { showingSettings = false; return }
+        // Back by path: Back's own moves are not steps, and a parent-chain move across sections (a linked session back to
+        // Work) also drops the step it undid.
+        let sectionBefore = section
+        let placeBefore = currentPlace
+        var tookStep = false
+        backMoving = true
+        defer {
+            // Nothing moved: no change will arrive to clear the flag, so clear it here.
+            if currentPlace == placeBefore { backMoving = false }
+            if section != sectionBefore, !tookStep { backPath = ActivityBackPath.settle(backPath, before: sectionBefore?.rawValue, after: section?.rawValue) }
+        }
+        if let step = backStep {
+            tookStep = true
+            backPath.removeLast()
+            returnTo(step.from)
+            return
+        }
         if !workWorkspaceState.startSending { workWorkspaceState.startItemID = nil } // A send being handed over keeps its overlay; it shows the result back in Work.
         // The linked receipt reader is a child of Work in both the integrated
         // candidate and production. Header Back and Escape keep that context.
@@ -1813,11 +2023,11 @@ struct ActivityWindow: View {
                     ForEach(rows[row], id: \.element.id) { index, item in
                         activityHomeCard(item, index: index, body: homeCardBody(item, inputs),
                                          desks: item == .sessions ? desks : nil, now: now)
-                            .onTapGesture { select(item) }
+                            .onTapGesture { pickSection(item) }
                             .accessibilityElement(children: .contain)
                             .accessibilityAddTraits(.isButton)
                             .accessibilityLabel("Open \(item.title)")
-                            .accessibilityAction { select(item) }
+                            .accessibilityAction { pickSection(item) }
                             // The description the card used to print, now its help text.
                             .help(item.summary)
                             // Plain and explicit. The earlier one-liner also cleared state for
@@ -2956,7 +3166,7 @@ struct ActivityWindow: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 if state == "route_absent" {
-                    Button("Update Server") { model.perform("update") }
+                    Button("Update Server") { model.updateServer(from: ServerUpdateCaller.sessionHooks) }
                         .buttonStyle(COSQuietButtonStyle())
                         .disabled(model.status.meetingWorkBlockingRestart)
                         .help(model.status.meetingWorkBlockingRestart ? model.status.meetingWorkBlockReason : "")
@@ -2978,6 +3188,8 @@ struct ActivityWindow: View {
                 .padding(.horizontal, 24)
                 .padding(.vertical, 6)
         }
+        ServerUpdateResultLine(model: model, caller: ServerUpdateCaller.sessionHooks)
+            .padding(.horizontal, 24)
     }
 
     private var sessionsStatus: String {
@@ -5725,12 +5937,15 @@ struct ActivityWindow: View {
                                     Button("Copy turn") { model.copyArchiveMessage(message) }
                                         .controlSize(.small)
                                 }
+                                // Pick A in archive chats too (Q1 FIX 3; W1: "message reader and archive chats").
                                 messageBlock(label: "You", text: message.query,
-                                             tint: ActivitySection.messages.tint, highlight: chatQuery)
+                                             tint: ActivitySection.messages.tint, highlight: chatQuery,
+                                             side: .you, caption: MessageSides.youCaption)
                                 // 0.5.380: the lens's inline numbered lists on their own lines, as Control Web draws them.
                                 // The card gets the stored answer; only its Markdown view draws it structured (Copy answer).
                                 messageBlock(label: "COS", text: message.text, lensLists: true,
-                                             tint: COSPalette.green, highlight: chatQuery, markdownID: "archive:\(date)/\(index)/\(message.id)")
+                                             tint: COSPalette.green, highlight: chatQuery, markdownID: "archive:\(date)/\(index)/\(message.id)",
+                                             side: .cos)
                             }
                             .padding(hit ? 10 : 0)
                             .background(
@@ -5912,15 +6127,17 @@ struct ActivityWindow: View {
                 }
                 .controlSize(.small)
 
+                // Miles's pick A (2026-11-12, "sides"): his words right in the chat's bubble, COS left by its mark.
                 messageBlock(label: "You", text: turn.query,
-                             tint: ActivitySection.messages.tint, highlight: recentQuery)
+                             tint: ActivitySection.messages.tint, highlight: recentQuery,
+                             side: .you, caption: MessageSides.youCaption)
                 attachmentStrip(attachments: turn.attachments.filter(\.isUserPhoto), fallback: "Your attachments")
                 // 0.5.380 (server 7.0.5 parity): a COS answer is written for the lens as plain text, so its inline numbered
                 // lists go on their own lines before Markdown draws them (Sources/LensAnswerStructure.swift, the web's
                 // structureLensAnswer). Only whitespace changes, and only in the card's Markdown view: Copy turn and
                 // Copy answer read the stored text (final QA W1).
                 messageBlock(label: "COS", text: turn.text, lensLists: true,
-                             tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id)
+                             tint: COSPalette.green, highlight: recentQuery, markdownID: "turn:" + turn.id, side: .cos)
                 attachmentStrip(attachments: turn.attachments.filter { !$0.isUserPhoto }, fallback: "From COS")
                 // Reply (D4; asked for 2026-11-11 13:59, parity with Control Web's reader): this Mac's replies, under the answer.
                 MessageReplyBlock(store: model.messageReply, handoff: handoffStore, turn: turn, part: .replies)
@@ -6022,9 +6239,11 @@ struct ActivityWindow: View {
     /// nil shows it as typed (what you said). `lensLists` draws a lens answer's inline lists on
     /// their own lines (LensAnswerStructure) in the Markdown view only. See ActivityMessageCard.
     private func messageBlock(
-        label: String, text: String, lensLists: Bool = false, tint: Color, highlight: String = "", markdownID: String? = nil
+        label: String, text: String, lensLists: Bool = false, tint: Color, highlight: String = "", markdownID: String? = nil,
+        side: ActivityMessageCard.Side = .card, caption: String? = nil
     ) -> some View {
-        ActivityMessageCard(label: label, text: text, tint: tint, highlight: highlight, markdownID: markdownID, lensLists: lensLists)
+        ActivityMessageCard(label: label, text: text, tint: tint, highlight: highlight, markdownID: markdownID, lensLists: lensLists,
+                            side: side, caption: caption)
     }
 
     /// Titles itself from what it holds, because a turn can now carry a video
@@ -6303,9 +6522,68 @@ struct ActivityMessageCard: View {
     /// 0.5.380 (final QA W1): a COS answer's inline numbered lists go on their own lines in the Markdown view only.
     /// `text` stays the stored answer, so Copy answer copies it byte for byte.
     var lensLists = false
+    /// Miles's pick A (2026-11-12, "sides"): .you is his words in the COS chat's own bubble on the right, captioned below;
+    /// .cos is the answer on the left by COS's mark. .card is the labelled card, as before, for every other caller.
+    enum Side { case card, you, cos }
+    var side: Side = .card
+    /// Under .you's bubble ("You, <time>").
+    var caption: String? = nil
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        switch side {
+        case .card: card
+        case .you: youBubble
+        case .cos: cosSide
+        }
+    }
+
+    /// His words, right, in the chat's bubble (DropInk, the same fill, edge and ink as the COS chat).
+    private var youBubble: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            Text(highlighted(text.isEmpty ? "(empty)" : text, query: highlight))
+                .font(COSType.body(14)).foregroundStyle(DropInk.youInk)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .background(UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18, bottomTrailingRadius: 6, topTrailingRadius: 18, style: .continuous).fill(DropInk.youBg))
+                .overlay(UnevenRoundedRectangle(topLeadingRadius: 18, bottomLeadingRadius: 18, bottomTrailingRadius: 6, topTrailingRadius: 18, style: .continuous).stroke(DropInk.youEdgeReader, lineWidth: 1))
+            if let caption {
+                Text(caption).font(COSType.body(12)).foregroundStyle(DropInk.tertiary).padding(.trailing, 4)
+                    .accessibilityHidden(caption == MessageSides.youCaption)
+            }
+        }
+        .frame(maxWidth: 560, alignment: .trailing)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(MessageSides.youSaid + ": " + text)
+    }
+
+    /// The answer, left, by COS's mark; no card around it.
+    private var cosSide: some View {
+        HStack(alignment: .top, spacing: 10) {
+            DropItAvatar(size: 30).accessibilityHidden(true)
+            Group {
+                if text.isEmpty {
+                    Text("(empty)").font(.system(size: 13)).foregroundStyle(.secondary)
+                } else if let markdownID {
+                    COSMarkdownView(text: markdownText, cacheID: markdownID, bodySize: 13)
+                        .environment(\.cosMarkdownHighlight, highlight)
+                } else {
+                    Text(highlighted(text, query: highlight)).font(.system(size: 13)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(MessageSides.cosSaid)
+        .modifier(ActivityCopyMenu(label: "Copy answer", text: markdownID == nil ? nil : text))
+    }
+
+    /// The Markdown view's text: lens lists on their own lines (0.5.380), for the card and the COS side alike.
+    private var markdownText: String { lensLists ? LensAnswerStructure.structure(text) : text }
+
+    private var card: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(label.uppercased())
                 .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
@@ -6316,7 +6594,7 @@ struct ActivityMessageCard: View {
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             } else if let markdownID {
-                COSMarkdownView(text: lensLists ? LensAnswerStructure.structure(text) : text, cacheID: markdownID, bodySize: 13)
+                COSMarkdownView(text: markdownText, cacheID: markdownID, bodySize: 13)
                     .environment(\.cosMarkdownHighlight, highlight)
             } else {
                 // Marks every occurrence of the query inside the text. A tinted ROW says
@@ -9150,12 +9428,12 @@ extension ActivityWindow {
     }
 
     @ViewBuilder private var settingsHubTodayKeys: some View {
-        Button("") { goHome() }.keyboardShortcut(KeyEquivalent("h"), modifiers: [.command, .shift])
+        Button("") { pickSection(nil) }.keyboardShortcut(KeyEquivalent("h"), modifiers: [.command, .shift])
             .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
-        Button("") { goHome() }.keyboardShortcut("0", modifiers: .command)
+        Button("") { pickSection(nil) }.keyboardShortcut("0", modifiers: .command)
             .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
         ForEach(Array(ActivitySection.allCases.prefix(9).enumerated()), id: \.offset) { index, item in
-            Button("") { select(item) }.keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
+            Button("") { pickSection(item) }.keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: .command)
                 .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
         }
     }

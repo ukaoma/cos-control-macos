@@ -148,9 +148,10 @@ struct DevicesCard: View {
         let model = await seeded(phone: phone, glasses: true)
         count += try render(DevicesCard(model: model), width: 390, name: "phone-6-devices-card-390", out: out)
         count += try render(DevicesCard(model: model), width: 720 + 32, name: "phone-6-devices-card-720", out: out)
-        // 0.5.368: a server before 6.99.3 (needs_update). The phone row and its glasses note are gone; the glasses rows stay.
+        // A server before 6.99.3 (needs_update). Since Anand fix b (2026-11-12) the row says "Update the server to use this." with
+        // Update Server, in place of the hidden row and its glasses note; the glasses rows stay.
         let oldPhone = await phoneState(handoff: handoffTooOld)
-        precondition(oldPhone.serverTooOld, "the needs_update fixture must hide the row")
+        precondition(oldPhone.serverTooOld, "the needs_update fixture must show the old-server note")
         let oldModel = await seeded(phone: oldPhone, glasses: true)
         count += try render(DevicesCard(model: oldModel), width: 390, name: "phone-7-devices-card-server-too-old-390", out: out)
 

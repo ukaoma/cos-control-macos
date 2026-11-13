@@ -484,10 +484,17 @@ final class ControllerModel: ObservableObject {
         )
     }
     @Published var openReview: SpeakerReview?
+    /// Anand fix c (2026-11-12): Update Server's result, shown beside the button it was started from (ServerUpdateResultLine).
+    @Published private(set) var serverUpdateResult: ServerUpdateResult?
+    /// The button an update is running from, while it runs: its progress shows there.
+    @Published private(set) var serverUpdateCaller: String?
     /// The readable meeting beside the speaker rows. nil when the server is
     /// older than 6.21.28 or the fetch failed — the review still renders.
     @Published var openContent: MeetingContent?
     @Published var copyNote: String?
+    /// Which Speakers copy button says Copied right now (MeetingCopyWords.summary or .full), for copiedSeconds.
+    @Published private(set) var copiedMeetingKind: String?
+    private var copiedMeetingReset: Task<Void, Never>?
     /// 0.5.259: why Open meeting found no Meetings row for this review. Cleared whenever a review opens or closes.
     @Published var openMeetingNote: String?
     /// Why the write-up is absent: "route_absent" (server too old) or an error
@@ -2129,6 +2136,11 @@ final class ControllerModel: ObservableObject {
                     Task { @MainActor in self?.operationProgress = message }
                 }
                 notice = response.message
+                if command == "update" {
+                    // The result shows where the update was started, not as a second line in Settings.
+                    notice = nil
+                    finishServerUpdate(message: response.message, error: nil)
+                }
                 if command == "doctor" {
                     doctorChecks = Self.parseChecks(response.details["checks"])
                 }
@@ -2149,6 +2161,10 @@ final class ControllerModel: ObservableObject {
             } catch {
                 if command == "set-operations-dir" {
                     self.meetingLibraryGuidance = error.localizedDescription
+                } else if command == "update" {
+                    // Anand fix c: the alert says it in plain words; the helper's own text stays under the button.
+                    finishServerUpdate(message: nil, error: error.localizedDescription)
+                    self.error = serverUpdateResult?.line
                 } else {
                     self.error = error.localizedDescription
                 }
@@ -2164,6 +2180,23 @@ final class ControllerModel: ObservableObject {
 
     func installCurrentRelease() {
         perform("install", arguments: ["--version", Self.managedServerInstallVersion])
+    }
+
+    /// Update Server from one place (ServerUpdateCaller): the result shows there, in plain words, and is announced.
+    func updateServer(from caller: String) {
+        guard !busy else { return }
+        serverUpdateCaller = caller
+        serverUpdateResult = nil
+        perform("update")
+    }
+
+    private func finishServerUpdate(message: String?, error: String?) {
+        let caller = serverUpdateCaller ?? ServerUpdateCaller.settings
+        serverUpdateCaller = nil
+        let result = error.map { ServerUpdateWords.failure($0, caller: caller) } ?? ServerUpdateWords.success(message ?? "", caller: caller)
+        serverUpdateResult = result
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: result.line, .priority: NSAccessibilityPriorityLevel.high.rawValue])
     }
 
     /// Stop recognized legacy (if needed) and install the current npm latest managed server.
@@ -9005,11 +9038,10 @@ final class ControllerModel: ObservableObject {
             } else {
                 libraryDays = days
             }
+            // Anand parity item 4 (2026-11-12, as Control Web 7.0.30): Meetings opens on today, with or without meetings; an empty
+            // today says so and offers the latest earlier day (MeetingTodayWords).
             if !libraryDayAutoApplied, libraryMonth == Self.currentMeetingMonth() {
-                let today = Self.currentMeetingDay()
-                if libraryDays.contains(where: { $0.date == today && $0.count > 0 }) {
-                    libraryDay = today
-                }
+                libraryDay = Self.currentMeetingDay()
                 libraryDayAutoApplied = true
             }
             libraryError = nil
@@ -10131,6 +10163,19 @@ final class ControllerModel: ObservableObject {
         NSPasteboard.general.setString(text, forType: .string)
         let kb = max(1, (full ? c.fullChars : c.summaryChars) / 1024)
         copyNote = full ? "Copied full meeting (\(kb) KB)" : "Copied summary (\(kb) KB)"
+        // Anand parity item 3 (2026-11-12, as Control Web 7.0.30): the tapped button says Copied for a moment, and VoiceOver
+        // hears what was copied.
+        copiedMeetingKind = full ? MeetingCopyWords.full : MeetingCopyWords.summary
+        copiedMeetingReset?.cancel()
+        copiedMeetingReset = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(MeetingCopyWords.copiedSeconds))
+            guard !Task.isCancelled else { return }
+            self?.copiedMeetingKind = nil
+        }
+        if let note = copyNote {
+            NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                                 userInfo: [.announcement: note, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+        }
     }
 
     func retryOpenReview() {

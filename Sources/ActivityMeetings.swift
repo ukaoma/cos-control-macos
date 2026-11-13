@@ -36,7 +36,8 @@ struct MeetingLibraryBody: View {
                     selectedDay: model.libraryDay,
                     tint: ActivitySection.meetings.tint,
                     onShift: { model.shiftLibraryMonth($0) },
-                    onSelectDay: { model.selectLibraryDay($0) }
+                    onSelectDay: { model.selectLibraryDay($0) },
+                    today: ControllerModel.currentMeetingDay()
                 )
             }
             toolbar
@@ -244,6 +245,21 @@ struct MeetingLibraryBody: View {
                 .frame(maxWidth: 420)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(30)
+        } else if model.visibleLibraryMeetings.isEmpty, !model.isLibraryQueryActive, let today = model.libraryDay,
+                  today == ControllerModel.currentMeetingDay() {
+            // Anand parity item 4 (as Control Web 7.0.30): an empty today says so, with one tap to the latest earlier day.
+            let last = MeetingTodayWords.latestDayBefore(today, days: model.libraryDays.map { (date: $0.date, count: $0.count) })
+            VStack(spacing: 10) {
+                Text(MeetingTodayWords.emptyToday)
+                    .font(COSType.body(12))
+                    .foregroundStyle(.secondary)
+                Button(MeetingTodayWords.jump(to: last, today: today)) {
+                    if let last { model.selectLibraryDay(last) } else { model.shiftLibraryMonth(-1) }
+                }
+                .buttonStyle(COSQuietButtonStyle())
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(30)
         } else if model.visibleLibraryMeetings.isEmpty {
             Text(emptyCopy)
                 .font(COSType.body(12))
@@ -404,6 +420,8 @@ struct MeetingMonthCalendar: View {
     let tint: Color
     let onShift: (Int) -> Void
     let onSelectDay: (String?) -> Void
+    /// Anand parity item 4: today's YYYY-MM-DD. Its cell is ringed and can be picked even with no meetings.
+    var today: String? = nil
 
     var body: some View {
         let counts = LibraryMeetingDay.countsByDate(days)
@@ -439,7 +457,7 @@ struct MeetingMonthCalendar: View {
                         } label: {
                             VStack(spacing: 3) {
                                 Text("\(cell.day)")
-                                    .font(COSType.body(11.5, weight: selectedDay == cell.date ? .semibold : .regular))
+                                    .font(COSType.body(11.5, weight: selectedDay == cell.date || cell.date == today ? .semibold : .regular))
                                 Circle()
                                     .fill(count > 0 ? tint : Color.clear)
                                     .frame(width: 5, height: 5)
@@ -448,6 +466,11 @@ struct MeetingMonthCalendar: View {
                             .background(
                                 RoundedRectangle(cornerRadius: 6)
                                     .fill(selectedDay == cell.date ? tint.opacity(0.18) : Color.clear)
+                            )
+                            // Today is marked, as the web's ring.
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(cell.date == today ? tint : Color.clear, lineWidth: 1.5)
                             )
                             // THE WHOLE CELL IS THE TARGET. With a plain
                             // button style SwiftUI hit-tests only the RENDERED
@@ -458,9 +481,9 @@ struct MeetingMonthCalendar: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .disabled(count == 0)
-                        .opacity(count == 0 ? 0.38 : 1)
-                        .accessibilityLabel("\(cell.date)\(count == 0 ? ", no meetings" : ", \(count) meetings")")
+                        .disabled(count == 0 && cell.date != today)
+                        .opacity(count == 0 && cell.date != today ? 0.38 : 1)
+                        .accessibilityLabel("\(cell.date)\(cell.date == today ? ", today" : "")\(count == 0 ? ", no meetings" : ", \(count) meetings")")
                     } else {
                         Color.clear.frame(minHeight: 28)
                     }
@@ -1147,10 +1170,11 @@ struct MeetingImportPane: View {
                 .font(COSType.body(11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Button("Update Server") { model.perform("update") }
+            Button("Update Server") { model.updateServer(from: ServerUpdateCaller.meetingImports) }
                 .buttonStyle(COSQuietButtonStyle())
                 .controlSize(.small)
                 .disabled(model.busy)
+            ServerUpdateResultLine(model: model, caller: ServerUpdateCaller.meetingImports)
         }
         .mergeCard()
     }
@@ -1692,8 +1716,9 @@ struct MeetingSuggestionsPane: View {
             emptyState(
                 "Update the COS server to 6.47.0",
                 detail: "This Mac's COS server does not look for meetings that are the same meeting yet.",
-                button: ("Update Server", { model.perform("update") })
+                button: ("Update Server", { model.updateServer(from: ServerUpdateCaller.meetingSuggestions) })
             )
+            ServerUpdateResultLine(model: model, caller: ServerUpdateCaller.meetingSuggestions)
         } else if let error = model.meetingSuggestionsError {
             emptyState(error, detail: "", button: ("Retry", { Task { await model.loadMeetingSuggestions() } }))
         } else if model.meetingSuggestionsState == nil && model.meetingSuggestionsLoading {
