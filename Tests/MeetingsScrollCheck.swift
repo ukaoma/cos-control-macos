@@ -13,6 +13,15 @@ import Vision
 ///
 /// What ActivitySizing does not prove: it checks the window's minimum and maximum SIZE for every tab, never whether the
 /// content inside a tab can be reached at that size. This check scrolls the pane and reads where the row is drawn.
+///
+/// What THIS check cannot see: it scrolls through NSScrollView's own API (the clip view under the drawn title), because
+/// Tests/desktop-safety-check.py forbids a test from making or sending an event. So it would not notice a scroll view
+/// that exists but never receives the wheel: one covered by another view, or with hit-testing off. The one-time evidence
+/// that a real wheel reaches the page scroll is the run on 3ea7f1a (the same Sources as the merged fix), posted
+/// 2026-11-13 04:05: wheel events sent to the view under each title, 5 rounds of 4 legs green and 67f9d4d red, logged in
+/// the COS repository at operations/personal/wk46_2026/production_hardening/lanes/D4_evidence/meetings_scroll/
+/// check_fix_x5.log and check_67f9d4d_r8.log. A change to what sits over these panes, or to their hit-testing, needs that
+/// proof again by hand.
 @main @MainActor struct MeetingsScrollCheck {
     static let titles = ["Bottle POS weekly", "Gina 1:1, content calendar", "Leadership sync", "October offer review",
                          "Team standup", "Design review", "Pricing page walkthrough", "Quarter close prep"]
