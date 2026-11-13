@@ -100,15 +100,15 @@ mutants = [
  ("Q5 the note still says the glasses QR is above", M, '"The QR below is for the COS Glasses app, not the Camera."', '"This QR is for Safari. The one in Connect your glasses is for the COS app."', PINS, "[copy]"),
  ("Q6 the pairing caption loses the app (pins)", M, 'static let pairCaption = "Or take one photo of it inside the COS Glasses app (Scan, or Take a photo of the code). Your phone\'s camera app can\'t read it."', 'static let pairCaption = "Hold your phone so the code fills the screen"', PINS, "[glasses QR labeled]"),
  ("Q7 the pairing caption loses the app (checks)", M, 'static let pairCaption = "Or take one photo of it inside the COS Glasses app (Scan, or Take a photo of the code). Your phone\'s camera app can\'t read it."', 'static let pairCaption = "Hold your phone so the code fills the screen"', APP, "[glasses qr copy]"),
- ("Q10 the address line shows the 14 characters in place of the server's 8", M, '? "If the app asks for a Mac address, type \\(code.display) and \\(addressText(host))"', '? "If the app asks for a Mac address, type \\(shownCode(code)) and \\(addressText(host))"', APP, "[long code card]"),
+ ("Q12 the address line shows the 14 characters in place of the server's 8", M, '? "If the app asks for a Mac address, type \\(code.display) and \\(addressText(host))"', '? "If the app asks for a Mac address, type \\(shownCode(code)) and \\(addressText(host))"', APP, "[long code card]"),
  ("Q8 the pairing row says COS app again", M, 'unlocks: GlassesRules.pairSubtitle,', 'unlocks: "Scan the code with the COS app on your phone. Nothing to type.",', APP, "[glasses qr copy]"),
  ("Q9 the caption is a literal again", V, '                Text(GlassesRules.pairCaption)\n', '                Text("Hold your phone so the code fills the screen")\n', PINS, "[glasses QR labeled]"),
  ("Q10 the pairing QR loses Show a new code", V, '''            HStack(spacing: 12) {
                 Button("Show a new code") { Task { await pairing.showNewCode() } }.buttonStyle(COSTextButtonStyle())
                 Spacer(minLength: 0)
             }
-            lanToggle
-''', "            lanToggle\n", PINS, "[glasses QR labeled]"),
+            if let qr = code.qr {
+''', "            if let qr = code.qr {\n", PINS, "[glasses QR labeled]"),
  ("Q11 the catalog keeps the old subtitle", K, '"Point your phone\'s camera here. Its browser opens COS already signed in.", old: ""', '"Scan with your iPhone camera. Safari opens COS already signed in.", old: ""', PINS, "[catalog row]"),
  # Anand fixes a and b (2026-11-12).
  ("AN1 an Android phone is not counted", M, '    static let phoneOS: Set<String> = ["ios", "android"]', '    static let phoneOS: Set<String> = ["ios"]', APP, "[phone row any phone]"),
