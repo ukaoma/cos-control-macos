@@ -67,8 +67,8 @@ mutants = [
  ("H6 a QR does not show the row again", M, "        case .qr, .code: serverTooOld = false\n", "        case .qr, .code: break\n", APP, "[phone old server hides]"),
  ("H7 the hidden block keeps its height", V, ".frame(height: hidden ? 0 : nil, alignment: .top)", ".frame(height: nil, alignment: .top)", PINS, "[old server hides]"),
  ("H8 VoiceOver still reads the hidden row", V, "            .accessibilityHidden(hidden)\n", "", PINS, "[old server hides]"),
- ("H9 Devices mounts the bare row", P, "            PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)\n",
-  "            SettingsHubBlock { PhoneSignInRow(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses) }\n", PINS, "[mounted once]"),
+ ("H9 Devices mounts the bare row", P, "            PhoneSignInBlock(model: model, state: model.phoneSignIn)\n",
+  "            SettingsHubBlock { PhoneSignInRow(model: model, state: model.phoneSignIn) }\n", PINS, "[mounted once]"),
  ("H10 the glasses note drawn outside the row", P, '                .settingsHubAnchor("UT-29")\n            if voiceGuide.devicePath == .glasses {\n',
   '                .settingsHubAnchor("UT-29")\n            if voiceGuide.devicePath == .glasses {\n                Text(PhoneSignInRules.notGlasses)\n', PINS, "[old server hides]"),
  # The row, the QR image and the hub (pins and the hub's checks).
@@ -88,8 +88,8 @@ mutants = [
  ("V9 search misses Control Web", K, '"qr", "control web", "safari"', '"qr", "safari"', HUB, "search finds Open COS on your phone by Control Web"),
 # 0.5.368: the Camera's QR first, and both QRs say where they work (Miles 2026-11-04, 09:05).
  ("Q1 the glasses rows come before the phone row", P,
-  '            PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)\n                .settingsHubAnchor("UT-29")\n            if voiceGuide.devicePath == .glasses {\n                SettingsHubBlock {\n                    GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ = model.providerGuide.openURL($0) })\n                }\n                hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }\n            }\n',
-  '            if voiceGuide.devicePath == .glasses {\n                SettingsHubBlock {\n                    GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ = model.providerGuide.openURL($0) })\n                }\n                hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }\n            }\n            PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)\n                .settingsHubAnchor("UT-29")\n',
+  '            PhoneSignInBlock(model: model, state: model.phoneSignIn)\n                .settingsHubAnchor("UT-29")\n            if voiceGuide.devicePath == .glasses {\n                SettingsHubBlock {\n                    GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ = model.providerGuide.openURL($0) })\n                }\n                hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }\n            }\n',
+  '            if voiceGuide.devicePath == .glasses {\n                SettingsHubBlock {\n                    GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ = model.providerGuide.openURL($0) })\n                }\n                hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }\n            }\n            PhoneSignInBlock(model: model, state: model.phoneSignIn)\n                .settingsHubAnchor("UT-29")\n',
   PINS, "[qr order]"),
  ("Q2 the render draws the old order", "Tests/PhoneSignInRender.swift",
   '                PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: true, polls: false)\n                SettingsHubBlock { GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ in }, polls: false) }\n',
@@ -97,18 +97,24 @@ mutants = [
   PINS, "[qr order]"),
  ("Q3 the phone subtitle says scan again (pins)", M, '"Point your phone\'s camera here. Its browser opens COS already signed in."', '"Scan with your iPhone camera. Safari opens COS already signed in."', PINS, "[copy]"),
  ("Q4 the phone subtitle says scan again (checks)", M, '"Point your phone\'s camera here. Its browser opens COS already signed in."', '"Scan with your iPhone camera. Safari opens COS already signed in."', APP, "[phone copy]"),
- ("Q5 the note still says the glasses QR is above", M, '"The QR below is for the COS Glasses app, not the Camera."', '"This QR is for Safari. The one in Connect your glasses is for the COS app."', PINS, "[copy]"),
- ("Q6 the pairing caption loses the app (pins)", M, 'static let pairCaption = "Or take one photo of it inside the COS Glasses app (Scan, or Take a photo of the code). Your phone\'s camera app can\'t read it."', 'static let pairCaption = "Hold your phone so the code fills the screen"', PINS, "[glasses QR labeled]"),
- ("Q7 the pairing caption loses the app (checks)", M, 'static let pairCaption = "Or take one photo of it inside the COS Glasses app (Scan, or Take a photo of the code). Your phone\'s camera app can\'t read it."', 'static let pairCaption = "Hold your phone so the code fills the screen"', APP, "[glasses qr copy]"),
- ("Q10 the address line shows the 14 characters in place of the server's 8", M, '? "If the app asks for a Mac address, type \\(code.display) and \\(addressText(host))"', '? "If the app asks for a Mac address, type \\(shownCode(code)) and \\(addressText(host))"', APP, "[long code card]"),
- ("Q8 the pairing row says COS app again", M, 'unlocks: GlassesRules.pairSubtitle,', 'unlocks: "Scan the code with the COS app on your phone. Nothing to type.",', APP, "[glasses qr copy]"),
- ("Q9 the caption is a literal again", V, '                Text(GlassesRules.pairCaption)\n', '                Text("Hold your phone so the code fills the screen")\n', PINS, "[glasses QR labeled]"),
+ ("Q6 the glasses QR comes back on the card (pins)", V, "            // 0.5.393, direction 1: no pairing QR is drawn. The server still sends one; nothing here reads it.\n", "            // 0.5.393, direction 1: no pairing QR is drawn. The server still sends one; nothing here reads it.\n            if let qr = code.qr { QRCodeView(text: qr, side: 228, label: \"Pairing code\") }\n", PINS, "[one QR]"),
+ ("Q7 the paired row says Type this code again (checks)", M, "        case .paired: return pairedSubtitle\n", "        case .paired: return pairSubtitle\n", APP, "[paired subtitle]"),
+ ("Q12 the address line shows the 14 characters in place of the server's 8", M, '? "If the app asks for a Mac address, type \\(code.display) and \\(addressText(host))"', '? "If the app asks for a Mac address, type \\(shownCode(code)) and \\(addressText(host))"', APP, "[long code card]"),
+ ("Q8 the pairing row says COS app again", M, 'static let pairSubtitle = "Type this code in the COS Glasses app on your phone."', 'static let pairSubtitle = "Scan the code with the COS app on your phone. Nothing to type."', APP, "[glasses qr copy]"),
+ ("Q9 the install line is never shown (pins)", V, "            if GlassesRules.showsAppLine(GlassesRules.stage(facts)) {\n", "            if false {\n", PINS, "[app line first]"),
  ("Q10 the pairing QR loses Show a new code", V, '''            HStack(spacing: 12) {
                 Button("Show a new code") { Task { await pairing.showNewCode() } }.buttonStyle(COSTextButtonStyle())
                 Spacer(minLength: 0)
             }
-            lanToggle
-''', "            lanToggle\n", PINS, "[glasses QR labeled]"),
+            // 0.5.393, direction 1: no pairing QR is drawn. The server still sends one; nothing here reads it.
+''', "            // 0.5.393, direction 1: no pairing QR is drawn. The server still sends one; nothing here reads it.\n", PINS, "[glasses QR labeled]"),
+ # 0.5.393 (Miles 2026-11-13): one QR in the whole app, the install line, a subtitle per stage.
+ ("Q13 the install line stays once a phone is paired", M, "static func showsAppLine(_ stage: Stage) -> Bool { if case .paired = stage { return false } else { return true } }", "static func showsAppLine(_ stage: Stage) -> Bool { true }", APP, "[glasses app line]"),
+ ("Q14 the card stops saying the code is typed", M, "[typedNote, addressLine(code)].compactMap", "[addressLine(code)].compactMap", APP, "[no glasses qr]"),
+ ("Q17 the line under the code says No QR here again", M, 'static let typedNote = "This code is typed, not scanned."', 'static let typedNote = "No QR here."', APP, "[no glasses qr]"),
+ ("Q16 the older Get the app row comes back under the code (pins)", P, "                // 0.5.393 (lead, 2026-11-13): the \"Glasses app / Get the app\" row (SG-13) is gone from here. The glasses rows\n",
+  "                hubButton(\"SG-13\", \"Get the app\") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }\n", PINS, "[one app link]"),
+ ("Q15 the sentence above the browser QR comes back (pins)", M, '    static let codeNote = "Type this on the sign-in page. Works once, for 5 minutes."\n', '    static let codeNote = "Type this on the sign-in page. Works once, for 5 minutes."\n    static let notGlasses = "The QR below is for the COS Glasses app, not the Camera."\n', PINS, "[one QR]"),
  ("Q11 the catalog keeps the old subtitle", K, '"Point your phone\'s camera here. Its browser opens COS already signed in.", old: ""', '"Scan with your iPhone camera. Safari opens COS already signed in.", old: ""', PINS, "[catalog row]"),
  # Anand fixes a and b (2026-11-12).
  ("AN1 an Android phone is not counted", M, '    static let phoneOS: Set<String> = ["ios", "android"]', '    static let phoneOS: Set<String> = ["ios"]', APP, "[phone row any phone]"),

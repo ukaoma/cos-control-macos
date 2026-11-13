@@ -4324,7 +4324,7 @@ private extension ControlPanel {
         hubCard("glasses.phone") {
             // UT-29 (0.5.367, server 6.99.3): Open COS on your phone. The web page's sign-in error names this row. On a server
             // before 6.99.3 the whole block hides (PhoneSignInBlock), its glasses note with it.
-            PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)
+            PhoneSignInBlock(model: model, state: model.phoneSignIn)
                 .settingsHubAnchor("UT-29")
             // PK-02 (option A, lead 2026-11-11 21:31): Turn on phone approvals. Full Settings only (not a basic row, so
             // hubRowDrawn is false in Basic), off by default, and only for a server with the reopened phone approvals.
@@ -4348,7 +4348,9 @@ private extension ControlPanel {
                 SettingsHubBlock {
                     GlassesSetupRows(model: model, pairing: model.glassesPairing, openURL: { _ = model.providerGuide.openURL($0) })
                 }
-                hubButton("SG-13", "Get the app") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }
+                // 0.5.393 (lead, 2026-11-13): the "Glasses app / Get the app" row (SG-13) is gone from here. The glasses rows
+                // above carry "COS Glasses on your phone / Get COS Glasses" before the code, so the card has one link to the
+                // app. SG-13 stays in the catalog for search, which opens this card.
             }
             // 0.5.387 (recovery rows, lead 2026-11-09; Q1 review M2): the glasses app tells people to press Copy pairing token, so
             // unless the person chose "Just my Mac" it is on the card, in Basic and All (no stored choice counts: glasses users from

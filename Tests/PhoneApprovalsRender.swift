@@ -158,7 +158,7 @@ struct PhoneCard: View {
     var body: some View {
         HubPage {
             SettingsHubCard(group: SettingsHubCatalog.group("glasses.phone")!, advancedCount: 0, advancedOpen: .constant(false)) {
-                PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: false, polls: false)
+                PhoneSignInBlock(model: model, state: model.phoneSignIn, polls: false)
                 SettingsHubBlock { row }
                 WebKeySettingsBlock(state: model.webKey, refreshes: false)
                 SettingsHubWebRevokeRow(model: model, phone: model.phoneSignIn)

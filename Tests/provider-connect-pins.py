@@ -113,17 +113,18 @@ pin('section("Glasses") {' in guide_view and "GlassesSetupRows(model: model, pai
 pin(connect_views.count("await pairing.run(") == 1 and "await pairing.run(" in body(connect_views, "struct GlassesSetupRows: View {", "\n/// One Glasses row"), "glasses polling", "one polling site: the section's own task")
 pin('filter.correctionLevel = "Q"' in connect_views and "CIFilter.qrCodeGenerator()" in connect_views and ".interpolation(.none)" in connect_views, "glasses qr", "CoreImage, correction Q, crisp")
 qr_side = re.search(r"QRCodeView\(text: qr, side: (\d+)", connect_views)
-pin(qr_side is not None and int(qr_side.group(1)) >= 220, "glasses qr", "the pairing QR is at least 220 pt")
+# 0.5.393, direction 1: the glasses rows draw no pairing QR (the glasses pair by code only), so there is no size to hold.
+pin(qr_side is None and "QRCodeView(text: qr" not in connect_views, "glasses qr", "no pairing QR is drawn in COS Control")
 glasses_rows = body(connect_views, "struct GlassesSetupRows: View {", "\n/// One Glasses row")
 pin('Button("Update Server") { model.updateServer(from: ServerUpdateCaller.glassesPairing) }' in glasses_rows and "checkForAppUpdateManually" not in glasses_rows
     and "model.status.installed && model.status.managedContract && model.status.ownershipVerified" in glasses_rows, "glasses update", "the real server update with the panel's gates (QA 2026-10-09 W1)")
 pin("visible: windowHolder.onScreen(panelVisible: model.panelVisible)" in glasses_rows and "window.occlusionState.contains(.visible)" in connect_views
     and "!window.isMiniaturized" in connect_views, "glasses visibility", "polls only while its window is on screen (QA 2026-10-09 W3)")
-pin('label: "Pairing code \\(code.display)"' in glasses_rows and 'label: "Tailscale download link"' in glasses_rows, "glasses voiceover", "the QRs say what they are")
+pin('label: "Tailscale download link"' in glasses_rows and '.accessibilityLabel("Pairing code \\(shown)")' in glasses_rows, "glasses voiceover", "the QR and the code say what they are")
 
 pin("let next = SetupGuideRules.next(rows)" in connect_views and "$0.counted }" in body(connect, "    static func progress(", "\n    }\n"), "glasses uncounted", "progress and Next skip uncounted rows")
-pin('Text(GlassesRules.pairCaption)' in connect_views and 'static let pairCaption = "Or take one photo of it inside the COS Glasses app (Scan, or Take a photo of the code). Your phone\'s camera app can\'t read it."' in connect
-    and '"Allow pairing on this Wi-Fi (home only)"' in connect_views, "glasses copy", "contract copy (0.5.368: the pairing caption names the COS Glasses app)")
+pin('pairCaption' not in connect_views and 'pairCaption' not in connect and 'static let typedNote = "This code is typed, not scanned."' in connect
+    and '"Allow pairing on this Wi-Fi (home only)"' in connect_views, "glasses copy", "contract copy (0.5.393: the glasses pair by code only, so no photo caption)")
 pin("facts.glasses = glassesPairing.facts(serverRunning: status.running, pairingSupported: status.pairingSupported)" in connect_views, "capability gate", "rows read the server's pairing capability")
 
 # The setup guide (Miles 2026-10-08 10:52): prominent, skippable, reachable from everywhere.
