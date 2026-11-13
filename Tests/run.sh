@@ -184,7 +184,7 @@ SWAP_SRC="$(grep -v -E '^[[:space:]]*//' "$ROOT/Sources/MacDictation.swift")"
 # measured before, and grow without a limit.
 "$ROOT/Tests/run-activity-sizing.sh" check
 # 0.5.393: that check proves the window's size limits only, never that a tab's content can be reached. At 760 x 560, Today
-# rail off and on, a wheel through the window brings the first meeting row on screen in Meetings and in Work's meeting
+# rail off and on, scrolling the scroll view under each surface's drawn title (no event) brings the first meeting row on screen in Meetings and in Work's meeting
 # picker (red on 67f9d4d: the calendar and filters took the window and the list had no height).
 "$ROOT/Tests/run-meetings-scroll.sh" check
 # Typing in the task editor must not rebuild Activity or the Work board.
