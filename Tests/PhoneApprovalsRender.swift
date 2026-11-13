@@ -196,26 +196,43 @@ struct PhoneCard: View {
             PhoneApprovalsSwitch.Peer(os: $0.os, dns: $0.dns, ipv4: $0.ipv4, sameUser: $0.sameUser)
         })
         precondition(listed.map(\.name) == ["example-ipad", "example-iphone"], "the picker lists this account's iOS devices only")
+
+        // 0.5.392 (lead ruling 2026-11-12 19:50): phone approvals cannot be turned on from this build. Executes the app's one
+        // sender of set-phone-approvals, ControllerModel.setPhoneApprovals, with a recorder in place of the helper (`run`), so
+        // nothing here can reach a helper even if the gate breaks. On sends nothing for any phone; Off is sent as before.
+        var sent: [[String]] = []
+        let record: (String, [String]) -> Void = { command, arguments in sent.append([command] + arguments) }
+        for phone in [iphone, PhoneApprovalsSwitch.Phone(name: "example-ipad", ipv4: "100.64.0.21")] {
+            off.setPhoneApprovals(on: true, phone: phone, run: record)
+            pending.setPhoneApprovals(on: true, phone: phone, run: record)
+        }
+        off.setPhoneApprovals(on: true, phone: nil, run: record)
+        precondition(sent.isEmpty && !off.busy && !pending.busy, "phone approvals unavailable: setPhoneApprovals never sends on, for any phone")
+        pending.setPhoneApprovals(on: false, phone: nil, run: record)
+        precondition(sent == [["set-phone-approvals", "off"]] && !pending.busy, "phone approvals off stays reachable: setPhoneApprovals sends off")
+        print("PASS phone approvals unavailable: setPhoneApprovals sent nothing for on (5 calls) and [set-phone-approvals off] for off")
+        // The mount: an off server shows no row in either view; a server that is on shows the Off row in both.
+        precondition(!PhoneApprovalsSwitch.mounted(serverVersion: off.status.version, rowDrawn: true, on: PhoneApprovalsSwitch.isOn(off.webKey.mode), pendingOff: false)
+                     && PhoneApprovalsSwitch.mounted(serverVersion: pending.status.version, rowDrawn: false, on: PhoneApprovalsSwitch.isOn(pending.webKey.mode), pendingOff: false),
+                     "phone approvals mount: none while off, the Off row in Basic and All while on")
         precondition(PhoneApprovalsSwitch.phones((noPhone.glassesPairing.tailscale?.peers ?? []).map {
             PhoneApprovalsSwitch.Peer(os: $0.os, dns: $0.dns, ipv4: $0.ipv4, sameUser: $0.sameUser)
         }).isEmpty, "no-phone fixture")
 
-        // The whole window, Glasses and iPhone. Basic first: PK-02 is not there.
+        // The whole window, Glasses and iPhone. 0.5.392: no switch for a Mac that is off, in Basic or All; a Mac that is on
+        // gets the Off row in both.
         UserDefaults.standard.set(SettingsHubView.basic.rawValue, forKey: SettingsHubView.key)
         count += try page(ControlPanel.hubFixture(model: off, category: .glasses), width: 1280, height: 1100, name: "page-1-basic-no-switch-1280", out: out)
+        count += try page(ControlPanel.hubFixture(model: pending, category: .glasses), width: 1280, height: 1400, name: "page-5-basic-on-off-row-1280", out: out)
         UserDefaults.standard.set(SettingsHubView.all.rawValue, forKey: SettingsHubView.key)
-        count += try page(ControlPanel.hubFixture(model: off, category: .glasses), width: 1280, height: 1100, name: "page-2-all-switch-off-1280", out: out)
+        count += try page(ControlPanel.hubFixture(model: off, category: .glasses), width: 1280, height: 1100, name: "page-2-all-no-switch-1280", out: out)
         count += try page(ControlPanel.hubFixture(model: pending, category: .glasses), width: 1280, height: 1400, name: "page-3-all-on-certificate-pending-1280", out: out)
         count += try page(ControlPanel.hubFixture(model: pending, category: .glasses), width: 760, height: 1500, name: "page-4-all-on-certificate-pending-760", out: out)
 
         // The card, one step each.
         let cardWidth: CGFloat = 720 + 32
+        // 0.5.392: the turn-on steps (cards 1 to 5 in 0.5.391) cannot be reached in this build, so they are not drawn.
         let steps: [(String, ControllerModel, PhoneApprovalsSwitchRow.FixtureStep, RestartApply.Work)] = [
-            ("card-1-picker-empty", off, .choosing(nil), .init()),
-            ("card-2-picker-phone-chosen", off, .choosing(iphone), .init()),
-            ("card-3-confirm-turn-on", off, .confirmOn(iphone), .init()),
-            ("card-4-no-phone-on-this-account", noPhone, .choosing(nil), .init()),
-            ("card-5-waits-for-running-work", off, .choosing(iphone), .init(transcriptionSessions: 1)),
             ("card-6-confirm-turn-off", pending, .confirmOff, .init()),
         ]
         for (name, model, step, work) in steps {

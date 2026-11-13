@@ -449,6 +449,14 @@ enum PhoneApprovalsSwitch {
     /// The first server with the reopened phone approvals; PhoneApprovalsCore.minimumServer must equal it (a check).
     static let minimumServer = "7.0.30"
 
+    /// 0.5.392 (lead ruling 2026-11-12 19:50): phone approvals cannot be turned on from this build, by anyone. A compile-time
+    /// constant, never a defaults key or a server answer: the switch opens 3144 on every interface (review finding 9, open)
+    /// and puts the Mac's tailnet name in public certificate logs. Turning it on returns in its own build, with those closed.
+    /// With it false: the row is not mounted for a Mac that is off (shown), the app never sends `set-phone-approvals on`
+    /// (request), and the helper refuses it (PhoneApprovalsCore.available, which must equal this: a check). Search never lists
+    /// PK-01 or PK-02 (SettingsHubCatalog.unavailableRows). A Mac whose server already reports it on keeps the Off row (mounted).
+    static let available = false
+
     struct Peer: Equatable, Sendable {
         var os: String
         var dns: String
@@ -483,10 +491,29 @@ enum PhoneApprovalsSwitch {
         return octets.count == 4 && octets[0] == 100 && (64...127).contains(octets[1])
     }
 
-    /// The row draws only for a server new enough to have the reopened phone approvals.
-    static func shown(serverVersion: String?) -> Bool {
+    /// A server new enough to have the reopened phone approvals.
+    static func serverSupports(_ serverVersion: String?) -> Bool {
         guard let version = serverVersion.flatMap(numbers), let floor = numbers(minimumServer) else { return false }
         return version.lexicographicallyPrecedes(floor) == false
+    }
+
+    /// The turn-on row: only in a build where phone approvals are available, and only for a server that has them.
+    static func shown(serverVersion: String?) -> Bool { available && serverSupports(serverVersion) }
+
+    /// Whether Settings mounts PK-02. Available: where hubRowDrawn (All view) and the server floor allow. Unavailable (0.5.392):
+    /// only while the server reports phone approvals on, or an Off is still waiting (PhoneApprovalsPendingOff), and then in
+    /// every view, so a Mac that is already on can always turn it off. The row offers no way to turn it on in that build.
+    static func mounted(serverVersion: String?, rowDrawn: Bool, on: Bool, pendingOff: Bool) -> Bool {
+        if available { return rowDrawn && serverSupports(serverVersion) }
+        return serverSupports(serverVersion) && (on || pendingOff)
+    }
+
+    /// What the app sends the helper. Off always goes through (a Mac that is on must be able to turn it off); on only where
+    /// phone approvals are available. ControllerModel.setPhoneApprovals is the only caller, and the only way the app writes
+    /// COS_WEB_KEY_AUTHORITY or COS_WEB_KEY_DEVICES.
+    static func request(on: Bool, phone: Phone?) -> [String]? {
+        guard !on || available else { return nil }
+        return arguments(on: on, phone: phone)
     }
 
     private static func numbers(_ version: String) -> [Int]? {

@@ -153,6 +153,7 @@ struct WebKeyChecks {
         signerTLSLine()
         reasonParity(g)
         phoneApprovalsSwitch()
+        phoneApprovalsUnavailable()
         await phoneApprovalsOff()
         await cancellation()
         await flow(pending: pending, anchorG: anchorG, anchorDER: anchorDER, anchorRaw: anchorRaw, selfDns: selfDns)
@@ -564,9 +565,9 @@ struct WebKeyChecks {
               "phone switch phones", "this account's iPhones with a tailnet IPv4, by name; never a guest's phone, a Mac or an odd address")
         // Shown only for a server with the reopened phone approvals; the app and the helper agree on that server.
         check(PhoneApprovalsSwitch.minimumServer == PhoneApprovalsCore.minimumServer, "phone switch server floor", "the app and the helper name the same server")
-        check(PhoneApprovalsSwitch.shown(serverVersion: PhoneApprovalsSwitch.minimumServer) && PhoneApprovalsSwitch.shown(serverVersion: "8.0.0")
-              && !PhoneApprovalsSwitch.shown(serverVersion: "7.0.28") && !PhoneApprovalsSwitch.shown(serverVersion: "7.0.29") && !PhoneApprovalsSwitch.shown(serverVersion: nil)
-              && !PhoneApprovalsSwitch.shown(serverVersion: "7.0") && !PhoneApprovalsSwitch.shown(serverVersion: "7.0.30-rc1"),
+        check(PhoneApprovalsSwitch.serverSupports(PhoneApprovalsSwitch.minimumServer) && PhoneApprovalsSwitch.serverSupports("8.0.0")
+              && !PhoneApprovalsSwitch.serverSupports("7.0.28") && !PhoneApprovalsSwitch.serverSupports("7.0.29") && !PhoneApprovalsSwitch.serverSupports(nil)
+              && !PhoneApprovalsSwitch.serverSupports("7.0") && !PhoneApprovalsSwitch.serverSupports("7.0.30-rc1"),
               "phone switch server floor", "at or above the floor only; unknown or malformed versions hide the row")
         // On is the server's own answer; bootstrap (registration only) and off read as off.
         check(PhoneApprovalsSwitch.isOn(.authority) && !PhoneApprovalsSwitch.isOn(.bootstrap) && !PhoneApprovalsSwitch.isOn(.off),
@@ -591,6 +592,35 @@ struct WebKeyChecks {
         check(PhoneApprovalsSwitch.applyAllowed(locked: false, workActive: false) && !PhoneApprovalsSwitch.applyAllowed(locked: true, workActive: false)
               && !PhoneApprovalsSwitch.applyAllowed(locked: false, workActive: true) && !PhoneApprovalsSwitch.applyAllowed(locked: true, workActive: true),
               "phone switch waits for work", "an apply is live only with nothing in progress and no running work")
+    }
+
+    /// 0.5.392 (lead ruling 2026-11-12 19:50): phone approvals cannot be turned on from this build, by anyone. Executes the
+    /// gates the app and the helper go through: what the app sends (request, the only argument source of
+    /// ControllerModel.setPhoneApprovals, its one sender of set-phone-approvals), what the helper applies (permits, checked
+    /// right after it parses), and where Settings mounts the row (shown, mounted). Off keeps working for a Mac already on.
+    static func phoneApprovalsUnavailable() {
+        let amy = PhoneApprovalsSwitch.Phone(name: "amy-iphone", ipv4: "100.64.0.11")
+        let versions: [String?] = [PhoneApprovalsSwitch.minimumServer, "7.0.31", "8.0.0", "7.0.29", nil]
+        // Nothing turns it on: the app never sends on, whatever phone; the helper refuses on even when run by hand.
+        check(PhoneApprovalsSwitch.request(on: true, phone: amy) == nil && PhoneApprovalsSwitch.request(on: true, phone: nil) == nil
+              && PhoneApprovalsCore.change(["on", amy.ipv4]).map(PhoneApprovalsCore.permits) == false,
+              "phone switch unavailable", "the app never sends on and the helper never applies it, for any phone")
+        // The row is not mounted for a Mac that is off, in any view, on any server.
+        check(versions.allSatisfy { !PhoneApprovalsSwitch.shown(serverVersion: $0) }
+              && versions.allSatisfy { v in [true, false].allSatisfy { !PhoneApprovalsSwitch.mounted(serverVersion: v, rowDrawn: $0, on: false, pendingOff: false) } },
+              "phone switch unavailable", "no turn-on row for a Mac that is off, in Basic or All, on any server")
+        // App and helper agree, as they do on the server floor.
+        check(PhoneApprovalsSwitch.available == PhoneApprovalsCore.available, "phone switch unavailable", "the app and the helper make the same build decision")
+        // A Mac whose server already reports it on (or whose Off still waits) keeps the Off row, in every view, and Off goes through.
+        check(PhoneApprovalsSwitch.mounted(serverVersion: "7.0.31", rowDrawn: false, on: true, pendingOff: false)
+              && PhoneApprovalsSwitch.mounted(serverVersion: "7.0.31", rowDrawn: true, on: true, pendingOff: false)
+              && PhoneApprovalsSwitch.mounted(serverVersion: "7.0.31", rowDrawn: false, on: false, pendingOff: true)
+              && !PhoneApprovalsSwitch.mounted(serverVersion: "7.0.29", rowDrawn: true, on: true, pendingOff: true),
+              "phone switch off stays reachable", "a Mac already on keeps the Off row in Basic and All, and so does a waiting Off")
+        check(PhoneApprovalsSwitch.request(on: false, phone: nil) == ["off"] && PhoneApprovalsSwitch.request(on: false, phone: amy) == ["off"]
+              && PhoneApprovalsCore.change(["off"]).map(PhoneApprovalsCore.permits) == true
+              && PhoneApprovalsCore.environment(.off).set == ["COS_WEB_KEY_AUTHORITY": "0"],
+              "phone switch off stays reachable", "Off is sent and applied, and writes the flag as 0")
     }
 
     /// Option A (lead ruling 2026-11-12 10:32): Off revokes every phone at once, whatever work runs; only its =0 restart waits.

@@ -19,6 +19,7 @@ K = "Sources/SettingsHubCatalog.swift"
 R = "Tests/fixtures/web-key/tls/README.md"
 MV = "Sources/Views.swift"
 RN = "Tests/PhoneApprovalsRender.swift"
+M = "Sources/ControllerModel.swift"
 
 
 def sh(cmd):
@@ -245,8 +246,8 @@ mutants = [
      "static func isOn(_ mode: WebKeyServerMode) -> Bool { mode != .off }", "[phone switch on reads the server]"),
     ("PA-9 the switch in Basic (pins)", K, '"SG-02", "SG-11", "SG-12", "SG-13", "UT-29", "PK-01", "WB-01", "UT-10",',
      '"SG-02", "SG-11", "SG-12", "SG-13", "UT-29", "PK-01", "PK-02", "WB-01", "UT-10",', "[phone switch full settings only]"),
-    ("PA-10 the toggle applies by itself (pins)", V, "                    if wanted, !on {\n                        choosing = true\n",
-     "                    if wanted, !on {\n                        model.setPhoneApprovals(on: true, phone: phones.first)\n                        choosing = true\n",
+    ("PA-10 the toggle applies by itself (pins)", V, "                        guard PhoneApprovalsSwitch.available else { return }\n                        choosing = true\n",
+     "                        guard PhoneApprovalsSwitch.available else { return }\n                        model.setPhoneApprovals(on: true, phone: phones.first)\n                        choosing = true\n",
      "[phone switch off by default]"),
     ("PA-11 the helper skips the server floor (pins)", H,
      "guard runningVersion.map({ versionAtLeast($0, PhoneApprovalsCore.minimumServer) }) == true || stoppedCompatibleManagedServer else {",
@@ -254,7 +255,7 @@ mutants = [
     ("PA-12 no proof after an in-place restart (pins)", H,
      "            if let phoneApprovals = PhoneApprovalsCore.change(fromEnvironment: values) {\n                try requirePhoneApprovals(phoneApprovals)\n            }\n", "",
      "[phone switch wiring]"),
-    ("PA-13 the app and the helper name different servers", C, 'static let minimumServer = "7.0.30"\n\n    struct Peer', 'static let minimumServer = "7.0.29"\n\n    struct Peer',
+    ("PA-13 the app and the helper name different servers", C, 'static let minimumServer = "7.0.30"\n\n    /// 0.5.392 (lead ruling', 'static let minimumServer = "7.0.29"\n\n    /// 0.5.392 (lead ruling',
      "[phone switch server floor]"),
     ("PA-14 the confirm drops the certificate-log sentence", C,
      '+ "\\(mac) becomes public in certificate logs when its first certificate is issued, and stays public. "', '+ ""', "[phone switch confirm]"),
@@ -313,6 +314,31 @@ mutants = [
     ("PA-29 a phone's Revoke waits for work (pins)", V, "Button(WebKeyCopy.revoke) { Task { await state.revoke(row.kid) } }",
      "Button(WebKeyCopy.revoke) { if PhoneApprovalsSwitch.applyAllowed(locked: false, workActive: false) { Task { await state.revoke(row.kid) } } }",
      "[devices revoke is live]"),
+    # 0.5.392 (lead ruling 2026-11-12 19:50): phone approvals cannot be turned on from this build. One per gate.
+    ("PA-33 the app makes phone approvals available again", C, "    static let available = false\n", "    static let available = true\n",
+     "[phone switch unavailable]"),
+    ("PA-34 the helper makes phone approvals available again", P, "    static let available = false\n", "    static let available = true\n",
+     "[phone switch unavailable]"),
+    ("PA-35 the app sends on whatever the build says", C, "        guard !on || available else { return nil }\n", "", "[phone switch unavailable]"),
+    ("PA-36 the helper applies on whatever the build says", P, "static func permits(_ change: Change) -> Bool { change == .off || available }",
+     "static func permits(_ change: Change) -> Bool { true }", "[phone switch unavailable]"),
+    ("PA-37 the helper never asks permits (pins)", H, "        guard PhoneApprovalsCore.permits(change) else { throw HelperError.message(PhoneApprovalsCore.unavailable) }\n", "",
+     "[phone switch unavailable]"),
+    ("PA-38 the row mounts for a Mac that is off", C, "        return serverSupports(serverVersion) && (on || pendingOff)\n", "        return serverSupports(serverVersion)\n",
+     "[phone switch unavailable]"),
+    ("PA-39 a Mac that is on loses its Off row", C, "        return serverSupports(serverVersion) && (on || pendingOff)\n", "        return false\n",
+     "[phone switch off stays reachable]"),
+    ("PA-40 the toggle starts turning on (pins)", V, "                        guard PhoneApprovalsSwitch.available else { return }\n", "",
+     "[phone switch unavailable]"),
+    ("PA-41 the app's sender skips the gate (pins)", M, "guard let arguments = PhoneApprovalsSwitch.request(on: on, phone: phone) else { return }",
+     "guard let arguments = PhoneApprovalsSwitch.arguments(on: on, phone: phone) else { return }", "[phone switch unavailable]"),
+    ("PA-42 a second sender of set-phone-approvals (pins)", M, "    // ── Morning brief (server 6.43.0) ──\n",
+     "    func setPhoneApprovalsAgain() { perform(\"set-phone-approvals\", arguments: [\"on\", \"100.64.0.11\"]) }\n\n    // ── Morning brief (server 6.43.0) ──\n",
+     "[phone switch unavailable]"),
+    ("PA-43 search lists the switch again (pins)", K, 'static let unavailableRows: Set<String> = ["PK-01", "PK-02"]', 'static let unavailableRows: Set<String> = ["PK-01"]',
+     "[phone switch unavailable]"),
+    ("PA-44 Off is no longer sent", C, "        guard !on || available else { return nil }\n        return arguments(on: on, phone: phone)",
+     "        guard !on || available else { return nil }\n        return on ? arguments(on: on, phone: phone) : nil", "[phone switch off stays reachable]"),
 ]
 
 only = [part for part in os.environ.get("MUTATE_ONLY", "").split("|") if part]

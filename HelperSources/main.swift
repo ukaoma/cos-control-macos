@@ -6893,6 +6893,7 @@ final class COSControlHelper {
     /// PhoneApprovalsCore. Never touches the anchor, ~/.cos-glasses/.env or any certificate.
     private func setPhoneApprovals(_ arguments: [String]) throws {
         guard let change = PhoneApprovalsCore.change(arguments) else { throw HelperError.message(PhoneApprovalsCore.usage) }
+        guard PhoneApprovalsCore.permits(change) else { throw HelperError.message(PhoneApprovalsCore.unavailable) }
         let runningVersion = (maintenanceStatus()?["serverVersion"] as? String)
             ?? request("/api/health", timeout: 12)?.body?["server_version"] as? String
         let stoppedCompatibleManagedServer = loadManifest().map {

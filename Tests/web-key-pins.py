@@ -284,9 +284,38 @@ basic_block = catalog[catalog.index("static let basicIDs: Set<String> = ["):cata
 pk02_at = catalog.find('.init("PK-02"')
 need('"PK-02"' not in basic_block and catalog.index("static let extras: [SettingsHubItem] = [") < pk02_at < catalog.index("static let items: [SettingsHubItem] = [")
      and re.search(r'\.init\("PK-02", "Turn on phone approvals", [^\n]*group: "glasses\.phone",\s*advanced: false, mount: \.group', catalog) is not None
-     and phone.count('if hubRowDrawn("PK-02"), PhoneApprovalsSwitch.shown(serverVersion: model.status.version) {') == 1
-     and phone.count('.settingsHubAnchor("PK-02")') == 1 and main_views.count("PhoneApprovalsSwitchRow(") == 1,
-     "phone switch full settings only", "PK-02 is an extras row in Phone and web, not in Basic, drawn only where hubRowDrawn and the server floor allow")
+     and phone.count('PhoneApprovalsSwitchMount(state: model.webKey, serverVersion: model.status.version, rowDrawn: hubRowDrawn("PK-02")) {') == 1
+     and phone.count('.settingsHubAnchor("PK-02")') == 1 and main_views.count("PhoneApprovalsSwitchRow(") == 1
+     and main_views.count("PhoneApprovalsSwitchMount(") == 1,
+     "phone switch full settings only", "PK-02 is an extras row in Phone and web, not in Basic, mounted only through PhoneApprovalsSwitch.mounted")
+# 0.5.392 (lead ruling 2026-11-12 19:50): phone approvals cannot be turned on from this build. The constant is compile time in
+# the app and the helper (never a defaults key, a server answer or an environment value), and the mount, the toggle, the app's
+# one sender and the helper all ask it. Search leaves out PK-01 and PK-02 exactly while it is false.
+mount_view = body_of(views, views.index("struct PhoneApprovalsSwitchMount<Content: View>: View"))
+mounted_fn = body_of(core, core.index("static func mounted(serverVersion: String?, rowDrawn: Bool, on: Bool, pendingOff: Bool) -> Bool"))
+request_fn = body_of(core, core.index("static func request(on: Bool, phone: Phone?) -> [String]?"))
+model = code("Sources/ControllerModel.swift")
+sender = body_of(model, model.index("func setPhoneApprovals(on: Bool, phone: PhoneApprovalsSwitch.Phone?, run: ((String, [String]) -> Void)? = nil)"))
+set_fn0 = body_of(helper, helper.index("private func setPhoneApprovals(_ arguments: [String]) throws"))
+app_unavailable = core.count("    static let available = false\n") == 1 and "static let available = true" not in core
+helper_unavailable = pairing.count("    static let available = false\n") == 1 and "static let available = true" not in pairing
+sources = "\n".join(code(str(f.relative_to(root))) for f in sorted((root / "Sources").glob("*.swift")))
+need(app_unavailable and helper_unavailable
+     and "if available { return rowDrawn && serverSupports(serverVersion) }" in mounted_fn
+     and "return serverSupports(serverVersion) && (on || pendingOff)" in mounted_fn
+     and "PhoneApprovalsSwitch.mounted(serverVersion: serverVersion, rowDrawn: rowDrawn, on: PhoneApprovalsSwitch.isOn(state.mode)," in mount_view
+     and "guard !on || available else { return nil }" in request_fn
+     and sender.count("PhoneApprovalsSwitch.request(on: on, phone: phone)") == 1 and "PhoneApprovalsSwitch.arguments(" not in sender
+     and sources.count('"set-phone-approvals"') == 2 and sender.count('"set-phone-approvals"') == 2
+     and set_fn0.find("guard PhoneApprovalsCore.permits(change) else") > set_fn0.find("PhoneApprovalsCore.change(arguments)") >= 0
+     and set_fn0.find("guard PhoneApprovalsCore.permits(change) else") < set_fn0.find("PhoneApprovalsCore.environment(change)")
+     and "static func permits(_ change: Change) -> Bool { change == .off || available }" in pairing
+     and re.search(r"if wanted, !on \{\s*guard PhoneApprovalsSwitch\.available else \{ return \}\s*choosing = true", views) is not None
+     and "defaults" not in (mounted_fn + request_fn).lower() and "UserDefaults" not in body_of(core, core.index("enum PhoneApprovalsSwitch {")),
+     "phone switch unavailable", "a compile-time false in the app and the helper; mount, toggle, the one sender and the helper all ask it")
+unavailable_rows = 'static let unavailableRows: Set<String> = ["PK-01", "PK-02"]'
+need(catalog.count(unavailable_rows) == 1 and "!unavailableRows.contains($0.id)" in catalog and app_unavailable,
+     "phone switch unavailable", "search leaves out PK-01 and PK-02 while phone approvals are unavailable; empty that set in the build that makes them available")
 # Off by default: the toggle never applies anything; only the two confirmations call setPhoneApprovals, and nothing else in
 # the helper writes the flag (one allowlist entry, then PhoneApprovalsCore's own constants).
 switch_view = body_of(views, views.index("struct PhoneApprovalsSwitchRow: View"))
