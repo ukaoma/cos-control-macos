@@ -3980,7 +3980,8 @@ meetings = (pathlib.Path(sys.argv[1]) / "Sources/ActivityMeetings.swift").read_t
 # Anchored on the day cell's OWN action, which is unique. A generic
 # RoundedRectangle anchor matched an unrelated button earlier in the file
 # and failed against correct code.
-block = re.search(r"onSelectDay\(selectedDay == cell\.date(.{0,1400}?)\.buttonStyle\(\.plain\)", meetings, re.S)
+# 2400, not 1400: since ce375ba (today is marked) the cell runs about 1,700 characters to its button style.
+block = re.search(r"onSelectDay\(selectedDay == cell\.date(.{0,2400}?)\.buttonStyle\(\.plain\)", meetings, re.S)
 if block is None: sys.exit("calendar: day-cell button block not found")
 if ".contentShape(" not in block.group(1):
     sys.exit("calendar: the day cell has no contentShape, so only the date glyph is clickable")
@@ -7402,7 +7403,9 @@ if 'case "error": failure.isEmpty ? "Failed"' not in label or "queued" not in la
 # 6. Messages (2026-10-09): a COS answer renders as Markdown, what you said stays as typed,
 # links open through SwiftUI's own action (web only), and the copies stay raw.
 card = body(activity, "struct ActivityMessageCard")
-if "COSMarkdownView(text: lensLists ? LensAnswerStructure.structure(text) : text, cacheID: markdownID" not in card:
+# Since fecb1a6 (who said what by side) the card and the COS side share markdownText, so the lens structuring lives there.
+if "private var markdownText: String { lensLists ? LensAnswerStructure.structure(text) : text }" not in card \
+        or card.count("COSMarkdownView(text: markdownText, cacheID: markdownID, bodySize: 13)") != 2:
     fail("[messages] the COS card renders through COSMarkdownView under its message id (a lens answer's lists structured there only)")
 if "} else if let markdownID {" not in card or "Text(highlighted(text, query: highlight))" not in card:
     fail("[messages] a card with no markdownID shows its text as typed (the YOU side)")
@@ -7414,7 +7417,8 @@ if 'messageBlock(label: "COS", text: turn.text, lensLists: true,\n              
 if 'messageBlock(label: "You", text: turn.query,\n                             tint: ActivitySection.messages.tint, highlight: recentQuery,\n                             side: .you, caption: MessageSides.youCaption)\n' not in detail:
     fail("[messages] Recent's YOU card stays as typed")
 chat = body(activity, "@ViewBuilder private func archiveChatDetail(")
-if 'markdownID: "archive:\\(date)/\\(index)/\\(message.id)")' not in chat:
+# Since ecfabdf (pick A in archive chats too) the call goes on to `side: .cos)` on its own line.
+if 'markdownID: "archive:\\(date)/\\(index)/\\(message.id)",\n                                             side: .cos)' not in chat:
     fail("[messages] an archived chat's COS card renders as Markdown, keyed by day, chat and position")
 # 0.5.374: the preview also gets a space between progress sentences that ran together (previewSpacing), then renders.
 if 'GlassesTurn.previewSpacing(COSMarkdownInlineCache.plain(turn.text))' not in body(activity, "private func messageRow(") or 'Text(preview)' not in body(activity, "private func messageRow("):
