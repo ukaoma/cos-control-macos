@@ -6,13 +6,13 @@ import Vision
 /// window's own window (ActivityWindowPresenter.makeWindow), never ordered in, background work off, a scratch home, the
 /// Today rail on as on his Mac. A day with eight meetings is selected. Every meeting here is invented.
 ///
-///     check                   the gate: at 760x560 a real scroll-wheel event, sent through the window over the middle
+///     check                   the gate: at 760x560 the scroll view under the surface's drawn title, moved 60 pt a notch
 ///                             of the pane, brings the first meeting row fully on screen below the top bar
 ///     render <folder> WxH ... by hand: Meetings at each size before and after the same scroll, to PNGs, with the row's
 ///                             frame printed
 ///
 /// What ActivitySizing does not prove: it checks the window's minimum and maximum SIZE for every tab, never whether the
-/// content inside a tab can be reached at that size. This check drives the pane with the wheel and reads where the row is.
+/// content inside a tab can be reached at that size. This check scrolls the pane and reads where the row is drawn.
 @main @MainActor struct MeetingsScrollCheck {
     static let titles = ["Bottle POS weekly", "Gina 1:1, content calendar", "Leadership sync", "October offer review",
                          "Team standup", "Design review", "Pricing page walkthrough", "Quarter close prep"]
@@ -59,7 +59,7 @@ import Vision
                 for failure in failures { fputs("Meetings scroll check FAILED: \(failure)\n", stderr) }
                 exit(1)
             }
-            print("PASS: Meetings scroll: at 760x560, in Meetings and in Work's meeting picker, Today rail off and on, the wheel brings the first meeting row on screen below the top bar")
+            print("PASS: Meetings scroll: at 760x560, in Meetings and in Work's meeting picker, Today rail off and on, scrolling the pane brings the first meeting row on screen below the top bar")
         case "render":
             guard arguments.count >= 3 else { fputs("render <folder> WxH ...\n", stderr); exit(2) }
             let out = URL(fileURLWithPath: arguments[1], isDirectory: true)
@@ -91,7 +91,7 @@ import Vision
     /// fixed above it: Work's header, its controls and the back row).
     enum Surface: String, CaseIterable { case meetings, workPicker = "work-picker" }
 
-    /// Text only that surface draws, asserted before the first wheel event, so a leg can never pass on the other surface.
+    /// Text only that surface draws, asserted before scrolling, so a leg can never pass on the other surface.
     static func marker(_ surface: Surface) -> String {
         surface == .meetings ? "Saved calls by day" : "Choose a saved meeting"
     }
@@ -157,18 +157,19 @@ import Vision
         }
     }
 
-    /// One wheel notch through the window, as the trackpad sends it: a CGEvent scroll in pixels at a point in the window.
-    static func wheel(_ window: NSWindow, at point: NSPoint, pixels: Int32) -> Bool {
-        let screenPoint = window.convertPoint(toScreen: point)
-        let primary = NSScreen.screens.first?.frame.height ?? 0
-        guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: pixels, wheel2: 0, wheel3: 0) else { return false }
-        cg.location = CGPoint(x: screenPoint.x, y: primary - screenPoint.y)
-        guard let event = NSEvent(cgEvent: cg) else { return false }
-        // To the view under the pointer, as AppKit routes a wheel event (it climbs the responder chain to the first view that
-        // scrolls). window.sendEvent drops it for a window that is never ordered in.
-        guard let target = window.contentView?.hitTest(point) else { return false }
-        target.scrollWheel(with: event)
-        return true
+    /// One notch, 60 pt down: the scroll view under the point moves its own clip view, as a wheel notch does, through the
+    /// scroll view's API. No event is made or sent (Tests/desktop-safety-check.py: no test makes a synthetic event or calls
+    /// a view's scroll handler, Miles 2026-09-30). Under a point with no scroll view, nothing moves: the pane is fixed there.
+    static func notch(_ window: NSWindow, at point: NSPoint, points: CGFloat) {
+        var view = window.contentView?.hitTest(point)
+        while let current = view, !(current is NSScrollView) { view = current.superview }
+        guard let scroller = view as? NSScrollView, let document = scroller.documentView else { return }
+        let clip = scroller.contentView
+        let room = max(0, document.frame.height - clip.bounds.height)
+        var origin = clip.bounds.origin
+        origin.y = document.isFlipped ? min(room, origin.y + points) : max(0, origin.y - points)
+        clip.scroll(to: origin)
+        scroller.reflectScrolledClipView(clip)
     }
 
     static var lastRead = 0.0
@@ -201,7 +202,7 @@ import Vision
         defer { window.contentViewController = nil; window.close() }
         let contentHeight = window.contentView?.bounds.height ?? 0
         let first = titles[0]
-        // The surface's own text must be DRAWN before the first wheel event: a positive signal, polled, never a fixed sleep
+        // The surface's own text must be DRAWN before scrolling: a positive signal, polled, never a fixed sleep
         // (a single read missed once under load, 02:36). Bounded at 6 s; on giving up, what was drawn instead is reported.
         let drawn = waitForDrawn(marker(surface), in: window)
         let surfaceShown = drawn.frame
@@ -222,9 +223,8 @@ import Vision
         let barBottom = home?.maxY ?? 0
         func shown(_ rect: NSRect?) -> Bool { rect.map { $0.minY >= barBottom && $0.maxY <= contentHeight } ?? false }
         var sent = 0
-        var built = true
         while sent < 24, !shown(find(first, in: window)) {
-            guard wheel(window, at: point, pixels: -60) else { built = false; break }
+            notch(window, at: point, points: 60)
             sent += 1
             settle(window, seconds: 0.15)
         }
@@ -234,17 +234,16 @@ import Vision
         let after = find(first, in: window)
         if let out { snap(window, out: out, name: "\(surface.rawValue)-\(Int(size.width))x\(Int(size.height))-\(UserDefaults.standard.bool(forKey: TodayHome.enabledKey) ? "rail" : "classic")-after.png") }
         let viewport = (scrollView as? NSScrollView)?.contentView.bounds.height ?? 0
-        let report = "\(Int(size.width))x\(Int(size.height)): \"\(marker(surface))\" \(describe(surfaceShown)) before the wheel (\(readNote)), viewport \(Int(viewport)) pt, content \(Int(contentHeight)) pt, top bar ends \(describe(home)), "
-            + "first row before \(describe(before)), wheel sent \(sent)x-60 px over \(scrollView.map { String(describing: type(of: $0)) } ?? "no scroll view"), "
+        let report = "\(Int(size.width))x\(Int(size.height)): \"\(marker(surface))\" \(describe(surfaceShown)) before scrolling (\(readNote)), viewport \(Int(viewport)) pt, content \(Int(contentHeight)) pt, top bar ends \(describe(home)), "
+            + "first row before \(describe(before)), \(sent) notches of 60 pt over \(scrollView.map { String(describing: type(of: $0)) } ?? "no scroll view"), "
             + "first row after \(describe(after)); \(geometry)"
-        guard surfaceShown != nil else { return (report, "\"\(marker(surface))\" is not drawn before the wheel: this leg is not on \(surface.rawValue)") }
-        guard built else { return (report, "the wheel events could not be built") }
+        guard surfaceShown != nil else { return (report, "\"\(marker(surface))\" is not drawn before scrolling: this leg is not on \(surface.rawValue)") }
         // A row reachable through a slit is not reachable: the scroll view under the pointer shows at least two rows.
         guard viewport >= 120 else { return (report, "the scroll view under the pointer is \(Int(viewport)) pt tall, under 120 pt (about two rows)") }
         guard home != nil else { return (report, "the top bar's Home is not drawn, so there is no bar to measure below") }
-        guard let after else { return (report, "after \(sent) wheel notches the first meeting row is not drawn (the list is not on screen)") }
+        guard let after else { return (report, "after \(sent) notches the first meeting row is not drawn (the list is not on screen)") }
         if after.minY < barBottom || after.maxY > contentHeight {
-            return (report, "after the wheel the first meeting row is at \(describe(after)), outside \(Int(barBottom))-\(Int(contentHeight)) (below the top bar, inside the window)")
+            return (report, "after scrolling the first meeting row is at \(describe(after)), outside \(Int(barBottom))-\(Int(contentHeight)) (below the top bar, inside the window)")
         }
         return (report, nil)
     }
