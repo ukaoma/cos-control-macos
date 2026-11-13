@@ -2724,15 +2724,20 @@ struct WorkWorkspaceView: View {
 
     @ViewBuilder private var detailPane: some View {
         if state.meetingPicker {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Choose a saved meeting").font(COSType.display(23, weight: .medium)).padding(.horizontal, 18)
-                Text("Browse older months or search. Selecting a meeting does not start an agent.").font(COSType.body(12)).foregroundStyle(COSPalette.muted).padding(.horizontal, 18)
-                if let target = state.linkTarget {
-                    Text("Link to: " + target.text).font(COSType.body(12, weight: .medium)).padding(.horizontal, 18)
-                }
-                MeetingLibraryBody(model: model, selectionOnly: true, onOpen: chooseMeeting)
-                    .disabled(state.mutationBusy)
-            }.padding(.top, 18)
+            // 0.5.393: the picker scrolls as one page under Work's header and the back row, as Activity's Meetings pane does.
+            // Fixed, its title, the calendar and the filters took the window at its minimum size and the list had no height
+            // (Q1's sweep, 2026-11-12 23:56). Tests/MeetingsScrollCheck.swift drives it with the wheel.
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Choose a saved meeting").font(COSType.display(23, weight: .medium)).padding(.horizontal, 18)
+                    Text("Browse older months or search. Selecting a meeting does not start an agent.").font(COSType.body(12)).foregroundStyle(COSPalette.muted).padding(.horizontal, 18)
+                    if let target = state.linkTarget {
+                        Text("Link to: " + target.text).font(COSType.body(12, weight: .medium)).padding(.horizontal, 18)
+                    }
+                    MeetingLibraryBody(model: model, selectionOnly: true, scrollsInPage: true, onOpen: chooseMeeting)
+                        .disabled(state.mutationBusy)
+                }.padding(.top, 18)
+            }
         } else if let meeting = reviewStore.selectedMeeting {
             ScrollView { meetingIntake(meeting).padding(22) }
         } else if let item = selected {
