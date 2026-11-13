@@ -110,7 +110,8 @@ mutants = [
 ''', "            // 0.5.393, direction 1: no pairing QR is drawn. The server still sends one; nothing here reads it.\n", PINS, "[glasses QR labeled]"),
  # 0.5.393 (Miles 2026-11-13): one QR in the whole app, the install line, a subtitle per stage.
  ("Q13 the install line stays once a phone is paired", M, "static func showsAppLine(_ stage: Stage) -> Bool { if case .paired = stage { return false } else { return true } }", "static func showsAppLine(_ stage: Stage) -> Bool { true }", APP, "[glasses app line]"),
- ("Q14 the card stops saying there is no QR", M, "[noQR, addressLine(code)].compactMap", "[addressLine(code)].compactMap", APP, "[no glasses qr]"),
+ ("Q14 the card stops saying the code is typed", M, "[typedNote, addressLine(code)].compactMap", "[addressLine(code)].compactMap", APP, "[no glasses qr]"),
+ ("Q17 the line under the code says No QR here again", M, 'static let typedNote = "This code is typed, not scanned."', 'static let typedNote = "No QR here."', APP, "[no glasses qr]"),
  ("Q16 the older Get the app row comes back under the code (pins)", P, "                // 0.5.393 (lead, 2026-11-13): the \"Glasses app / Get the app\" row (SG-13) is gone from here. The glasses rows\n",
   "                hubButton(\"SG-13\", \"Get the app\") { _ = model.providerGuide.openURL(GuideExtras.glassesWizardURL) }\n", PINS, "[one app link]"),
  ("Q15 the sentence above the browser QR comes back (pins)", M, '    static let codeNote = "Type this on the sign-in page. Works once, for 5 minutes."\n', '    static let codeNote = "Type this on the sign-in page. Works once, for 5 minutes."\n    static let notGlasses = "The QR below is for the COS Glasses app, not the Camera."\n', PINS, "[one QR]"),

@@ -123,7 +123,7 @@ pin("visible: windowHolder.onScreen(panelVisible: model.panelVisible)" in glasse
 pin('label: "Tailscale download link"' in glasses_rows and '.accessibilityLabel("Pairing code \\(shown)")' in glasses_rows, "glasses voiceover", "the QR and the code say what they are")
 
 pin("let next = SetupGuideRules.next(rows)" in connect_views and "$0.counted }" in body(connect, "    static func progress(", "\n    }\n"), "glasses uncounted", "progress and Next skip uncounted rows")
-pin('pairCaption' not in connect_views and 'pairCaption' not in connect and 'static let noQR = "No QR here."' in connect
+pin('pairCaption' not in connect_views and 'pairCaption' not in connect and 'static let typedNote = "This code is typed, not scanned."' in connect
     and '"Allow pairing on this Wi-Fi (home only)"' in connect_views, "glasses copy", "contract copy (0.5.393: the glasses pair by code only, so no photo caption)")
 pin("facts.glasses = glassesPairing.facts(serverRunning: status.running, pairingSupported: status.pairingSupported)" in connect_views, "capability gate", "rows read the server's pairing capability")
 

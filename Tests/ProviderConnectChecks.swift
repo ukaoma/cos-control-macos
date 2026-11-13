@@ -1012,8 +1012,12 @@ extension ProviderConnectChecks {
               "glasses app line", "shown until a phone is paired")
         check(GuideExtras.glassesAppURL.scheme == "https" && GuideExtras.glassesAppURL.query == nil, "glasses app line", "the link carries no query, so no token: \(GuideExtras.glassesAppURL)")
         let allCopy = [GlassesRules.pairSubtitle, GlassesRules.pairPurpose, GlassesRules.pairedSubtitle, GlassesRules.appTitle, GlassesRules.appLine, GlassesRules.appLink,
-                       GlassesRules.noQR, GlassesRules.pairCopiedNote, GlassesRules.newCodeNote, GlassesRules.wifiLine("X")]
-        check(!allCopy.contains { $0.lowercased().contains("scan") || $0.lowercased().contains("photo") }, "glasses qr copy", "nothing on the Mac asks for a scan or a photo of a glasses code")
+                       GlassesRules.typedNote, GlassesRules.pairCopiedNote, GlassesRules.newCodeNote, GlassesRules.wifiLine("X")]
+        // "not scanned" is the one place the word may appear: every other line is free of scan, QR and photo.
+        check(!allCopy.filter { $0 != GlassesRules.typedNote }.contains { $0.lowercased().contains("scan") || $0.lowercased().contains("photo") || $0.contains("QR") },
+              "glasses qr copy", "nothing on the Mac asks for a scan or a photo of a glasses code")
+        check(GlassesRules.typedNote == "This code is typed, not scanned." && !GlassesRules.typedNote.contains("QR") && !GlassesRules.typedNote.lowercased().contains("here"),
+              "no glasses qr", "the line is about the code, not the card, which can show the Tailscale download QR: \(GlassesRules.typedNote)")
         for text in allCopy {
             check(!text.contains("—") && !text.contains("–") && !text.contains("→") && !text.contains("->"), "glasses qr copy", "no dash or arrow: \(text)")
         }
@@ -1316,8 +1320,8 @@ extension ProviderConnectChecks {
         check(GlassesRules.addressLine(tailnet)?.contains(" \(tailnet.display) ") == true && GlassesRules.addressLine(tailnet)?.contains(GlassesRules.shownCode(tailnet)) == false
               && GlassesRules.addressLine(tailnet)?.lowercased().contains("older") == false, "long code card", "the address line names the server's 8 characters, not the 14, and does not call the app older")
         // 0.5.393: no pairing QR on the card. The line under the code says so first, then the address line, word for word.
-        check(GlassesRules.underCodeLine(tailnet) == "No QR here. If the app asks for a Mac address, type K7Q2-M9XD and 100.108.149.114", "no glasses qr", GlassesRules.underCodeLine(tailnet))
-        check(GlassesRules.underCodeLine(card([])) == "No QR here.", "no glasses qr", GlassesRules.underCodeLine(card([])))
+        check(GlassesRules.underCodeLine(tailnet) == "This code is typed, not scanned. If the app asks for a Mac address, type K7Q2-M9XD and 100.108.149.114", "no glasses qr", GlassesRules.underCodeLine(tailnet))
+        check(GlassesRules.underCodeLine(card([])) == "This code is typed, not scanned.", "no glasses qr", GlassesRules.underCodeLine(card([])))
         check(GlassesRules.wifiCode(tailnet) == nil, "long code card", "no Wi-Fi code while Wi-Fi pairing is off")
         // Wi-Fi pairing switched on: the main code still names Tailscale, and a second one names this Wi-Fi.
         let both = card([ts, lan])

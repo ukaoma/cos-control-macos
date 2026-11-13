@@ -1988,12 +1988,9 @@ enum GlassesRules {
     static let allowedWait: TimeInterval = 180
     /// Names from Tailscale are shown at most this long, with control characters removed.
     static let nameLimit = 40
-    /// 0.5.368 (Miles 2026-11-04, 09:05): he pointed the iPhone Camera at this QR expecting a sign-in and got a web search.
-    /// 0.5.390 line (Miles 2026-11-12): the code is typed first now. On a fresh phone the photo routes found no code in
-    /// six tries and the address beside the code was small, grey and unlabelled. The row names the code; the QR is the
-    /// second way in and its caption says it is one photo taken inside the app, never a live scan and never the phone's
-    /// own camera. 0.5.392: the caption names the button by both of its names, Scan (the public app through 6.11.682)
-    /// and Take a photo of the code (6.11.683 on), because the old caption named a button the public app does not have.
+    /// 0.5.390 line (Miles 2026-11-12): the code is typed. On a fresh phone the photo routes found no code in six tries
+    /// and the address beside the code was small, grey and unlabelled. The row names the code.
+    /// 0.5.393 (Miles 2026-11-13, direction 1): the card draws no pairing QR and no photo caption (see typedNote).
     static let pairSubtitle = "Type this code in the COS Glasses app on your phone."
     /// 0.5.393 (Miles 2026-11-12, 23:40, with a paired phone): the row said "Type this code" with no code on screen.
     /// The row says what it is for; only the stage that shows a code says to type it.
@@ -2012,11 +2009,12 @@ enum GlassesRules {
     static let appLine = "Install the Even Realities app on your phone. In it, open Even Hub and add COS Glasses. The code below goes in that app."
     static let appLink = "Get COS Glasses"
     static func showsAppLine(_ stage: Stage) -> Bool { if case .paired = stage { return false } else { return true } }
-    /// 0.5.393, direction 1 (Miles 2026-11-13): the glasses pair by code only, so COS Control shows one kind of QR,
-    /// the browser's. On 2026-11-12 his first photo in the glasses app was of the browser QR. Phone apps through
-    /// 6.11.683 still offer a photo, so the card says there is nothing here to photograph.
-    static let noQR = "No QR here."
-    static func underCodeLine(_ code: PairingCode) -> String { [noQR, addressLine(code)].compactMap { $0 }.joined(separator: " ") }
+    /// 0.5.393, direction 1 (Miles 2026-11-13): the glasses pair by code only, so COS Control draws no pairing QR. On
+    /// 2026-11-12 his first photo in the glasses app was of the browser sign-in QR. Phone apps through 6.11.683 still
+    /// offer a photo, so the line under the code says how this code is used. It is about the code, not the card: the
+    /// same card can show the Tailscale download QR while the phone is not on the tailnet yet (Q1, M1).
+    static let typedNote = "This code is typed, not scanned."
+    static func underCodeLine(_ code: PairingCode) -> String { [typedNote, addressLine(code)].compactMap { $0 }.joined(separator: " ") }
     static let pairCopy = "Copy"
     static let pairCopied = "Copied"
     static let pairCopiedNote = "Copied. On an iPhone signed in to the same Apple ID as this Mac, tap Paste in the COS Glasses app."

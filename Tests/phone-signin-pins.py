@@ -141,7 +141,8 @@ need("if GlassesRules.shouldComeForward(old: old, new: new) { windowHolder.comeF
 need("pairCaption" not in views_file and "pairCaption" not in model_file and "Hold your phone so the code fills the screen\"" not in views_file, "one QR", "no caption asks for a photo of a glasses code")
 glasses_words = dict(re.findall(r'static let (\w+) = "([^"]*)"', body(model_file, "enum GlassesRules {")))
 need(glasses_words.get("pairSubtitle") == "Type this code in the COS Glasses app on your phone.", "glasses QR labeled", "the pairing row's subtitle")
-need(glasses_words.get("noQR") == "No QR here.", "one QR", "the card says there is nothing to photograph")
+need(glasses_words.get("typedNote") == "This code is typed, not scanned." and "noQR" not in model_file and "No QR here" not in model_file,
+     "one QR", "the line under the code is about the code, since the same card can show the Tailscale download QR")
 need(glasses_words.get("pairedSubtitle") == "The COS Glasses app on your phone is connected to this Mac."
      and glasses_words.get("pairPurpose") == "Pairs the COS Glasses app on your phone with this Mac.", "paired subtitle", "the subtitles for the stages with no code on screen")
 need('title: "Connect your glasses", status: "Checking…",\n                           unlocks: GlassesRules.connectSubtitle(current),' in model_file
@@ -154,7 +155,7 @@ need(glasses_words.get("appLine") == "Install the Even Realities app on your pho
 need("static let glassesAppURL = " in model_file and "token=" not in model_file.split("enum GuideExtras {", 1)[1].split("\n}", 1)[0], "app line first", "one named link, with no token in it")
 need('.help("Add COS Glasses from Even Hub in the Even Realities app, then type the code above")' in views_file and "scan the code above" not in views_file,
      "app line first", "the Setup guide's hover line says type, not scan")
-for name in ("pairSubtitle", "pairPurpose", "pairedSubtitle", "appTitle", "appLine", "appLink", "noQR"):
+for name in ("pairSubtitle", "pairPurpose", "pairedSubtitle", "appTitle", "appLine", "appLink", "typedNote"):
     need(not re.search("[—–→]|->", glasses_words.get(name, "")), "glasses QR labeled", f"no em dash, en dash or arrow: {name}")
 need("await state.run(visible: { [model, windowHolder] in windowHolder.onScreen(panelVisible: model.panelVisible) })" in row
      and ".background(WindowProbe(holder: windowHolder))" in row and "guard polls else { return }" in row, "visible only",

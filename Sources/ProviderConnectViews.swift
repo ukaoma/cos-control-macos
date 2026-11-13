@@ -576,7 +576,7 @@ struct GlassesSetupRows: View {
 
     /// 0.5.390 line (Miles 2026-11-12, direction A plus paste). The code is the largest thing on the card and carries this
     /// Mac's address, so the phone needs nothing else; Copy puts it on the clipboard for an iPhone on the same Apple ID.
-    /// 0.5.393: the pairing QR is gone from the card (see GlassesRules.noQR). The address is no longer small, grey and
+    /// 0.5.393: the pairing QR is gone from the card (see GlassesRules.typedNote). The address is no longer small, grey and
     /// unlabelled beside the code (S10): one labelled line keeps it for a phone app from before the long code.
     @ViewBuilder private func codeCard(_ code: PairingCode) -> some View {
         let shown = GlassesRules.shownCode(code)
