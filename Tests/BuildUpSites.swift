@@ -46,8 +46,11 @@ import SwiftUI
         // The skeleton.
         fresh()
         var probe: COSBuildUpProbeFrame?
-        // Only a stage inside this window (a hosted view from an earlier render may still report its own).
-        let inside = { (p: COSBuildUpProbeFrame) in p.frame.maxX <= size.width + 0.5 && p.frame.maxY <= size.height + 0.5 }
+        // Only a stage in this window (a hosted view from an earlier render may still report its own, 9675171): within its
+        // width, and STARTING above its bottom edge. 0.5.393: a list that scrolls with its page (Meetings, Work's meeting
+        // picker) runs past the bottom of the window, so its loaded frame ends below it; it was dropped as "no loaded frame".
+        // A frame wholly below the window is still dropped. Every frame the old rule kept (ending inside) is still kept.
+        let inside = { (p: COSBuildUpProbeFrame) in p.frame.maxX <= size.width + 0.5 && p.frame.minY < size.height }
         COSBuildUpProbe.stage = { if $0.kind == site.kind, site.pick($0), inside($0) { probe = $0 } }
         COSBuildUpProbe.freeze = COSBuildUpFrame(phase: .building, drawT: 1.4)
         let skel = bitmap(site.view(false, size), size: size, appearance: appearance)
@@ -68,7 +71,8 @@ import SwiftUI
         _ = bitmap(site.view(true, size), size: size, appearance: appearance)
         COSBuildUpProbe.freeze = nil
         COSBuildUpProbe.stage = nil
-        let frame = probe?.frame
+        // Compared only where it shows: the part inside the window (the whole frame for every site that ends inside it).
+        let frame = probe.map { $0.frame.intersection(CGRect(origin: .zero, size: size)) }
         if frame == nil { m.note += "no loaded frame; " }
         // The loaded view, settled.
         fresh()
