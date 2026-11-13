@@ -13747,6 +13747,77 @@ struct TodayDismissals: Equatable {
 
 // MARK: - Activity Today home (plan v2, 2026-10-21)
 
+/// One of an agent's efforts as /api/models serves them (server step 2a), cleaned by the helper. Reply in the message reader.
+struct WorkEffortChoice: Codable, Equatable, Sendable {
+    let value: String
+    let label: String
+}
+
+/// Reply in the message reader (D4; Miles 2026-11-11 13:59, "We want parity there"): the Mac twin of Control Web's Reply
+/// block (server 6.99.12, web-control/panes/cos-chat.js replyHtml), in the web's own words. A reply is an Ask (the same
+/// Today Work run, POST /api/query-jobs) that continues the replied-to turn's conversation when it has one the server can
+/// take, and starts one when it does not; the answer lands in Messages with its own number.
+enum MessageReply {
+    static let title = "Reply"
+    static func label(no: Int?) -> String { no.map { "Reply to Message #\($0)" } ?? "Reply" }
+    static let continuesLine = "Continues this conversation. The answer lands in Messages with its own number."
+    static let startsLine = "Starts a conversation. The answer lands in Messages with its own number."
+    static func subline(sessionId: String) -> String { session(sessionId) == nil ? startsLine : continuesLine }
+    /// The turn's conversation, when it is one the helper will send (a server session id); otherwise the reply starts one.
+    static func session(_ sessionId: String) -> String? {
+        sessionId.range(of: "\\A[A-Za-z0-9-]{8,80}\\z", options: .regularExpression) != nil ? sessionId : nil
+    }
+    /// The Today Work run's target: one per reply, so two replies to one turn are two runs, and the guard counts each.
+    static func target(turnID: String, replyID: String) -> String { "cos:reply:" + String(turnID.prefix(80)) + ":" + replyID }
+    /// Per-Mac picks, under keys no older build reads.
+    static let modelKey = "cos.messageReply.model"
+    static let effortKey = "cos.messageReply.effort"
+    /// The server's efforts for this model's agent; empty when the server serves none (7.0.18), and then no Effort shows.
+    static func effortChoices(provider: String, efforts: [String: [WorkEffortChoice]]) -> [WorkEffortChoice] { efforts[provider] ?? [] }
+    /// Whether an effort may go with this model: only one the server served for that model's agent.
+    static func effortOffered(_ effort: String, provider: String, efforts: [String: [WorkEffortChoice]]) -> Bool {
+        effortChoices(provider: provider, efforts: efforts).contains { $0.value == effort }
+    }
+    /// Control Web's model menu, in its order and words (server cos-chat.js CLAUDE_MENU, ENGINE and FALLBACK; decided
+    /// 2026-11-11 20:31, match the web): the three Claude tiers, then Codex, Cursor and Ollama by the model each runs. Haiku is not on
+    /// it. Tests/message-reply-pins.py fails if this and the web's file drift apart.
+    static let claudeMenu: [(id: String, label: String)] = [("opus", "Claude Opus"), ("fable", "Claude Fable"), ("sonnet", "Claude Sonnet")]
+    static let engines: [(id: String, engine: String, fallback: String)] = [
+        ("codex-frontier", "Codex", "Frontier"), ("codex-balanced", "Codex", "Balanced"),
+        ("cursor-grok", "Cursor", "Grok"), ("cursor-composer", "Cursor", "Composer"), ("ollama", "Ollama", ""),
+    ]
+    /// Q1 F3 (2026-11-12): a reply is tried once more, fresh, only when the refusal is about the session (the helper's
+    /// "sessionId must be a server session id", the server's session reasons). Any other refusal (the run guard, a busy Work,
+    /// a gone model) is shown as it is, so one failed reply costs one run, never two.
+    static func isSessionRefusal(_ reason: String) -> Bool { reason.lowercased().contains("session") }
+    /// Shown in place of the box while Settings has "Work runs from Today" off: a reply is a Today Work run.
+    static let runsOffLine = "Reply runs as a Work run from Today, which is off in Settings."
+    static let modelGoneLine = "The model you picked is not available on this Mac right now. Pick another and Ask again."
+    /// The default until the person picks (then the pick is kept): Sonnet, as on the web.
+    static let defaultModel = "sonnet"
+    struct Choice: Equatable, Sendable { let id: String; let label: String }
+    /// The reply's menu: the web's list, each entry only while this Mac's Work catalog says it can run (the helper refuses an
+    /// unavailable model, and marks Cursor and Ollama unavailable until they are ready, as the web hides them).
+    static func menu(_ models: [(id: String, available: Bool, resolved: String?)]) -> [Choice] {
+        func runs(_ id: String) -> (available: Bool, resolved: String?)? { models.first { $0.id == id }.map { ($0.available, $0.resolved) } }
+        let claude = claudeMenu.compactMap { c in runs(c.id)?.available == true ? Choice(id: c.id, label: c.label) : nil }
+        let others = engines.compactMap { e -> Choice? in
+            guard let row = runs(e.id), row.available else { return nil }
+            let name = (row.resolved?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 } ?? e.fallback
+            return Choice(id: e.id, label: String((e.engine + (name.isEmpty ? "" : " " + name)).prefix(48)))
+        }
+        return claude + others
+    }
+    /// Whether the reader offers Reply: the menu has a model to run it (none while the server's durable query jobs are off,
+    /// which is when Control Web hides it too).
+    static func available(_ models: [(id: String, available: Bool, resolved: String?)]) -> Bool { !menu(models).isEmpty }
+    /// The model a reply runs on: the pick while it is on the menu, else Sonnet, else the menu's first.
+    static func model(picked: String?, menu: [Choice]) -> String? {
+        if let picked, menu.contains(where: { $0.id == picked }) { return picked }
+        return menu.contains { $0.id == defaultModel } ? defaultModel : menu.first?.id
+    }
+}
+
 /// The Activity window's Today home (PLAN_control_activity_home_v2_2026-10-21, direction A). Pure: every number the rail,
 /// the Needs you header, the brief, the cards and the tabs show comes from one function here, so Tests/ActivityTodayChecks
 /// executes each rule and pins that they agree. A source Control has not loaded is nil, never a made-up 0. Zero LLM: the
