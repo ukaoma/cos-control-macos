@@ -120,25 +120,41 @@ need("QRImage.make(text, cached: cached)" in views_file, "qr not cached", "QRCod
 # 0.5.368 (Miles 2026-11-04, 09:05: the iPhone Camera offered a web search for the glasses QR): the pairing QR, its code, host and
 # Show a new code are unchanged; its row and caption now say it is for the COS Glasses app and the Camera cannot read it.
 card = body(views_file, "@ViewBuilder private func codeCard(_ code: PairingCode) -> some View {")
-need('QRCodeView(text: qr, side: 228, label: "Pairing code \\(code.display)").frame(maxWidth: .infinity)' in card
-     and "Text(shown)" in card and "GlassesRules.shownCode(code)" in card and "GlassesRules.addressLine(code)" in card
+need("Text(shown)" in card and "GlassesRules.shownCode(code)" in card and "Text(GlassesRules.underCodeLine(code))" in card
      and "Text(host.text)" not in card and 'Button("Show a new code") { Task { await pairing.showNewCode() } }' in card,
-     "glasses QR labeled", "the glasses pairing QR, the code it shows large, the labelled address line and Show a new code (0.5.390 line: the address is no longer an unlabelled grey text beside the code)")
+     "glasses QR labeled", "the code it shows large, the labelled line under it and Show a new code (0.5.390 line: the address is no longer an unlabelled grey text beside the code)")
+# 0.5.393, direction 1 (Miles 2026-11-13): the glasses pair by code only. COS Control draws no pairing QR anywhere, so the
+# only QRs on the page are for the phone's Camera (the browser sign-in, and the Tailscale download).
+glasses_rows = body(views_file, "struct GlassesSetupRows: View {")
+need("QRCodeView(" not in card and "code.qr" not in card and glasses_rows.count("QRCodeView(") == 1
+     and "QRCodeView(text: GlassesRules.tailscalePhoneDownload" in glasses_rows, "one QR", "no pairing QR in the glasses rows; the one QR there is the Tailscale download")
+need(views_file.count("QRCodeView(text:") == 2 and "QRCodeView(text: handoff.url" in views_file, "one QR", "the browser sign-in QR and the Tailscale download are the only QRs drawn")
 # 0.5.390 line (Miles 2026-11-12): the code comes first and is typed; the QR is under it, the second way in.
-need(card.index("Text(shown)") < card.index("QRCodeView(text: qr") and "copy(shown)" in card and "GlassesRules.expiryLine(code.expiresAt, now: pairing.now())" in card
+need(card.index("Text(shown)") < card.index("Text(GlassesRules.underCodeLine(code))") and "copy(shown)" in card and "GlassesRules.expiryLine(code.expiresAt, now: pairing.now())" in card
      and "GlassesRules.showsNewCodeNote(replacedAt: pairing.codeReplacedAt, now: pairing.now())" in card and "GlassesRules.wifiCode(code)" in card,
-     "glasses code first", "the code, Copy, the time left and the new-code line come before the QR")
+     "glasses code first", "the code, Copy, the time left and the new-code line come before the line under the code")
 allow = body(views_file, "@ViewBuilder private func allowCard(_ pending: PairingStatusFacts.Pending, facts: GlassesFacts) -> some View {")
 need("GlassesRules.allowLeft(pending, now: pairing.now())" in allow, "allow countdown", "the Allow card counts the same seconds as the phone")
 need("if GlassesRules.shouldComeForward(old: old, new: new) { windowHolder.comeForward() }" in views_file
      and 'guard ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] == nil, let window else { return }' in views_file,
      "allow comes forward", "a pairing request brings the card's window forward, never in a test or render run")
-need("Text(GlassesRules.pairCaption)" in card and "Hold your phone so the code fills the screen\"" not in views_file, "glasses QR labeled", "the caption under the pairing QR names the app")
+need("pairCaption" not in views_file and "pairCaption" not in model_file and "Hold your phone so the code fills the screen\"" not in views_file, "one QR", "no caption asks for a photo of a glasses code")
 glasses_words = dict(re.findall(r'static let (\w+) = "([^"]*)"', body(model_file, "enum GlassesRules {")))
 need(glasses_words.get("pairSubtitle") == "Type this code in the COS Glasses app on your phone.", "glasses QR labeled", "the pairing row's subtitle")
-need(glasses_words.get("pairCaption") == "Or take one photo of it inside the COS Glasses app (Scan, or Take a photo of the code). Your phone's camera app can't read it.", "glasses QR labeled", "the pairing caption")
-need('title: "Connect your glasses", status: "Checking…",\n                           unlocks: GlassesRules.pairSubtitle,' in model_file, "glasses QR labeled", "Connect your glasses shows the subtitle")
-for name in ("pairSubtitle", "pairCaption"):
+need(glasses_words.get("noQR") == "No QR here.", "one QR", "the card says there is nothing to photograph")
+need(glasses_words.get("pairedSubtitle") == "The COS Glasses app on your phone is connected to this Mac."
+     and glasses_words.get("pairPurpose") == "Pairs the COS Glasses app on your phone with this Mac.", "paired subtitle", "the subtitles for the stages with no code on screen")
+need('title: "Connect your glasses", status: "Checking…",\n                           unlocks: GlassesRules.connectSubtitle(current),' in model_file
+     and "unlocks: GlassesRules.pairSubtitle" not in model_file, "paired subtitle", "Connect your glasses takes its subtitle from its stage")
+# Miles 2026-11-13: "Nothing says to install the even app." The install line sits above the Connect row and has one link.
+need(glasses_words.get("appLine") == "Install the Even Realities app on your phone. In it, open Even Hub and add COS Glasses. The code below goes in that app."
+     and "if GlassesRules.showsAppLine(GlassesRules.stage(facts)) {" in glasses_rows
+     and glasses_rows.index("Text(GlassesRules.appLine)") < glasses_rows.index("GlassesRowView(row: rows[2])")
+     and "Button(GlassesRules.appLink) { openURL(GuideExtras.glassesAppURL) }" in glasses_rows, "app line first", "the install line and its link come before the code")
+need("static let glassesAppURL = " in model_file and "token=" not in model_file.split("enum GuideExtras {", 1)[1].split("\n}", 1)[0], "app line first", "one named link, with no token in it")
+need('.help("Add COS Glasses from Even Hub in the Even Realities app, then type the code above")' in views_file and "scan the code above" not in views_file,
+     "app line first", "the Setup guide's hover line says type, not scan")
+for name in ("pairSubtitle", "pairPurpose", "pairedSubtitle", "appTitle", "appLine", "appLink", "noQR"):
     need(not re.search("[—–→]|->", glasses_words.get(name, "")), "glasses QR labeled", f"no em dash, en dash or arrow: {name}")
 need("await state.run(visible: { [model, windowHolder] in windowHolder.onScreen(panelVisible: model.panelVisible) })" in row
      and ".background(WindowProbe(holder: windowHolder))" in row and "guard polls else { return }" in row, "visible only",
@@ -158,18 +174,19 @@ need(panel.count("PhoneSignInBlock(") == 1 and glasses.count("PhoneSignInBlock("
 # Only the card's own rows: anything after its "} advanced: {" is Advanced, so it is cut before the checks.
 phone_card = glasses[glasses.index('hubCard("glasses.phone"'):glasses.index('hubCard("glasses.devices"')].split("} advanced: {", 1)[0]
 devices = glasses[glasses.index('hubCard("glasses.devices"'):].split("} advanced: {", 1)[0]
-need("PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)" in phone_card, "mounted once",
-     "in Phone and web, not Advanced, and told when the glasses rows show")
+need("PhoneSignInBlock(model: model, state: model.phoneSignIn)" in phone_card, "mounted once", "in Phone and web, not Advanced")
 need("devicePath == .glasses {" not in phone_card and "PhoneSignInBlock(" not in devices, "every path", "the row is outside the glasses-only block")
 # 0.5.368: on a server without the phone sign-in (before 6.99.3, or no route) the whole block hides, its glasses note with it.
 block = body(views_file, "struct PhoneSignInBlock: View {")
 need("let hidden = state.serverTooOld" in block
-     and "SettingsHubBlock { PhoneSignInRow(model: model, state: state, besideGlasses: besideGlasses, polls: polls) }" in block
+     and "SettingsHubBlock { PhoneSignInRow(model: model, state: state, polls: polls) }" in block
      and ".frame(height: hidden ? 0 : nil, alignment: .top)" in block and ".clipped()" in block and ".opacity(hidden ? 0 : 1)" in block
      and ".allowsHitTesting(!hidden)" in block and ".accessibilityHidden(hidden)" in block, "old server hides",
      "the block takes no space, draws nothing, takes no click and says nothing to VoiceOver when the server is too old")
-need(views_file.count("PhoneSignInRules.notGlasses") == 1 and "PhoneSignInRules.notGlasses" in body(views_file, "struct PhoneSignInRow: View {")
-     and "notGlasses" not in panel, "old server hides", "the glasses note lives only inside the row, so it hides with it")
+# 0.5.393: "The QR below is for the COS Glasses app, not the Camera." sat right above the browser QR (the Phone and web
+# card comes first since 0.5.387), and on 2026-11-12 Miles photographed that QR in the glasses app. The sentence is gone.
+need("notGlasses" not in views_file and "notGlasses" not in model_file and "besideGlasses" not in views_file and "besideGlasses" not in panel
+     and "for the COS Glasses app, not the Camera" not in model_file, "one QR", "nothing above the browser QR says it is for the glasses app")
 # Anand fix b (2026-11-12): in place of the hidden row, the old-server note with the panel's Update Server, and a recheck when
 # the server changes; the row's own line never draws it by name.
 old_server = body(views_file, "struct PhoneSignInOldServer: View {")
@@ -202,7 +219,6 @@ rules = body(model_file, "enum PhoneSignInRules {")
 words = dict(re.findall(r'static let (\w+) = "([^"]*)"', rules))
 need(words.get("title") == "Open COS on your phone", "copy", "the title the web page names")
 need(words.get("subtitle") == "Point your phone's camera here. Its browser opens COS already signed in.", "copy", "the subtitle")
-need(words.get("notGlasses") == "The QR below is for the COS Glasses app, not the Camera.", "copy", "the note when the glasses rows follow")
 need(words.get("qrNote") == "Works once, for 2 minutes. Only on your tailnet.", "copy", "under the QR")
 need(words.get("codeNote") == "Type this on the sign-in page. Works once, for 5 minutes.", "copy", "under the code")
 need(words.get("showCode") == "Show a sign-in code" and words.get("newQR") == "Show a new QR", "copy", "the buttons")

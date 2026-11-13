@@ -513,6 +513,16 @@ struct GlassesSetupRows: View {
                 }
             }
             Divider()
+            if GlassesRules.showsAppLine(GlassesRules.stage(facts)) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(GlassesRules.appTitle).font(COSType.body(12.5, weight: .semibold))
+                    Text(GlassesRules.appLine).font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    Button(GlassesRules.appLink) { openURL(GuideExtras.glassesAppURL) }.buttonStyle(COSTextButtonStyle()).padding(.top, 2)
+                }
+                .padding(.vertical, 9)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Divider()
+            }
             GlassesRowView(row: rows[2]) { connectBody(facts) }
         }
         .background(WindowProbe(holder: windowHolder))
@@ -566,7 +576,7 @@ struct GlassesSetupRows: View {
 
     /// 0.5.390 line (Miles 2026-11-12, direction A plus paste). The code is the largest thing on the card and carries this
     /// Mac's address, so the phone needs nothing else; Copy puts it on the clipboard for an iPhone on the same Apple ID.
-    /// The QR is the second way in, under the code, at the contract's size. The address is no longer small, grey and
+    /// 0.5.393: the pairing QR is gone from the card (see GlassesRules.noQR). The address is no longer small, grey and
     /// unlabelled beside the code (S10): one labelled line keeps it for a phone app from before the long code.
     @ViewBuilder private func codeCard(_ code: PairingCode) -> some View {
         let shown = GlassesRules.shownCode(code)
@@ -601,17 +611,9 @@ struct GlassesSetupRows: View {
                 Button("Show a new code") { Task { await pairing.showNewCode() } }.buttonStyle(COSTextButtonStyle())
                 Spacer(minLength: 0)
             }
-            if let qr = code.qr {
-                Divider()
-                QRCodeView(text: qr, side: 228, label: "Pairing code \(code.display)").frame(maxWidth: .infinity)
-                Text(GlassesRules.pairCaption)
-                    .font(COSType.body(11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            if let line = GlassesRules.addressLine(code) {
-                Text(line).font(COSType.body(11)).foregroundStyle(.secondary).textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            // 0.5.393, direction 1: no pairing QR is drawn. The server still sends one; nothing here reads it.
+            Text(GlassesRules.underCodeLine(code)).font(COSType.body(11)).foregroundStyle(.secondary).textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
             if let wifi = GlassesRules.wifiCode(code) {
                 Text(GlassesRules.wifiLine(wifi)).font(COSType.body(11)).foregroundStyle(.secondary).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -681,8 +683,6 @@ struct GlassesSetupRows: View {
 struct PhoneSignInRow: View {
     @ObservedObject var model: ControllerModel
     @ObservedObject var state: PhoneSignInState
-    /// The glasses pairing QR is drawn below (0.5.368): say which QR is which.
-    var besideGlasses = false
     /// Off in offscreen renders.
     var polls = true
     @StateObject private var windowHolder = GlassesWindowHolder()
@@ -695,10 +695,6 @@ struct PhoneSignInRow: View {
                     .lineSpacing(2).fixedSize(horizontal: false, vertical: true)
                 Text(PhoneSignInRules.bothDevices).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
                     .fixedSize(horizontal: false, vertical: true)
-                if besideGlasses {
-                    Text(PhoneSignInRules.notGlasses).font(COSType.body(11)).foregroundStyle(COSPalette.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
             .accessibilityElement(children: .combine)
             if let handoff = state.handoff {
@@ -747,7 +743,6 @@ struct PhoneSignInRow: View {
 struct PhoneSignInBlock: View {
     @ObservedObject var model: ControllerModel
     @ObservedObject var state: PhoneSignInState
-    var besideGlasses = false
     /// Off in offscreen renders.
     var polls = true
 
@@ -755,7 +750,7 @@ struct PhoneSignInBlock: View {
         let hidden = state.serverTooOld
         VStack(alignment: .leading, spacing: 0) {
             if hidden { SettingsHubBlock { PhoneSignInOldServer(model: model) } }
-            SettingsHubBlock { PhoneSignInRow(model: model, state: state, besideGlasses: besideGlasses, polls: polls) }
+            SettingsHubBlock { PhoneSignInRow(model: model, state: state, polls: polls) }
                 .frame(height: hidden ? 0 : nil, alignment: .top)
                 .clipped()
                 .opacity(hidden ? 0 : 1)
@@ -1266,7 +1261,7 @@ struct SetupGuideView: View {
                 }
                 Button("The COS app for your glasses") { _ = provider.openURL(GuideExtras.glassesWizardURL) }
                     .buttonStyle(COSTextButtonStyle())
-                    .help("Install COS on your phone from the Even app, then scan the code above")
+                    .help("Add COS Glasses from Even Hub in the Even Realities app, then type the code above")
             }
             HStack(spacing: 14) {
                 if guide.hidden {

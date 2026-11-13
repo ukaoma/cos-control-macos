@@ -654,6 +654,10 @@ enum AgentCliText {
 
 enum GuideExtras {
     static let glassesWizardURL = URL(string: "https://gotcos.com/wizard/#glasses-setup")!
+    /// Where "Get COS Glasses" goes: the app's public page in Even Hub. PLACEHOLDER until Miles gives the public
+    /// link (lead, COORD 2026-11-13 00:01): it opens the wizard page the Mac already opens. Never the site's link
+    /// that carries a token.
+    static let glassesAppURL = glassesWizardURL
 }
 
 // MARK: - The guide
@@ -1991,7 +1995,28 @@ enum GlassesRules {
     /// own camera. 0.5.392: the caption names the button by both of its names, Scan (the public app through 6.11.682)
     /// and Take a photo of the code (6.11.683 on), because the old caption named a button the public app does not have.
     static let pairSubtitle = "Type this code in the COS Glasses app on your phone."
-    static let pairCaption = "Or take one photo of it inside the COS Glasses app (Scan, or Take a photo of the code). Your phone's camera app can't read it."
+    /// 0.5.393 (Miles 2026-11-12, 23:40, with a paired phone): the row said "Type this code" with no code on screen.
+    /// The row says what it is for; only the stage that shows a code says to type it.
+    static let pairPurpose = "Pairs the COS Glasses app on your phone with this Mac."
+    static let pairedSubtitle = "The COS Glasses app on your phone is connected to this Mac."
+    static func connectSubtitle(_ stage: Stage) -> String {
+        switch stage {
+        case .code: return pairSubtitle
+        case .paired: return pairedSubtitle
+        default: return pairPurpose
+        }
+    }
+    /// 0.5.393 (Miles 2026-11-13: "Nothing says to install the even app."): shown above the Connect row until a phone
+    /// is paired. The code is for an app the user may not have yet.
+    static let appTitle = "COS Glasses on your phone"
+    static let appLine = "Install the Even Realities app on your phone. In it, open Even Hub and add COS Glasses. The code below goes in that app."
+    static let appLink = "Get COS Glasses"
+    static func showsAppLine(_ stage: Stage) -> Bool { if case .paired = stage { return false } else { return true } }
+    /// 0.5.393, direction 1 (Miles 2026-11-13): the glasses pair by code only, so COS Control shows one kind of QR,
+    /// the browser's. On 2026-11-12 his first photo in the glasses app was of the browser QR. Phone apps through
+    /// 6.11.683 still offer a photo, so the card says there is nothing here to photograph.
+    static let noQR = "No QR here."
+    static func underCodeLine(_ code: PairingCode) -> String { [noQR, addressLine(code)].compactMap { $0 }.joined(separator: " ") }
     static let pairCopy = "Copy"
     static let pairCopied = "Copied"
     static let pairCopiedNote = "Copied. On an iPhone signed in to the same Apple ID as this Mac, tap Paste in the COS Glasses app."
@@ -2213,10 +2238,11 @@ enum GlassesRules {
     }
 
     static func connectRow(_ facts: GlassesFacts) -> SetupRow {
+        let current = stage(facts)
         var row = SetupRow(id: .glassesPair, title: "Connect your glasses", status: "Checking…",
-                           unlocks: GlassesRules.pairSubtitle, detail: nil, done: false)
+                           unlocks: GlassesRules.connectSubtitle(current), detail: nil, done: false)
         row.counted = false
-        switch stage(facts) {
+        switch current {
         case .serverOff: row.status = "After Get started"; row.afterSetup = true
         case .updateServer: row.status = "Update the server"; row.detail = "Pairing needs server 6.67 or newer."
         case .checking: row.status = "Making a code…"
@@ -2562,8 +2588,6 @@ enum PhoneSignInRules {
     static let title = "Open COS on your phone"
     static let subtitle = "Point your phone's camera here. Its browser opens COS already signed in."
     static let qrNote = "Works once, for 2 minutes. Only on your tailnet."
-    /// Shown when the glasses pairing QR is drawn below (0.5.368: this row comes first), so the two are never mixed up.
-    static let notGlasses = "The QR below is for the COS Glasses app, not the Camera."
     static let codeNote = "Type this on the sign-in page. Works once, for 5 minutes."
     static let showCode = "Show a sign-in code"
     /// Once a code is up, the same button replaces it.

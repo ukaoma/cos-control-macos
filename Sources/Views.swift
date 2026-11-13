@@ -4324,7 +4324,7 @@ private extension ControlPanel {
         hubCard("glasses.phone") {
             // UT-29 (0.5.367, server 6.99.3): Open COS on your phone. The web page's sign-in error names this row. On a server
             // before 6.99.3 the whole block hides (PhoneSignInBlock), its glasses note with it.
-            PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: voiceGuide.devicePath == .glasses)
+            PhoneSignInBlock(model: model, state: model.phoneSignIn)
                 .settingsHubAnchor("UT-29")
             // PK-02 (option A, lead 2026-11-11 21:31): Turn on phone approvals. Full Settings only (not a basic row, so
             // hubRowDrawn is false in Basic), off by default, and only for a server with the reopened phone approvals.

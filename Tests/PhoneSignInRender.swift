@@ -90,13 +90,13 @@ struct HubPage<Content: View>: View {
     }
 }
 
-/// The Phone and web card (0.5.387) holding the phone row (Just my Mac, so no glasses note).
+/// The Phone and web card (0.5.387) holding the phone row (Just my Mac).
 struct PhoneOnlyCard: View {
     @ObservedObject var model: ControllerModel
     var body: some View {
         HubPage {
             SettingsHubCard(group: SettingsHubCatalog.group("glasses.phone")!, advancedCount: 0, advancedOpen: .constant(false)) {
-                PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: false, polls: false)
+                PhoneSignInBlock(model: model, state: model.phoneSignIn, polls: false)
             } advanced: { EmptyView() }
         }
     }
@@ -112,7 +112,7 @@ struct DevicesCard: View {
         HubPage { VStack(alignment: .leading, spacing: 26) {
             // 0.5.387: Phone and web is its own card, first on the page, then Devices.
             SettingsHubCard(group: SettingsHubCatalog.group("glasses.phone")!, advancedCount: 0, advancedOpen: .constant(false)) {
-                PhoneSignInBlock(model: model, state: model.phoneSignIn, besideGlasses: true, polls: false)
+                PhoneSignInBlock(model: model, state: model.phoneSignIn, polls: false)
             } advanced: { EmptyView() }
             SettingsHubCard(group: SettingsHubCatalog.group("glasses.devices")!, advancedCount: advanced, advancedOpen: .constant(false)) {
                 SettingsHubBlock { SetupDeviceChoice(guide: model.setupGuide) }
