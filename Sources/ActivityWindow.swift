@@ -688,6 +688,17 @@ struct ActivityWindow: View {
         return view
     }
 
+    /// 0.5.393 Meetings scroll (D4, Tests/MeetingsScrollCheck.swift): Work with "Review a meeting" open, as its button opens it.
+    static func workMeetingPickerFixture(model: ControllerModel) -> ActivityWindow {
+        precondition(!model.backgroundWorkEnabled)
+        var view = ActivityWindow(model: model)
+        view._section = State(initialValue: .work)
+        let state = WorkWorkspaceState()
+        state.meetingPicker = true
+        view._workWorkspaceState = StateObject(wrappedValue: state)
+        return view
+    }
+
     /// Full Activity shell for the offscreen settings regression fixture.
     static func settingsFixture(model: ControllerModel) -> ActivityWindow {
         precondition(!model.backgroundWorkEnabled)
@@ -2542,8 +2553,13 @@ struct ActivityWindow: View {
         return [(formatted(model.tasks.count), "OPEN"), (formatted(scheduled), "SCHEDULED"), (formatted(flagged), "NEED ATTENTION")]
     }
 
+    /// 0.5.393 (Miles, 2026-11-12 23:43): the WHOLE pane scrolls under the top bar, as Control Web does. The header, the
+    /// record row, the calendar and the filters scroll away with the list, so the list is always reachable: before, they
+    /// were fixed and took the whole window at its minimum size, the list's own ScrollView got no height, and there was
+    /// nothing to scroll. Only the top bar (Home, Back, the trail) and the rail stay put. Tests/MeetingsScrollCheck.swift.
     private var meetingsList: some View {
-        VStack(spacing: 0) {
+        ScrollView(.vertical) {
+          VStack(spacing: 0) {
             sectionHeader(
                 section: .meetings,
                 title: "Meetings",
@@ -2556,7 +2572,7 @@ struct ActivityWindow: View {
                 refreshDisabled: model.libraryLoading,
                 stats: meetingsStats
             )
-            MeetingLibraryBody(model: model) { meeting in
+            MeetingLibraryBody(model: model, scrollsInPage: true) { meeting in
                 meetingReturnWorkID = nil
                 meetingReturnToWork = false
                 meetingReturnSpeakerSessionID = nil
@@ -2564,6 +2580,7 @@ struct ActivityWindow: View {
                 selectedLibraryRecordID = meeting.id
                 model.openLibraryMeeting(meeting)
             }
+          }
         }
     }
 

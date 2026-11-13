@@ -7,6 +7,9 @@ import SwiftUI
 struct MeetingLibraryBody: View {
     @ObservedObject var model: ControllerModel
     var selectionOnly = false
+    /// 0.5.393: the Activity pane scrolls as one page (ActivityWindow.meetingsList), so the list draws its rows in that
+    /// page instead of a ScrollView of its own, which would have no height there. Work's picker keeps its own scroll.
+    var scrollsInPage = false
     let onOpen: (LibraryMeeting) -> Void
     @State private var confirmRecoverAllOrphans = false
     @State private var confirmSaveAllStranded = false
@@ -228,6 +231,8 @@ struct MeetingLibraryBody: View {
         COSBuildUp(.rows(6), loading: model.libraryLoading && model.libraryMeetings.isEmpty, landed: !model.libraryMeetings.isEmpty,
                    interrupted: model.isLibraryQueryActive, failed: model.libraryError != nil, enabled: !selectionOnly,
                    label: "Loading meetings") { libraryContent }
+            // In the page, the empty, loading and error states have a height to fill (the build-up reads its size).
+            .frame(minHeight: scrollsInPage ? 280 : nil, alignment: .top)
     }
 
     @ViewBuilder
@@ -268,22 +273,26 @@ struct MeetingLibraryBody: View {
                 .frame(maxWidth: 420)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(30)
+        } else if scrollsInPage {
+            libraryRows
         } else {
-            ScrollView {
-                LazyVStack(spacing: 6) {
-                    ForEach(model.visibleLibraryMeetings) { meeting in
-                        Button { onOpen(meeting) } label: {
-                            meetingRow(meeting.title, subtitle: meeting.subtitle(clock: model.clockStyle), sessionId: meeting.sessionId,
-                                       keys: meeting.contextKeys)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 22)
-                .padding(.vertical, 12)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ScrollView { libraryRows }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private var libraryRows: some View {
+        LazyVStack(spacing: 6) {
+            ForEach(model.visibleLibraryMeetings) { meeting in
+                Button { onOpen(meeting) } label: {
+                    meetingRow(meeting.title, subtitle: meeting.subtitle(clock: model.clockStyle), sessionId: meeting.sessionId,
+                               keys: meeting.contextKeys)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 12)
     }
 
     @ViewBuilder
@@ -307,58 +316,62 @@ struct MeetingLibraryBody: View {
                 .frame(maxWidth: 420)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(30)
+        } else if scrollsInPage {
+            searchRows
         } else {
-            ScrollView {
-                LazyVStack(spacing: 6) {
-                    ForEach(model.visibleLibrarySearchHits) { hit in
-                        Button { onOpen(hit.meeting) } label: {
-                            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(hit.meeting.title)
-                                        .font(COSType.body(13.5, weight: .semibold))
-                                        .foregroundStyle(.primary)
-                                        .multilineTextAlignment(.leading)
-                                    if !hit.snippet.isEmpty {
-                                        Text(hit.snippet)
-                                            .font(COSType.body(11))
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(2)
-                                    }
-                                    Text(hit.meeting.subtitle(clock: model.clockStyle))
-                                        .font(COSType.body(11))
-                                        .foregroundStyle(.tertiary)
-                                        .lineLimit(1)
-                                }
-                                Spacer()
-                                Text(hit.matchLabel)
-                                    .font(COSType.mono(9.5, weight: .semibold))
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 3)
-                                    .background(
-                                        Capsule().fill(ActivitySection.meetings.tint.opacity(0.16))
-                                    )
-                                if !hit.meeting.sessionId.isEmpty {
-                                    MeetingStatusPills(
-                                        isNew: model.isInboxNew(hit.meeting.sessionId),
-                                        tag: model.voiceTag(sessionId: hit.meeting.sessionId)
-                                    )
-                                }
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(.tertiary)
-                            }
-                            .padding(.vertical, 2)
-                            .contentShape(Rectangle())
-                            .cosRowCard()
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 22)
-                .padding(.vertical, 12)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ScrollView { searchRows }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private var searchRows: some View {
+        LazyVStack(spacing: 6) {
+            ForEach(model.visibleLibrarySearchHits) { hit in
+                Button { onOpen(hit.meeting) } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(hit.meeting.title)
+                                .font(COSType.body(13.5, weight: .semibold))
+                                .foregroundStyle(.primary)
+                                .multilineTextAlignment(.leading)
+                            if !hit.snippet.isEmpty {
+                                Text(hit.snippet)
+                                    .font(COSType.body(11))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(2)
+                            }
+                            Text(hit.meeting.subtitle(clock: model.clockStyle))
+                                .font(COSType.body(11))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        Text(hit.matchLabel)
+                            .font(COSType.mono(9.5, weight: .semibold))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(
+                                Capsule().fill(ActivitySection.meetings.tint.opacity(0.16))
+                            )
+                        if !hit.meeting.sessionId.isEmpty {
+                            MeetingStatusPills(
+                                isNew: model.isInboxNew(hit.meeting.sessionId),
+                                tag: model.voiceTag(sessionId: hit.meeting.sessionId)
+                            )
+                        }
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.vertical, 2)
+                    .contentShape(Rectangle())
+                    .cosRowCard()
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 12)
     }
 
     private func meetingRow(_ title: String, subtitle: String, sessionId: String, keys: [String] = []) -> some View {
