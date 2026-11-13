@@ -285,7 +285,8 @@ pk02_at = catalog.find('.init("PK-02"')
 need('"PK-02"' not in basic_block and catalog.index("static let extras: [SettingsHubItem] = [") < pk02_at < catalog.index("static let items: [SettingsHubItem] = [")
      and re.search(r'\.init\("PK-02", "Turn on phone approvals", [^\n]*group: "glasses\.phone",\s*advanced: false, mount: \.group', catalog) is not None
      and phone.count('PhoneApprovalsSwitchMount(state: model.webKey, serverVersion: model.status.version, rowDrawn: hubRowDrawn("PK-02")) {') == 1
-     and phone.count('.settingsHubAnchor("PK-02")') == 1 and main_views.count("PhoneApprovalsSwitchRow(") == 1
+     and phone.count('.settingsHubAnchor(PhoneApprovalsSwitch.anchorID)') == 1 and main_views.count("PhoneApprovalsSwitchRow(") == 1
+     and 'static var anchorID: String { available ? "PK-02" : "PK-02-off" }' in core and '.init("PK-02-off"' not in catalog
      and main_views.count("PhoneApprovalsSwitchMount(") == 1,
      "phone switch full settings only", "PK-02 is an extras row in Phone and web, not in Basic, mounted only through PhoneApprovalsSwitch.mounted")
 # 0.5.392 (lead ruling 2026-11-12 19:50): phone approvals cannot be turned on from this build. The constant is compile time in
@@ -392,7 +393,7 @@ need(seed_fn.count("precondition(!model.backgroundWorkEnabled)") == 1 and source
 # The renders Miles reviews draw the Phone and web card in the app's order: UT-29, PK-02, PK-01, WB-01.
 render_card = body_of(code("Tests/PhoneApprovalsRender.swift"), code("Tests/PhoneApprovalsRender.swift").index("struct PhoneCard: View {"))
 render_order = [render_card.find(s) for s in ("PhoneSignInBlock(", "SettingsHubBlock { row }", "WebKeySettingsBlock(", "SettingsHubWebRevokeRow(")]
-app_order = [phone.find(s) for s in ('.settingsHubAnchor("UT-29")', '.settingsHubAnchor("PK-02")', '.settingsHubAnchor("PK-01")', "SettingsHubWebRevokeRow(")]
+app_order = [phone.find(s) for s in ('.settingsHubAnchor("UT-29")', '.settingsHubAnchor(PhoneApprovalsSwitch.anchorID)', '.settingsHubAnchor("PK-01")', "SettingsHubWebRevokeRow(")]
 need(all(i >= 0 for i in render_order + app_order) and render_order == sorted(render_order) and app_order == sorted(app_order),
      "phone switch render order", "the render's Phone and web card and the app's both run UT-29, PK-02, PK-01, WB-01")
 # 0.5.390: the server's not-trusted reason codes live in ONE Swift list, WebKeySignerTLS.sentences (copied from the server's

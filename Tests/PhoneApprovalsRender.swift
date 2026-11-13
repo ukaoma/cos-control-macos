@@ -215,6 +215,9 @@ struct PhoneCard: View {
         precondition(!PhoneApprovalsSwitch.mounted(serverVersion: off.status.version, rowDrawn: true, on: PhoneApprovalsSwitch.isOn(off.webKey.mode), pendingOff: false)
                      && PhoneApprovalsSwitch.mounted(serverVersion: pending.status.version, rowDrawn: false, on: PhoneApprovalsSwitch.isOn(pending.webKey.mode), pendingOff: false),
                      "phone approvals mount: none while off, the Off row in Basic and All while on")
+        // The Off row's anchor is one Basic never hides (an id the catalog does not know); PK-02 itself is All only.
+        precondition(SettingsHubCatalog.drawn(PhoneApprovalsSwitch.anchorID, view: .basic) && SettingsHubCatalog.drawn(PhoneApprovalsSwitch.anchorID, view: .all)
+                     && SettingsHubCatalog.item(PhoneApprovalsSwitch.anchorID) == nil, "phone approvals Off row: its anchor draws in Basic and All")
         precondition(PhoneApprovalsSwitch.phones((noPhone.glassesPairing.tailscale?.peers ?? []).map {
             PhoneApprovalsSwitch.Peer(os: $0.os, dns: $0.dns, ipv4: $0.ipv4, sameUser: $0.sameUser)
         }).isEmpty, "no-phone fixture")
