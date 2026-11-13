@@ -491,6 +491,10 @@ enum PhoneApprovalsSwitch {
         return octets.count == 4 && octets[0] == 100 && (64...127).contains(octets[1])
     }
 
+    /// The row's Settings anchor. Available: PK-02, which Basic leaves out (SettingsHubAnchorChrome). Unavailable: an id the
+    /// catalog does not know, which no view hides, so a Mac that is already on keeps its Off row in Basic too (render page-5).
+    static var anchorID: String { available ? "PK-02" : "PK-02-off" }
+
     /// A server new enough to have the reopened phone approvals.
     static func serverSupports(_ serverVersion: String?) -> Bool {
         guard let version = serverVersion.flatMap(numbers), let floor = numbers(minimumServer) else { return false }

@@ -4333,7 +4333,7 @@ private extension ControlPanel {
             PhoneApprovalsSwitchMount(state: model.webKey, serverVersion: model.status.version, rowDrawn: hubRowDrawn("PK-02")) {
                 SettingsHubBlock { PhoneApprovalsSwitchRow(model: model, state: model.webKey, pairing: model.glassesPairing,
                                                            work: restartWork, locked: serverSettingsLocked, confirm: phoneConfirm) }
-                    .settingsHubAnchor("PK-02")
+                    .settingsHubAnchor(PhoneApprovalsSwitch.anchorID)
             }
             // PK-01 (server 6.99.31, COS_WEB_KEY_AUTHORITY): Phone approvals, beside the phone sign-in, in Basic and All, never
             // under Advanced. Zero height unless the server says the flag is on.

@@ -337,6 +337,8 @@ mutants = [
      "[phone switch unavailable]"),
     ("PA-43 search lists the switch again (pins)", K, 'static let unavailableRows: Set<String> = ["PK-01", "PK-02"]', 'static let unavailableRows: Set<String> = ["PK-01"]',
      "[phone switch unavailable]"),
+    ("PA-45 the Off row takes Basic's hidden anchor (pins)", C, 'static var anchorID: String { available ? "PK-02" : "PK-02-off" }',
+     'static var anchorID: String { "PK-02" }', "[phone switch full settings only]"),
     ("PA-44 Off is no longer sent", C, "        guard !on || available else { return nil }\n        return arguments(on: on, phone: phone)",
      "        guard !on || available else { return nil }\n        return on ? arguments(on: on, phone: phone) : nil", "[phone switch off stays reachable]"),
 ]
