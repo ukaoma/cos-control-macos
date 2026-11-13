@@ -1598,7 +1598,9 @@ assert "var sessionNameSource: String { fullTitle ?? title }" in store, "the nam
 assert "let data = try JSONSerialization.data(withJSONObject: job)" in submit, "the name rides in the job request"
 new = body(helper, "    private func emitWorkNew() throws {", "    private func emitWorkJob(args: [String]) throws {")
 # 0.5.374: the call also carries the COS thread's sessionId, on its own continuation line.
-assert "let sessionName = try Self.workNewSessionName(body)" in new and "messageEra: era, sessionName: sessionName," in new and "maintenanceWorkflow: workflow, sessionId: threadSession)" in new, "the helper cleans the name and posts it"
+# 0.5.391 (Reply in the message reader): and the effort the person chose, last on that line, checked against the server's values.
+assert "let sessionName = try Self.workNewSessionName(body)" in new and "messageEra: era, sessionName: sessionName," in new and "maintenanceWorkflow: workflow, sessionId: threadSession, effort: effort)" in new, "the helper cleans the name and posts it"
+assert 'guard let effort = Self.workEffort(body["effort"]), effort == nil || workflow == nil else {' in new, "the helper sends only an effort the server knows, never beside a maintenance workflow"
 fresh = body(helper, "    private func emitFreshClaudeSessions(", "    private func emitSessionList(")
 assert fresh.index("Self.applyClaudeDesktopTitles(peers") < fresh.index("Self.applyClaudeCustomTitles(peers") < fresh.index("peers.removeAll { Self.isWarmUpRow($0) }"), "transcript titles apply after Desktop's, before the warm-up filter"
 assert "Self.isKeepWarmSessionTitle(($0[\"name\"] as? String) ?? \"\") }" not in helper, "no list hides a row as a warm-up by a title someone gave it (isWarmUpRow)"
