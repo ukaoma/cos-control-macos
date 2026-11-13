@@ -189,11 +189,11 @@ for script in list((root / "Tests").glob("*.sh")) + list((root / "scripts").glob
 
 # ── Version touchpoints and the lanes.
 plist = read("Resources/Info.plist")
-need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.391</string>", plist) and re.search(r"<key>CFBundleVersion</key>\s*<string>445</string>", plist),
-     "version", "Info.plist is 0.5.391 (build 445), Reply, Back by path, the glasses code, phone approvals off, the turn-end ask, the question card, production hardening, Work chat with no session, Prep on every Next up row, Today Next up and Ask about this, phone approvals registration only, Sessions file cards, the Mac parity bundle and calendars on top of 0.5.377: pet session counts on top of Meeting Prep, Ask Work review, the Messages cleanup, quit fix, P2 and Drop it")
+need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.392</string>", plist) and re.search(r"<key>CFBundleVersion</key>\s*<string>446</string>", plist),
+     "version", "Info.plist is 0.5.392 (build 446), Reply, Back by path, the glasses code, phone approvals held back, the turn-end ask, the question card, production hardening, Work chat with no session, Prep on every Next up row, Today Next up and Ask about this, phone approvals registration only, Sessions file cards, the Mac parity bundle and calendars on top of 0.5.377: pet session counts on top of Meeting Prep, Ask Work review, the Messages cleanup, quit fix, P2 and Drop it")
 whats = json.loads(read("Resources/WhatsNew.json"))
 sec = [s for s in whats["whatsNew"]["sections"] if s["title"] == "0.5.371"]
-need(whats.get("version") == "0.5.391" and len(sec) == 1 and any("Drop it" in i for i in sec[0]["items"]), "version", "What's New has one 0.5.371 section naming Drop it")
+need(whats.get("version") == "0.5.392" and len(sec) == 1 and any("Drop it" in i for i in sec[0]["items"]), "version", "What's New has one 0.5.371 section naming Drop it")
 need("\n## 0.5.371 (build 425)" in "\n" + read("CHANGELOG.md"), "version", "the changelog has its 0.5.371 (build 425) entry")
 need('python3 "$ROOT/Tests/drop-it-helper-checks.py" "$TMP/cos-control-helper"' in run_sh, "lanes wired", "Tests/run.sh runs the helper checks")
 for lane in ("pins", "models", "wiring"):
