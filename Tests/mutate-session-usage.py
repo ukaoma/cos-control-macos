@@ -1101,6 +1101,20 @@ MUTANTS += [
      'U1: the price file is asked for at most every 6 hours', CORE),
 ]
 
+# 0.5.394 plan ruler (U1). Names start "plan:", so `mutate-session-usage.py <root> plan:` runs only these.
+MUTANTS += [
+    ("plan: a failed read draws a ruler", "var hasRuler: Bool { usedPct != nil }", "var hasRuler: Bool { true }", "plan: a failed read and Cursor draw no ruler", CORE),
+    ("plan: closest ignores the server", "pane.closest.flatMap { id in pane.lines.first { $0.provider == id } }", "pane.lines.first", ("plan: the closed row leads with the tool closest to its limit", "plan: no closest tool, no lead ruler"), CORE),
+    ("plan: read time shown while reading", "guard !loading, let iso = pane?.readAt", "guard let iso = pane?.readAt", "plan: no read time while reading or before a read", CORE),
+    ("plan: read time in UTC", "f.timeZone = timeZone; f.dateFormat = \"h:mm a\"", "f.timeZone = TimeZone(identifier: \"UTC\"); f.dateFormat = \"h:mm a\"", "plan: the read time in his time zone", CORE),
+    ("plan: estimate without its arithmetic", "\"\\($0.text) \\($0.arithmetic)\"", "\"\\($0.text)\"", "plan: the estimate carries its arithmetic", CORE),
+    ("plan: estimate shown while reading", "(loading ? [] : pane?.lines ?? [])", "(pane?.lines ?? [])", "plan: no estimate while reading", CORE),
+    ("plan: rows keep numbers while reading", "if let pane, !loading { return pane.lines }", "if let pane { return pane.lines }", "plan: reading keeps the rows and hides the numbers", CORE),
+    ("plan: refresh asks plainly", "refresh ? [\"usage-plan\", \"--refresh\"] : [\"usage-plan\"]", "[\"usage-plan\"]", "plan: opening asks plainly; Refresh asks for a fresh read", CORE),
+    ("plan: reading rows look like a failure", 'state: loading ? "reading" : "not_read"', 'state: "not_read"', "plan: reading keeps the rows and hides the numbers", CORE),
+    ("plan: whole-second times only", "return f.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)", "return ISO8601DateFormatter().date(from: iso)", "plan: the read time in his time zone", CORE),
+]
+
 # Regular expressions over the names, several with | to run in that order, for when the compile lock is busy and only some can run.
 if len(sys.argv) > 2:
     picked = {}

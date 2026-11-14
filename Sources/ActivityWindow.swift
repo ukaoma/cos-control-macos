@@ -2608,7 +2608,11 @@ struct ActivityWindow: View {
                 detail: sessionsPane == .cost ? "What COS itself used, on top of your sessions" : showingSessionUsage ? "Token usage and estimated API value" : sessionsStatus,
                 refresh: { Task {
                     if sessionsPane == .cost { await CosCostStore.shared.refresh(importSessions: model.sessionUsage.enabled) }
-                    else if showingSessionUsage { await model.sessionUsage.refresh(importNew: model.sessionUsage.enabled, cursorNow: true) }
+                    else if showingSessionUsage {
+                        // 0.5.394: Refresh also asks for the plan ruler; the server re-reads only a reading over 2 minutes old.
+                        Task { await PlanRulerStore.shared.load(refresh: true) }
+                        await model.sessionUsage.refresh(importNew: model.sessionUsage.enabled, cursorNow: true)
+                    }
                     else { await model.loadClaudeSessions(force: true) }
                 } },
                 refreshDisabled: showingSessionUsage ? false : model.claudeSessionsLoading,

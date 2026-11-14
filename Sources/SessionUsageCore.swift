@@ -3165,3 +3165,70 @@ enum CosCostPresentation {
         return notes
     }
 }
+
+// MARK: - 0.5.394 plan ruler (U1; Miles 2026-11-14 12:16, "Collapsed, tap to open")
+// GET /api/usage/plan (server 7.0.41, plan-pane.ts) through the helper's `usage-plan` verb. The server writes every word,
+// so the Mac and Control Web say the same thing. A line with no `usedPct` has no ruler: a failed, paused, missing or ended
+// reading never draws one, so it can never look like 0% used.
+
+struct PlanEstimate: Codable, Equatable { let text: String; let arithmetic: String }
+
+struct PlanLine: Codable, Equatable, Identifiable {
+    let provider: String
+    let name: String
+    let state: String
+    let usedPct: Double?
+    let gonePct: Double?
+    let windowWords: String
+    let short: String
+    let shortLong: String
+    let long: String
+    let quiet: String
+    let readAt: String?
+    let estimate: PlanEstimate?
+    var id: String { provider }
+    var hasRuler: Bool { usedPct != nil }
+}
+
+struct PlanPane: Codable, Equatable {
+    let protocolVersion: Int
+    let now: String
+    let readAt: String?
+    let closest: String?
+    let others: String
+    let lines: [PlanLine]
+}
+
+enum PlanRulerPresentation {
+    /// Closed by default; this Mac remembers the choice.
+    static let openKey = "usagePlanOpen"
+    static let failedWords = "Plan use could not be read. Refresh to try again."
+    static let readingWords = "Reading…"
+    static func closest(_ pane: PlanPane) -> PlanLine? { pane.closest.flatMap { id in pane.lines.first { $0.provider == id } } }
+    /// "Read 10:03 AM." Nil while reading or before the first read.
+    static func readWords(_ pane: PlanPane?, loading: Bool, timeZone: TimeZone = .current) -> String? {
+        guard !loading, let iso = pane?.readAt, let date = parse(iso) else { return nil }
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = timeZone; f.dateFormat = "h:mm a"
+        return "Read \(f.string(from: date))."
+    }
+    /// The open state's estimate block: every estimate the server gave, or why there is none. Never a number of our own.
+    static func estimates(_ pane: PlanPane?, loading: Bool) -> [String] {
+        let given = (loading ? [] : pane?.lines ?? []).compactMap { $0.estimate.map { "\($0.text) \($0.arithmetic)" } }
+        if !given.isEmpty { return given }
+        return [loading ? "No estimate: reading." : "No estimate: no plan is far enough into its week to project."]
+    }
+    /// The open rows: the server's lines, or one quiet row per tool while reading (numbers hidden, same rows).
+    static func rows(_ pane: PlanPane?, loading: Bool) -> [PlanLine] {
+        if let pane, !loading { return pane.lines }
+        return [("claude", "Claude"), ("codex", "Codex"), ("cursor", "Cursor")].map {
+            PlanLine(provider: $0.0, name: $0.1, state: loading ? "reading" : "not_read", usedPct: nil, gonePct: nil, windowWords: "", short: "", shortLong: "",
+                     long: loading ? readingWords : "Not read.", quiet: "", readAt: nil, estimate: nil)
+        }
+    }
+    static func parse(_ iso: String) -> Date? {
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
+    }
+    /// The helper's arguments: Refresh asks the server for a reading under 2 minutes old; opening, under 10.
+    static func helperArguments(refresh: Bool) -> [String] { refresh ? ["usage-plan", "--refresh"] : ["usage-plan"] }
+}

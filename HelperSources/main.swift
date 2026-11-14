@@ -688,6 +688,7 @@ final class COSControlHelper {
         case "ask-work-plan": try emitAskWorkPlan()
         case "ask-work-snapshot": try emitAskWorkSnapshot()
         case "work-orchestrator-input": try emitWorkOrchestratorInput()
+        case "usage-plan": try emitUsagePlan(args: args)
         case "work-lens-inbox": try emitWorkLensInbox(args: args)
         case "work-lens-media": try emitWorkLensMedia(args: args)
         case "work-lens-history": try emitWorkLensHistory(args: args)
@@ -21461,6 +21462,29 @@ final class COSControlHelper {
 
     /// 0.5.333 (Work orchestrator): pushes Control's Work snapshot and reads the card's planner rows in one call. stdin is
     /// `{workID, meetingWorkIDs, snapshot}` (at most 4 MB); the server stores the snapshot, then answers. No model call.
+    /// 0.5.394 (U1; Miles 2026-11-14, "Collapsed, tap to open"; 12:38 "When I open Usage"): the plan ruler's reading.
+    /// GET /api/usage/plan (the next server release). The server decides whether to read again (over 10 minutes old on open, over 2
+    /// on --refresh) and holds a failing reader 10 minutes, so this verb only asks. Never on a timer: the app calls it when
+    /// Usage appears and on the page's Refresh. The isolated preview reads nothing.
+    private func emitUsagePlan(args: [String]) throws {
+        guard ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] == nil else {
+            throw HelperError.message("Plan use is not read in the isolated preview")
+        }
+        let path = "/api/usage/plan" + (args.contains("--refresh") ? "?refresh=1" : "")
+        guard let response = request(path, method: "GET", token: try readToken(), body: nil, timeout: 50) else {
+            throw HelperError.message("COS could not read plan use from the server (no answer in 50 s).")
+        }
+        guard response.status == 200, let answer = response.body, answer["protocolVersion"] as? Int == 1, answer["lines"] is [Any] else {
+            throw HelperError.message(Self.usagePlanFailure(status: response.status, error: response.body?["error"] as? String))
+        }
+        emit(ok: true, message: "Plan use", details: answer)
+    }
+    /// Plain words, then the server's machine code only (never its text).
+    static func usagePlanFailure(status: Int, error: String?) -> String {
+        if status == 404 { return "This server does not report plan use yet (HTTP 404). Update the COS server to read it." }
+        let code = error.flatMap { $0.range(of: "^[A-Za-z0-9_-]{1,100}$", options: .regularExpression) != nil ? $0 : nil }
+        return "Plan use could not be read (HTTP \(status)" + (code.map { ", \($0)" } ?? "") + ")."
+    }
     private func emitWorkOrchestratorInput() throws {
         try requireLiveWorkTransport()
         let data = try FileHandle.standardInput.read(upToCount: 4_000_001) ?? Data()

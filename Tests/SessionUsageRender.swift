@@ -7,6 +7,11 @@ import SwiftUI
         let out = URL(fileURLWithPath: CommandLine.arguments[1])
         try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
         let store = SessionUsageStore()
+        // 0.5.394: the page's plan ruler never starts the helper here; every page shows the 2026-11-14 reading, closed.
+        let planPane = try JSONDecoder().decode(PlanPane.self, from: Data(planFixture.utf8))
+        PlanRulerStore.shared.offscreen = true
+        PlanRulerStore.shared.pane = planPane
+        PlanRulerStore.shared.open = false
         let monthFormat = DateFormatter(); monthFormat.dateFormat = "yyyy-MM"
         let month = monthFormat.string(from: Date())
         var rows: [SessionUsageBucket] = []
@@ -179,6 +184,35 @@ import SwiftUI
               }
             }
         }
+        // 0.5.394 plan ruler (Miles: "Collapsed, tap to open"), drawn to round 2 tap-mac: closed, open, a failed read and
+        // reading, light and dark, wide and narrow. Same reading as the web harness.
+        for dark in [false, true] {
+            for width in [1200.0, 760.0] {
+                for state in ["closed", "open", "failed", "reading"] {
+                    let plan = PlanRulerStore()
+                    plan.offscreen = true
+                    plan.open = state != "closed"
+                    plan.pane = state == "failed" ? nil : planPane
+                    plan.failed = state == "failed"
+                    plan.loading = state == "reading"
+                    let view = PlanRulerView(plan: plan, narrow: width < 944).padding(24).frame(width: width, alignment: .top).background(COSPalette.panel).cosControlTheme()
+                    let host = NSHostingView(rootView: view)
+                    let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: 400), styleMask: [.borderless], backing: .buffered, defer: false)
+                    window.isReleasedWhenClosed = false
+                    window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua); host.appearance = window.appearance
+                    window.contentView = host
+                    host.frame = NSRect(x: 0, y: 0, width: width, height: max(60, host.fittingSize.height))
+                    let until = Date().addingTimeInterval(0.4)
+                    while Date() < until { RunLoop.main.run(until: Date().addingTimeInterval(0.05)); host.layoutSubtreeIfNeeded() }
+                    host.frame.size.height = max(60, host.fittingSize.height)
+                    print("plan \(Int(width)) \(dark ? "dark" : "light") \(state): \(Int(host.frame.height)) pt tall")
+                    guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { fatalError("plan bitmap unavailable") }
+                    host.cacheDisplay(in: host.bounds, to: rep)
+                    try rep.representation(using: .png, properties: [:])!.write(to: out.appendingPathComponent("usage-plan-\(Int(width))-\(dark ? "dark" : "light")-\(state).png"))
+                    window.close()
+                }
+            }
+        }
         for dark in [false, true] {
             let detail = SessionUsageInspector(title: "Saturday, Oct 24, 2026", rows: rows.filter { $0.day == month + "-24" }, excludingCacheReads: false, measure: .tokens,
                 isPeriod: true, canGoEarlier: true, canGoLater: false, comparison: nil, onStep: { _ in }, onClear: {}, onInspectDay: { _ in })
@@ -218,3 +252,11 @@ import SwiftUI
         print(only.map { "PASS: offscreen renders of \($0.sorted().joined(separator: ", ")) only" } ?? "PASS: offscreen light/dark Usage renders at 760, 800 and 1200 points, including first load/empty/error/backfill/reversed dates/API/cache/day/slice/sort/history-inspect/paused/long calendar states")
     }
 }
+
+/// The server's plan answer on 2026-11-14 (the same reading as the web harness and Tests/SessionUsageChecks.swift).
+let planFixture = """
+{"protocolVersion":1,"now":"2026-11-14T16:03:55.000Z","readAt":"2026-11-14T16:03:55.000Z","closest":"codex","others":"Claude read failed. Cursor no plan reading.","lines":[
+{"provider":"claude","name":"Claude","state":"failed","usedPct":null,"gonePct":null,"windowWords":"Week not known","short":"Read failed, refused by Claude","shortLong":"Read failed, refused by Claude","long":"Read failed: refused by Claude. No number is shown until a read succeeds.","quiet":"Claude read failed","readAt":null,"estimate":null},
+{"provider":"codex","name":"Codex","state":"fresh","usedPct":96,"gonePct":92.6,"windowWords":"Nov 7, 10:31 PM to Nov 14, 10:31 PM","short":"96% used, resets tonight","shortLong":"96% used, resets tonight 10:31 PM","long":"96% used. 93% of the week gone.","quiet":"Codex 96% used","readAt":"2026-11-14T16:03:55.000Z","estimate":{"text":"At this week's average pace, Codex reaches its limit about 4:30 PM, before it resets tonight 10:31 PM.","arithmetic":"Worked out from 96% used in 6 days 11.5 hours of 7 days, about 0.6% an hour."}},
+{"provider":"cursor","name":"Cursor","state":"no_plan","usedPct":null,"gonePct":null,"windowWords":"","short":"No plan reading","shortLong":"No plan reading","long":"No plan reading. Cursor does not report its plan to COS.","quiet":"Cursor no plan reading","readAt":null,"estimate":null}]}
+"""

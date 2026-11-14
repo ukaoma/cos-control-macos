@@ -124,6 +124,8 @@ struct SessionUsageView: View {
     /// What the chart sentence offers. New tokens is the ledger's cache-reads-excluded count.
     private enum SentenceMeasure: String, CaseIterable { case all = "All tokens", new = "New tokens", value = "API value" }
     @ObservedObject var store: SessionUsageStore
+    /// 0.5.394: the plan ruler's reading (one per app, so leaving and reopening Usage keeps the last one on screen).
+    @ObservedObject var plan: PlanRulerStore = .shared
     @State private var month = "Last 30 days"
     @State private var customStart = Calendar.current.date(byAdding: .day, value: -29, to: Date())!
     @State private var customEnd = Date()
@@ -338,6 +340,8 @@ struct SessionUsageView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 filterRow
+                // 0.5.394: the plan ruler (Miles: "Collapsed, tap to open").
+                PlanRulerView(plan: plan, narrow: narrow).padding(.top, 10)
                 if !store.enabled { pausedBar.padding(.top, 12) }
                 if let exportStatus {
                     Text(exportStatus).font(COSType.body(11)).foregroundStyle(COSPalette.subtle).padding(.top, 8)
@@ -387,6 +391,8 @@ struct SessionUsageView: View {
         .onChange(of: customEnd) { _, _ in inspection = nil }
         .onChange(of: exportScope) { _, _ in exportStatus = nil }
         .task { if store.report == nil { await store.refresh(importNew: store.enabled) } }
+        // Opening Usage reads the plan; the server re-reads only a reading over 10 minutes old (Miles 12:38, "When I open Usage").
+        .task { await plan.load(refresh: false) }
     }
 
     private func inspectDay(_ day: String) {
@@ -2023,5 +2029,209 @@ private struct CosCostBar: View {
         }
         .frame(height: 7)
         .accessibilityHidden(true)
+    }
+}
+
+// MARK: - 0.5.394 plan ruler (U1; Miles 2026-11-14 12:16, "Collapsed, tap to open"), drawn to round 2 tap-mac
+// One row when closed: the tool closest to its plan limit with its ruler, the rest in quiet words, the read time and
+// Refresh. Open (a native DisclosureGroup, its state announced): each tool's week as a ruler and the labelled estimate.
+// Read when the Usage view appears and on the page's Refresh; the server decides whether the reading is old enough to
+// read again (10 minutes on open, 2 on Refresh) and holds a failing reader 10 minutes. Never on a timer.
+
+@MainActor
+final class PlanRulerStore: ObservableObject {
+    static let shared = PlanRulerStore()
+    @Published var pane: PlanPane?
+    @Published var loading = false
+    @Published var failed = false
+    @Published var open = UserDefaults.standard.bool(forKey: PlanRulerPresentation.openKey) {
+        didSet { if !offscreen { UserDefaults.standard.set(open, forKey: PlanRulerPresentation.openKey) } }
+    }
+    /// Offscreen renders set a pane and must not start the helper or write the choice.
+    var offscreen = false
+    private let helper = HelperClient()
+    func load(refresh: Bool) async {
+        guard !offscreen, !loading else { return }
+        loading = true
+        defer { loading = false }
+        do {
+            let result = try await helper.run(PlanRulerPresentation.helperArguments(refresh: refresh), timeout: 50, quality: .utility)
+            guard result.ok else { throw HelperClientError.commandFailed(result.message) }
+            pane = try JSONDecoder().decode(PlanPane.self, from: JSONEncoder().encode(result.details))
+            failed = false
+        } catch is CancellationError {
+            return
+        } catch {
+            // No numbers on a failed read: the page says so and keeps nothing from before.
+            pane = nil
+            failed = true
+        }
+    }
+}
+
+struct PlanRulerView: View {
+    @ObservedObject var plan: PlanRulerStore
+    var narrow = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $plan.open) {
+            rows
+        } label: {
+            summary
+        }
+        .disclosureGroupStyle(PlanDisclosureStyle(refresh: { Task { await plan.load(refresh: true) } }, readWords: PlanRulerPresentation.readWords(plan.pane, loading: plan.loading), loading: plan.loading))
+        .background(COSPalette.card, in: RoundedRectangle(cornerRadius: 9))
+        .overlay(RoundedRectangle(cornerRadius: 9).stroke(COSPalette.line, lineWidth: 1))
+    }
+
+    private static func color(_ provider: String) -> Color {
+        switch provider {
+        case "claude": return COSPalette.gold
+        case "codex": return Color(red: 0.02, green: 0.59, blue: 0.62)
+        default: return Color.primary.opacity(0.72)
+        }
+    }
+    private func wordsColor(_ line: PlanLine) -> Color {
+        switch line.state {
+        case "failed", "not_read", "limit": return COSPalette.danger
+        case "fresh": return .primary
+        default: return COSPalette.subtle
+        }
+    }
+    private func who(_ line: PlanLine) -> some View {
+        HStack(spacing: 5) {
+            RoundedRectangle(cornerRadius: 2).fill(Self.color(line.provider)).frame(width: 8, height: 8)
+            Text(line.name).font(COSType.body(12.5).weight(.semibold))
+        }
+    }
+
+    @ViewBuilder private var summary: some View {
+        if plan.loading {
+            Text(PlanRulerPresentation.readingWords).font(COSType.body(12.5)).foregroundStyle(COSPalette.subtle)
+        } else if let pane = plan.pane {
+            HStack(spacing: 12) {
+                if let top = PlanRulerPresentation.closest(pane) {
+                    HStack(spacing: 8) {
+                        who(top)
+                        PlanRulerBar(line: top, color: Self.color(top.provider), long: false)
+                        Text(narrow ? top.short : top.shortLong).font(COSType.body(12.5)).foregroundStyle(wordsColor(top)).monospacedDigit().lineLimit(1).fixedSize()
+                    }
+                    // The closest tool's words stay whole; the quiet words for the rest give way first.
+                    .layoutPriority(1)
+                }
+                if !pane.others.isEmpty {
+                    Text(pane.others).font(COSType.body(12.5)).foregroundStyle(COSPalette.subtle).lineLimit(1).truncationMode(.tail)
+                }
+            }
+        } else {
+            Text(plan.failed ? PlanRulerPresentation.failedWords : "Plan use was not read.").font(COSType.body(12.5)).foregroundStyle(COSPalette.danger)
+        }
+    }
+
+    private var rows: some View {
+        let lines = PlanRulerPresentation.rows(plan.pane, loading: plan.loading)
+        return VStack(alignment: .leading, spacing: 0) {
+            Divider()
+            ForEach(lines) { line in
+                HStack(alignment: .center, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        who(line)
+                        if !line.windowWords.isEmpty { Text(line.windowWords).font(COSType.body(11)).foregroundStyle(COSPalette.subtle).lineLimit(2) }
+                    }.frame(width: narrow ? 120 : 170, alignment: .leading)
+                    if line.hasRuler {
+                        PlanRulerBar(line: line, color: Self.color(line.provider), long: true)
+                        Text(line.long).font(COSType.body(12.5)).foregroundStyle(wordsColor(line)).multilineTextAlignment(.trailing)
+                            .frame(width: narrow ? 170 : 240, alignment: .trailing)
+                    } else {
+                        Text(line.long).font(COSType.body(12.5)).foregroundStyle(wordsColor(line)).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .frame(minHeight: 56)
+                Divider()
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(PlanRulerPresentation.estimates(plan.pane, loading: plan.loading), id: \.self) { text in
+                    if text.hasPrefix("No estimate") {
+                        Text(text).font(COSType.body(12)).foregroundStyle(COSPalette.subtle)
+                    } else {
+                        (Text("Estimate: ").fontWeight(.semibold).foregroundColor(.primary) + Text(text).foregroundColor(COSPalette.subtle)).font(COSType.body(12))
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 40, alignment: .topLeading)
+            .padding(.top, 8)
+        }
+        .padding(.horizontal, 14).padding(.bottom, 10)
+    }
+}
+
+/// The ruler: a rail, the used fill, and a line for how much of the week has gone. Only drawn for a line with a number.
+struct PlanRulerBar: View {
+    let line: PlanLine
+    let color: Color
+    let long: Bool
+    var body: some View {
+        GeometryReader { g in
+            let w = g.size.width, used = CGFloat(max(0, min(100, line.usedPct ?? 0))) / 100
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.primary.opacity(0.12)).frame(height: 6)
+                Capsule().fill(line.state == "limit" ? COSPalette.danger : line.state == "older" ? COSPalette.subtle : color).frame(width: w * used, height: 6)
+                if let gone = line.gonePct {
+                    Rectangle().fill(Color.primary).frame(width: 2, height: 12).offset(x: max(0, w * CGFloat(gone) / 100 - 1))
+                }
+            }
+            .frame(height: 12)
+        }
+        .frame(width: long ? nil : 80, height: 12)
+        .frame(maxWidth: long ? .infinity : nil)
+        .accessibilityHidden(true)
+    }
+}
+
+/// A DisclosureGroup drawn as the round 2 head: the disclosure button ("Plan use", its state announced), the summary, the
+/// read time and Refresh. Opening moves the page only when the button is pressed.
+struct PlanDisclosureStyle: DisclosureGroupStyle {
+    let refresh: () -> Void
+    let readWords: String?
+    let loading: Bool
+    func makeBody(configuration: Configuration) -> some View {
+        PlanDisclosureHead(configuration: configuration, refresh: refresh, readWords: readWords, loading: loading)
+    }
+}
+
+private struct PlanDisclosureHead: View {
+    let configuration: DisclosureGroupStyleConfiguration
+    let refresh: () -> Void
+    let readWords: String?
+    let loading: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Button {
+                    if reduceMotion { configuration.isExpanded.toggle() } else { withAnimation(.easeOut(duration: 0.2)) { configuration.isExpanded.toggle() } }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold)).foregroundStyle(COSPalette.accent)
+                            .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
+                        Text("Plan use").font(COSType.body(13).weight(.semibold))
+                    }
+                    .padding(.horizontal, 8).frame(minHeight: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Plan use")
+                .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
+                .accessibilityHint(configuration.isExpanded ? "Hides each tool's week." : "Shows each tool's week and the estimate.")
+                configuration.label.frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 4) {
+                    if let readWords { Text(readWords).font(COSType.body(12)).foregroundStyle(COSPalette.subtle).monospacedDigit() }
+                    Button("Refresh", action: refresh).buttonStyle(.plain).font(COSType.body(12)).foregroundStyle(COSPalette.accent).underline().disabled(loading)
+                }
+                .fixedSize()
+            }
+            .frame(minHeight: 44)
+            .padding(.trailing, 12).padding(.leading, 2)
+            if configuration.isExpanded { configuration.content }
+        }
     }
 }

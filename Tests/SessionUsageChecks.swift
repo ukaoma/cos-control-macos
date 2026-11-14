@@ -1057,6 +1057,7 @@ import SQLite3
         check(try JSONDecoder().decode(SessionUsageReport.self, from: oldJSON).cursorFeed == nil, "a report without the feed field decodes")
         print("PASS: tool names, model names, default scales, per-tool prior windows and the Cursor feed (parsing, privacy, paging, backoff, resume)")
         try cosCostChecks(home: home)
+        try planRulerChecks()
         if try !cosCompressedChecks(home: home, nodes: zstNodes) { compressedChecksSkipped = true }
 
         print("PASS: weekly buckets, category USD mix, period comparisons, table sorting and CSV/JSON export")
@@ -2276,5 +2277,46 @@ extension Checks {
         if decoderAlive { kill(decoderPid, SIGKILL) }
         check(!decoderAlive, "a busy history ends the decoder it started")
         print("PASS: COS cost rules (dates, classification, session-log flags, rates, dedupe, Work, Cursor rule, denominator, headline, rows) and the bounded reader on a scratch home")
+    }
+}
+
+// MARK: - 0.5.394 plan ruler (U1; Miles 2026-11-14, "Collapsed, tap to open"). The server's answer on 2026-11-14, decoded
+// as the app decodes it, then every rule the Mac draws from: closest, the read time, the estimate block, the rows while
+// reading, and the helper's arguments. Words come from the server; the Mac adds none of its own numbers.
+extension Checks {
+    static let planAnswer = """
+    {"protocolVersion":1,"now":"2026-11-14T16:03:55.000Z","readAt":"2026-11-14T16:03:55.000Z","closest":"codex","others":"Claude read failed. Cursor no plan reading.","lines":[
+    {"provider":"claude","name":"Claude","state":"failed","usedPct":null,"gonePct":null,"windowStart":null,"resetsAt":null,"windowWords":"Week not known","short":"Read failed, refused by Claude","shortLong":"Read failed, refused by Claude","long":"Read failed: refused by Claude. No number is shown until a read succeeds.","quiet":"Claude read failed","readAt":null,"lastGoodAt":null,"reason":"no_limits","estimate":null},
+    {"provider":"codex","name":"Codex","state":"fresh","usedPct":96,"gonePct":92.6,"windowStart":"2026-11-08T04:31:03.000Z","resetsAt":"2026-11-15T04:31:03.000Z","windowWords":"Nov 7, 10:31 PM to Nov 14, 10:31 PM","short":"96% used, resets tonight","shortLong":"96% used, resets tonight 10:31 PM","long":"96% used. 93% of the week gone.","quiet":"Codex 96% used","readAt":"2026-11-14T16:03:55.000Z","lastGoodAt":"2026-11-14T16:03:55.000Z","reason":null,"estimate":{"text":"At this week's average pace, Codex reaches its limit about 4:30 PM, before it resets tonight 10:31 PM.","arithmetic":"Worked out from 96% used in 6 days 11.5 hours of 7 days, about 0.6% an hour."}},
+    {"provider":"cursor","name":"Cursor","state":"no_plan","usedPct":null,"gonePct":null,"windowStart":null,"resetsAt":null,"windowWords":"","short":"No plan reading","shortLong":"No plan reading","long":"No plan reading. Cursor does not report its plan to COS.","quiet":"Cursor no plan reading","readAt":null,"lastGoodAt":null,"reason":null,"estimate":null}]}
+    """
+
+    static func planRulerChecks() throws {
+        func check(_ yes: Bool, _ label: String) { if !yes { fatalError(label) } }
+        let P = PlanRulerPresentation.self
+        // The helper hands the app its details as JSON; this is the same decode.
+        let pane = try JSONDecoder().decode(PlanPane.self, from: Data(planAnswer.utf8))
+        check(pane.lines.map(\.provider) == ["claude", "codex", "cursor"], "plan: the three tools, in order")
+        // Only a stated reading has a ruler: a failed read and Cursor never draw one, so neither can look like 0% used.
+        check(pane.lines.map(\.hasRuler) == [false, true, false], "plan: a failed read and Cursor draw no ruler")
+        check(P.closest(pane)?.provider == "codex" && P.closest(pane)?.shortLong == "96% used, resets tonight 10:31 PM", "plan: the closed row leads with the tool closest to its limit")
+        let none = try JSONDecoder().decode(PlanPane.self, from: Data(planAnswer.replacingOccurrences(of: "\"closest\":\"codex\"", with: "\"closest\":null").utf8))
+        check(P.closest(none) == nil, "plan: no closest tool, no lead ruler")
+        let chicago = TimeZone(identifier: "America/Chicago")!
+        check(P.readWords(pane, loading: false, timeZone: chicago) == "Read 10:03 AM.", "plan: the read time in his time zone")
+        check(P.readWords(pane, loading: true, timeZone: chicago) == nil && P.readWords(nil, loading: false, timeZone: chicago) == nil, "plan: no read time while reading or before a read")
+        // The estimate is the server's, labelled by the view, with its arithmetic. Hidden while reading.
+        check(P.estimates(pane, loading: false) == ["At this week's average pace, Codex reaches its limit about 4:30 PM, before it resets tonight 10:31 PM. Worked out from 96% used in 6 days 11.5 hours of 7 days, about 0.6% an hour."], "plan: the estimate carries its arithmetic")
+        check(P.estimates(pane, loading: true) == ["No estimate: reading."], "plan: no estimate while reading")
+        check(P.estimates(nil, loading: false) == ["No estimate: no plan is far enough into its week to project."], "plan: no estimate without a reading")
+        // While reading: the same three rows (so the same height), every number hidden.
+        let reading = P.rows(pane, loading: true)
+        check(reading.count == pane.lines.count && reading.allSatisfy { !$0.hasRuler && $0.long == P.readingWords && $0.state == "reading" }, "plan: reading keeps the rows and hides the numbers")
+        check(P.rows(pane, loading: false) == pane.lines, "plan: after the read, the server's rows")
+        check(P.rows(nil, loading: false).allSatisfy { !$0.hasRuler && $0.long == "Not read." }, "plan: a failed read keeps nothing from before")
+        check(P.helperArguments(refresh: false) == ["usage-plan"] && P.helperArguments(refresh: true) == ["usage-plan", "--refresh"], "plan: opening asks plainly; Refresh asks for a fresh read")
+        check(P.openKey == "usagePlanOpen", "plan: the open choice is remembered under one key")
+        check(P.parse("2026-11-14T16:03:55Z") != nil && P.parse("2026-11-14T16:03:55.000Z") != nil && P.parse("not a time") == nil, "plan: both server time forms parse")
+        print("PASS: plan ruler (decode, no ruler on failure, closest, read time, estimate, reading rows, helper arguments)")
     }
 }
