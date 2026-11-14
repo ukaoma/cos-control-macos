@@ -3187,7 +3187,10 @@ struct PlanLine: Codable, Equatable, Identifiable {
     let readAt: String?
     let estimate: PlanEstimate?
     var id: String { provider }
-    var hasRuler: Bool { usedPct != nil }
+    /// Only a stated reading draws a ruler, whatever the server sends: a failed, paused, ended, missing or Cursor line never
+    /// does, even with a number, so it can never look like 0% (or any share) used. The web pane holds the same rule.
+    var hasRuler: Bool { usedPct != nil && PlanLine.rulerStates.contains(state) }
+    static let rulerStates: Set<String> = ["fresh", "older", "limit"]
 }
 
 struct PlanPane: Codable, Equatable {
@@ -3229,6 +3232,8 @@ enum PlanRulerPresentation {
         let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return f.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
     }
+    /// One read at a time, and never from an offscreen render.
+    static func shouldLoad(offscreen: Bool, loading: Bool) -> Bool { !offscreen && !loading }
     /// The helper's arguments: Refresh asks the server for a reading under 2 minutes old; opening, under 10.
     static func helperArguments(refresh: Bool) -> [String] { refresh ? ["usage-plan", "--refresh"] : ["usage-plan"] }
 }

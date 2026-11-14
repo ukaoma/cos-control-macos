@@ -54,6 +54,11 @@ INSTALL_GUARD = "try requireLatestMovesForward(requested: requestedVersion, reso
 ADOPT_GUARD = "try requireLatestMovesForward(requested: requestedVersion, resolved: resolveVersion(requestedVersion).version)"
 HEADER = "await model.sessionUsage.refresh(importNew: model.sessionUsage.enabled, cursorNow: true)"
 INSTALL_COMMAND = 'static let cursorInstallCommand = "curl https://cursor.com/install -fsS | bash"'
+PLAN_REFRESH_BLOCK = ("refresh: { Task {\n                    if sessionsPane == .cost { await CosCostStore.shared.refresh(importSessions: model.sessionUsage.enabled) }\n"
+                      "                    else if showingSessionUsage {\n                        Task { await PlanRulerStore.shared.load(refresh: true) }\n")
+PLAN_REFRESH_BLOCK_MOVED = ("refresh: { Task {\n                    Task { await PlanRulerStore.shared.load(refresh: true) }\n"
+                            "                    if sessionsPane == .cost { await CosCostStore.shared.refresh(importSessions: model.sessionUsage.enabled) }\n"
+                            "                    else if showingSessionUsage {\n")
 # (name, check over the texts, the file its mutation edits, old, new)
 PINS = [
     ("the header Refresh imports only while tracking",
@@ -187,9 +192,16 @@ PINS = [
      lambda t: once(t[VIEW], ".task { await plan.load(refresh: false) }"), VIEW, ".task { await plan.load(refresh: false) }", ".task { await plan.load(refresh: true) }"),
     ("the page Refresh asks for a fresh plan read",
      lambda t: once(t[ACTIVITY], "Task { await PlanRulerStore.shared.load(refresh: true) }"), ACTIVITY, "Task { await PlanRulerStore.shared.load(refresh: true) }\n", ""),
+    ("only Usage's Refresh asks for the plan (not COS cost's, not the sessions list's)",
+     lambda t: "Task { await PlanRulerStore.shared.load(refresh: true) }" in between(t[ACTIVITY], "                    else if showingSessionUsage {\n", "\n                    }"),
+     ACTIVITY, PLAN_REFRESH_BLOCK, PLAN_REFRESH_BLOCK_MOVED),
     ("the plan store calls the helper only through helperArguments",
-     lambda t: once(t[VIEW], "helper.run(PlanRulerPresentation.helperArguments(refresh: refresh)") and '"usage-plan"' not in t[VIEW],
-     VIEW, "helper.run(PlanRulerPresentation.helperArguments(refresh: refresh)", 'helper.run(["usage-plan"]'),
+     lambda t: once(t[VIEW], "HelperClient().run(PlanRulerPresentation.helperArguments(refresh: refresh)") and '"usage-plan"' not in t[VIEW]
+               and once(t[VIEW], "self.read = read ?? { try await PlanRulerStore.helperRead(refresh: $0) }"),
+     VIEW, "HelperClient().run(PlanRulerPresentation.helperArguments(refresh: refresh)", 'HelperClient().run(["usage-plan"]'),
+    ("the app's plan store reads through the helper (only the render harness passes its own reader)",
+     lambda t: once(t[VIEW], "static let shared = PlanRulerStore()") and once(t[VIEW], "@ObservedObject var plan: PlanRulerStore = .shared"),
+     VIEW, "static let shared = PlanRulerStore()", "static let shared = PlanRulerStore(read: { _ in throw CancellationError() })"),
     ("the helper's usage-plan verb passes Refresh to the server",
      lambda t: once(t[HELPER], 'case "usage-plan": try emitUsagePlan(args: args)') and once(t[HELPER], 'args.contains("--refresh") ? "?refresh=1" : ""'),
      HELPER, '"?refresh=1" : ""', '"" : ""'),
@@ -207,7 +219,14 @@ PINS = [
      lambda t: once(t[VIEW], ".padding(.horizontal, 8).frame(minHeight: 44).contentShape(Rectangle())"),
      VIEW, ".padding(.horizontal, 8).frame(minHeight: 44)", ".padding(.horizontal, 8).frame(minHeight: 24)"),
     ("an offscreen render never starts the plan helper",
-     lambda t: once(t[VIEW], "guard !offscreen, !loading else { return }"), VIEW, "guard !offscreen, !loading else { return }", "guard !loading else { return }"),
+     lambda t: once(t[VIEW], "guard PlanRulerPresentation.shouldLoad(offscreen: offscreen, loading: loading) else { return }"),
+     VIEW, "shouldLoad(offscreen: offscreen, loading: loading)", "shouldLoad(offscreen: false, loading: loading)"),
+    ("one plan read at a time",
+     lambda t: once(t[VIEW], "guard PlanRulerPresentation.shouldLoad(offscreen: offscreen, loading: loading) else { return }"),
+     VIEW, "shouldLoad(offscreen: offscreen, loading: loading)", "shouldLoad(offscreen: offscreen, loading: false)"),
+    ("the closed row draws a ruler only for a stated reading, as the web does",
+     lambda t: once(t[VIEW], "if top.hasRuler { PlanRulerBar(line: top, color: Self.color(top.provider), long: false) }"),
+     VIEW, "if top.hasRuler { PlanRulerBar(line: top, color: Self.color(top.provider), long: false) }", "PlanRulerBar(line: top, color: Self.color(top.provider), long: false)"),
     ("the closed row keeps the closest tool's words whole; the rest give way",
      lambda t: once(t[VIEW], ".monospacedDigit().lineLimit(1).fixedSize()\n                    }\n                    .layoutPriority(1)"),
      VIEW, "                    .layoutPriority(1)\n", ""),

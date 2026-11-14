@@ -1103,7 +1103,10 @@ MUTANTS += [
 
 # 0.5.394 plan ruler (U1). Names start "plan:", so `mutate-session-usage.py <root> plan:` runs only these.
 MUTANTS += [
-    ("plan: a failed read draws a ruler", "var hasRuler: Bool { usedPct != nil }", "var hasRuler: Bool { true }", "plan: a failed read and Cursor draw no ruler", CORE),
+    ("plan: a failed read draws a ruler", "var hasRuler: Bool { usedPct != nil && PlanLine.rulerStates.contains(state) }", "var hasRuler: Bool { true }", "plan: a failed read and Cursor draw no ruler", CORE),
+    ("plan: the Mac trusts the server's number", "var hasRuler: Bool { usedPct != nil && PlanLine.rulerStates.contains(state) }", "var hasRuler: Bool { usedPct != nil }", "plan: a line that is not a stated reading draws no ruler even with a number", CORE),
+    ("plan: a stated reading with no number draws", "var hasRuler: Bool { usedPct != nil && PlanLine.rulerStates.contains(state) }", "var hasRuler: Bool { PlanLine.rulerStates.contains(state) }", "plan: a stated reading with a number draws its ruler; without one it does not", CORE),
+    ("plan: a limit draws no ruler", '["fresh", "older", "limit"]', '["fresh", "older"]', "plan: a stated reading with a number draws its ruler; without one it does not", CORE),
     ("plan: closest ignores the server", "pane.closest.flatMap { id in pane.lines.first { $0.provider == id } }", "pane.lines.first", ("plan: the closed row leads with the tool closest to its limit", "plan: no closest tool, no lead ruler"), CORE),
     ("plan: read time shown while reading", "guard !loading, let iso = pane?.readAt", "guard let iso = pane?.readAt", "plan: no read time while reading or before a read", CORE),
     ("plan: read time in UTC", "f.timeZone = timeZone; f.dateFormat = \"h:mm a\"", "f.timeZone = TimeZone(identifier: \"UTC\"); f.dateFormat = \"h:mm a\"", "plan: the read time in his time zone", CORE),
@@ -1112,6 +1115,8 @@ MUTANTS += [
     ("plan: rows keep numbers while reading", "if let pane, !loading { return pane.lines }", "if let pane { return pane.lines }", "plan: reading keeps the rows and hides the numbers", CORE),
     ("plan: refresh asks plainly", "refresh ? [\"usage-plan\", \"--refresh\"] : [\"usage-plan\"]", "[\"usage-plan\"]", "plan: opening asks plainly; Refresh asks for a fresh read", CORE),
     ("plan: reading rows look like a failure", 'state: loading ? "reading" : "not_read"', 'state: "not_read"', "plan: reading keeps the rows and hides the numbers", CORE),
+    ("plan: a second read while one is in flight", "{ !offscreen && !loading }", "{ !offscreen }", "plan: one read at a time, none offscreen", CORE),
+    ("plan: an offscreen render reads", "{ !offscreen && !loading }", "{ !loading }", "plan: one read at a time, none offscreen", CORE),
     ("plan: whole-second times only", "return f.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)", "return ISO8601DateFormatter().date(from: iso)", "plan: the read time in his time zone", CORE),
 ]
 

@@ -2299,6 +2299,13 @@ extension Checks {
         check(pane.lines.map(\.provider) == ["claude", "codex", "cursor"], "plan: the three tools, in order")
         // Only a stated reading has a ruler: a failed read and Cursor never draw one, so neither can look like 0% used.
         check(pane.lines.map(\.hasRuler) == [false, true, false], "plan: a failed read and Cursor draw no ruler")
+        // Lead 13:44: the Mac holds the rule itself. A failed, paused, ended (not_read) or Cursor line with a number the
+        // server should never send still draws no ruler; only fresh, older and limit lines with a number do.
+        func lineWith(_ state: String, _ used: Double?) throws -> PlanLine {
+            try JSONDecoder().decode(PlanLine.self, from: Data(#"{"provider":"claude","name":"Claude","state":"\#(state)","usedPct":\#(used.map { String($0) } ?? "null"),"gonePct":null,"windowWords":"","short":"","shortLong":"","long":"","quiet":"","readAt":null,"estimate":null}"#.utf8))
+        }
+        check(try ["failed", "paused", "not_read", "no_plan", "reading", "anything"].allSatisfy { !(try lineWith($0, 40)).hasRuler }, "plan: a line that is not a stated reading draws no ruler even with a number")
+        check(try ["fresh", "older", "limit"].allSatisfy { (try lineWith($0, 40)).hasRuler } && !(try lineWith("fresh", nil)).hasRuler, "plan: a stated reading with a number draws its ruler; without one it does not")
         check(P.closest(pane)?.provider == "codex" && P.closest(pane)?.shortLong == "96% used, resets tonight 10:31 PM", "plan: the closed row leads with the tool closest to its limit")
         let none = try JSONDecoder().decode(PlanPane.self, from: Data(planAnswer.replacingOccurrences(of: "\"closest\":\"codex\"", with: "\"closest\":null").utf8))
         check(P.closest(none) == nil, "plan: no closest tool, no lead ruler")
@@ -2316,6 +2323,7 @@ extension Checks {
         check(P.rows(nil, loading: false).allSatisfy { !$0.hasRuler && $0.long == "Not read." }, "plan: a failed read keeps nothing from before")
         check(P.helperArguments(refresh: false) == ["usage-plan"] && P.helperArguments(refresh: true) == ["usage-plan", "--refresh"], "plan: opening asks plainly; Refresh asks for a fresh read")
         check(P.openKey == "usagePlanOpen", "plan: the open choice is remembered under one key")
+        check(P.shouldLoad(offscreen: false, loading: false) && !P.shouldLoad(offscreen: false, loading: true) && !P.shouldLoad(offscreen: true, loading: false), "plan: one read at a time, none offscreen")
         check(P.parse("2026-11-14T16:03:55Z") != nil && P.parse("2026-11-14T16:03:55.000Z") != nil && P.parse("not a time") == nil, "plan: both server time forms parse")
         print("PASS: plan ruler (decode, no ruler on failure, closest, read time, estimate, reading rows, helper arguments)")
     }

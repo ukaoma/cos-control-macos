@@ -221,6 +221,8 @@ PY
 
 # Meeting Prep transport uses only private fixture listeners and temporary owned files.
 /usr/bin/python3 "$ROOT/Tests/meeting-prep-helper-checks.py" "$TMP/cos-control-helper"
+# 0.5.394: the plan ruler verb against its own loopback fixture (never 3141 or 3143, never the plan endpoint).
+/usr/bin/python3 "$ROOT/Tests/usage-plan-helper-checks.py" "$TMP/cos-control-helper"
 
 # The helper prints WHICH expectation failed. Capturing that into a variable
 # under `set -e` threw it away: a failing self-test aborted this script at this

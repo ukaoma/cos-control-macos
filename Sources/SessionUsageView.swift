@@ -2049,15 +2049,21 @@ final class PlanRulerStore: ObservableObject {
     }
     /// Offscreen renders set a pane and must not start the helper or write the choice.
     var offscreen = false
-    private let helper = HelperClient()
+    typealias Reader = @MainActor @Sendable (_ refresh: Bool) async throws -> PlanPane
+    private let read: Reader
+    /// The app reads through the helper; the render harness passes its own reader to run load() itself.
+    init(read: Reader? = nil) { self.read = read ?? { try await PlanRulerStore.helperRead(refresh: $0) } }
+    static func helperRead(refresh: Bool) async throws -> PlanPane {
+        let result = try await HelperClient().run(PlanRulerPresentation.helperArguments(refresh: refresh), timeout: 50, quality: .utility)
+        guard result.ok else { throw HelperClientError.commandFailed(result.message) }
+        return try JSONDecoder().decode(PlanPane.self, from: JSONEncoder().encode(result.details))
+    }
     func load(refresh: Bool) async {
-        guard !offscreen, !loading else { return }
+        guard PlanRulerPresentation.shouldLoad(offscreen: offscreen, loading: loading) else { return }
         loading = true
         defer { loading = false }
         do {
-            let result = try await helper.run(PlanRulerPresentation.helperArguments(refresh: refresh), timeout: 50, quality: .utility)
-            guard result.ok else { throw HelperClientError.commandFailed(result.message) }
-            pane = try JSONDecoder().decode(PlanPane.self, from: JSONEncoder().encode(result.details))
+            pane = try await read(refresh)
             failed = false
         } catch is CancellationError {
             return
@@ -2113,7 +2119,7 @@ struct PlanRulerView: View {
                 if let top = PlanRulerPresentation.closest(pane) {
                     HStack(spacing: 8) {
                         who(top)
-                        PlanRulerBar(line: top, color: Self.color(top.provider), long: false)
+                        if top.hasRuler { PlanRulerBar(line: top, color: Self.color(top.provider), long: false) }
                         Text(narrow ? top.short : top.shortLong).font(COSType.body(12.5)).foregroundStyle(wordsColor(top)).monospacedDigit().lineLimit(1).fixedSize()
                     }
                     // The closest tool's words stay whole; the quiet words for the rest give way first.

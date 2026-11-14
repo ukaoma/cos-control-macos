@@ -9,6 +9,10 @@ import SwiftUI
         let store = SessionUsageStore()
         // 0.5.394: the page's plan ruler never starts the helper here; every page shows the 2026-11-14 reading, closed.
         let planPane = try JSONDecoder().decode(PlanPane.self, from: Data(planFixture.utf8))
+        let contractPane = try JSONDecoder().decode(PlanPane.self, from: Data(planFixture
+            .replacingOccurrences(of: #""closest":"codex""#, with: #""closest":"claude""#)
+            .replacingOccurrences(of: #""state":"failed","usedPct":null"#, with: #""state":"failed","usedPct":40"#).utf8))
+        guard contractPane.lines[0].usedPct == 40, contractPane.closest == "claude", !contractPane.lines[0].hasRuler else { fatalError("plan: the contract payload did not build") }
         PlanRulerStore.shared.offscreen = true
         PlanRulerStore.shared.pane = planPane
         PlanRulerStore.shared.open = false
@@ -186,13 +190,15 @@ import SwiftUI
         }
         // 0.5.394 plan ruler (Miles: "Collapsed, tap to open"), drawn to round 2 tap-mac: closed, open, a failed read and
         // reading, light and dark, wide and narrow. Same reading as the web harness.
+        var planHeights: [String: Int] = [:]
         for dark in [false, true] {
             for width in [1200.0, 760.0] {
-                for state in ["closed", "open", "failed", "reading"] {
+                for state in ["closed", "open", "failed", "reading", "contract-closed", "contract"] {
                     let plan = PlanRulerStore()
                     plan.offscreen = true
-                    plan.open = state != "closed"
-                    plan.pane = state == "failed" ? nil : planPane
+                    plan.open = !state.hasSuffix("closed")
+                    // contract: a payload the server should never send (Claude failed, yet with 40% and named closest).
+                    plan.pane = state == "failed" ? nil : state.hasPrefix("contract") ? contractPane : planPane
                     plan.failed = state == "failed"
                     plan.loading = state == "reading"
                     let view = PlanRulerView(plan: plan, narrow: width < 944).padding(24).frame(width: width, alignment: .top).background(COSPalette.panel).cosControlTheme()
@@ -205,6 +211,7 @@ import SwiftUI
                     let until = Date().addingTimeInterval(0.4)
                     while Date() < until { RunLoop.main.run(until: Date().addingTimeInterval(0.05)); host.layoutSubtreeIfNeeded() }
                     host.frame.size.height = max(60, host.fittingSize.height)
+                    planHeights["\(Int(width)) \(dark ? "dark" : "light") \(state)"] = Int(host.frame.height)
                     print("plan \(Int(width)) \(dark ? "dark" : "light") \(state): \(Int(host.frame.height)) pt tall")
                     guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { fatalError("plan bitmap unavailable") }
                     host.cacheDisplay(in: host.bounds, to: rep)
@@ -213,6 +220,52 @@ import SwiftUI
                 }
             }
         }
+        // A refresh never changes the height: reading and a failed read take the open height, closed is one row everywhere.
+        let closed = Set(planHeights.filter { $0.key.hasSuffix("closed") }.values)
+        guard planHeights.count == 24, closed.count == 1, let closedHeight = closed.first else { fatalError("plan: closed heights differ \(planHeights)") }
+        for width in [1200, 760] { for theme in ["light", "dark"] {
+            let open = planHeights["\(width) \(theme) open"]!
+            guard ["failed", "reading", "contract"].allSatisfy({ planHeights["\(width) \(theme) \($0)"] == open }), open > closedHeight else {
+                fatalError("plan: \(width) \(theme) open, failed and reading differ \(planHeights)")
+            }
+        } }
+        // Lead 13:44: the store itself, run here because this harness compiles the view. Two triggers while a read is in
+        // flight send one request; a failed read keeps nothing from before; an offscreen store never reads.
+        @MainActor final class PlanProbe { var calls: [Bool] = []; var fail = false; var release = false; var done = false; var returned = 0 }
+        let probe = PlanProbe()
+        let live = PlanRulerStore(read: { refresh in
+            probe.calls.append(refresh)
+            while !probe.release { try await Task.sleep(nanoseconds: 10_000_000) }
+            if probe.fail { throw CocoaError(.fileReadUnknown) }
+            return planPane
+        })
+        let quiet = PlanRulerStore(read: { _ in probe.calls.append(true); return planPane })
+        quiet.offscreen = true
+        Task { @MainActor in
+            let first = Task { @MainActor in await live.load(refresh: false) }
+            while probe.calls.isEmpty { await Task.yield() }
+            // Not awaited: without the in-flight guard each would block inside the held read, and the check below would
+            // never run (run 5 at 15:20 caught that mutant only as "did not finish"). Wait until both triggers returned
+            // or a second request went out, whichever comes first.
+            let second = Task { @MainActor in await live.load(refresh: true); probe.returned += 1 }   // the page's Refresh while the open's read is in flight
+            let third = Task { @MainActor in await live.load(refresh: false); probe.returned += 1 }   // and Usage appearing again
+            var spins = 0
+            while probe.returned < 2 && probe.calls.count < 2 && spins < 200_000 { await Task.yield(); spins += 1 }
+            guard probe.calls == [false], probe.returned == 2, live.loading else { fatalError("plan: two triggers in flight sent \(probe.calls)") }
+            probe.release = true; await first.value; await second.value; await third.value
+            guard live.pane == planPane, !live.failed, !live.loading else { fatalError("plan: a read did not land") }
+            probe.fail = true
+            await live.load(refresh: true)
+            guard probe.calls == [false, true], live.pane == nil, live.failed else { fatalError("plan: a failed read kept numbers from before") }
+            await quiet.load(refresh: true)
+            guard probe.calls == [false, true] else { fatalError("plan: an offscreen store read") }
+            probe.done = true
+        }
+        let deadline = Date().addingTimeInterval(10)
+        while !probe.done && Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        guard probe.done else { fatalError("plan: the store run did not finish") }
+        print("PASS: plan store executed: two triggers in flight send one request; a failed read keeps nothing; offscreen never reads")
+        print("PASS: plan ruler heights: closed \(closedHeight) pt everywhere; open, failed and reading equal at each width and theme")
         for dark in [false, true] {
             let detail = SessionUsageInspector(title: "Saturday, Oct 24, 2026", rows: rows.filter { $0.day == month + "-24" }, excludingCacheReads: false, measure: .tokens,
                 isPeriod: true, canGoEarlier: true, canGoLater: false, comparison: nil, onStep: { _ in }, onClear: {}, onInspectDay: { _ in })

@@ -21471,7 +21471,9 @@ final class COSControlHelper {
             throw HelperError.message("Plan use is not read in the isolated preview")
         }
         let path = "/api/usage/plan" + (args.contains("--refresh") ? "?refresh=1" : "")
-        guard let response = request(path, method: "GET", token: try readToken(), body: nil, timeout: 50) else {
+        // Only the explicit connected test candidate (a loopback fixture, never 3141 or 3143) changes where this asks.
+        let candidate = try reviewCandidateTransport()
+        guard let response = request(path, method: "GET", token: try candidate?.token ?? readToken(), body: nil, timeout: 50, reviewCandidatePort: candidate?.port) else {
             throw HelperError.message("COS could not read plan use from the server (no answer in 50 s).")
         }
         guard response.status == 200, let answer = response.body, answer["protocolVersion"] as? Int == 1, answer["lines"] is [Any] else {
