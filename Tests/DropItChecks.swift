@@ -44,13 +44,15 @@ struct StandDown: Error {}
         var holding: Set<String> = []
         var waiting: [String: [CheckedContinuation<Void, Never>]] = [:]
         var down = false
+        var captureOnEntry: Set<String> = []
         func op(_ args: [String]) -> String { args.count > 2 ? args[2] : "" }
         func run(_ args: [String], _ stdin: Data?) async throws -> HelperResponse {
             log.append((args, stdin))
             let op = op(args)
+            let captured = captureOnEntry.contains(op) ? answers[op] : nil
             if holding.contains(op) { await withCheckedContinuation { waiting[op, default: []].append($0) } }
             if down { throw StandDown() }
-            return HelperResponse(ok: true, message: "x", details: answers[op] ?? answered(500))
+            return HelperResponse(ok: true, message: "x", details: captured ?? answers[op] ?? answered(500))
         }
         func release(_ op: String) { holding.remove(op); for c in waiting[op] ?? [] { c.resume() }; waiting[op] = nil }
         func calls(_ op: String) -> [[String]] { log.filter { self.op($0.args) == op }.map(\.args) }
@@ -466,6 +468,107 @@ struct StandDown: Error {}
         await files.readSettings()
         check(files.dropTakes == 5, "[capability files] the settings answer says how many files a drop takes")
         try? FileManager.default.removeItem(at: scratch)
+
+        // Shared history is server-owned. A new Mac shows web answers; cursors and terminal outcomes merge by id.
+        let shared = DropItStore(run: stand.run)
+        shared.historyOn = { true }; shared.timelineOn = { true }; shared.threadOn = { true }; shared.threadOnlyOn = { true }
+        let sharedID = "t:aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        let sharedRow = #"{"id":"\#(sharedID)","at":"2026-11-05T12:00:00Z","kind":"chat","question":"from the web","answer":"start","full":false,"status":"running","clientJobId":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","generation":1}"#
+        stand.answers["thread-history"] = answered(200, #""protocol":1,"entries":[\#(sharedRow)],"updated":[],"older":"c2.123.t000000000","newest":"c3.1.0.0.0","more":false"#)
+        await shared.loadThreadHistory()
+        check(shared.threadEntries.count == 1 && shared.threadEntries[0].question == "from the web", "[shared history] another surface's chat survives a new store")
+        check(stand.calls("thread-history").last == DropIt.call("thread-history", ["--timeline", "true"]), "[shared initial] newest page with timeline, no invented cursor")
+        let completed = sharedRow.replacingOccurrences(of: "\"running\"", with: "\"completed\"").replacingOccurrences(of: "\"start\"", with: "\"final preview\"")
+        stand.answers["thread-history"] = answered(200, #""protocol":1,"entries":[],"updated":[\#(completed)],"newest":"c3.1.1.0.0","more":false"#)
+        await shared.loadThreadHistory()
+        check(shared.threadEntries.count == 1 && shared.threadEntries[0].status == "completed" && shared.threadEntries[0].answer == "final preview", "[shared updated] a terminal outcome replaces the running card")
+        check(stand.calls("thread-history").last?.suffix(2) == ["--after", "c3.1.0.0.0"], "[shared poll] resumes the server cursor")
+        stand.answers["thread-entry"] = answered(200, #""entry":\#(completed.replacingOccurrences(of: "false", with: "true").replacingOccurrences(of: "final preview", with: "the entire answer"))"#)
+        await shared.expandThreadEntry(sharedID)
+        check(shared.threadEntries[0].full && shared.threadEntries[0].answer == "the entire answer", "[shared full] entry route expands the answer in place")
+        await shared.loadThreadHistory()
+        check(shared.threadEntries[0].answer == "the entire answer", "[shared full poll] preview polling preserves an expanded answer")
+        await shared.loadThreadHistory(older: true)
+        check(stand.calls("thread-history").last?.suffix(2) == ["--before", "c2.123.t000000000"], "[shared older] uses the opaque older cursor")
+        stand.answers["thread-history"] = answered(500)
+        await shared.loadThreadHistory()
+        check(shared.threadEntries.count == 1 && shared.threadHistoryLine != nil, "[shared offline] a failed refresh keeps loaded history and offers retry")
+        shared.askJob = { _, _, _, _, _ in .started("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee") }
+        shared.askState = { ids in Dictionary(uniqueKeysWithValues: ids.map { ($0, DropIt.AskState(status: "completed", answer: "local answer", number: nil, session: "aaaaaaaa-bbbb")) }) }
+        let registrations = stand.calls("thread-turn").count
+        check(await shared.ask("from this Mac"), "[thread only] starts with the existing Ask guard and routing")
+        check(stand.calls("thread").last == DropIt.call("thread", ["--thread-only", "true"]), "[thread only] requests a thread conversation")
+        check(shared.visibleAsks.isEmpty, "[shared dedupe] a local pending bubble is replaced by its ledger identity")
+        stand.answers["thread-history"] = answered(200, #""protocol":1,"entries":[],"updated":[\#(completed)],"newest":"c3.1.1.0.0","more":false"#)
+        await shared.loadThreadHistory()
+        check(shared.asks.last?.finished == true, "[shared terminal recovery] a shared terminal outcome unblocks an Ask even if the local receipt poll was lost")
+        await shared.refreshAsks()
+        check(stand.calls("thread-turn").count == registrations && shared.asks.last?.threadOnly == true, "[thread only] never manually registers a server-owned terminal turn")
+        stand.answers["thread-history"] = answered(200, #""protocol":1,"entries":[],"updated":[\#(completed.replacingOccurrences(of: "completed", with: "failed"))],"newest":"c3.1.2.0.0","more":false"#)
+        await shared.loadThreadHistory()
+        shared.retryOptions = { ("sonnet", "high", nil) }
+        stand.answers["thread-retry"] = answered(200, #""accepted":true,"jobStatus":"accepted""#)
+        await shared.retryThreadEntry(sharedID)
+        let retryBody = stdinObject(stand.log.last(where: { stand.op($0.args) == "thread-retry" })?.stdin)
+        check(retryBody["clientJobId"] as? String == "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" && retryBody["generation"] as? Int == 2 && retryBody["sessionId"] == nil,
+              "[shared retry] next generation of the same client id, never a new turn or a different conversation")
+        check(shared.threadEntries[0].status == "running" && shared.threadEntries[0].generation == 2, "[shared retry outcome] an old generation poll cannot roll a retry back")
+        // Deferred responses exercise real await boundaries, not a source-string expectation.
+        let races = Stand()
+        let race = DropItStore(run: races.run)
+        race.historyOn = { true }; race.threadOnlyOn = { true }
+        races.answers["thread-history"] = answered(200, #""protocol":1,"entries":[\#(completed)],"newest":"c1.1.1","more":false"#)
+        await race.loadThreadHistory()
+        races.captureOnEntry = ["thread-entry"]; races.holding = ["thread-entry"]
+        races.answers["thread-entry"] = answered(200, #""entry":\#(completed.replacingOccurrences(of: "false", with: "true"))"#)
+        let staleExpansion = Task { await race.expandThreadEntry(sharedID) }
+        while races.waiting["thread-entry"]?.isEmpty != false { await Task.yield() }
+        let newer = completed.replacingOccurrences(of: "final preview", with: "new answer").replacingOccurrences(of: "\"generation\":1", with: "\"generation\":2")
+        races.answers["thread-history"] = answered(200, #""protocol":1,"entries":[],"updated":[\#(newer)],"newest":"c1.1.2","more":false"#)
+        await race.loadThreadHistory()
+        races.release("thread-entry"); await staleExpansion.value
+        check(race.threadEntries[0].generation == 2 && race.threadEntries[0].answer == "new answer", "[shared expansion race] late generation-1 full answer cannot overwrite generation-2 outcome")
+        races.holding = ["thread-entry"]
+        races.answers["thread-entry"] = answered(200, #""entry":\#(newer.replacingOccurrences(of: "false", with: "true").replacingOccurrences(of: "new answer", with: "late full"))"#)
+        let closedExpansion = Task { await race.expandThreadEntry(sharedID) }
+        while races.waiting["thread-entry"]?.isEmpty != false { await Task.yield() }
+        race.closed(); races.release("thread-entry"); await closedExpansion.value
+        check(race.threadEntries[0].answer == "new answer", "[shared expansion closed] closing the pane invalidates its in-flight expansion")
+        race.retryOptions = { ("sonnet", nil, nil) }
+        let failed2 = newer.replacingOccurrences(of: "completed", with: "failed")
+        races.answers["thread-history"] = answered(200, #""protocol":1,"entries":[],"updated":[\#(failed2)],"newest":"c1.1.3","more":false"#)
+        await race.loadThreadHistory()
+        races.answers["thread-retry"] = answered(500)
+        await race.retryThreadEntry(sharedID) // generation 3 delivery unknown
+        let failed3 = failed2.replacingOccurrences(of: "\"generation\":2", with: "\"generation\":3")
+        races.answers["thread-history"] = answered(200, #""protocol":1,"entries":[],"updated":[\#(failed3)],"newest":"c1.1.4","more":false"#)
+        await race.loadThreadHistory()
+        await race.retryThreadEntry(sharedID)
+        check(stdinObject(races.log.last(where: { races.op($0.args) == "thread-retry" })?.stdin)["generation"] as? Int == 4,
+              "[shared uncertain retry] observing the uncertain generation terminal advances the next user retry")
+        races.captureOnEntry.insert("thread-retry"); races.holding = ["thread-retry"]
+        races.answers["thread-retry"] = answered(200, #""accepted":true,"jobStatus":"running""#)
+        let closedRetry = Task { await race.retryThreadEntry(sharedID) }
+        while races.waiting["thread-retry"]?.isEmpty != false { await Task.yield() }
+        race.closed(); races.release("thread-retry"); await closedRetry.value
+        check(race.threadEntries[0].generation == 3 && race.threadEntries[0].status == "failed", "[shared retry closed] a closed pane cannot apply an in-flight retry response")
+        let oldHistory = DropItStore(run: stand.run)
+        let historyCalls = stand.calls("thread-history").count
+        await oldHistory.loadThreadHistory()
+        check(stand.calls("thread-history").count == historyCalls, "[shared old server] history route never called without capability")
+        let cap = DropItCapability(statusDetails: details(#"{"dropItProtocol":1,"dropItEnabled":true,"dropItThread":1,"dropItThreadHistory":1,"dropItThreadTimeline":1,"cosThreadOnly":true}"#))
+        check(cap.hasHistory && cap.hasTimeline && cap.threadOnlyAsk && !DropItCapability().threadOnlyAsk, "[shared capability] history and thread-only are fail-closed on old servers")
+
+        let questionRow = ClaudeSession(.object(["id": .string("question-session"), "provider": .string("claude"), "name": .string("Question"),
+                                                "state": .string("waiting"), "alive": .bool(true), "waitingKind": .string("question"),
+                                                "waitingSource": .string("turn_end"), "waitingAskID": .string("turn_end:1794740000000")]))!
+        let bound = SessionChatPendingTurn(provider: "claude", sessionId: questionRow.sessionId, bindingId: "binding-fixture", epoch: 1,
+                                           boundTo: "fixture", clientTurnId: "fixture-turn", prompt: TodayHome.turnEndReply(choice: "Proceed"), sentAt: 1,
+                                           turnEndAskID: TodayHome.turnEndAsk(questionRow)?.id)
+        check(bound.questionArguments == ["--turn-end-ask-id", "turn_end:1794740000000"], "[question identity] parsed server identity becomes actual turn-send arguments")
+        check(TodayHome.validTurnEndAskID("turn_end:bad") == nil && TodayHome.validTurnEndAskID(nil) == nil, "[question identity old] invalid or absent identity cannot bind an answer")
+        let restored = try? JSONDecoder().decode(SessionChatPendingTurn.self, from: JSONEncoder().encode(bound))
+        check(restored?.turnEndAskID == bound.turnEndAskID, "[question identity recovery] a pending turn persists the exact seen question")
 
         // Words: no em dash, en dash or arrow in anything the chat says.
         for text in [DropIt.chatLine, DropIt.placeholder, DropIt.footReturn, DropIt.footNothingOut, DropIt.historyLine, DropIt.moveNote,

@@ -3144,6 +3144,7 @@ final class ControllerModel: ObservableObject {
     @Published var chatMessages: [SessionChatMessage] = []
     @Published var chatBinding: SessionChatBinding?
     @Published var chatVerdict: SessionChatVerdict?
+    private var chatDraftAskID: String?
     @Published var chatRefusal: String?
     /// Control-owned second line for refusals whose server copy names an
     /// action Control does not have (detach, fork). Never replaces the copy.
@@ -7673,6 +7674,7 @@ final class ControllerModel: ObservableObject {
         chatPollTask?.cancel()
         chatPollTask = nil
         chatPrefill.clear()
+        chatDraftAskID = nil
         chatDraft = ""
         chatMessages = []
         chatBinding = nil
@@ -7797,8 +7799,23 @@ final class ControllerModel: ObservableObject {
 
     /// Words placed in the open session's composer, unsent. Call after `openClaudeSession`, which clears the draft.
     func prefillChat(_ words: String) {
+        chatDraftAskID = nil
         chatDraft = words
         chatPrefill.place(words)
+    }
+
+    /// Bind the answer to the question the person actually saw. No identity on an older server means answer in its app.
+    func prefillTurnEndAnswer(_ words: String, askID: String?) {
+        prefillChat(words)
+        chatDraftAskID = TodayHome.validTurnEndAskID(askID)
+    }
+    func sendTurnEndAnswer(_ words: String, askID: String?) {
+        prefillTurnEndAnswer(words, askID: askID)
+        guard let askID = chatDraftAskID, openClaudeRow?.waitingAskID == askID else {
+            chatRefusal = "Not sent. This question changed or its identity is unavailable. Refresh the session before answering."
+            return
+        }
+        sendChatMessage()
     }
 
     /// Return in the composer. Placed words are not sent by it: the person edits them first, or presses Send.
@@ -7817,6 +7834,13 @@ final class ControllerModel: ObservableObject {
             chatRefusal = "That message is too long for one turn (32,000 characters max)."
             return
         }
+        let turnEndAskID = prompt.hasPrefix(TodayHome.turnEndPrefix) ? chatDraftAskID : nil
+        if prompt.hasPrefix(TodayHome.turnEndPrefix) {
+            guard let turnEndAskID, session.waitingAskID == turnEndAskID else {
+                chatRefusal = "Not sent. This question changed or its identity is unavailable. Refresh the session before answering."
+                return
+            }
+        }
         if chatVerdict?.caution == true, !chatCautionAcknowledged {
             chatCautionPending = true
             return
@@ -7828,7 +7852,7 @@ final class ControllerModel: ObservableObject {
         chatSending = true
         chatDidReattach = false
         Task { [weak self] in
-            await self?.performChatSend(session, prompt: prompt)
+            await self?.performChatSend(session, prompt: prompt, turnEndAskID: turnEndAskID)
         }
     }
 
@@ -7968,12 +7992,16 @@ final class ControllerModel: ObservableObject {
         return binding
     }
 
-    private func performChatSend(_ session: ClaudeSession, prompt: String) async {
+    private func performChatSend(_ session: ClaudeSession, prompt: String, turnEndAskID: String? = nil) async {
         defer { chatSending = false }
         // 0.5.238: THE PET'S ORDER. A probe that saw the thread mid-turn parks the
         // message instead of attaching into the refusal it already predicted. The queue
         // route re-runs the gate: a thread that freed meanwhile answers thread_free and
         // the ordinary send below takes over.
+        if turnEndAskID != nil, chatParkReason != nil {
+            chatRefusal = "Not sent. The session is working. An answer to a question is never sent late."
+            return
+        }
         if chatParkReason != nil {
             switch await parkPetTurn(session, clientTurnId: UUID().uuidString, prompt: prompt) {
             case .parked(let phase):
@@ -7996,7 +8024,7 @@ final class ControllerModel: ObservableObject {
                 // The turn started in the gap between the probe and this send: park it
                 // like the pet does. If the queue says the thread is free after all, the
                 // attach's own refusal copy (with Retry and Fork) stays on screen.
-                if let reason = lastAttachRefusalReason, Self.petQueueableReasons.contains(reason) {
+                if turnEndAskID == nil, let reason = lastAttachRefusalReason, Self.petQueueableReasons.contains(reason) {
                     switch await parkPetTurn(session, clientTurnId: UUID().uuidString, prompt: prompt) {
                     case .parked(let phase):
                         await noteChatParked(session, prompt: prompt, phase: phase)
@@ -8018,7 +8046,8 @@ final class ControllerModel: ObservableObject {
             boundTo: binding.boundTo,
             clientTurnId: UUID().uuidString,
             prompt: prompt,
-            sentAt: Date().timeIntervalSince1970
+            sentAt: Date().timeIntervalSince1970,
+            turnEndAskID: turnEndAskID
         )
         chatPendingTurn = pending
         persistPendingTurn(pending)
@@ -8081,6 +8110,7 @@ final class ControllerModel: ObservableObject {
             "--bound-to", pending.boundTo,
             "--client-turn-id", pending.clientTurnId,
         ]
+        args += pending.questionArguments
         if let acknowledgedRevision { args += ["--acknowledged-revision", acknowledgedRevision] }
         do {
             let response = try await helper.run(
@@ -8116,6 +8146,16 @@ final class ControllerModel: ObservableObject {
     ) async {
         let reason = details["reason"]?.string ?? ""
         let copy = details["reasonCopy"]?.string ?? "The turn was refused."
+        if pending.turnEndAskID != nil {
+            chatDraft = pending.prompt
+            chatDraftAskID = pending.turnEndAskID
+            chatRefusal = reason == "turn_end_answer_not_queued" ? "Not sent. The session is working. An answer to a question is never sent late."
+                : reason == "turn_end_ask_moved" ? "Not sent. The session has moved on from this question. Refresh it before answering."
+                : copy
+            chatRetryAvailable = false; chatForkAvailable = false; chatChangedRevision = nil
+            clearPendingTurn()
+            return
+        }
         if Self.chatReattachReasons.contains(reason), !chatDidReattach {
             chatDidReattach = true
             chatBinding = nil
@@ -8558,6 +8598,8 @@ final class ControllerModel: ObservableObject {
                     return .failed(session.provider == "cursor"
                         ? "This Cursor chat is not mid-turn, so it cannot take a message from COS. Send it from Cursor."
                         : "COS cannot queue a message for this session.")
+                case "turn_end_answer_not_queued":
+                    return .failed("Not sent. The session is working. An answer to a question is never sent late.")
                 case "duplicate_turn", "already_queued":
                     return .failed("That message is already queued for this session.")
                 case let reason:

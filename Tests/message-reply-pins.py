@@ -58,7 +58,7 @@ need("let picked = modelID.flatMap { id in handoff.models.firstIndex { $0.id == 
      and "guard let index = modelID == nil ? TodayHome.pickRunModel(handoff.models.map { ($0.id, $0.provider, $0.available) }) : picked else {" in run
      and "runNote = modelID == nil ? \"No model is available for a Work run. Open Work to start one.\" : MessageReply.modelGoneLine" in run,
      "[run] a picked model only while Work can run it, never a substitute; a run COS starts by itself keeps pickRunModel")
-need("MessageReply.effortOffered(e, provider: handoff.models[index].provider, efforts: handoff.efforts) ? e : nil" in run and "effort: sentEffort)" in run,
+need("MessageReply.effortOffered(e, provider: handoff.models[index].provider, efforts: handoff.efforts) ? e : nil" in run and "effort: sentEffort, cosThread: cosThread)" in run,
      "[run] an effort only one the server served for that model's agent")
 need("if mode == .newSession, let effort { job[\"effort\"] = effort }" in handoff and "efforts = (try? JSONDecoder().decode([String: [WorkEffortChoice]].self" in handoff,
      "[handoff] the effort rides only a new Work run; the served efforts are read with the models")

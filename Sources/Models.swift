@@ -176,7 +176,13 @@ struct DropItCapability: Equatable, Sendable {
     /// 0.5.374 (server 6.99.16): `capabilities.dropIt.thread.protocol`, the COS thread the chat's Ask continues. nil on an older
     /// server: each Ask starts a fresh session there, as before.
     var thread: Int? = nil
+    var history: Int? = nil
+    var timeline: Int? = nil
+    var threadOnly = false
     var threaded: Bool { available && thread == 1 }
+    var hasHistory: Bool { threaded && (history ?? 0) >= 1 }
+    var hasTimeline: Bool { hasHistory && (timeline ?? 0) >= 1 }
+    var threadOnlyAsk: Bool { hasHistory && threadOnly }
 
     /// The server has the Drop it routes this build speaks (protocol 1).
     var supported: Bool { protocolVersion == 1 }
@@ -193,6 +199,9 @@ struct DropItCapability: Equatable, Sendable {
         self.init(protocolVersion: details["dropItProtocol"]?.int, enabled: details["dropItEnabled"]?.bool == true,
                   source: details["dropItSource"]?.string, attachments: details["dropItAttachments"]?.int,
                   thread: details["dropItThread"]?.int)
+        history = details["dropItThreadHistory"]?.int
+        timeline = details["dropItThreadTimeline"]?.int
+        threadOnly = details["cosThreadOnly"]?.bool == true
     }
 }
 
@@ -1799,6 +1808,8 @@ struct SessionChatPendingTurn: Codable, Sendable {
     let clientTurnId: String
     let prompt: String
     let sentAt: Double
+    var turnEndAskID: String? = nil
+    var questionArguments: [String] { TodayHome.validTurnEndAskID(turnEndAskID).map { ["--turn-end-ask-id", $0] } ?? [] }
 }
 
 /// Optional list-level subagent counts. Missing or malformed readings stay unknown, never zero by default.
@@ -1874,6 +1885,7 @@ struct ClaudeSession: Identifiable, Sendable {
     /// 0.5.389 (D4, X1 turn-end asks): the server's additive `waiting_source` ("turn_end" for a turn that ended with the
     /// app's next-step box) and `waiting_choices` (that box's reply labels). Empty on a server without the feature.
     var waitingSource = ""
+    var waitingAskID: String? = nil
     var waitingChoices: [String] = []
     /// The server's optional `subagent_activity`; used as Today summary fallback if its bounded richer read misses.
     var subagentActivity: SessionSubagentActivity?
@@ -2215,6 +2227,7 @@ struct ClaudeSession: Identifiable, Sendable {
         waitingQuestion = o["waitingQuestion"]?.string ?? ""
         waitingQuestionCount = o["waitingQuestionCount"]?.int ?? 0
         waitingSource = o["waitingSource"]?.string ?? ""
+        waitingAskID = TodayHome.validTurnEndAskID(o["waitingAskID"]?.string)
         waitingChoices = (o["waitingChoices"]?.array ?? []).compactMap { $0.string ?? $0.object?["label"]?.string }
         subagentActivity = SessionSubagentActivity(o["subagentActivity"] ?? o["subagent_activity"])
     }
@@ -14097,7 +14110,7 @@ enum TodayHome {
             var next = row
             if let listed = list.first(where: { ClaudeSession.sameSession($0.id, row.id) }) {
                 if next.waitingQuestion.isEmpty { next.waitingQuestion = listed.waitingQuestion }
-                if next.waitingSource.isEmpty { next.waitingSource = listed.waitingSource; next.waitingChoices = listed.waitingChoices }
+                if next.waitingSource.isEmpty { next.waitingSource = listed.waitingSource; next.waitingChoices = listed.waitingChoices; next.waitingAskID = listed.waitingAskID }
                 if next.subagentActivity == nil { next.subagentActivity = listed.subagentActivity }
             }
             out.append(next)
@@ -14262,6 +14275,10 @@ enum TodayHome {
     struct TurnEndAsk: Equatable, Sendable {
         let ask: String?
         let choices: [String]
+        var id: String? = nil
+    }
+    static func validTurnEndAskID(_ value: String?) -> String? {
+        value.flatMap { $0.range(of: "\\Aturn_end:[0-9]{1,16}\\z", options: .regularExpression) != nil ? $0 : nil }
     }
     static let turnEndSource = "turn_end"
     static let turnEndMaxChoices = 2, turnEndChoiceMax = 40
@@ -14273,7 +14290,7 @@ enum TodayHome {
             choices.append(String(label.prefix(turnEndChoiceMax)))
             if choices.count == turnEndMaxChoices { break }
         }
-        return TurnEndAsk(ask: guarded(session.waitingDetail).map { ActivityHome.clip($0, 240) }, choices: choices)
+        return TurnEndAsk(ask: guarded(session.waitingDetail).map { ActivityHome.clip($0, 240) }, choices: choices, id: validTurnEndAskID(session.waitingAskID))
     }
     /// The words a reply sends: X1 CONTRACT v1 with Q1's text fix (COORD 07:23, W1 5c0588b): "not typed at this Mac" is
     /// false when the reply comes from COS Control on the Mac itself, so it says "not typed in this session". Attributed, never as if typed at

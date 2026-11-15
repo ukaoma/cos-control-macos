@@ -1361,7 +1361,7 @@ struct WorkRecommendationKey: Equatable {
     func submit(source: WorkSource, mode: WorkHandoffMode, session: WorkSession?, model: WorkModelChoice?, prompt: String, attachmentIds: [String] = [],
                 journalPrompt: String? = nil, origin: WorkRequestOrigin? = nil, replacing: String? = nil, resendAllFiles: Bool = false, orchestrationRunID: String? = nil, intentID suppliedID: String? = nil, recovery: WorkIndependentRecovery? = nil,
                 contextFileIDs: Set<String>? = nil, sessionFence: Bool = false, threadSessionID: String? = nil, threadDigest: String? = nil,
-                effort: String? = nil) async {
+                effort: String? = nil, cosThread: Bool = false) async {
         guard !busy else { return }
         if mode != .newSession, let line = KeyLanes.refusal(sessionID: session?.nativeID) { error = line; return }
         // 0.5.252: one send at a time. A send for the glasses does not take `busy` (the Agent workspace stays usable).
@@ -1425,7 +1425,7 @@ struct WorkRecommendationKey: Equatable {
                                               return candidate.utf16.count - instruction.utf16.count <= Self.draftLimit
                                                   && (!cutsForCursor || Self.cursorPrefillFits(candidate, tag: tag, instruction: instruction))
                                           })
-            let sent = WorkCardFiles.compose(text: text, block: files.block, instruction: instruction)
+            let sent = cosThread ? text : WorkCardFiles.compose(text: text, block: files.block, instruction: instruction)
             guard sent.utf16.count - instruction.utf16.count <= Self.draftLimit else {
                 throw failure("The context and the card's file list together are over \(Self.draftLimit.formatted()) characters. Shorten the context, or remove a file from the card.")
             }
@@ -1447,7 +1447,7 @@ struct WorkRecommendationKey: Equatable {
             // 0.5.253: Cursor work opens Cursor's window for a person to press Send, so a send for the glasses (Start, Reply
             // by voice, Not done yet: every one comes through here) is refused before anything is recorded.
             let destination = mode == .newSession ? model!.provider : session!.provider
-            let prefill = Self.prefillProviders.contains(destination) && mode != .fork
+            let prefill = Self.prefillProviders.contains(destination) && mode != .fork && !cosThread
             if origin != nil, prefill { throw failure(WorkRequestOrigin.cursorNeedsMac) }
             // 0.5.254: a Cursor link keeps every path; a file list too long for it is refused before anything is recorded.
             if prefill, !Self.cursorPrefillFits(sent, tag: tag, instruction: instruction) { throw failure(Self.cursorFilesTooLong) }
@@ -1502,11 +1502,12 @@ struct WorkRecommendationKey: Equatable {
                 // 0.5.252 (Miles, 2026-09-30): one started from the glasses stays in the background. Its app is never
                 // opened by itself, so the COS server keeps the session and the glasses can reply to it; the card's
                 // Open in Claude or Codex still works, and from then the app owns it as usual.
-                if opensInApp, Self.appProviders.contains(row.provider) {
+                if opensInApp, !cosThread, Self.appProviders.contains(row.provider) {
                     row.appOpen = origin == nil ? WorkAppOpen() : WorkAppOpen(skipped: WorkRequestOrigin.staysInBackground)
                 }
                 row.channel = "job"; try save(row)
                 var job: [String: Any] = ["clientJobId": id, "query": sent, "model": model!.id]
+                if cosThread { job["cosThread"] = true }
                 if source.id == MeetingConsolidation.source.id { job["maintenanceWorkflow"] = MeetingConsolidation.workflow }
                 // 0.5.371: the COS chat's Ask sends its uploaded files with the words (POST /api/query-jobs attachmentIds).
                 if !attachmentIds.isEmpty { job["attachmentIds"] = Array(attachmentIds.prefix(5)) }
@@ -1523,7 +1524,7 @@ struct WorkRecommendationKey: Equatable {
                 let data = try JSONSerialization.data(withJSONObject: job)
                 if pastWireDeadline(&row) { row.appOpen = nil } else {
                     let result = try await call(["work-new"], data)
-                    if let http = result["httpStatus"]?.int, [400, 401, 403, 404, 422].contains(http) || (http == 409 && result["error"]?.object?["code"]?.string == "message_era_mismatch") {
+                    if let http = result["httpStatus"]?.int, [400, 401, 403, 404, 422].contains(http) || (http == 409 && (["message_era_mismatch", "cos_thread_off", "thread_session_web_only"].contains(result["error"]?.object?["code"]?.string ?? ""))) {
                         row.status = "refused"; row.detail = result["error"]?.object?["message"]?.string ?? "New-session admission was refused (\(http))."
                     } else { applyJob(result, to: &row) }
                 }

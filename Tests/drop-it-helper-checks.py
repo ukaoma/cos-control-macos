@@ -218,6 +218,31 @@ with tempfile.TemporaryDirectory(prefix='cos-drop-it-', dir='/tmp') as tmp:
         check(run('--op', 'summary')['details'] == {'transport': 'answered', 'httpStatus': 500}, 'a code outside the grammar and a multi-line message carry nothing')
         state['status'] = 200; state['body'] = ANSWER
 
+        # Shared history grammar, full answers, and no stray server keys.
+        state['status'] = 200
+        entry = {'id': 't:' + DROP, 'at': '2026-11-05T12:00:00Z', 'kind': 'chat', 'question': WORDS,
+                 'answer': 'answer', 'status': 'completed', 'full': True, 'clientJobId': DROP, 'generation': 1, 'SECRET': 'SECRET'}
+        state['body'] = {'protocol': 1, 'entries': [entry], 'updated': [entry], 'older': 'c2.123.t000000000', 'newest': 'c3.1.1.0.0', 'more': False, 'SECRET': 'SECRET'}
+        got = run('--op', 'thread-history', '--timeline', 'true', '--before', 'c2.123.t000000000')
+        check(requests[-1][1] == '/api/cos-thread/history?limit=40&timeline=1&before=c2.123.t000000000', 'shared history uses the opaque cursor and timeline')
+        check(got['details']['entries'][0]['answer'] == 'answer' and got['details']['updated'][0]['status'] == 'completed' and 'SECRET' not in json.dumps(got), 'history and outcomes carry contract fields only')
+        state['body']['updated'] = [dict(entry, id='t:updated-' + str(i)) for i in range(130)]
+        got = run('--op', 'thread-history', '--after', 'c3.1.0.0.0')
+        check(len(got['details']['updated']) == 130 and got['details']['newest'] == 'c3.1.1.0.0', 'all byte-bounded outcome updates survive before cursor advance')
+        state['body'] = {'entry': dict(entry, answer='A' * 9000), 'source': 'ledger', 'SECRET': 'SECRET'}
+        got = run('--op', 'thread-entry', '--entry', 't:' + DROP)
+        check(got['details']['entry']['answer'] == 'A' * 9000 and 'SECRET' not in json.dumps(got), 'whole answer is kept without unrelated fields')
+        state['body'] = {'protocol': 1, 'next': {'mode': 'fresh', 'reason': 'thread_only', 'digest': 'earlier chat'}}
+        got = run('--op', 'thread', '--thread-only', 'true')
+        check(requests[-1][1] == '/api/cos-thread?threadOnly=1' and got['details']['next']['reason'] == 'thread_only', 'thread-only fresh segment and digest survive helper boundary')
+        prior = len(requests)
+        for args in [('--op', 'thread-history', '--before', 'x&limit=999'), ('--op', 'thread-history', '--before', 'c1.1', '--after', 'c1.2'), ('--op', 'thread-entry', '--entry', '../secret')]:
+            check(not run(*args)['ok'], 'invalid history route refused before transport')
+        check(len(requests) == prior, 'invalid shared reads never reach the server')
+
+        work_contract = subprocess.run([sys.argv[1], 'self-test-work'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=40)
+        check(work_contract.returncode == 0 and json.loads(work_contract.stdout).get('ok') is True, 'actual work-new thread marker and exact session-question payload parsers pass isolated admission contract')
+
         # ── no server, no token
         sock = socket.socket(); sock.bind(('127.0.0.1', 0)); dead = sock.getsockname()[1]; sock.close()
         check(run('--op', 'summary', port=dead)['details'] == {'transport': 'unavailable'}, 'nothing listening: unavailable')

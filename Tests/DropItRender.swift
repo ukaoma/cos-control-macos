@@ -94,6 +94,21 @@ nonisolated(unsafe) var uploadCount = 0
     }
 }
 
+/// Shared history fixture: web-origin prior chat, a timeline note, and a durable newest answer. No live helper or API.
+@MainActor func sharedHistoryStore() async -> DropItStore {
+    let fallback = fixtureRun(feedOn: false)
+    let store = DropItStore(run: { args, input in
+        if args.count > 2, args[2] == "thread-history" {
+            return answered(#""protocol":1,"entries":[{"id":"t:fixture-old-chat","at":"\#(iso(1500))","kind":"chat","question":"What did we settle on yesterday?","answer":"Use the approved figures in the deck. This answer was kept from the web.","full":true,"status":"completed","clientJobId":"fixture-old-chat","generation":1},{"id":"b:fixture-meeting","at":"\#(iso(75))","kind":"meeting","line":"Kickoff planning review","ref":{"type":"meeting","domain":"quilt","month":"2026-11","filename":"fixture.md"}},{"id":"t:fixture-latest-chat","at":"\#(iso(2))","kind":"chat","question":"What should I do next?","answer":"Start with the two store stories Gina is collecting.\n\nKeep the approved Q4 figures alongside the narrative so the deck and board pack agree.","full":true,"status":"completed","clientJobId":"fixture-latest-chat","generation":1}],"updated":[],"older":"c2.123.t000000000","newest":"c3.2.2.1.0","more":false"#)
+        }
+        if args.count > 2, args[2] == "thread" { return answered(#""protocol":1,"thread":{"asks":2},"next":{"mode":"continue","reason":"continue","sessionId":"fixture-session"}"#) }
+        return try await fallback(args, input)
+    })
+    store.threadOn = { true }; store.historyOn = { true }; store.timelineOn = { true }; store.threadOnlyOn = { true }
+    await store.loadFeed(opening: true)
+    return store
+}
+
 /// 0.5.371 composer fixtures: a store-front photo and a one-page PDF, drawn here (no real files), in the scratch home.
 func fixtureFiles() -> (photo: URL, pdf: URL) {
     let folder = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("composer-fixtures", isDirectory: true)
@@ -234,6 +249,9 @@ struct SettingsRowCard: View {
             // The chat, in the window (opened the way the pinned row opens it).
             let chatModel = seededModel(dropIt: true)
             try renderWindow(chatModel, width: 1280, height: 1500, name: "2-cos-chat", out: out) { chatModel.openDropItChat() }
+            let shared = await sharedHistoryStore()
+            try render(DropItChatPane(store: shared, onAllMessages: {}, onHistory: {}, onOpen: { _, _ in }, polls: false),
+                       width: 1000, height: 900, name: "2b-cos-shared-history", out: out)
             // History, in the window.
             let historyModel = seededModel(dropIt: true)
             try renderWindow(historyModel, width: 1280, height: 900, name: "3-history", out: out) { historyModel.openDropItHistory() }
@@ -308,6 +326,11 @@ struct SettingsRowCard: View {
         }
         await on.setDropItEnabled(false)
         check(!on.status.dropIt.enabled && !on.dropItChatOpen && !on.dropItHistoryOpen, "[settings off] turning it off in Settings closes the chat")
+
+        let refusedAnswer = TodayHome.turnEndReply(choice: "Keep these words")
+        on.sendTurnEndAnswer(refusedAnswer, askID: "turn_end:1794740000000")
+        check(on.chatDraft == refusedAnswer && on.chatRefusal?.contains("Not sent.") == true && !on.chatRetryAvailable,
+              "[question moved] preserves the typed answer with a plain refusal and no automatic retry")
 
         // ⌘K: the old row exactly while off, Drop it while on.
         var inputs = SetupAssistant.Center.Inputs()

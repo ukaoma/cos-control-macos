@@ -780,12 +780,38 @@ extension DropIt {
         var session: String?
         var threaded = false
         var recorded = false
+        var threadOnly = false
+        var attachmentIDs: [String] = []
         /// Reply in the message reader (D4): the turn this Ask replies to, so the reader shows only its own replies.
         var replyTo: String? = nil
-        var finished: Bool { ["completed", "failed", "canceled", "refused"].contains(status) }
+        var finished: Bool { ["completed", "failed", "canceled", "refused", "interrupted"].contains(status) }
     }
     /// What the window reads back for an Ask (the Work receipt behind it).
     struct AskState: Equatable, Sendable { var status: String; var answer: String?; var number: Int?; var session: String? = nil }
+
+    /// Durable shared chat or a quiet timeline breadcrumb, returned oldest first by the server.
+    struct ThreadEntry: Identifiable, Sendable {
+        var id: String
+        var at: Date
+        var kind: String
+        var question: String
+        var answer: String
+        var full: Bool
+        var status: String
+        var number: Int?
+        var clientJobId: String?
+        var generation: Int?
+        var line: String
+        var outcome: String?
+        var reference: [String: JSONValue]
+    }
+    static func threadEntry(_ value: JSONValue) -> ThreadEntry? {
+        guard let o = value.object, let id = o["id"]?.string, let at = date(o["at"]), let kind = o["kind"]?.string else { return nil }
+        return ThreadEntry(id: id, at: at, kind: kind, question: o["question"]?.string ?? "", answer: o["answer"]?.string ?? "",
+                           full: o["full"]?.bool == true, status: o["status"]?.string ?? "completed", number: o["messageNo"]?.int,
+                           clientJobId: o["clientJobId"]?.string, generation: o["generation"]?.int, line: o["line"]?.string ?? "",
+                           outcome: o["outcome"]?.string, reference: o["ref"]?.object ?? [:])
+    }
 
     // MARK: The COS thread (0.5.374, server 6.99.16)
 
@@ -811,6 +837,8 @@ extension DropIt {
         }
     }
     static let threadNew = "New thread"
+    static let modelKey = "cos.chat.model"
+    static let effortKey = "cos.chat.effort"
     static let referenceQuery = DropItThreadCopy.referenceQuery
     static let threadBusy = "COS is still answering your last question in this thread. Ask again when it lands, or start a New thread."
     /// "claude:<id>" from a Work receipt, as the server's bare id.
@@ -835,7 +863,7 @@ extension DropIt {
         }.map(\.element)
     }
     /// The card title over an answer: its Messages number once the server gave one.
-    static func askTitle(_ ask: Ask) -> String { ask.number.map { "Message #\($0)" } ?? "Asking COS" }
+    static func askTitle(_ ask: Ask) -> String { ask.threadOnly ? "COS" : ask.number.map { "Message #\($0)" } ?? "Asking COS" }
 }
 
 // MARK: The store
@@ -888,6 +916,38 @@ final class DropItStore: ObservableObject {
     var askJob: (@MainActor (_ target: String, _ prompt: String, _ attachmentIds: [String], _ session: String?, _ digest: String?) async -> AskStart)?
     /// 0.5.374: whether the server keeps the COS thread (6.99.16). Off: every Ask starts fresh, as before.
     var threadOn: () -> Bool = { false }
+    var historyOn: () -> Bool = { false }
+    var timelineOn: () -> Bool = { false }
+    var threadOnlyOn: () -> Bool = { false }
+    /// The window checks the same Today cap/breaker and resolves the model currently shown by this composer.
+    var retryOptions: (@MainActor () -> (model: String?, effort: String?, refusal: String?))?
+    @Published private(set) var retryingEntries: Set<String> = []
+    private var retryGenerations: [String: Int] = [:]
+    @Published private(set) var threadEntries: [DropIt.ThreadEntry] = []
+    @Published private(set) var threadHistoryLoaded = false
+    @Published private(set) var threadHistoryLoading = false
+    @Published private(set) var threadHistoryLine: String?
+    @Published private(set) var threadOlder: String?
+    @Published private(set) var entryBusy: Set<String> = []
+    @Published private(set) var entryLines: [String: String] = [:]
+    private var threadNewest: String?
+    private var historyTimeline: Bool?
+    private var threadHistoryGeneration = 0
+    /// Local cards stay until their shared ledger entry exists. Reply cards belong to the message reader.
+    var visibleAsks: [DropIt.Ask] {
+        let jobs = Set(threadEntries.compactMap(\.clientJobId))
+        let entries = Set(threadEntries.map(\.id))
+        return asks.filter { $0.replyTo == nil && !jobs.contains($0.id) && !entries.contains("t:" + $0.id) }
+    }
+    var chatItems: [DropIt.Item] {
+        // Timeline notifications already have their actionable inbox card; avoid a second quiet copy.
+        let inboxIDs = Set(items.map(\.id))
+        let shared = threadEntries.filter { !($0.kind == "notification" && inboxIDs.contains($0.reference["id"]?.string ?? "")) }
+            .map { e in DropIt.Item(id: e.id, kind: e.kind == "chat" ? "thread-chat" : "thread-note", threadId: e.id,
+                                   createdAt: e.at, readAt: e.at, source: "cos", title: nil, line: e.line,
+                                   links: [], actions: [], live: false, undoUntil: nil) }
+        return DropIt.merged(items + shared, asks: visibleAsks).sorted { $0.createdAt == $1.createdAt ? $0.id < $1.id : $0.createdAt < $1.createdAt }
+    }
     /// The line under the chat's header about the thread, nil while the server has none.
     @Published private(set) var threadLine: String?
     @Published private(set) var threadBusy = false
@@ -937,6 +997,7 @@ final class DropItStore: ObservableObject {
         let reply = await ask(DropIt.call("feed", ["--limit", "200"]))
         guard case .ok(let details) = reply else {
             if !loaded { line = DropIt.line(reply) }
+            await loadThreadHistory()
             return
         }
         let fresh = (details["items"]?.array ?? []).compactMap(DropIt.item)
@@ -945,6 +1006,7 @@ final class DropItStore: ObservableObject {
         loaded = true
         if line == DropIt.unreachableLine { line = nil }
         if fresh.contains(where: { $0.readAt == nil }), let last = fresh.last { await markRead(through: last.id) }
+        await loadThreadHistory()
     }
 
     /// Mark everything up to `through` read (POST /api/inbox/read).
@@ -963,7 +1025,7 @@ final class DropItStore: ObservableObject {
     }
 
     /// The chat closed: the next opening draws its own "N new" line.
-    func closed() { newMark = nil }
+    func closed() { newMark = nil; threadHistoryGeneration += 1 }
 
     /// Take an answer's items into the chat, in place where they exist, in order after the rest.
     private func merge(_ answer: DropIt.Answer) {
@@ -1026,7 +1088,7 @@ final class DropItStore: ObservableObject {
         let threaded = threadOn()
         if threaded {
             if asks.contains(where: { $0.threaded && !$0.finished }) { line = DropIt.threadBusy; return false }
-            if case .ok(let details) = await ask(DropIt.call("thread")) { next = DropIt.threadNext(details); threadLine = DropIt.threadLine(next) }
+            if case .ok(let details) = await ask(threadCall) { next = DropIt.threadNext(details); threadLine = DropIt.threadLine(next) }
         }
         var start = await askJob("cos:ask:" + DropIt.newDropID(), words, ids, next?.session, next?.digest)
         // A session the server no longer takes: the same Ask once more, fresh, so the question is never lost to the thread.
@@ -1035,6 +1097,8 @@ final class DropItStore: ObservableObject {
         case .started(let job):
             var made = DropIt.Ask(id: job, words: words, files: sent.map { DropIt.Ask.File(name: $0.name, kind: $0.kind, thumb: $0.thumb) }, at: now())
             made.threaded = threaded
+            made.threadOnly = threadOnlyOn()
+            made.attachmentIDs = ids
             asks.append(made)
             // The files went with the words; their copies stay for the thumbnails under his bubble.
             if separateFiles == nil { attachments.removeAll { ids.contains($0.mediaId ?? "") } }
@@ -1090,12 +1154,13 @@ final class DropItStore: ObservableObject {
             if let session = state.session { asks[index].session = session }
         }
         await recordThreadTurns()
+        await loadThreadHistory()
     }
 
     /// 0.5.374: each finished threaded Ask, once, into the server's COS thread (its session, words and answer), so the next Ask
     /// continues it and the thread is kept and searchable. Failed runs are never recorded.
     func recordThreadTurns() async {
-        for index in asks.indices where asks[index].threaded && !asks[index].recorded && asks[index].status == "completed" {
+        for index in asks.indices where asks[index].threaded && !asks[index].threadOnly && !asks[index].recorded && asks[index].status == "completed" {
             guard let session = asks[index].session else { continue }
             var body: [String: Any] = ["clientId": asks[index].id, "sessionId": session, "query": String(asks[index].words.prefix(4_000)),
                                        "provider": "claude"]
@@ -1111,8 +1176,109 @@ final class DropItStore: ObservableObject {
     /// The thread's state for the line under the header (the chat calls it when it opens).
     func refreshThread() async {
         guard threadOn() else { threadLine = nil; return }
-        if case .ok(let details) = await ask(DropIt.call("thread")) { threadLine = DropIt.threadLine(DropIt.threadNext(details)) }
+        if case .ok(let details) = await ask(threadCall) { threadLine = DropIt.threadLine(DropIt.threadNext(details)) }
     }
+    private var threadCall: [String] { DropIt.call("thread", threadOnlyOn() ? ["--thread-only", "true"] : []) }
+
+    /// Initial newest page, older pages on request, then cursor polling with terminal updates. Cursors stay opaque.
+    func loadThreadHistory(older: Bool = false) async {
+        guard historyOn(), !threadHistoryLoading else { return }
+        let timeline = timelineOn()
+        if historyTimeline != timeline {
+            historyTimeline = timeline; threadHistoryGeneration += 1
+            threadEntries = []; threadNewest = nil; threadOlder = nil; threadHistoryLoaded = false
+        }
+        guard !older || threadOlder != nil else { return }
+        threadHistoryLoading = true
+        defer { threadHistoryLoading = false }
+        let generation = threadHistoryGeneration
+        var cursor = older ? threadOlder : threadNewest
+        // Bound catch-up work per refresh; next poll resumes from the last page.
+        for _ in 0..<5 {
+            var args = timeline ? ["--timeline", "true"] : []
+            if let cursor { args += [older ? "--before" : "--after", cursor] }
+            let reply = await ask(DropIt.call("thread-history", args))
+            guard generation == threadHistoryGeneration, historyOn(), timeline == timelineOn() else { return }
+            guard case .ok(let details) = reply, details["protocol"]?.int == 1 else {
+                threadHistoryLine = "Could not load the COS chat history. Try again."
+                return
+            }
+            let entries = (details["entries"]?.array ?? []).compactMap(DropIt.threadEntry)
+            let updates = (details["updated"]?.array ?? []).compactMap(DropIt.threadEntry)
+            var byID = Dictionary(uniqueKeysWithValues: threadEntries.map { ($0.id, $0) })
+            for entry in entries + updates {
+                var entry = entry
+                // A preview refresh cannot replace a whole answer already expanded, unless its outcome changed.
+                if let old = byID[entry.id], (old.generation ?? 0) > (entry.generation ?? 0) { continue }
+                if let old = byID[entry.id], old.full, !entry.full, old.status == entry.status, old.generation == entry.generation { entry.answer = old.answer; entry.full = true }
+                byID[entry.id] = entry
+                if let local = asks.firstIndex(where: { $0.id == entry.clientJobId || "t:" + $0.id == entry.id }),
+                   ["completed", "failed", "interrupted"].contains(entry.status) {
+                    asks[local].status = entry.status
+                    if asks[local].answer == nil || entry.full { asks[local].answer = entry.answer }
+                }
+                if let pending = retryGenerations[entry.id], (entry.generation ?? 0) >= pending { retryGenerations[entry.id] = nil }
+            }
+            threadEntries = byID.values.sorted { $0.at == $1.at ? $0.id < $1.id : $0.at < $1.at }
+            if older || !threadHistoryLoaded { threadOlder = details["older"]?.string }
+            if !older { threadNewest = details["newest"]?.string }
+            threadHistoryLoaded = true; threadHistoryLine = nil
+            guard !older, details["more"]?.bool == true, let next = threadNewest, next != cursor else { break }
+            cursor = next
+        }
+    }
+
+    func retryThreadEntry(_ id: String) async {
+        guard threadOnlyOn(), !retryingEntries.contains(id), let index = threadEntries.firstIndex(where: { $0.id == id }),
+              ["failed", "interrupted"].contains(threadEntries[index].status),
+              let client = threadEntries[index].clientJobId, let generation = threadEntries[index].generation,
+              let options = retryOptions?() else { return }
+        if let refusal = options.refusal { entryLines[id] = refusal; return }
+        guard let model = options.model else { entryLines[id] = "Choose an available model before asking again."; return }
+        retryingEntries.insert(id); entryLines[id] = nil
+        defer { retryingEntries.remove(id) }
+        let next = max(retryGenerations[id] ?? generation + 1, generation + 1)
+        retryGenerations[id] = next
+        var body: [String: Any] = ["clientJobId": client, "generation": next, "query": threadEntries[index].question, "model": model]
+        if let effort = options.effort { body["effort"] = effort }
+        if let local = asks.first(where: { $0.id == client }), !local.attachmentIDs.isEmpty { body["attachmentIds"] = local.attachmentIDs }
+        guard let data = DropIt.json(body) else { return }
+        let epoch = threadHistoryGeneration
+        let reply = await ask(DropIt.call("thread-retry"), data)
+        guard epoch == threadHistoryGeneration, threadOnlyOn() else { return }
+        guard case .ok(let details) = reply, details["accepted"]?.bool == true else {
+            if case .refused(_, let why) = reply { entryLines[id] = why }
+            else { entryLines[id] = "Could not confirm the retry. Ask again here to recover the same attempt." }
+            return
+        }
+        if let index = threadEntries.firstIndex(where: { $0.id == id }), (threadEntries[index].generation ?? 0) < next {
+            let reported = details["jobStatus"]?.string ?? "running"
+            threadEntries[index].status = ["completed", "failed", "interrupted"].contains(reported) ? reported : reported == "canceled" ? "interrupted" : "running"
+            threadEntries[index].answer = ""; threadEntries[index].generation = next
+        }
+        retryGenerations[id] = nil
+        await expandThreadEntry(id)
+        await loadThreadHistory()
+    }
+
+    func expandThreadEntry(_ id: String) async {
+        guard historyOn(), !entryBusy.contains(id), let before = threadEntries.first(where: { $0.id == id }) else { return }
+        let epoch = threadHistoryGeneration
+        entryBusy.insert(id); entryLines[id] = nil
+        defer { entryBusy.remove(id) }
+        let reply = await ask(DropIt.call("thread-entry", ["--entry", id]))
+        guard epoch == threadHistoryGeneration, historyOn(), let index = threadEntries.firstIndex(where: { $0.id == id }),
+              threadEntries[index].generation == before.generation, threadEntries[index].status == before.status,
+              threadEntries[index].answer == before.answer, threadEntries[index].full == before.full else { return }
+        guard case .ok(let details) = reply, let value = details["entry"], let entry = DropIt.threadEntry(value),
+              entry.id == id else {
+            entryLines[id] = "Could not load the rest. Try again."; return
+        }
+        guard entry.generation == before.generation, entry.status == before.status else { return }
+        threadEntries[index] = entry
+        if !entry.full { entryLines[id] = "Only the start of this answer was kept." }
+    }
+
     /// New thread: the server closes this one (kept, with its summary) and the next Ask starts fresh.
     func newThread() async {
         guard threadOn(), !threadBusy else { return }

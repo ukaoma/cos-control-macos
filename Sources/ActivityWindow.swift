@@ -6729,8 +6729,7 @@ struct TurnEndAskBlock: View {
     @State private var other = ""
 
     private func send(_ words: String) {
-        model.prefillChat(words)
-        model.sendChatMessage()
+        model.sendTurnEndAnswer(words, askID: ask.id)
     }
 
     var body: some View {
@@ -6764,7 +6763,7 @@ struct TurnEndAskBlock: View {
                     .cosField()
                     .disabled(gate != nil || busy)
                 Button("Send") {
-                    if let words = TodayHome.turnEndReply(other: other) { other = ""; send(words) }
+                    if let words = TodayHome.turnEndReply(other: other) { send(words) }
                 }
                 .controlSize(.small)
                 .disabled(gate != nil || busy || TodayHome.turnEndReply(other: other) == nil)
@@ -9073,7 +9072,7 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
     /// outlives this call by 20 seconds, so a caller that must know cannot read the note.
     @discardableResult
     func startRun(target: String, title: String, prompt: String, context: String, handoff: WorkHandoffStore, attachmentIds: [String] = [],
-                  threadSessionID: String? = nil, threadDigest: String? = nil, modelID: String? = nil, effort: String? = nil) async -> Bool {
+                  threadSessionID: String? = nil, threadDigest: String? = nil, cosThread: Bool = false, modelID: String? = nil, effort: String? = nil) async -> Bool {
         guard !runBusy else { return false }
         let guardrail = TodayRunGuard(defaults: .standard)
         let admission = guardrail.admission(target: target, inFlight: Self.inFlightTargets(handoff.receipts),
@@ -9104,7 +9103,7 @@ let todayLog = Logger(subsystem: "com.gotcos.control", category: "activity-today
         // An effort goes only with the model it was offered for (the server's efforts for that model's agent).
         let sentEffort = effort.flatMap { e in MessageReply.effortOffered(e, provider: handoff.models[index].provider, efforts: handoff.efforts) ? e : nil }
         await handoff.submit(source: source, mode: .newSession, session: nil, model: handoff.models[index], prompt: prompt, attachmentIds: attachmentIds, intentID: id,
-                             threadSessionID: threadSessionID, threadDigest: threadDigest, effort: sentEffort)
+                             threadSessionID: threadSessionID, threadDigest: threadDigest, effort: sentEffort, cosThread: cosThread)
         let receipt = handoff.receipts.first { $0.id == id }
         let outcome = TodayRunGuard.outcome(receiptStatus: receipt?.status, error: handoff.error)
         let before = guardrail.pausedUntil(now: Date())
@@ -11288,11 +11287,11 @@ extension ActivityWindow {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 ForEach(ask.choices, id: \.self) { choice in
-                    Button(choice) { todayReplyInControl(session, words: TodayHome.turnEndReply(choice: choice)) }
+                    Button(choice) { todayReplyInControl(session, words: TodayHome.turnEndReply(choice: choice), askID: ask.id) }
                         .buttonStyle(TodayButtonStyle(primary: true))
                 }
                 // The prefix in place, the person's own words after it.
-                Button(TodayHome.turnEndOtherLabel) { todayReplyInControl(session, words: TodayHome.turnEndPrefix) }
+                Button(TodayHome.turnEndOtherLabel) { todayReplyInControl(session, words: TodayHome.turnEndPrefix, askID: ask.id) }
                     .buttonStyle(TodayButtonStyle())
             }
             Text(TodayHome.turnEndTodayLine)
@@ -11302,7 +11301,7 @@ extension ActivityWindow {
 
     /// Opens the session in Sessions' reader and places `words` in its composer, unsent. Never over another session's
     /// unsent reply (opening clears the composer), and only for a session whose composer can take a message.
-    func todayReplyInControl(_ session: ClaudeSession, words: String) {
+    func todayReplyInControl(_ session: ClaudeSession, words: String, askID: String? = nil) {
         guard commandCanContinue(session) else {
             today.flash("That session cannot take a message from here now. Answer it in its app.")
             return
@@ -11316,7 +11315,7 @@ extension ActivityWindow {
         sessionsPane = .sessions
         selectedSessionID = session.id
         model.openClaudeSession(session)
-        model.prefillChat(words)
+        if words.hasPrefix(TodayHome.turnEndPrefix) { model.prefillTurnEndAnswer(words, askID: askID) } else { model.prefillChat(words) }
     }
 
     func commandCanContinue(_ session: ClaudeSession) -> Bool {
@@ -11548,10 +11547,15 @@ extension ActivityWindow {
     /// 0.5.371 option A: the composer's Ask, the same Today Work run as a drop routed to a question, with the uploaded files.
     /// A refusal is the run guard's own line (Work busy, the switch, the breaker, no model).
     var dropItAskJob: @MainActor (String, String, [String], String?, String?) async -> DropItStore.AskStart {
-        { [today, handoffStore] target, prompt, files, session, digest in
+        { [today, handoffStore, model] target, prompt, files, session, digest in
+            if handoffStore.models.isEmpty { await handoffStore.refresh() }
+            let menu = MessageReply.menu(handoffStore.models.map { ($0.id, $0.available, $0.resolvedModel) })
+            let picked = UserDefaults.standard.string(forKey: DropIt.modelKey).flatMap { $0.isEmpty ? nil : $0 }
+            let chosen = MessageReply.model(picked: picked, menu: menu)
+            let effort = UserDefaults.standard.string(forKey: DropIt.effortKey).flatMap { $0.isEmpty ? nil : $0 }
             let accepted = await today.startRun(target: target, title: String(prompt.prefix(60)), prompt: prompt,
                                                 context: "Asked in the COS chat on \(TodayHome.headerDate(Date())).", handoff: handoffStore, attachmentIds: files,
-                                                threadSessionID: session, threadDigest: digest)
+                                                threadSessionID: session, threadDigest: digest, cosThread: model.status.dropIt.threadOnlyAsk, modelID: chosen, effort: effort)
             guard accepted, let id = today.lastStartedRunID else { return .refused(today.runNote ?? DropIt.askHeldLine) }
             return .started(id)
         }
@@ -11604,6 +11608,18 @@ extension ActivityWindow {
         model.dropIt.askState = dropItAskState
         // 0.5.374: the COS thread, only on a server that has it (6.99.16); an older one starts every Ask fresh, as before.
         model.dropIt.threadOn = { [model] in model.status.dropIt.threaded }
+        model.dropIt.historyOn = { [model] in model.status.dropIt.hasHistory }
+        model.dropIt.timelineOn = { [model] in model.status.dropIt.hasTimeline }
+        model.dropIt.threadOnlyOn = { [model] in model.status.dropIt.threadOnlyAsk }
+        model.dropIt.retryOptions = { [today, handoffStore] in
+            let menu = MessageReply.menu(handoffStore.models.map { ($0.id, $0.available, $0.resolvedModel) })
+            let chosen = MessageReply.model(picked: UserDefaults.standard.string(forKey: DropIt.modelKey), menu: menu)
+            let provider = chosen.flatMap { id in handoffStore.models.first { $0.id == id }?.provider }
+            let effort = UserDefaults.standard.string(forKey: DropIt.effortKey).flatMap { picked in
+                provider.flatMap { MessageReply.effortOffered(picked, provider: $0, efforts: handoffStore.efforts) ? picked : nil }
+            }
+            return (chosen, effort, today.runRefusal(target: "cos:ask:retry", handoff: handoffStore))
+        }
         model.dropIt.dropTakes = model.status.dropIt.attachments
         model.dropIt.isSecret = { WorkCardFiles.looksSecret(name: $0) }
     }
@@ -11622,7 +11638,13 @@ extension ActivityWindow {
             },
             planForWork: workConnectionsEnabled && !isolatedWorkPreview ? { words in
                 askWorkPlanRequest = AskWorkPlan.Request(question: words)
-            } : nil)
+            } : nil,
+            askModels: { [handoffStore] in MessageReply.menu(handoffStore.models.map { ($0.id, $0.available, $0.resolvedModel) }) },
+            askEfforts: { [handoffStore] id in
+                guard let provider = handoffStore.models.first(where: { $0.id == id })?.provider else { return [] }
+                return MessageReply.effortChoices(provider: provider, efforts: handoffStore.efforts)
+            },
+            loadAskModels: { [handoffStore] in if handoffStore.models.isEmpty { await handoffStore.refresh() } })
     }
 
     /// An open action on a chat item: Work with the card selected, the session, Threads, Memories To review, or Messages. Each

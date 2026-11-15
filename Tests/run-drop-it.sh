@@ -26,6 +26,14 @@ app_binary() {
   SOURCES=("${(@)SOURCES:#*/COSControlApp.swift}")
   /usr/bin/python3 "$ROOT/Tests/kit-compile.py" "$ROOT/Tests/compile-guard.sh" "${SWIFTC[@]}" -parse-as-library "${SOURCES[@]}" "$ROOT/Tests/DropItRender.swift" \
     -framework SwiftUI -framework AppKit -framework ServiceManagement -framework Vision -o "$DIR/drop-it-render"
+  # Opt-in review bundle survives the lane's scratch cleanup, with fonts beside the compiled fixture.
+  if [[ -n "${COS_DROP_IT_ARTIFACT_DIR:-}" ]]; then
+    mkdir -p "$COS_DROP_IT_ARTIFACT_DIR"
+    cp "$DIR/drop-it-render" "$COS_DROP_IT_ARTIFACT_DIR/DropItRender"
+    cp -R "$DIR/Fonts" "$COS_DROP_IT_ARTIFACT_DIR/"
+    cp "$DIR/"*.svg "$COS_DROP_IT_ARTIFACT_DIR/" 2>/dev/null || true
+    print "DropItRender review bundle: $COS_DROP_IT_ARTIFACT_DIR/DropItRender"
+  fi
 }
 
 if [[ "$MODE" == "render" ]]; then

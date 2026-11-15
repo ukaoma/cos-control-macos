@@ -144,6 +144,14 @@ struct DropItComposerHooks {
     var loadMoveOptions: () async -> Void = {}
     /// Explicit planning for an existing Work card; normal Ask/Drop continue through their original paths.
     var planForWork: ((String) -> Void)? = nil
+    var askModels: () -> [MessageReply.Choice] = { [] }
+    var askEfforts: (String) -> [WorkEffortChoice] = { _ in [] }
+    var loadAskModels: () async -> Void = {}
+}
+
+private struct DropItBottomPreference: PreferenceKey {
+    static let defaultValue: CGFloat = .zero
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 struct DropItChatPane: View {
@@ -167,6 +175,11 @@ struct DropItChatPane: View {
     @State private var movePick: String?
     @State private var moveSearch = ""
     @State private var dropTargeted = false
+    @State private var followsLatest = true
+    @State private var positioned = false
+    @State private var jumpRequest = 0
+    @AppStorage(DropIt.modelKey) private var pickedModel = ""
+    @AppStorage(DropIt.effortKey) private var pickedEffort = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -185,6 +198,7 @@ struct DropItChatPane: View {
         }
         .background(TodayInk.page)
         .task {
+            await hooks.loadAskModels()
             await store.loadFeed(opening: true)
             guard polls else { return }
             while !Task.isCancelled {
@@ -255,7 +269,7 @@ struct DropItChatPane: View {
             HStack(spacing: 18) {
                 Button(DropIt.allMessages, action: onAllMessages).buttonStyle(TodayLinkStyle(color: TodayInk.grey, size: 13))
                 Button(DropIt.historyLink, action: onHistory).buttonStyle(TodayLinkStyle(size: 13))
-                if store.threadLine != nil {
+                if store.threadLine != nil && !store.historyOn() {
                     Button(DropIt.threadNew) { Task { await store.newThread() } }.buttonStyle(TodayLinkStyle(color: TodayInk.grey, size: 13))
                         .disabled(store.threadBusy || store.asks.contains { $0.threaded && !$0.finished })
                         .help("Start a fresh COS thread. This one is kept and stays searchable.")
@@ -272,28 +286,74 @@ struct DropItChatPane: View {
     }
 
     private var thread: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    if store.loaded && store.items.isEmpty && store.asks.isEmpty {
-                        Text(DropIt.chatEmpty).font(COSType.body(13)).foregroundStyle(TodayInk.grey)
-                            .frame(maxWidth: .infinity).padding(.top, 40)
-                    } else if !store.loaded, let line = store.line {
-                        Text(line).font(COSType.body(13)).foregroundStyle(TodayInk.grey).frame(maxWidth: .infinity).padding(.top, 40)
+        GeometryReader { viewport in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if store.historyOn() {
+                            if store.threadOlder != nil {
+                                Button(store.threadHistoryLoading ? "Loading earlier…" : "Load earlier") {
+                                    // Keep the first rendered row fixed while the older page is prepended.
+                                    let anchor = store.chatItems.first?.id
+                                    Task {
+                                        followsLatest = false
+                                        await store.loadThreadHistory(older: true)
+                                        if let anchor { proxy.scrollTo(anchor, anchor: .top) }
+                                    }
+                                }.buttonStyle(TodayLinkStyle(size: 12)).disabled(store.threadHistoryLoading)
+                                    .accessibilityLabel("Load earlier COS chat history")
+                            }
+                            if let line = store.threadHistoryLine {
+                                HStack {
+                                    Text(line).font(COSType.body(12)).foregroundStyle(TodayInk.sub)
+                                    Button("Try again") { Task { await store.loadThreadHistory() } }.buttonStyle(TodayLinkStyle(size: 12))
+                                }
+                            }
+                        }
+                        if store.loaded && store.chatItems.isEmpty && !store.threadHistoryLoading {
+                            Text(DropIt.chatEmpty).font(COSType.body(13)).foregroundStyle(TodayInk.grey)
+                                .frame(maxWidth: .infinity).padding(.top, 40)
+                        } else if !store.loaded, let line = store.line {
+                            Text(line).font(COSType.body(13)).foregroundStyle(TodayInk.grey).frame(maxWidth: .infinity).padding(.top, 40)
+                        }
+                        ForEach(DropIt.rows(store.chatItems, firstNew: store.newMark?.first, newCount: store.newMark?.count ?? 0, now: now)) { row in
+                            rowView(row)
+                        }
+                        Color.clear.frame(height: 1).id("drop-it-bottom")
+                            .background(GeometryReader { bottom in
+                                Color.clear.preference(key: DropItBottomPreference.self, value: bottom.frame(in: .named("cos-chat-scroll")).maxY)
+                            })
                     }
-                    ForEach(DropIt.rows(DropIt.merged(store.items, asks: store.asks), firstNew: store.newMark?.first, newCount: store.newMark?.count ?? 0, now: now)) { row in
-                        rowView(row)
-                    }
-                    Color.clear.frame(height: 1).id("drop-it-bottom")
+                    .frame(maxWidth: 760)
+                    .padding(.horizontal, 28).padding(.vertical, 18)
+                    .frame(maxWidth: .infinity)
                 }
-                .frame(maxWidth: 760)
-                .padding(.horizontal, 28).padding(.vertical, 18)
-                .frame(maxWidth: .infinity)
+                .coordinateSpace(name: "cos-chat-scroll")
+                .onPreferenceChange(DropItBottomPreference.self) { bottom in
+                    if positioned { followsLatest = bottom <= viewport.size.height + 50 }
+                }
+                .onChange(of: store.chatItems.map { $0.id + $0.line }) { _, _ in
+                    if !positioned || followsLatest { proxy.scrollTo("drop-it-bottom", anchor: .bottom) }
+                    if store.loaded && (!store.historyOn() || store.threadHistoryLoaded) { positioned = true }
+                }
+                .onChange(of: store.threadEntries.map { $0.answer + $0.status }) { _, _ in
+                    if followsLatest { proxy.scrollTo("drop-it-bottom", anchor: .bottom) }
+                }
+                .onChange(of: store.asks.map { $0.answer ?? "" }) { _, _ in
+                    if followsLatest { proxy.scrollTo("drop-it-bottom", anchor: .bottom) }
+                }
+                .onChange(of: jumpRequest) { _, _ in
+                    followsLatest = true; proxy.scrollTo("drop-it-bottom", anchor: .bottom)
+                }
+                .onAppear { positioned = false; followsLatest = true; proxy.scrollTo("drop-it-bottom", anchor: .bottom) }
+                .overlay(alignment: .bottomTrailing) {
+                    Button { jumpRequest += 1 } label: { Label("Jump to latest", systemImage: "arrow.down.to.line") }
+                        .buttonStyle(.bordered).background(TodayInk.page, in: Capsule())
+                        .accessibilityLabel("Jump to latest COS chat message")
+                        .help("Scroll to the bottom of your COS chat")
+                        .padding(12)
+                }
             }
-            // Opens on the newest line, and follows a new one in.
-            .defaultScrollAnchor(.bottom)
-            .onChange(of: store.items.count + store.asks.count) { _, _ in proxy.scrollTo("drop-it-bottom", anchor: .bottom) }
-            .onAppear { proxy.scrollTo("drop-it-bottom", anchor: .bottom) }
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
     }
@@ -315,7 +375,8 @@ struct DropItChatPane: View {
             .padding(.top, 8)
             .accessibilityElement(children: .combine)
         case .item(let item):
-            if item.kind == "ask" { askRows(item) } else if item.fromYou { youBubble(item) } else { cosCard(item) }
+            if item.kind == "thread-chat" || item.kind == "thread-note" { sharedRow(item) }
+            else if item.kind == "ask" { askRows(item) } else if item.fromYou { youBubble(item) } else { cosCard(item) }
         }
     }
 
@@ -508,7 +569,23 @@ struct DropItChatPane: View {
     private var composer: some View {
         let askReady = DropIt.askBlock(text: draft, files: store.attachments) == nil && !store.asking && !store.sending
         let dropReady = DropIt.cleaned(draft) != nil && !store.asking && !store.sending
+        let models = hooks.askModels()
+        let selected = MessageReply.model(picked: pickedModel.isEmpty ? nil : pickedModel, menu: models)
+        let efforts = selected.map { hooks.askEfforts($0) } ?? []
         return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                if let selected {
+                    COSDropdown("Model", selection: Binding(get: { selected }, set: { pickedModel = $0; pickedEffort = "" }),
+                                options: models.map { COSDropdownOption($0.id, $0.label) })
+                        .fixedSize().accessibilityLabel("Model for COS Ask")
+                }
+                if !efforts.isEmpty {
+                    COSDropdown("Effort", selection: $pickedEffort,
+                                options: [COSDropdownOption("", "Default")] + efforts.map { COSDropdownOption($0.value, $0.label) })
+                        .fixedSize().accessibilityLabel("Effort for COS Ask")
+                }
+                Spacer(minLength: 0)
+            }
             VStack(alignment: .leading, spacing: 8) {
                 // 0.5.372: mid drag, the "Drop to attach" slot sits at the end of the chip row, where the file will land, instead of
                 // an overlay on the box (0.5.371's covered the second chip's size). With no files yet the row appears for the drag.
@@ -594,7 +671,7 @@ struct DropItChatPane: View {
         let words = draft
         Task {
             // The box keeps the words until the run has started.
-            if await store.ask(words), draft == words { draft = "" }
+            if await store.ask(words) { jumpRequest += 1; if draft == words { draft = "" } }
         }
     }
 
@@ -604,7 +681,7 @@ struct DropItChatPane: View {
         let words = draft
         Task {
             // The box keeps the words until the server has them.
-            if await store.send(words) != nil, draft == words { draft = "" }
+            if await store.send(words) != nil { jumpRequest += 1; if draft == words { draft = "" } }
         }
     }
 
@@ -615,6 +692,76 @@ struct DropItChatPane: View {
         panel.prompt = "Attach"; panel.message = "Choose photos, video, PDFs or documents to send with your message."
         guard panel.runModal() == .OK else { return }
         store.attach(panel.urls.map { ($0, $0.lastPathComponent) })
+    }
+
+    @ViewBuilder
+    private func sharedRow(_ item: DropIt.Item) -> some View {
+        if let entry = store.threadEntries.first(where: { $0.id == item.id }) {
+            if entry.kind == "chat" {
+                let local = store.asks.first { $0.id == entry.clientJobId || "t:" + $0.id == entry.id }
+                let answer = entry.status == "running" && (entry.generation ?? 1) == 1 ? local?.answer ?? entry.answer : entry.answer
+                VStack(alignment: .leading, spacing: 8) {
+                    youBubble(DropIt.Item(id: entry.id + "-question", kind: "drop", threadId: entry.id, createdAt: entry.at,
+                                         readAt: entry.at, source: "cos", title: nil, line: entry.question, links: [], actions: [], live: false, undoUntil: nil))
+                    if let local = store.asks.first(where: { $0.id == entry.clientJobId || "t:" + $0.id == entry.id }), !local.files.isEmpty {
+                        HStack(spacing: 6) {
+                            ForEach(Array(local.files.enumerated()), id: \.offset) { _, file in DropItSentFile(name: file.name, kind: file.kind, thumb: file.thumb) }
+                        }.frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                    HStack(alignment: .top, spacing: 10) {
+                        DropItAvatar(size: 30)
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("COS").font(COSType.body(14, weight: .semibold))
+                                if let no = entry.number { Text("#\(no)").font(COSType.body(11)).foregroundStyle(TodayInk.grey) }
+                            }
+                            if !answer.isEmpty {
+                                COSMarkdownView(text: LensAnswerStructure.structure(answer)).font(COSType.body(13.5)).textSelection(.enabled)
+                            } else {
+                                Text(entry.status == "running" ? "COS is answering." : entry.status == "completed" ? "This answer was not kept." : "This ask did not finish.")
+                                    .font(COSType.body(13)).foregroundStyle(TodayInk.sub)
+                            }
+                            if ["failed", "interrupted"].contains(entry.status), !entry.answer.isEmpty {
+                                Text("This ask did not finish.").font(COSType.body(12)).foregroundStyle(TodayInk.hot)
+                            }
+                            if entry.status == "completed", !entry.full, !entry.answer.isEmpty {
+                                Button(store.entryBusy.contains(entry.id) ? "Loading the rest…" : "Show all of it") {
+                                    Task { await store.expandThreadEntry(entry.id) }
+                                }.buttonStyle(TodayLinkStyle(size: 12)).disabled(store.entryBusy.contains(entry.id))
+                            }
+                            if store.threadOnlyOn(), ["failed", "interrupted"].contains(entry.status), entry.clientJobId != nil, entry.generation != nil {
+                                Button(store.retryingEntries.contains(entry.id) ? "Asking again…" : "Ask again") {
+                                    Task { await store.retryThreadEntry(entry.id) }
+                                }.buttonStyle(TodayLinkStyle(size: 12)).disabled(store.retryingEntries.contains(entry.id))
+                            }
+                            if let line = store.entryLines[entry.id] { Text(line).font(COSType.body(12)).foregroundStyle(TodayInk.sub) }
+                        }
+                        .padding(14).frame(maxWidth: 600, alignment: .leading)
+                        .background(TodayInk.panel, in: RoundedRectangle(cornerRadius: 16))
+                        .overlay(RoundedRectangle(cornerRadius: 16).stroke(TodayInk.panelBorder, lineWidth: 1))
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }.id(item.id)
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(timelineLine(entry)).font(COSType.body(12)).foregroundStyle(TodayInk.sub).textSelection(.enabled)
+                    Spacer(minLength: 0)
+                    Text(entry.at, style: .time).font(COSType.body(11)).foregroundStyle(TodayInk.grey)
+                }.padding(.leading, 40).padding(.vertical, 6).id(item.id)
+            }
+        }
+    }
+
+    private func timelineLine(_ entry: DropIt.ThreadEntry) -> String {
+        let prefix: String
+        switch entry.kind {
+        case "notification": prefix = "COS sent: "
+        case "session_question": prefix = "A session asked: "
+        case "meeting": prefix = "Meeting: "
+        case "message": prefix = "Message" + (entry.reference["no"]?.int.map { " #\($0)" } ?? "") + ": "
+        default: prefix = ""
+        }
+        let outcomes = ["replied": " You replied.", "acted": " You acted on it.", "dismissed": " You dismissed it.", "closed": " It was closed.", "seen": " You saw it.", "answered": " You answered."]
+        return prefix + entry.line + (outcomes[entry.outcome ?? ""] ?? "")
     }
 
     // MARK: This Mac's Asks
@@ -647,7 +794,7 @@ struct DropItChatPane: View {
                                 Text(DropIt.askTitle(ask)).font(COSType.body(14, weight: .semibold)).foregroundStyle(TodayInk.ink)
                                 Text(askStateWord(ask)).font(COSType.body(12)).foregroundStyle(TodayInk.sub)
                             }
-                            if ["failed", "refused", "canceled"].contains(ask.status) {
+                            if ["failed", "refused", "canceled", "interrupted"].contains(ask.status) {
                                 Text(DropIt.askFailedLine).font(COSType.body(13)).foregroundStyle(TodayInk.hot).fixedSize(horizontal: false, vertical: true)
                             } else if let answer = ask.answer, !answer.isEmpty {
                                 COSMarkdownView(text: LensAnswerStructure.structure(answer)).font(COSType.body(13.5)).foregroundStyle(TodayInk.ink).textSelection(.enabled)
@@ -670,7 +817,7 @@ struct DropItChatPane: View {
     private func askStateWord(_ ask: DropIt.Ask) -> String {
         switch ask.status {
         case "completed", "delivered", "reviewed": "Answered"
-        case "failed", "refused", "canceled": "Did not finish"
+        case "failed", "refused", "canceled", "interrupted": "Did not finish"
         default: "Answering"
         }
     }

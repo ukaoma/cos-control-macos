@@ -353,6 +353,9 @@ final class COSControlHelper {
         // Phone approvals (option A, PK-02, set-phone-approvals): written only by the Settings switch, off by default.
         "COS_WEB_KEY_AUTHORITY",
         "COS_WEB_KEY_DEVICES",
+        // Optional Web Push choices survive repair/update; absence keeps the server's off defaults.
+        "COS_WEB_PUSH",
+        "COS_WEB_PUSH_PRODUCTION",
         "COS_CLAUDE_SESSIONS_ENABLED",
         "COS_CLAUDE_SESSIONS_SHOW_NAMES",
         // Continue an agent thread. The server reads this key straight off
@@ -3117,6 +3120,7 @@ final class COSControlHelper {
         details.merge(Self.liveMeetingStatusFields(health?["capabilities"])) { _, new in new }
         // 0.5.371 (server Drop it P1): `capabilities.dropIt`, codes and bools only.
         details.merge(Self.dropItStatusFields(health?["capabilities"])) { _, new in new }
+        details["cosThreadOnly"] = Self.dropItBool((health?["features"] as? [String: Any])?["cosThreadOnly"]) == true
         return details
     }
 
@@ -12105,7 +12109,7 @@ final class COSControlHelper {
         ("waiting_kind", "waitingKind"), ("waiting_detail", "waitingDetail"), ("failure", "failure"),
         ("last_reply", "lastReply"), ("queued_turns", "queuedTurns"),
         // 0.5.389 (D4, X1 turn-end asks): additive, sent only while the server's COS_TURN_END_ASKS is on.
-        ("waiting_source", "waitingSource"), ("waiting_choices", "waitingChoices"),
+        ("waiting_source", "waitingSource"), ("waiting_choices", "waitingChoices"), ("waiting_ask_id", "waitingAskID"),
     ]
 
     static func serverStateProjection(_ row: [String: Any]) -> [String: Any] {
@@ -19066,7 +19070,7 @@ final class COSControlHelper {
                                          // 0.5.372 (server Drop it P2, 6.99.11): the banner outbox, the pending reminders and the P2 settings.
                                          "banners", "reminders", "p2", "p2-set",
                                          // 0.5.374 (server 6.99.16): the COS thread, one size-capped session the chat's Ask continues.
-                                         "thread", "thread-new", "thread-turn"]
+                                         "thread", "thread-new", "thread-turn", "thread-history", "thread-entry", "thread-retry"]
     static let dropItTextMax = 2_000
     static let dropItDests: Set<String> = ["new_card", "existing_card", "thread", "memory", "session", "note", "reminder", "ask"]
     static let dropItKinds: Set<String> = ["idea", "task", "note", "memory", "file", "reminder", "ask"]
@@ -19265,7 +19269,7 @@ final class COSControlHelper {
                              "sessionId": session(t["sessionId"]), "contextTokens": dropItInt(t["contextTokens"]).map { $0 as Any } ?? NSNull(),
                              "startedAt": dropItStamp(t["startedAt"]).map { $0 as Any } ?? NSNull()] as [String: Any]
         }
-        let reasons: Set<String> = ["continue", "empty", "size", "missing_session", "manual"]
+        let reasons: Set<String> = ["continue", "empty", "size", "missing_session", "manual", "thread_only"]
         if let n = body["next"] as? [String: Any], let mode = n["mode"] as? String, mode == "continue" || mode == "fresh",
            let reason = n["reason"] as? String, reasons.contains(reason) {
             var next: [String: Any] = ["mode": mode, "reason": reason, "sessionId": session(n["sessionId"])]
@@ -19273,6 +19277,29 @@ final class COSControlHelper {
             // A continue with no session to continue is not a continue.
             if mode == "continue", next["sessionId"] is NSNull { next["mode"] = "fresh" }
             out["next"] = next
+        }
+        return out
+    }
+
+    /// Shared thread history: only typed, bounded contract fields cross the helper boundary.
+    static func dropItThreadEntry(_ value: Any?) -> [String: Any]? {
+        guard let raw = value as? [String: Any], let id = dropItPlain(raw["id"], max: 100),
+              let at = dropItStamp(raw["at"]), let kind = raw["kind"] as? String,
+              ["chat", "notification", "session_question", "meeting", "message"].contains(kind) else { return nil }
+        var out: [String: Any] = ["id": id, "at": at, "kind": kind]
+        for key in ["question", "answer", "line", "threadId", "status", "clientJobId", "outcome", "by", "surface"] {
+            let cap = key == "answer" ? 1_000_000 : key == "question" ? 48_000 : 300
+            if let text = dropItPlain(raw[key], max: cap, newlines: true) { out[key] = text }
+        }
+        for key in ["answerChars", "messageNo", "generation"] { if let n = dropItInt(raw[key]) { out[key] = n } }
+        if let full = dropItBool(raw["full"]) { out["full"] = full }
+        if let ref = raw["ref"] as? [String: Any] {
+            var kept: [String: Any] = [:]
+            for key in ["type", "id", "threadId", "provider", "domain", "month", "filename", "era"] {
+                if let text = dropItPlain(ref[key], max: 300) { kept[key] = text }
+            }
+            if let no = dropItInt(ref["no"]) { kept["no"] = no }
+            out["ref"] = kept
         }
         return out
     }
@@ -19330,7 +19357,23 @@ final class COSControlHelper {
             guard let object = try? JSONSerialization.jsonObject(with: stdin), let shape = dropItP2Shape(object, strict: true),
                   let body = dropItJSON(shape) else { return nil }
             return ("PUT", "/api/drops/settings/p2", body)
-        case "thread": return ("GET", "/api/cos-thread", nil)
+        case "thread":
+            return ("GET", "/api/cos-thread" + (opt("--thread-only") == "true" ? "?threadOnly=1" : ""), nil)
+        case "thread-history":
+            var parts = ["limit=40"]
+            if opt("--timeline") == "true" { parts.append("timeline=1") }
+            guard opt("--before") == nil || opt("--after") == nil else { return nil }
+            for key in ["before", "after"] {
+                if let value = opt("--" + key) {
+                    guard dropItMatches(value, "\\A[A-Za-z0-9._-]{1,240}\\z") else { return nil }
+                    parts.append(key + "=" + value)
+                }
+            }
+            return ("GET", "/api/cos-thread/history?" + parts.joined(separator: "&"), nil)
+        case "thread-entry":
+            guard let id = opt("--entry"), dropItMatches(id, "\\At:[A-Za-z0-9:_-]{8,80}\\z"),
+                  let encoded = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#"))) else { return nil }
+            return ("GET", "/api/cos-thread/entry/" + encoded, nil)
         case "thread-new": return ("POST", "/api/cos-thread/new", "{}")
         case "thread-turn": return dropItThreadTurnBody(stdin).map { ("POST", "/api/cos-thread/turn", $0) }
         default: return nil
@@ -19469,6 +19512,14 @@ final class COSControlHelper {
         case "p2", "p2-set":
             if let version = dropItInt(body["protocol"]) { out["protocol"] = version }
             if let settings = dropItP2Shape(body["settings"], strict: false) { out["settings"] = settings }
+        case "thread-history":
+            if let version = dropItInt(body["protocol"]) { out["protocol"] = version }
+            out["entries"] = ((body["entries"] as? [Any]) ?? []).prefix(100).compactMap(dropItThreadEntry)
+            out["updated"] = ((body["updated"] as? [Any]) ?? []).compactMap(dropItThreadEntry)
+            for key in ["older", "newest"] { out[key] = dropItPlain(body[key], max: 240).map { $0 as Any } ?? NSNull() }
+            out["more"] = dropItBool(body["more"]) ?? false
+        case "thread-entry":
+            if let entry = dropItThreadEntry(body["entry"]) { out["entry"] = entry }
         case "thread", "thread-new", "thread-turn":
             out.merge(dropItThreadView(body)) { _, new in new }
         default:
@@ -19506,14 +19557,71 @@ final class COSControlHelper {
                 "dropItSource": source.map { $0 as Any } ?? NSNull(),
                 "dropItAttachments": files.map { $0 as Any } ?? NSNull(),
                 // 0.5.374 (server 6.99.16): the COS thread's protocol; absent on an older server, whose Asks each start fresh.
-                "dropItThread": dropItInt((block?["thread"] as? [String: Any])?["protocol"]).map { $0 as Any } ?? NSNull()]
+                "dropItThread": dropItInt((block?["thread"] as? [String: Any])?["protocol"]).map { $0 as Any } ?? NSNull(),
+                "dropItThreadHistory": dropItInt((block?["thread"] as? [String: Any])?["history"]).map { $0 as Any } ?? NSNull(),
+                "dropItThreadTimeline": dropItInt((block?["thread"] as? [String: Any])?["timeline"]).map { $0 as Any } ?? NSNull()]
+    }
+
+    /// Retry keeps the original client id and uses only its next generation. A lost response is recovered by that exact key.
+    private func emitDropItThreadRetry(_ input: Data) throws {
+        try requireLiveWorkTransport()
+        guard let raw = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any],
+              Set(raw.keys).isSubset(of: ["clientJobId", "generation", "query", "model", "effort", "attachmentIds"]),
+              let id = raw["clientJobId"] as? String, Self.workJobID(id),
+              let generation = Self.dropItInt(raw["generation"]), (2...1_000_000).contains(generation),
+              let query = Self.dropItPlain(raw["query"], max: 48_000, newlines: true), !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let model = raw["model"] as? String, let effort = Self.workEffort(raw["effort"]) else {
+            throw HelperError.message("The COS chat retry is not valid")
+        }
+        let token = try readToken()
+        let catalog = try fetchWorkModels(token: token)
+        let files: [String]
+        if let ids = raw["attachmentIds"] {
+            guard let checked = Self.dropItMediaIds(ids) else { throw HelperError.message("The retry's attachments are invalid") }
+            files = checked
+        } else { files = [] }
+        guard catalog.models.contains(where: { $0["id"] as? String == model && $0["available"] as? Bool == true }) else {
+            throw HelperError.message("The selected model is unavailable; no substitute was sent")
+        }
+        guard let health = request("/api/health", timeout: 5), health.status == 200,
+              Self.dropItBool((health.body?["features"] as? [String: Any])?["cosThreadOnly"]) == true else {
+            throw HelperError.message("Thread-only Ask is unavailable; nothing was retried")
+        }
+        guard let prior = request("/api/query-jobs/by-client/" + id + "?generation=\(generation)&trail=0", token: token, timeout: 15) else {
+            throw HelperError.message("Could not recover this retry. Try again with the same chat")
+        }
+        let response: HTTPResponse
+        if prior.status == 200 { response = prior }
+        else {
+            guard prior.status == 404, (prior.body?["error"] as? [String: Any])?["code"] as? String == "query_job_not_found" else {
+                throw HelperError.message("Could not recover this retry. Try again with the same chat")
+            }
+            var payload: [String: Any] = ["clientJobId": id, "generation": generation, "query": query, "model": model,
+                                          "source": "web", "cosThread": true, "activityToolMode": "status"]
+            if let effort { payload["effort"] = effort }
+            if !files.isEmpty { payload["attachmentIds"] = files }
+            let body = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
+            guard let admitted = request("/api/query-jobs", method: "POST", token: token, body: body, timeout: 30) else {
+                throw HelperError.message("Retry delivery is unknown. Try again with this same chat to recover it")
+            }
+            response = admitted
+        }
+        let job = response.body?["job"] as? [String: Any]
+        if (200..<300).contains(response.status), job?["clientJobId"] as? String == id, Self.dropItInt(job?["generation"]) == generation {
+            emit(ok: true, message: "COS chat retry accepted", details: ["transport": "answered", "httpStatus": 200, "accepted": true, "jobStatus": (job?["status"] as? String) ?? "running"])
+        } else {
+            var details = Self.dropItAnswer(op: "thread-retry", status: response.status, body: response.body)
+            details["transport"] = "answered"; details["httpStatus"] = response.status
+            emit(ok: true, message: "COS chat retry refused", details: details)
+        }
     }
 
     private func emitDropIt(args: [String]) throws {
         guard let op = option("--op", in: args), Self.dropItOps.contains(op) else { throw HelperError.message("Use --op and one of the Drop it operations") }
-        let takesStdin: Set<String> = ["submit", "history", "move", "upload", "p2-set", "thread-turn"]
-        let input = takesStdin.contains(op) ? try readBoundedStdin(16_384) : Data()
+        let takesStdin: Set<String> = ["submit", "history", "move", "upload", "p2-set", "thread-turn", "thread-retry"]
+        let input = takesStdin.contains(op) ? try readBoundedStdin(op == "thread-retry" ? 256_000 : 16_384) : Data()
         if op == "upload" { try emitDropItUpload(input); return }
+        if op == "thread-retry" { try emitDropItThreadRetry(input); return }
         guard let call = Self.dropItRequest(op: op, args: args, stdin: input) else {
             throw HelperError.message("That Drop it request is not valid")
         }
@@ -20805,6 +20913,10 @@ final class COSControlHelper {
             "targetKey": Self.sessionChatTargetKey(provider: provider, threadId: threadId),
             "clientTurnId": clientTurnId,
         ]
+        guard let questionFields = Self.sessionChatQuestionFields(option("--turn-end-ask-id", in: args)) else {
+            throw HelperError.message("The question identity is invalid; nothing was sent")
+        }
+        for (key, value) in questionFields { payload[key] = value }
         if let boundTo = option("--bound-to", in: args), !boundTo.isEmpty {
             payload["boundTo"] = boundTo
         }
@@ -21055,6 +21167,18 @@ final class COSControlHelper {
         guard let era = counter["era"] as? String,
               era.range(of: "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$", options: .regularExpression) != nil else { return nil }
         return era
+    }
+
+    /// The pinned chat's one wire mark. Older callers emit no keys; an explicit false is invalid, never silently downgraded.
+    static func workThreadMark(_ body: [String: Any]) -> [String: Any]? {
+        guard let raw = body["cosThread"] else { return [:] }
+        guard dropItBool(raw) == true else { return nil }
+        return ["cosThread": true, "source": "web", "activityToolMode": "status"]
+    }
+    static func sessionChatQuestionFields(_ askID: String?) -> [String: String]? {
+        guard let askID else { return [:] }
+        guard dropItMatches(askID, "\\Aturn_end:[0-9]{1,16}\\z") else { return nil }
+        return ["turnEndAskId": askID]
     }
 
     static func workNewPayload(clientJobId: String, query: String, model: String, messageEra: String,
@@ -21748,6 +21872,10 @@ final class COSControlHelper {
             guard workflow == nil, let reference = Self.workThreadReference(raw) else { throw HelperError.message("reference must be a short label and a summary") }
             payload["reference"] = reference
         }
+        guard let threadMark = Self.workThreadMark(body), threadMark.isEmpty || workflow == nil else {
+            throw HelperError.message("cosThread must be true for a COS chat")
+        }
+        payload.merge(threadMark) { _, mark in mark }
         if !files.isEmpty { payload["attachmentIds"] = files }
         let json = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
         guard let response = request("/api/query-jobs", method: "POST", token: token, body: json, timeout: 30) else {
@@ -21861,6 +21989,30 @@ final class COSControlHelper {
     }
 
     private func selfTestWork() throws {
+        if ProcessInfo.processInfo.environment["COS_CONTROL_TEST_HOME"] != nil {
+            var pushFixture = RuntimeManifest(version: "fixture", generationPath: "/tmp/fixture", installedAt: "fixture", previousVersions: [],
+                                               nodePath: "/tmp/fixture-node", providerEnvironment: ["COS_WEB_PUSH": "1", "COS_WEB_PUSH_PRODUCTION": "0"])
+            let preservedPush = try captureProviderEnvironment(previous: pushFixture)
+            pushFixture.providerEnvironment = preservedPush
+            let launchPush = try launchEnvironment(for: pushFixture)
+            let defaultPush = try captureProviderEnvironment(previous: nil)
+            guard preservedPush["COS_WEB_PUSH"] == "1", preservedPush["COS_WEB_PUSH_PRODUCTION"] == "0",
+                  launchPush["COS_WEB_PUSH"] == "1", launchPush["COS_WEB_PUSH_PRODUCTION"] == "0",
+                  defaultPush["COS_WEB_PUSH"] == nil, defaultPush["COS_WEB_PUSH_PRODUCTION"] == nil else {
+                throw HelperError.message("Web Push environment capture/preservation failed")
+            }
+        }
+        let chatMark = Self.workThreadMark(["cosThread": true])
+        let markBytes = try JSONSerialization.data(withJSONObject: chatMark ?? [:])
+        let decodedMark = try JSONSerialization.jsonObject(with: markBytes) as? [String: Any]
+        guard decodedMark?["cosThread"] as? Bool == true, decodedMark?["source"] as? String == "web",
+              decodedMark?["activityToolMode"] as? String == "status", chatMark?.count == 3,
+              Self.workThreadMark([:])?.isEmpty == true, Self.workThreadMark(["cosThread": false]) == nil,
+              Self.workThreadMark(["cosThread": "true"]) == nil,
+              Self.sessionChatQuestionFields("turn_end:1794740000000") == ["turnEndAskId": "turn_end:1794740000000"],
+              Self.sessionChatQuestionFields(nil)?.isEmpty == true, Self.sessionChatQuestionFields("turn_end:old") == nil else {
+            throw HelperError.message("COS chat thread mark and exact question identity contract failed")
+        }
         let workflow = "meeting-consolidation-v1"
         let cleanupCapability: [String: Any] = ["enabled": true, "protocolVersion": 1, "maintenanceWorkflows": [workflow]]
         guard Self.workMaintenanceWorkflows(["capabilities": ["durableQueryJobs": cleanupCapability]]) == [workflow],
