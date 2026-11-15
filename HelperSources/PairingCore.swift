@@ -626,13 +626,14 @@ enum PhoneApprovalsCore {
         guard (body["signerBind"] as? [String: Any])?["scope"] as? String == tailnetScope else { return needsTailnetBind }
         let cert = body["certDisclosure"] as? [String: Any]
         let issued = cert?["issued"] as? Bool == true
-        let name = (cert?["publicName"] as? String).flatMap(validName)
+        guard let name = (cert?["publicName"] as? String).flatMap(validName) else { return nameUnknown }
         if let disclosedName { return disclosedName == name ? nil : disclosureStale }
         return issued ? nil : disclosureMissing
     }
     static let notReady = "COS could not read the server's phone approvals status, so phone approvals stay off. Start the server and try again."
     static let needsFix = "This COS server cannot turn on phone approvals safely yet. Update the server first."
     static let needsTailnetBind = "Phone approvals stay off: the server could not limit your phone's connection to this Mac's Tailscale address. Check that Tailscale is connected."
+    static let nameUnknown = "Phone approvals stay off: the server does not know this Mac's Tailscale name yet. Check that Tailscale is connected."
     static let disclosureMissing = "Phone approvals stay off: confirm first that this Mac's Tailscale name goes into public certificate logs."
     static let disclosureStale = "Phone approvals stay off: this Mac's Tailscale name is not the one you confirmed. Turn it on again to see the name."
 
@@ -666,18 +667,37 @@ enum PhoneApprovalsCore {
     /// The restarted server proves the change through GET /api/web-key/status. On: 200, enabled true, authority mode
     /// (mode absent or "authority"). The origin is not required: a boot-time miss of the tailnet name is refreshed later
     /// (S1), and the Phone approvals line says so. Off: anything but an enabled authority answer (no route is a 404).
-    /// PA-C: on is proven only when the restarted server also still reports the SR-15 fix and a tailnet-only signer bind; a
-    /// server that came back any other way fails the proof, and the apply paths roll the change back.
+    /// PA-C: on is proven only when the restarted server also still reports the SR-15 fix, a tailnet-only signer bind and that
+    /// 3144 is actually bound (listening true); a server that came back any other way fails the proof (after the bounded wait
+    /// in proofStep), and the apply paths roll the change back.
     static func proven(_ change: Change, status: Int?, body: [String: Any]?) -> Bool {
         let enabled = status == 200 && body?["enabled"] as? Bool == true
         let mode = body?["mode"]
         let authority = enabled && (mode == nil || mode as? String == "authority")
+        let bind = body?["signerBind"] as? [String: Any]
         let bindFixed = (integer(body?["signerBindFixVersion"]) ?? 0) >= requiredFixVersion
-            && (body?["signerBind"] as? [String: Any])?["scope"] as? String == tailnetScope
+            && bind?["scope"] as? String == tailnetScope && bind?["listening"] as? Bool == true
         switch change {
         case .on: return authority && bindFixed
         case .off: return !enabled
         }
+    }
+
+    /// PA-C, with PA-S's timing note (2026-11-15): the server plans the signer bind once at boot, and if Tailscale has no address
+    /// then it reports scope "none" with reason "no_tailnet_address" until its rescan opens 3144 (up to 30 s after the address
+    /// appears). So after an On restart that one answer means wait, for at most proofWaitSeconds; any other failure, including
+    /// "bind_host_not_tailnet" or "https_unavailable", fails at once and the apply path rolls back. Off never waits.
+    enum ProofStep: Equatable, Sendable { case proven, wait, fail }
+    static let proofWaitSeconds: Double = 45
+    static let proofPollSeconds: Double = 2
+    static func proofStep(_ change: Change, status: Int?, body: [String: Any]?) -> ProofStep {
+        if proven(change, status: status, body: body) { return .proven }
+        guard change != .off, status == 200, let body, body["enabled"] as? Bool == true,
+              body["mode"] == nil || body["mode"] as? String == "authority",
+              (integer(body["signerBindFixVersion"]) ?? 0) >= requiredFixVersion,
+              let bind = body["signerBind"] as? [String: Any], bind["scope"] as? String == "none",
+              bind["reason"] as? String == "no_tailnet_address" else { return .fail }
+        return .wait
     }
 
     /// The change a provider-environment write makes, so both apply paths run requirePhoneApprovals after the restart.

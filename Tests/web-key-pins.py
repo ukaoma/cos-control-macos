@@ -317,9 +317,10 @@ need(no_constant and "UserDefaults" not in switch_src and "UserDefaults" not in 
 need('static let requiredFixVersion: Int64 = 1' in readiness_src and 'static let tailnetScope = "tailnet"' in readiness_src
      and 'WebKeyServerMode.int(body["signerBindFixVersion"])' in readiness_src
      and 'var bindFixed: Bool { (fixVersion ?? 0) >= Self.requiredFixVersion && bindScope == Self.tailnetScope }' in readiness_src
-     and 'var canTurnOn: Bool { bindFixed && (!needsDisclosure || publicName != nil) }' in readiness_src
+     and 'var canTurnOn: Bool { bindFixed && publicName != nil }' in readiness_src
      and 'certIssued: cert?["issued"] as? Bool == true' in readiness_src,
-     "phone on needs the server fix", "the readiness reads the fix version strictly, the exact scope word, and needs the public name before a first certificate")
+     "phone on needs the server fix", "the readiness reads the fix version strictly, the exact scope word, and needs the public name")
+need('var canTurnOn: Bool { bindFixed && publicName != nil }' in readiness_src, "phone on needs the public name", "the app never offers On without the exact public name")
 # The app's gates: mount (turn-on only with shown, Off whatever the server says), toggle, the one sender.
 need("if serverSupports(serverVersion) && (on || pendingOff) { return true }" in mounted_fn
      and "return rowDrawn && shown(serverVersion: serverVersion, readiness: readiness)" in mounted_fn
@@ -351,9 +352,27 @@ refusal_fn = body_of(core_pa, core_pa.index("static func onRefusal(status: Int?,
 need("guard let fix = integer(body[\"signerBindFixVersion\"]), fix >= requiredFixVersion else { return needsFix }" in refusal_fn
      and "guard (body[\"signerBind\"] as? [String: Any])?[\"scope\"] as? String == tailnetScope else { return needsTailnetBind }" in refusal_fn
      and "if let disclosedName { return disclosedName == name ? nil : disclosureStale }" in refusal_fn
+     and 0 <= refusal_fn.find("if let disclosedName")
      and "return issued ? nil : disclosureMissing" in refusal_fn
      and "case .on: return authority && bindFixed" in core_pa,
      "phone on helper gate", "the helper needs the fix, the tailnet bind and the disclosure for the exact name, and proves the bind after the restart")
+need('guard let name = (cert?["publicName"] as? String).flatMap(validName) else { return nameUnknown }' in refusal_fn
+     and refusal_fn.find("else { return nameUnknown }") < refusal_fn.find("if let disclosedName"),
+     "phone on needs the public name", "the helper refuses On when the server's public name is null or malformed, whatever else it says")
+proven_fn = body_of(core_pa, core_pa.index("static func proven(_ change: Change, status: Int?, body: [String: Any]?) -> Bool"))
+need('bind?["scope"] as? String == tailnetScope && bind?["listening"] as? Bool == true' in proven_fn and "case .on: return authority && bindFixed" in proven_fn,
+     "phone on proof needs listening", "the post-restart proof needs scope tailnet AND listening true")
+step_fn = body_of(core_pa, core_pa.index("static func proofStep(_ change: Change, status: Int?, body: [String: Any]?) -> ProofStep"))
+need('bind["scope"] as? String == "none"' in step_fn and 'bind["reason"] as? String == "no_tailnet_address" else { return .fail }' in step_fn
+     and "guard change != .off, status == 200" in step_fn and step_fn.count("return .wait") == 1
+     and "static let proofWaitSeconds: Double = 45" in core_pa,
+     "phone on proof waits for the tailnet", "only no_tailnet_address waits; every other reason fails at once; Off never waits; the wait is 45 s")
+proof_fn = body_of(helper, helper.index("private func requirePhoneApprovals(_ change: PhoneApprovalsCore.Change) throws"))
+need(proof_fn.count("let deadline = Date().addingTimeInterval(PhoneApprovalsCore.proofWaitSeconds)") == 1
+     and proof_fn.count("PhoneApprovalsCore.proofStep(change, status: response?.status, body: response?.body)") == 1
+     and "case .wait where Date() < deadline: Thread.sleep(forTimeInterval: PhoneApprovalsCore.proofPollSeconds)" in proof_fn
+     and "case .wait, .fail:" in proof_fn and "PhoneApprovalsCore.proven(" not in proof_fn,
+     "phone on proof waits for the tailnet", "the post-restart proof polls only while the server waits for its tailnet address, up to the bound, then fails")
 unavailable_rows = 'static let unavailableRows: Set<String> = ["PK-01", "PK-02"]'
 need(catalog.count(unavailable_rows) == 1 and "!unavailableRows.contains($0.id)" in catalog,
      "phone switch unavailable", "search leaves out PK-01 and PK-02: whether they draw depends on the server, which a static index cannot know")

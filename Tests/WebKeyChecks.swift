@@ -544,7 +544,7 @@ struct WebKeyChecks {
               && PhoneApprovalsCore.change(fromEnvironment: ["COS_VIDEO_UPLOAD_V2": "1"]) == nil, "phone switch proof",
               "both apply paths prove a phone approvals write, and only that")
         // The restarted server's own status proves the change. PA-C: on also needs the SR-15 fix and a tailnet-only bind.
-        let fixedBind: [String: Any] = ["signerBindFixVersion": 1, "signerBind": ["scope": "tailnet", "addresses": ["100.64.0.10"], "reason": NSNull()]]
+        let fixedBind: [String: Any] = ["signerBindFixVersion": 1, "signerBind": ["scope": "tailnet", "addresses": ["100.64.0.10"], "reason": NSNull(), "listening": true]]
         var proofOn: [String: Any] = ["enabled": true]
         proofOn.merge(fixedBind) { a, _ in a }
         var proofAuthority = proofOn
@@ -558,6 +558,14 @@ struct WebKeyChecks {
               && !PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: viaJSONValue(["enabled": true, "signerBindFixVersion": true,
                                                                                                   "signerBind": ["scope": "tailnet"]]) as? [String: Any]),
               "phone on proof needs the bind", "a restarted server without the fix, with no tailnet bind, or with a boolean version does not prove on")
+        var notListening = proofOn
+        notListening["signerBind"] = ["scope": "tailnet", "addresses": ["100.64.0.10"], "reason": NSNull(), "listening": false]
+        var listeningMissing = proofOn
+        listeningMissing["signerBind"] = ["scope": "tailnet", "addresses": ["100.64.0.10"], "reason": NSNull()]
+        check(!PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: viaJSONValue(notListening) as? [String: Any])
+              && !PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: viaJSONValue(listeningMissing) as? [String: Any])
+              && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: viaJSONValue(notListening) as? [String: Any]) == .fail,
+              "phone on proof needs listening", "a tailnet scope proves on only with 3144 actually bound (listening true)")
         var bootstrapFixed = fixedBind
         bootstrapFixed["enabled"] = false; bootstrapFixed["mode"] = "bootstrap"
         var contradictionFixed = fixedBind
@@ -566,6 +574,27 @@ struct WebKeyChecks {
               && !PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: viaJSONValue(contradictionFixed) as? [String: Any])
               && !PhoneApprovalsCore.proven(.on(device: phone), status: 503, body: viaJSONValue(proofOn) as? [String: Any]),
               "phone switch proof", "a tailnet bind alone never proves on: the server must also be on, in authority mode, with a 200")
+        // PA-S's timing note: right after an On restart, "no_tailnet_address" means wait (bounded); other reasons fail at once.
+        func bindAnswer(_ reason: String) -> [String: Any]? {
+            viaJSONValue(["enabled": true, "mode": "authority", "signerBindFixVersion": 1,
+                          "signerBind": ["scope": "none", "addresses": [Any](), "reason": reason, "listening": false]]) as? [String: Any]
+        }
+        check(PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: bindAnswer("no_tailnet_address")) == .wait
+              && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: viaJSONValue(proofOn) as? [String: Any]) == .proven
+              && PhoneApprovalsCore.proofStep(.off, status: 404, body: nil) == .proven,
+              "phone on proof waits for the tailnet", "a server still waiting for its tailnet address is polled; a proven answer ends it")
+        var bootstrapWaiting = bindAnswer("no_tailnet_address") ?? [:]
+        bootstrapWaiting["enabled"] = false; bootstrapWaiting["mode"] = "bootstrap"
+        var unfixedWaiting = bindAnswer("no_tailnet_address") ?? [:]
+        unfixedWaiting["signerBindFixVersion"] = 0
+        check(PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: bindAnswer("bind_host_not_tailnet")) == .fail
+              && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: bindAnswer("https_unavailable")) == .fail
+              && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: bootstrapWaiting) == .fail
+              && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: unfixedWaiting) == .fail
+              && PhoneApprovalsCore.proofStep(.on(device: phone), status: nil, body: nil) == .fail
+              && PhoneApprovalsCore.proofStep(.off, status: 200, body: bindAnswer("no_tailnet_address")) == .fail
+              && PhoneApprovalsCore.proofWaitSeconds <= 60 && PhoneApprovalsCore.proofPollSeconds >= 1,
+              "phone on proof waits for the tailnet", "every other reason, an off or old server, no answer, and Off itself fail at once; the wait is bounded")
         check(!PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: ["enabled": false, "mode": "bootstrap"])
               && !PhoneApprovalsCore.proven(.on(device: phone), status: 404, body: nil)
               && !PhoneApprovalsCore.proven(.on(device: phone), status: nil, body: nil)
@@ -636,7 +665,8 @@ struct WebKeyChecks {
         func ready(_ text: String) -> PhoneApprovalsReadiness? { PhoneApprovalsReadiness.read(status: 200, body: body(text)) }
         let bind = #""signerBind":{"scope":"tailnet","addresses":["100.64.0.10"],"reason":null,"listening":false}"#
         let firstText = #"{"ok":true,"enabled":false,"mode":"off","signerBindFixVersion":1,\#(bind),"certDisclosure":{"issued":false,"publicName":"\#(name)"}}"#
-        let issuedText = #"{"ok":true,"enabled":false,"mode":"off","signerBindFixVersion":1,\#(bind),"certDisclosure":{"issued":true,"publicName":null}}"#
+        let issuedText = #"{"ok":true,"enabled":false,"mode":"off","signerBindFixVersion":1,\#(bind),"certDisclosure":{"issued":true,"publicName":"\#(name)"}}"#
+        let issuedNoNameText = #"{"ok":true,"enabled":false,"mode":"off","signerBindFixVersion":1,\#(bind),"certDisclosure":{"issued":true,"publicName":null}}"#
         let first = ready(firstText), issued = ready(issuedText)
         // The server's proof: the fix and a tailnet-only bind.
         check(first?.bindFixed == true && first?.canTurnOn == true && first?.needsDisclosure == true && first?.publicName == name
@@ -644,17 +674,17 @@ struct WebKeyChecks {
               "a server with the fix and a tailnet-only bind can turn on; a first certificate needs the disclosure")
         let unfixed: [String] = [
             #"{"enabled":false,"mode":"off"}"#,                                                                       // an older server
-            #"{"signerBindFixVersion":0,\#(bind),"certDisclosure":{"issued":true}}"#,                                // below the fix
-            #"{"signerBindFixVersion":true,\#(bind),"certDisclosure":{"issued":true}}"#,                             // a boolean
-            #"{"signerBindFixVersion":1.5,\#(bind),"certDisclosure":{"issued":true}}"#,                              // a fraction
-            #"{"signerBindFixVersion":"1",\#(bind),"certDisclosure":{"issued":true}}"#,                              // a string
-            #"{"signerBindFixVersion":1,"signerBind":{"scope":"all","addresses":[]},"certDisclosure":{"issued":true}}"#,   // every interface
-            #"{"signerBindFixVersion":1,"signerBind":{"scope":"none","addresses":[],"reason":"no_tailnet_address"},"certDisclosure":{"issued":true}}"#,
-            #"{"signerBindFixVersion":1,"signerBind":{"scope":"Tailnet"},"certDisclosure":{"issued":true}}"#,      // not the exact word
-            #"{"signerBindFixVersion":1,"certDisclosure":{"issued":true}}"#,                                       // no bind
+            #"{"signerBindFixVersion":0,\#(bind),"certDisclosure":{"issued":true,"publicName":"\#(name)"}}"#,                                // below the fix
+            #"{"signerBindFixVersion":true,\#(bind),"certDisclosure":{"issued":true,"publicName":"\#(name)"}}"#,                             // a boolean
+            #"{"signerBindFixVersion":1.5,\#(bind),"certDisclosure":{"issued":true,"publicName":"\#(name)"}}"#,                              // a fraction
+            #"{"signerBindFixVersion":"1",\#(bind),"certDisclosure":{"issued":true,"publicName":"\#(name)"}}"#,                              // a string
+            #"{"signerBindFixVersion":1,"signerBind":{"scope":"all","addresses":[]},"certDisclosure":{"issued":true,"publicName":"\#(name)"}}"#,   // every interface
+            #"{"signerBindFixVersion":1,"signerBind":{"scope":"none","addresses":[],"reason":"no_tailnet_address"},"certDisclosure":{"issued":true,"publicName":"\#(name)"}}"#,
+            #"{"signerBindFixVersion":1,"signerBind":{"scope":"Tailnet"},"certDisclosure":{"issued":true,"publicName":"\#(name)"}}"#,      // not the exact word
+            #"{"signerBindFixVersion":1,"certDisclosure":{"issued":true,"publicName":"\#(name)"}}"#,                                       // no bind
         ]
         check(unfixed.allSatisfy { ready($0)?.canTurnOn == false } && unfixed.allSatisfy { !PhoneApprovalsSwitch.canStart(ready($0)) }
-              && ready(#"{"signerBindFixVersion":2,\#(bind),"certDisclosure":{"issued":true}}"#)?.canTurnOn == true
+              && ready(#"{"signerBindFixVersion":2,\#(bind),"certDisclosure":{"issued":true,"publicName":"\#(name)"}}"#)?.canTurnOn == true
               && PhoneApprovalsReadiness.read(status: 404, body: [:]) == nil && !PhoneApprovalsSwitch.canStart(nil),
               "phone on needs the server fix", "no fix, a malformed version, any bind but tailnet, or no answer cannot turn on")
         // The disclosure: needed unless the server says plainly it already asked; it must name a real ts.net name.
@@ -667,6 +697,12 @@ struct WebKeyChecks {
                       #"{"signerBindFixVersion":1,\#(bind)}"#]
         check(noName.allSatisfy { ready($0)?.canTurnOn == false && ready($0)?.needsDisclosure == true }, "phone on disclosure",
               "before a first certificate, on is offered only when the exact public name is known and well formed")
+        // The lead (2026-11-15): a null public name refuses On in every case, even when a certificate was already asked for.
+        check(ready(issuedNoNameText)?.canTurnOn == false
+              && PhoneApprovalsSwitch.request(on: true, phone: amy, readiness: ready(issuedNoNameText), disclosedName: nil) == nil
+              && PhoneApprovalsCore.onRefusal(status: 200, body: body(issuedNoNameText), disclosedName: nil) == PhoneApprovalsCore.nameUnknown
+              && PhoneApprovalsCore.onRefusal(status: 200, body: body(issuedNoNameText), disclosedName: name) == PhoneApprovalsCore.nameUnknown,
+              "phone on needs the public name", "no public name, no On: the app does not offer it and the helper refuses it")
         check(first?.disclosed(nil) == false && first?.disclosed("other-mac.tail00000a.ts.net") == false && first?.disclosed(name) == true
               && issued?.disclosed(nil) == true, "phone on disclosure", "agreed only for the server's exact name, or not needed at all")
         // What the app sends.
@@ -710,7 +746,7 @@ struct WebKeyChecks {
               && PhoneApprovalsReadiness.validName(name) == name && PhoneApprovalsReadiness.validName("Example.tail00000a.ts.net") == nil,
               "phone on app and helper agree", "one fix version, one scope word, one flag, one name rule")
         var agree = true
-        for text in [firstText, issuedText] + unfixed + noName {
+        for text in [firstText, issuedText, issuedNoNameText] + unfixed + noName {
             for agreed in [nil, name, "other-mac.tail00000a.ts.net"] as [String?] {
                 let sent = PhoneApprovalsSwitch.request(on: true, phone: amy, readiness: ready(text), disclosedName: agreed)
                 let taken = sent.map { args in PhoneApprovalsCore.change(args) != nil && PhoneApprovalsCore.onRefusal(status: 200, body: body(text), disclosedName: PhoneApprovalsCore.disclosedName(args)) == nil }

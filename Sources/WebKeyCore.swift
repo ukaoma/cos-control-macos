@@ -476,8 +476,8 @@ struct PhoneApprovalsReadiness: Equatable, Sendable {
     var bindFixed: Bool { (fixVersion ?? 0) >= Self.requiredFixVersion && bindScope == Self.tailnetScope }
     /// The next On asks for the first certificate, so the person must first agree to the name going public.
     var needsDisclosure: Bool { !certIssued }
-    /// Turning on can be offered: the bind is fixed, and when a certificate will be asked for, its exact name is known.
-    var canTurnOn: Bool { bindFixed && (!needsDisclosure || publicName != nil) }
+    /// Turning on can be offered: the bind is fixed and the exact public name is known (the helper refuses a null name too).
+    var canTurnOn: Bool { bindFixed && publicName != nil }
     /// The disclosure was agreed for exactly this name (or none is needed).
     func disclosed(_ agreed: String?) -> Bool { !needsDisclosure || (publicName != nil && agreed == publicName) }
 

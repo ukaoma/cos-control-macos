@@ -74,7 +74,7 @@ enum Served {
     case .offReady(let issued):
         status = ["ok": true, "enabled": false, "mode": "off", "signerBindFixVersion": 1,
                   "signerBind": ["scope": "tailnet", "addresses": ["100.64.0.10"], "reason": NSNull(), "listening": false],
-                  "certDisclosure": ["issued": issued, "publicName": issued ? NSNull() as Any : host as Any]]
+                  "certDisclosure": ["issued": issued, "publicName": host]]
     case .on(let tls):
         status = ["enabled": true, "mode": "authority", "origin": origin, "aud": aud, "anchorRegistered": true, "anchorMature": true,
                   "anchorSetAt": baseMs - 86_400_000, "epoch": 4, "signerTls": tls]

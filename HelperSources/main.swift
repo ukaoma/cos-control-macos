@@ -6937,9 +6937,16 @@ final class COSControlHelper {
             throw HelperError.message("the restarted server did not load phone approvals as \(change == .off ? "off" : "on for that phone")")
         }
         let token = try readToken()
-        let response = request("/api/web-key/status", token: token, timeout: 10, refuseRedirects: true)
-        guard PhoneApprovalsCore.proven(change, status: response?.status, body: response?.body) else {
-            throw HelperError.message("the restarted server did not report phone approvals \(change == .off ? "off" : "on")")
+        // PA-C: an On whose server is still waiting for its tailnet address is polled, bounded (PhoneApprovalsCore.proofStep).
+        let deadline = Date().addingTimeInterval(PhoneApprovalsCore.proofWaitSeconds)
+        while true {
+            let response = request("/api/web-key/status", token: token, timeout: 10, refuseRedirects: true)
+            switch PhoneApprovalsCore.proofStep(change, status: response?.status, body: response?.body) {
+            case .proven: return
+            case .wait where Date() < deadline: Thread.sleep(forTimeInterval: PhoneApprovalsCore.proofPollSeconds)
+            case .wait, .fail:
+                throw HelperError.message("the restarted server did not report phone approvals \(change == .off ? "off" : "on")")
+            }
         }
     }
 
