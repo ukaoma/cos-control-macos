@@ -359,17 +359,38 @@ need("guard let fix = integer(body[\"signerBindFixVersion\"]), fix >= requiredFi
 need('guard let name = (cert?["publicName"] as? String).flatMap(validName) else { return nameUnknown }' in refusal_fn
      and refusal_fn.find("else { return nameUnknown }") < refusal_fn.find("if let disclosedName"),
      "phone on needs the public name", "the helper refuses On when the server's public name is null or malformed, whatever else it says")
-proven_fn = body_of(core_pa, core_pa.index("static func proven(_ change: Change, status: Int?, body: [String: Any]?) -> Bool"))
+proven_fn = body_of(core_pa, core_pa.index("static func proven(_ change: Change, status: Int?, body: [String: Any]?, expectedName: String? = nil) -> Bool"))
 need('bind?["scope"] as? String == tailnetScope && bind?["listening"] as? Bool == true' in proven_fn and "case .on: return authority && bindFixed" in proven_fn,
      "phone on proof needs listening", "the post-restart proof needs scope tailnet AND listening true")
-step_fn = body_of(core_pa, core_pa.index("static func proofStep(_ change: Change, status: Int?, body: [String: Any]?) -> ProofStep"))
+step_fn = body_of(core_pa, core_pa.index("static func proofStep(_ change: Change, status: Int?, body: [String: Any]?, expectedName: String? = nil) -> ProofStep"))
 need('bind["scope"] as? String == "none"' in step_fn and 'bind["reason"] as? String == "no_tailnet_address" else { return .fail }' in step_fn
      and "guard change != .off, status == 200" in step_fn and step_fn.count("return .wait") == 1
      and "static let proofWaitSeconds: Double = 45" in core_pa,
      "phone on proof waits for the tailnet", "only no_tailnet_address waits; every other reason fails at once; Off never waits; the wait is 45 s")
+# Review C4: the helper keeps the checked public name and the post-restart proof compares it, waiting included.
+need(helper.count("phoneApprovalsExpectedName = ") == 1 and set_fn0.count("phoneApprovalsExpectedName = PhoneApprovalsCore.publicName(status?.body)") == 1
+     and set_fn0.find("throw HelperError.message(refusal)") < set_fn0.find("phoneApprovalsExpectedName = ") < set_fn0.find("PhoneApprovalsCore.environment(change)")
+     and "let sameName = expectedName == nil || publicName(body) == expectedName" in proven_fn
+     and "case .on: return authority && bindFixed && sameName" in proven_fn
+     and "guard change != .off, status == 200, let body, expectedName == nil || publicName(body) == expectedName," in step_fn
+     and "if proven(change, status: status, body: body, expectedName: expectedName) { return .proven }" in step_fn,
+     "phone on proof keeps the checked name", "the restarted server must report the public name checked before the restart, or the change rolls back")
+# Review C3: the disclosure says only what the server can know.
+need("This COS server has no certificate stored for this name yet." in core and "has not asked for a certificate" not in core,
+     "phone on disclosure copy", "the disclosure's last sentence says no certificate is stored for this name, nothing more")
+# Review C5: all three provider-environment rollbacks go through the phone approvals warning.
+warn_fn = body_of(helper, helper.index("private func restoreOrWarnPhoneApprovals(_ values: [String: String], _ restore: () throws -> String) throws -> String"))
+need(helper.count("try restoreOrWarnPhoneApprovals(values) {") == 3
+     and helper.count("try restoreOrWarnPhoneApprovals(values) { try restoreAfterFailedSwitch(transaction) }") == 1
+     and helper.count("try restoreOrWarnPhoneApprovals(values) { try restoreInPlaceConfiguration(transaction) }") == 2
+     and "guard PhoneApprovalsCore.warnsOnFailedRollback(values) else { throw error }" in warn_fn
+     and 'throw HelperError.message("\\(PhoneApprovalsCore.rollbackFailed) Rollback error: \\(error)")' in warn_fn
+     and "static func warnsOnFailedRollback(_ values: [String: String]) -> Bool { change(fromEnvironment: values) != nil }" in core_pa,
+     "phone rollback failure says so", "a phone approvals change whose rollback fails says approvals may still be on and how to turn them off")
 proof_fn = body_of(helper, helper.index("private func requirePhoneApprovals(_ change: PhoneApprovalsCore.Change) throws"))
-need(proof_fn.count("let deadline = Date().addingTimeInterval(PhoneApprovalsCore.proofWaitSeconds)") == 1
-     and proof_fn.count("PhoneApprovalsCore.proofStep(change, status: response?.status, body: response?.body)") == 1
+need(proof_fn.count("expectedName: change == .off ? nil : phoneApprovalsExpectedName)") == 1
+     and proof_fn.count("let deadline = Date().addingTimeInterval(PhoneApprovalsCore.proofWaitSeconds)") == 1
+     and proof_fn.count("PhoneApprovalsCore.proofStep(change, status: response?.status, body: response?.body,") == 1
      and "case .wait where Date() < deadline: Thread.sleep(forTimeInterval: PhoneApprovalsCore.proofPollSeconds)" in proof_fn
      and "case .wait, .fail:" in proof_fn and "PhoneApprovalsCore.proven(" not in proof_fn,
      "phone on proof waits for the tailnet", "the post-restart proof polls only while the server waits for its tailnet address, up to the bound, then fails")

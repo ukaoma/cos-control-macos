@@ -625,7 +625,7 @@ enum PhoneApprovalsSwitch {
         "Turning this on asks for a certificate for \(name), so your phone can trust this Mac. "
             + "Every certificate is published in public certificate logs, so this name goes into them permanently. "
             + "Anyone can look it up, and turning phone approvals off later does not remove it. "
-            + "This COS server has not asked for a certificate for this Mac yet."
+            + "This COS server has no certificate stored for this name yet."
     }
     static func disclosureAgree(_ name: String) -> String { "I understand \(name) goes into public certificate logs permanently" }
     static let confirmOn = "Turn on and restart"

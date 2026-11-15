@@ -293,6 +293,9 @@ final class COSControlHelper {
         return FileManager.default.homeDirectoryForCurrentUser
     }()
     private let label = "com.cos.glasses-server"
+    /// PA-C (review C4): the public name the running server reported when set-phone-approvals on was checked; the post-restart
+    /// proof requires the restarted server to report the same one. Set only by setPhoneApprovals, for On.
+    private var phoneApprovalsExpectedName: String?
     private let recoveryLabel = "com.cos.glasses-control-recovery"
     private let packageName = "@gotcos/glasses-server"
     private let providerEnvironmentKeys: Set<String> = [
@@ -6908,6 +6911,7 @@ final class COSControlHelper {
                                                           disclosedName: PhoneApprovalsCore.disclosedName(arguments)) {
                 throw HelperError.message(refusal)
             }
+            phoneApprovalsExpectedName = PhoneApprovalsCore.publicName(status?.body)
         }
         let runningVersion = (maintenanceStatus()?["serverVersion"] as? String)
             ?? request("/api/health", timeout: 12)?.body?["server_version"] as? String
@@ -6941,7 +6945,8 @@ final class COSControlHelper {
         let deadline = Date().addingTimeInterval(PhoneApprovalsCore.proofWaitSeconds)
         while true {
             let response = request("/api/web-key/status", token: token, timeout: 10, refuseRedirects: true)
-            switch PhoneApprovalsCore.proofStep(change, status: response?.status, body: response?.body) {
+            switch PhoneApprovalsCore.proofStep(change, status: response?.status, body: response?.body,
+                                                expectedName: change == .off ? nil : phoneApprovalsExpectedName) {
             case .proven: return
             case .wait where Date() < deadline: Thread.sleep(forTimeInterval: PhoneApprovalsCore.proofPollSeconds)
             case .wait, .fail:
@@ -8312,8 +8317,17 @@ final class COSControlHelper {
                 clearTransaction()
                 throw error
             }
-            let restored = try restoreAfterFailedSwitch(transaction)
+            let restored = try restoreOrWarnPhoneApprovals(values) { try restoreAfterFailedSwitch(transaction) }
             throw HelperError.message("\(operationLabel) change failed. \(restored) Original error: \(error)")
+        }
+    }
+
+    /// Review C5: when a phone approvals change fails and its rollback fails too, say that phone approvals may still be on and
+    /// how to turn them off, instead of a raw error. Every other change rethrows exactly as before.
+    private func restoreOrWarnPhoneApprovals(_ values: [String: String], _ restore: () throws -> String) throws -> String {
+        do { return try restore() } catch {
+            guard PhoneApprovalsCore.warnsOnFailedRollback(values) else { throw error }
+            throw HelperError.message("\(PhoneApprovalsCore.rollbackFailed) Rollback error: \(error)")
         }
     }
 
@@ -8422,7 +8436,7 @@ final class COSControlHelper {
                 emit(ok: true, message: message, details: statusDetails())
                 return
             } catch {
-                let recovery = try restoreInPlaceConfiguration(transaction)
+                let recovery = try restoreOrWarnPhoneApprovals(values) { try restoreInPlaceConfiguration(transaction) }
                 throw HelperError.message("\(operationLabel) change failed. \(recovery) Original error: \(error)")
             }
         }
@@ -8492,7 +8506,7 @@ final class COSControlHelper {
                 : "\(operationLabel) applied and the adopted server was verified"
             emit(ok: true, message: message, details: statusDetails())
         } catch {
-            let recovery = try restoreInPlaceConfiguration(transaction)
+            let recovery = try restoreOrWarnPhoneApprovals(values) { try restoreInPlaceConfiguration(transaction) }
             throw HelperError.message("\(operationLabel) change failed. \(recovery) Original error: \(error)")
         }
     }

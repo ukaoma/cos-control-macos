@@ -637,6 +637,18 @@ enum PhoneApprovalsCore {
     static let disclosureMissing = "Phone approvals stay off: confirm first that this Mac's Tailscale name goes into public certificate logs."
     static let disclosureStale = "Phone approvals stay off: this Mac's Tailscale name is not the one you confirmed. Turn it on again to see the name."
 
+    /// The server's own public name, validated (nil when null or malformed). onRefusal requires it before On; the helper keeps
+    /// it and the post-restart proof requires the restarted server to report exactly the same name (review C4), so a rename or
+    /// another tailnet between the check and the boot rolls the change back instead of certifying a name nobody agreed to.
+    static func publicName(_ body: [String: Any]?) -> String? {
+        ((body?["certDisclosure"] as? [String: Any])?["publicName"] as? String).flatMap(validName)
+    }
+
+    /// Review C5: a phone approvals change whose rollback itself failed. The state is unknown, so say plainly that phone
+    /// approvals may still be on and how to turn them off. Any phone approvals write (on, or off, whose rollback restores on).
+    static func warnsOnFailedRollback(_ values: [String: String]) -> Bool { change(fromEnvironment: values) != nil }
+    static let rollbackFailed = "Phone approvals may still be on: COS could not undo this change. Turn them off in Settings, Glasses, phone and web, with the phone approvals switch (Remove phones and turn off), or run cos-control-helper set-phone-approvals off. Revoke all on that card stops every enrolled phone at once."
+
     /// A non-negative whole number from a server answer, never a boolean or a fraction (NSNumber bridges true to 1).
     static func integer(_ value: Any?) -> Int64? {
         guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else { return nil }
@@ -670,15 +682,16 @@ enum PhoneApprovalsCore {
     /// PA-C: on is proven only when the restarted server also still reports the SR-15 fix, a tailnet-only signer bind and that
     /// 3144 is actually bound (listening true); a server that came back any other way fails the proof (after the bounded wait
     /// in proofStep), and the apply paths roll the change back.
-    static func proven(_ change: Change, status: Int?, body: [String: Any]?) -> Bool {
+    static func proven(_ change: Change, status: Int?, body: [String: Any]?, expectedName: String? = nil) -> Bool {
         let enabled = status == 200 && body?["enabled"] as? Bool == true
         let mode = body?["mode"]
         let authority = enabled && (mode == nil || mode as? String == "authority")
         let bind = body?["signerBind"] as? [String: Any]
         let bindFixed = (integer(body?["signerBindFixVersion"]) ?? 0) >= requiredFixVersion
             && bind?["scope"] as? String == tailnetScope && bind?["listening"] as? Bool == true
+        let sameName = expectedName == nil || publicName(body) == expectedName
         switch change {
-        case .on: return authority && bindFixed
+        case .on: return authority && bindFixed && sameName
         case .off: return !enabled
         }
     }
@@ -690,9 +703,10 @@ enum PhoneApprovalsCore {
     enum ProofStep: Equatable, Sendable { case proven, wait, fail }
     static let proofWaitSeconds: Double = 45
     static let proofPollSeconds: Double = 2
-    static func proofStep(_ change: Change, status: Int?, body: [String: Any]?) -> ProofStep {
-        if proven(change, status: status, body: body) { return .proven }
-        guard change != .off, status == 200, let body, body["enabled"] as? Bool == true,
+    static func proofStep(_ change: Change, status: Int?, body: [String: Any]?, expectedName: String? = nil) -> ProofStep {
+        if proven(change, status: status, body: body, expectedName: expectedName) { return .proven }
+        guard change != .off, status == 200, let body, expectedName == nil || publicName(body) == expectedName,
+              body["enabled"] as? Bool == true,
               body["mode"] == nil || body["mode"] as? String == "authority",
               (integer(body["signerBindFixVersion"]) ?? 0) >= requiredFixVersion,
               let bind = body["signerBind"] as? [String: Any], bind["scope"] as? String == "none",

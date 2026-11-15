@@ -574,6 +574,30 @@ struct WebKeyChecks {
               && !PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: viaJSONValue(contradictionFixed) as? [String: Any])
               && !PhoneApprovalsCore.proven(.on(device: phone), status: 503, body: viaJSONValue(proofOn) as? [String: Any]),
               "phone switch proof", "a tailnet bind alone never proves on: the server must also be on, in authority mode, with a 200")
+        // Review C4: the restarted server must report the same public name the helper checked before the restart.
+        let checkedName = "example-mac.tail00000a.ts.net"
+        var named = proofOn
+        named["certDisclosure"] = ["issued": false, "publicName": checkedName]
+        var renamed = proofOn
+        renamed["certDisclosure"] = ["issued": false, "publicName": "other-mac.tail00000a.ts.net"]
+        var unnamed = proofOn
+        unnamed["certDisclosure"] = ["issued": false, "publicName": NSNull()]
+        let namedBody = viaJSONValue(named) as? [String: Any], renamedBody = viaJSONValue(renamed) as? [String: Any], unnamedBody = viaJSONValue(unnamed) as? [String: Any]
+        check(PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: namedBody, expectedName: checkedName)
+              && !PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: renamedBody, expectedName: checkedName)
+              && !PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: unnamedBody, expectedName: checkedName)
+              && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: renamedBody, expectedName: checkedName) == .fail
+              && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: namedBody, expectedName: checkedName) == .proven
+              && PhoneApprovalsCore.publicName(namedBody) == checkedName && PhoneApprovalsCore.publicName(unnamedBody) == nil
+              && PhoneApprovalsCore.publicName(viaJSONValue(["certDisclosure": ["publicName": "Example-Mac.tail00000a.ts.net"]]) as? [String: Any]) == nil,
+              "phone on proof keeps the checked name", "a restarted server with another public name, or none, fails the proof and rolls back")
+        // Review C5: a failed rollback of any phone approvals change says approvals may still be on, and how to turn them off.
+        check(PhoneApprovalsCore.warnsOnFailedRollback(PhoneApprovalsCore.environment(.on(device: phone)).set)
+              && PhoneApprovalsCore.warnsOnFailedRollback(PhoneApprovalsCore.environment(.off).set)
+              && !PhoneApprovalsCore.warnsOnFailedRollback(["COS_VIDEO_UPLOAD_V2": "1"])
+              && PhoneApprovalsCore.rollbackFailed.contains("may still be on") && PhoneApprovalsCore.rollbackFailed.contains("set-phone-approvals off")
+              && PhoneApprovalsCore.rollbackFailed.contains("Remove phones and turn off") && !PhoneApprovalsCore.rollbackFailed.contains("—"),
+              "phone rollback failure says so", "only phone approvals changes get the warning; it names the state and both ways off")
         // PA-S's timing note: right after an On restart, "no_tailnet_address" means wait (bounded); other reasons fail at once.
         func bindAnswer(_ reason: String) -> [String: Any]? {
             viaJSONValue(["enabled": true, "mode": "authority", "signerBindFixVersion": 1,
@@ -639,7 +663,8 @@ struct WebKeyChecks {
         let disclosure = [PhoneApprovalsSwitch.disclosureTitle(name), PhoneApprovalsSwitch.disclosureMessage(name), PhoneApprovalsSwitch.disclosureAgree(name)]
         check(disclosure.allSatisfy { $0.contains(name) } && disclosure[1].contains("public certificate logs") && disclosure[1].contains("permanently")
               && disclosure[1].contains("off later does not remove it") && disclosure[1].contains("asks for a certificate")
-              && disclosure[2].contains("permanently"), "phone on disclosure copy", "the exact name, public certificate logs, permanently, and Off does not remove it")
+              && disclosure[2].contains("permanently") && disclosure[1].hasSuffix("This COS server has no certificate stored for this name yet.")
+              && !disclosure[1].contains("has not asked"), "phone on disclosure copy", "the exact name, public certificate logs, permanently, and Off does not remove it")
         let copy = [PhoneApprovalsSwitch.confirmOnTitle(amy), message, issuedMessage, PhoneApprovalsSwitch.confirmOffTitle,
                     PhoneApprovalsSwitch.confirmOffMessage, PhoneApprovalsSwitch.label, PhoneApprovalsSwitch.labelOn, PhoneApprovalsSwitch.detail, PhoneApprovalsSwitch.noPhone]
                     + disclosure + [PhoneApprovalsCore.notReady, PhoneApprovalsCore.needsFix, PhoneApprovalsCore.needsTailnetBind,
