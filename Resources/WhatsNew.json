@@ -1,7 +1,7 @@
 {
   "version": "0.5.395",
   "whatsNew": {
-    "summary": "Your COS chat is shared with the web, with model and effort choices and a Jump to latest button. Usage now shows plan pacing.",
+    "summary": "Your COS chat is shared with the web, with model and effort choices and a Jump to latest button. Usage now shows plan pacing. Plus everything in 0.5.393: scrolling fixes for Meetings and Work, and clearer glasses setup.",
     "sections": [
       {
         "title": "0.5.395",
