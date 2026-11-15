@@ -286,74 +286,77 @@ struct DropItChatPane: View {
     }
 
     private var thread: some View {
-        GeometryReader { viewport in
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        if store.historyOn() {
-                            if store.threadOlder != nil {
-                                Button(store.threadHistoryLoading ? "Loading earlier…" : "Load earlier") {
-                                    // Keep the first rendered row fixed while the older page is prepended.
-                                    let anchor = store.chatItems.first?.id
-                                    Task {
-                                        followsLatest = false
-                                        await store.loadThreadHistory(older: true)
-                                        if let anchor { proxy.scrollTo(anchor, anchor: .top) }
+        VStack(spacing: 0) {
+            GeometryReader { viewport in
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            if store.historyOn() {
+                                if store.threadOlder != nil {
+                                    Button(store.threadHistoryLoading ? "Loading earlier…" : "Load earlier") {
+                                        // Keep the first rendered row fixed while the older page is prepended.
+                                        let anchor = store.chatItems.first?.id
+                                        Task {
+                                            followsLatest = false
+                                            await store.loadThreadHistory(older: true)
+                                            if let anchor { proxy.scrollTo(anchor, anchor: .top) }
+                                        }
+                                    }.buttonStyle(TodayLinkStyle(size: 12)).disabled(store.threadHistoryLoading)
+                                        .accessibilityLabel("Load earlier COS chat history")
+                                }
+                                if let line = store.threadHistoryLine {
+                                    HStack {
+                                        Text(line).font(COSType.body(12)).foregroundStyle(TodayInk.sub)
+                                        Button("Try again") { Task { await store.loadThreadHistory() } }.buttonStyle(TodayLinkStyle(size: 12))
                                     }
-                                }.buttonStyle(TodayLinkStyle(size: 12)).disabled(store.threadHistoryLoading)
-                                    .accessibilityLabel("Load earlier COS chat history")
-                            }
-                            if let line = store.threadHistoryLine {
-                                HStack {
-                                    Text(line).font(COSType.body(12)).foregroundStyle(TodayInk.sub)
-                                    Button("Try again") { Task { await store.loadThreadHistory() } }.buttonStyle(TodayLinkStyle(size: 12))
                                 }
                             }
+                            if store.loaded && store.chatItems.isEmpty && !store.threadHistoryLoading {
+                                Text(DropIt.chatEmpty).font(COSType.body(13)).foregroundStyle(TodayInk.grey)
+                                    .frame(maxWidth: .infinity).padding(.top, 40)
+                            } else if !store.loaded, let line = store.line {
+                                Text(line).font(COSType.body(13)).foregroundStyle(TodayInk.grey).frame(maxWidth: .infinity).padding(.top, 40)
+                            }
+                            ForEach(DropIt.rows(store.chatItems, firstNew: store.newMark?.first, newCount: store.newMark?.count ?? 0, now: now)) { row in
+                                rowView(row)
+                            }
+                            Color.clear.frame(height: 1).id("drop-it-bottom")
+                                .background(GeometryReader { bottom in
+                                    Color.clear.preference(key: DropItBottomPreference.self, value: bottom.frame(in: .named("cos-chat-scroll")).maxY)
+                                })
                         }
-                        if store.loaded && store.chatItems.isEmpty && !store.threadHistoryLoading {
-                            Text(DropIt.chatEmpty).font(COSType.body(13)).foregroundStyle(TodayInk.grey)
-                                .frame(maxWidth: .infinity).padding(.top, 40)
-                        } else if !store.loaded, let line = store.line {
-                            Text(line).font(COSType.body(13)).foregroundStyle(TodayInk.grey).frame(maxWidth: .infinity).padding(.top, 40)
-                        }
-                        ForEach(DropIt.rows(store.chatItems, firstNew: store.newMark?.first, newCount: store.newMark?.count ?? 0, now: now)) { row in
-                            rowView(row)
-                        }
-                        Color.clear.frame(height: 1).id("drop-it-bottom")
-                            .background(GeometryReader { bottom in
-                                Color.clear.preference(key: DropItBottomPreference.self, value: bottom.frame(in: .named("cos-chat-scroll")).maxY)
-                            })
+                        .frame(maxWidth: 760)
+                        .padding(.horizontal, 28).padding(.vertical, 18)
+                        .frame(maxWidth: .infinity)
                     }
-                    .frame(maxWidth: 760)
-                    .padding(.horizontal, 28).padding(.vertical, 18)
-                    .frame(maxWidth: .infinity)
-                }
-                .coordinateSpace(name: "cos-chat-scroll")
-                .onPreferenceChange(DropItBottomPreference.self) { bottom in
-                    if positioned { followsLatest = bottom <= viewport.size.height + 50 }
-                }
-                .onChange(of: store.chatItems.map { $0.id + $0.line }) { _, _ in
-                    if !positioned || followsLatest { proxy.scrollTo("drop-it-bottom", anchor: .bottom) }
-                    if store.loaded && (!store.historyOn() || store.threadHistoryLoaded) { positioned = true }
-                }
-                .onChange(of: store.threadEntries.map { $0.answer + $0.status }) { _, _ in
-                    if followsLatest { proxy.scrollTo("drop-it-bottom", anchor: .bottom) }
-                }
-                .onChange(of: store.asks.map { $0.answer ?? "" }) { _, _ in
-                    if followsLatest { proxy.scrollTo("drop-it-bottom", anchor: .bottom) }
-                }
-                .onChange(of: jumpRequest) { _, _ in
-                    followsLatest = true; proxy.scrollTo("drop-it-bottom", anchor: .bottom)
-                }
-                .onAppear { positioned = false; followsLatest = true; proxy.scrollTo("drop-it-bottom", anchor: .bottom) }
-                .overlay(alignment: .bottomTrailing) {
-                    Button { jumpRequest += 1 } label: { Label("Jump to latest", systemImage: "arrow.down.to.line") }
-                        .buttonStyle(COSQuietButtonStyle()).background(TodayInk.page, in: Capsule())
-                        .accessibilityLabel("Jump to latest COS chat message")
-                        .help("Scroll to the bottom of your COS chat")
-                        .padding(12)
+                    .coordinateSpace(name: "cos-chat-scroll")
+                    .onPreferenceChange(DropItBottomPreference.self) { bottom in
+                        if positioned { followsLatest = bottom <= viewport.size.height + 50 }
+                    }
+                    .onChange(of: store.chatItems.map { $0.id + $0.line }) { _, _ in
+                        if !positioned || followsLatest { proxy.scrollTo("drop-it-bottom", anchor: .bottom) }
+                        if store.loaded && (!store.historyOn() || store.threadHistoryLoaded) { positioned = true }
+                    }
+                    .onChange(of: store.threadEntries.map { $0.answer + $0.status }) { _, _ in
+                        if followsLatest { proxy.scrollTo("drop-it-bottom", anchor: .bottom) }
+                    }
+                    .onChange(of: store.asks.map { $0.answer ?? "" }) { _, _ in
+                        if followsLatest { proxy.scrollTo("drop-it-bottom", anchor: .bottom) }
+                    }
+                    .onChange(of: jumpRequest) { _, _ in
+                        followsLatest = true; proxy.scrollTo("drop-it-bottom", anchor: .bottom)
+                    }
+                    .onAppear { positioned = false; followsLatest = true; proxy.scrollTo("drop-it-bottom", anchor: .bottom) }
                 }
             }
+            HStack {
+                Spacer()
+                Button { jumpRequest += 1 } label: { Label("Jump to latest", systemImage: "arrow.down.to.line") }
+                    .buttonStyle(COSQuietButtonStyle())
+                    .accessibilityLabel("Jump to latest COS chat message")
+                    .help("Scroll to the bottom of your COS chat")
+            }
+            .padding(.horizontal, 12).padding(.vertical, 6)
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
     }

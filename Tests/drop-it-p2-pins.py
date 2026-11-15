@@ -26,6 +26,21 @@ need('else if action.isServerAction { Task { await store.serverAction(item, acti
 need(chat.count("if dropTargeted { DropItDropSlot().id(DropItDropSlot.anchor) }") == 1 and chat.count("DropIt.dropZoneTarget") == 2
      and "Label(DropIt.dropZoneTarget" not in chat.split("struct DropItDropSlot")[0], "[drag over] the drop slot ends the chip row and no overlay label covers a chip")
 need('"banners", "reminders", "p2", "p2-set"' in helper and 'case "p2-set":' in helper, "[helper] the four P2 ops")
+# Keep the jump control outside the measured scroll viewport: it must never obscure an answer.
+thread = chat[chat.index('    private var thread: some View {'):chat.index('\n    @ViewBuilder\n    private func rowView')]
+need(thread.startswith('    private var thread: some View {\n        VStack(spacing: 0) {\n            GeometryReader { viewport in\n'), "[jump layout] an outer stack owns the measured scroll viewport")
+need('\n            }\n            HStack {\n                Spacer()\n                Button { jumpRequest += 1 }' in thread
+     and '.overlay(' not in thread and '.safeAreaInset(' not in thread,
+     "[jump layout] an unconditional sibling row reserves space outside the scroll viewport")
+need(thread.count('.onChange(of: jumpRequest)') == 1
+     and 'followsLatest = true; proxy.scrollTo("drop-it-bottom", anchor: .bottom)' in thread,
+     "[jump action] one state change follows and scrolls to the bottom marker")
+need('if positioned { followsLatest = bottom <= viewport.size.height + 50 }' in thread
+     and 'if let anchor { proxy.scrollTo(anchor, anchor: .top) }' in thread,
+     "[jump follow] keep the measured tolerance and older-history top anchor")
+need(thread.endswith('        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)\n    }\n')
+     and thread.count('maxHeight: .infinity') == 1,
+     "[jump sizing] only the outer stack fills height; the button row stays natural height")
 for text in re.findall(r'\.init\("REACH-\d\d", "([^"]*)", "([^"]*)"', catalog):
     need(not re.search("[—–→]|->", text[0] + text[1]), "[copy] no em dash, en dash or arrow: " + text[0])
 import json
