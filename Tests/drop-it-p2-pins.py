@@ -33,7 +33,7 @@ need('\n            }\n            HStack {\n                Spacer()\n         
      and '.overlay(' not in thread and '.safeAreaInset(' not in thread,
      "[jump layout] an unconditional sibling row reserves space outside the scroll viewport")
 need(thread.count('.onChange(of: jumpRequest)') == 1
-     and 'followsLatest = true; proxy.scrollTo("drop-it-bottom", anchor: .bottom)' in thread,
+     and '.onChange(of: jumpRequest) { _, _ in\n                        followsLatest = true; proxy.scrollTo("drop-it-bottom", anchor: .bottom)\n                    }' in thread,
      "[jump action] one state change follows and scrolls to the bottom marker")
 need('if positioned { followsLatest = bottom <= viewport.size.height + 50 }' in thread
      and 'if let anchor { proxy.scrollTo(anchor, anchor: .top) }' in thread,
