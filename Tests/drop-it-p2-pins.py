@@ -52,9 +52,9 @@ meta = plistlib.loads(plist.encode())
 sections = whats["whatsNew"]["sections"]
 titles = [s["title"] for s in sections]
 p2 = [s for s in sections if s["title"] == "0.5.372"]
-need(meta.get("CFBundleShortVersionString") == "0.5.395" and meta.get("CFBundleVersion") == "449"
-     and whats.get("version") == "0.5.395" and titles[:2] == ["0.5.395", "0.5.393"],
-     "[version] Info.plist and What's New identify 0.5.395 build 449, carrying the 0.5.393 notes")
+need(meta.get("CFBundleShortVersionString") == "0.5.396" and meta.get("CFBundleVersion") == "450"
+     and whats.get("version") == "0.5.396" and titles[:3] == ["0.5.396", "0.5.395", "0.5.393"],
+     "[version] Info.plist and What's New identify 0.5.396 build 450, carrying the 0.5.395 and 0.5.393 notes")
 need(len(p2) == 1 and any("COS reaching out" in i for i in p2[0]["items"]),
      "[version] What's New retains one 0.5.372 section naming COS reaching out")
 releases = [tuple(map(int, title.split("."))) for title in titles if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", title)]

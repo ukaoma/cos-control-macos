@@ -77,15 +77,15 @@ need('c = Case("asked")' in read("Tests/app-update-escalation-checks.py"), "lane
 
 # Version touchpoints and the retained quit-fix history.
 plist = read("Resources/Info.plist")
-need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.395</string>", plist) is not None
-     and re.search(r"<key>CFBundleVersion</key>\s*<string>449</string>", plist) is not None,
-     "version", "Info.plist is 0.5.395 (build 449)")
+need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.396</string>", plist) is not None
+     and re.search(r"<key>CFBundleVersion</key>\s*<string>450</string>", plist) is not None,
+     "version", "Info.plist is 0.5.396 (build 450)")
 whats = json.loads(read("Resources/WhatsNew.json"))
 sections = whats["whatsNew"]["sections"]
 titles = [section["title"] for section in sections]
-need(whats.get("version") == "0.5.395" and titles[:2] == ["0.5.395", "0.5.393"],
-     "version", "What's New leads with 0.5.395 and retains the previous 0.5.393 release")
-historical = ['0.5.393', '0.5.392', '0.5.389', '0.5.388', '0.5.387', '0.5.386', '0.5.385', '0.5.384', '0.5.383', '0.5.380', '0.5.379', '0.5.378', '0.5.377', '0.5.376', '0.5.375', '0.5.374', '0.5.373']
+need(whats.get("version") == "0.5.396" and titles[:3] == ["0.5.396", "0.5.395", "0.5.393"],
+     "version", "What's New leads with 0.5.396 and retains 0.5.395 then 0.5.393")
+historical = ['0.5.395', '0.5.393', '0.5.392', '0.5.389', '0.5.388', '0.5.387', '0.5.386', '0.5.385', '0.5.384', '0.5.383', '0.5.380', '0.5.379', '0.5.378', '0.5.377', '0.5.376', '0.5.375', '0.5.374', '0.5.373']
 need([title for title in titles if title in historical] == historical,
      "quit-fix history", "the previous releases through 0.5.373 each survive once, in their original order")
 need(titles.index("0.5.373") + 1 == titles.index("0.5.372"),
@@ -94,7 +94,7 @@ quit_fix = next(section for section in sections if section["title"] == "0.5.373"
 need(quit_fix["items"] == ['An update started outside COS Control, from the command line or an install script, now asks Control to quit. Before, Control was never asked, waited 20 seconds and was closed by force.', "Updates from Control's own Install button already closed by themselves and work as before.", 'This applies from the next update on: the copy of Control you are running now is the one that closes for this update.'],
      "quit-fix words", "the original 0.5.373 quit-request explanation survives in full")
 log = read("CHANGELOG.md")
-need(log.startswith("## 0.5.395 (build 449)") and log.index("\n## 0.5.393 (build 447)") < log.index("\n## 0.5.392 (build 446)") < log.index("\n## 0.5.389 (build 443)") and log.index("\n## 0.5.389 (build 443)") < log.index("\n## 0.5.388 (build 442)") and log.index("\n## 0.5.388 (build 442)") < log.index("\n## 0.5.387 (build 441)") and log.index("\n## 0.5.387 (build 441)") < log.index("\n## 0.5.386 (build 440)") and log.index("\n## 0.5.386 (build 440)") < log.index("\n## 0.5.385 (build 439)") and log.index("\n## 0.5.385 (build 439)") < log.index("\n## 0.5.384 (build 438)") and log.index("\n## 0.5.384 (build 438)") < log.index("\n## 0.5.383 (build 437)") and log.index("\n## 0.5.383 (build 437)") < log.index("\n## 0.5.380 (build 434)") and log.index("\n## 0.5.380 (build 434)") < log.index("\n## 0.5.379 (build 433)") and log.index("\n## 0.5.379 (build 433)") < log.index("\n## 0.5.378 (build 432)") and log.index("\n## 0.5.378 (build 432)") < log.index("\n## 0.5.377 (build 431)") and log.index("\n## 0.5.373 (build 427)") < log.index("\n## 0.5.372 (build 426)"), "version",
+need(log.startswith("## 0.5.396 (build 450)") and log.index("\n## 0.5.395 (build 449)") < log.index("\n## 0.5.393 (build 447)") < log.index("\n## 0.5.392 (build 446)") < log.index("\n## 0.5.389 (build 443)") and log.index("\n## 0.5.389 (build 443)") < log.index("\n## 0.5.388 (build 442)") and log.index("\n## 0.5.388 (build 442)") < log.index("\n## 0.5.387 (build 441)") and log.index("\n## 0.5.387 (build 441)") < log.index("\n## 0.5.386 (build 440)") and log.index("\n## 0.5.386 (build 440)") < log.index("\n## 0.5.385 (build 439)") and log.index("\n## 0.5.385 (build 439)") < log.index("\n## 0.5.384 (build 438)") and log.index("\n## 0.5.384 (build 438)") < log.index("\n## 0.5.383 (build 437)") and log.index("\n## 0.5.383 (build 437)") < log.index("\n## 0.5.380 (build 434)") and log.index("\n## 0.5.380 (build 434)") < log.index("\n## 0.5.379 (build 433)") and log.index("\n## 0.5.379 (build 433)") < log.index("\n## 0.5.378 (build 432)") and log.index("\n## 0.5.378 (build 432)") < log.index("\n## 0.5.377 (build 431)") and log.index("\n## 0.5.373 (build 427)") < log.index("\n## 0.5.372 (build 426)"), "version",
      "the changelog's 0.5.373 entry sits above 0.5.372's")
 
 print(f"app update quit request pins: {passed} passed")
