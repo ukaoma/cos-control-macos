@@ -712,9 +712,11 @@ enum PhoneApprovalsCore {
               body["enabled"] as? Bool == true,
               body["mode"] == nil || body["mode"] as? String == "authority",
               (integer(body["signerBindFixVersion"]) ?? 0) >= requiredFixVersion,
-              let bind = body["signerBind"] as? [String: Any], bind["scope"] as? String == "none",
-              (bind["reason"] as? String).map(proofWaitReasons.contains) == true else { return .fail }
-        return .wait
+              let bind = body["signerBind"] as? [String: Any] else { return .fail }
+        if bind["scope"] as? String == "none", (bind["reason"] as? String).map(proofWaitReasons.contains) == true { return .wait }
+        // PA-S: a read in the first milliseconds of boot can find 3144 still binding: scope tailnet, reason null, not listening.
+        if bind["scope"] as? String == tailnetScope, bind["listening"] as? Bool == false, bind["reason"] == nil || bind["reason"] is NSNull { return .wait }
+        return .fail
     }
 
     /// The change a provider-environment write makes, so both apply paths run requirePhoneApprovals after the restart.

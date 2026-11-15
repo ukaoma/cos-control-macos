@@ -560,12 +560,15 @@ struct WebKeyChecks {
               "phone on proof needs the bind", "a restarted server without the fix, with no tailnet bind, or with a boolean version does not prove on")
         var notListening = proofOn
         notListening["signerBind"] = ["scope": "tailnet", "addresses": ["100.64.0.10"], "reason": NSNull(), "listening": false]
+        var notListeningWithReason = proofOn
+        notListeningWithReason["signerBind"] = ["scope": "tailnet", "addresses": ["100.64.0.10"], "reason": "listen_failed", "listening": false]
         var listeningMissing = proofOn
         listeningMissing["signerBind"] = ["scope": "tailnet", "addresses": ["100.64.0.10"], "reason": NSNull()]
         check(!PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: viaJSONValue(notListening) as? [String: Any])
               && !PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: viaJSONValue(listeningMissing) as? [String: Any])
-              && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: viaJSONValue(notListening) as? [String: Any]) == .fail,
-              "phone on proof needs listening", "a tailnet scope proves on only with 3144 actually bound (listening true)")
+              && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: viaJSONValue(notListeningWithReason) as? [String: Any]) == .fail
+              && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: viaJSONValue(listeningMissing) as? [String: Any]) == .fail,
+              "phone on proof needs listening", "a tailnet scope proves on only with 3144 actually bound; not listening with a reason, or no listening field, fails")
         var bootstrapFixed = fixedBind
         bootstrapFixed["enabled"] = false; bootstrapFixed["mode"] = "bootstrap"
         var contradictionFixed = fixedBind
@@ -607,6 +610,7 @@ struct WebKeyChecks {
               && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: bindAnswer("address_lost")) == .wait
               && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: bindAnswer("listen_failed")) == .wait
               && PhoneApprovalsCore.proofWaitReasons == ["no_tailnet_address", "address_lost", "listen_failed"]
+              && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: viaJSONValue(notListening) as? [String: Any]) == .wait
               && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: viaJSONValue(proofOn) as? [String: Any]) == .proven
               && PhoneApprovalsCore.proofStep(.off, status: 404, body: nil) == .proven,
               "phone on proof waits for the tailnet", "a server still waiting for its tailnet address is polled; a proven answer ends it")
