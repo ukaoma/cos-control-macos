@@ -200,9 +200,15 @@ pin(card.count("LensAnswerStructure") == 1 and "    let text: String\n" in card 
     "Copy answer copies the card's own stored text, which nothing in the card replaces with the structured one")
 pin('ActivityMessageCard(label: label, text: text, tint: tint, highlight: highlight, markdownID: markdownID, lensLists: lensLists,\n                            side: side, caption: caption)' in window,
     "copy answer", "messageBlock hands the card the text it was given")
-# The COS chat (Drop it) answer card: the Mac side of the web chat card in Miles's 11/08 screenshot.
+# Both COS chat answer paths: shared stored history and this Mac's live/local Ask.
 dropit = code("Sources/DropItViews.swift")
-pin(dropit.count("LensAnswerStructure.structure(") == 1 and "COSMarkdownView(text: LensAnswerStructure.structure(answer))" in dropit, "messages", "the COS chat answer card")
+formatter = "COSMarkdownView(text: LensAnswerStructure.structure(answer))"
+for name, next_name in (("sharedRow", "timelineLine"), ("askRows", "askStateWord")):
+    start, end = f"private func {name}(", f"private func {next_name}("
+    row = dropit.split(start, 1)[1].split(end, 1)[0] if start in dropit and end in dropit else ""
+    pin(row.count("LensAnswerStructure.structure(") == 1 and formatter in row,
+        "messages", f"the COS chat {name} answer card structures its displayed answer once")
+pin(dropit.count("LensAnswerStructure.structure(") == 2, "messages", "only the two COS answer cards structure text")
 pin('messageBlock(label: "You", text: turn.query,' in window and 'messageBlock(label: "You", text: message.query,' in window,
     "your words", "what you said is shown as you typed it")
 model = code("Sources/ControllerModel.swift")

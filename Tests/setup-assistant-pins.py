@@ -790,11 +790,17 @@ pin("guard !chatPrefill.blocksReturn else { return }\n        sendChatMessage()"
 # 0.5.389 (lane D4 section 8): two more callers, each pinned to its function: Today's turn-end reply opens the session and places
 # the words unsent (todayReplyInControl), and the session view's turn-end block places then sends through the session's own Continue.
 _cont_caller = block(window, "    func commandContinueIn(_ id: String, words: String) -> CommandEffect {", "\n    }\n")
-_today_caller = block(window, "    func todayReplyInControl(_ session: ClaudeSession, words: String) {", "\n    }\n")
+_today_caller = block(window, "    func todayReplyInControl(_ session: ClaudeSession, words: String, askID: String? = nil) {", "\n    }\n")
 _block_send = block(window, "    private func send(_ words: String) {", "\n    }\n")
-pin(cm_code.count("chatPrefill.place(") == 1 and "func prefillChat(_ words: String) {" in cm_code and window.count("prefillChat(") == 3
+_answer_prefill = block(cm_code, "    func prefillTurnEndAnswer(_ words: String, askID: String?) {", "\n    }\n")
+_answer_send = block(cm_code, "    func sendTurnEndAnswer(_ words: String, askID: String?) {", "\n    }\n")
+pin(cm_code.count("chatPrefill.place(") == 1 and "func prefillChat(_ words: String) {" in cm_code and window.count("prefillChat(") == 2
     and _cont_caller.count("prefillChat(") == 1 and _today_caller.count("prefillChat(") == 1 and "sendChatMessage" not in _today_caller
-    and _block_send.count("prefillChat(") == 1, "one place sets the block, and its three callers are Continue in, Today's turn-end reply (unsent) and the turn-end block")
+    and "model.prefillTurnEndAnswer(words, askID: askID)" in _today_caller
+    and "model.sendTurnEndAnswer(words, askID: ask.id)" in _block_send and "sendChatMessage" not in _block_send
+    and before(_answer_prefill, "prefillChat(words)", "chatDraftAskID = TodayHome.validTurnEndAskID(askID)")
+    and before(_answer_send, "prefillTurnEndAnswer(words, askID: askID)", "guard let askID = chatDraftAskID, openClaudeRow?.waitingAskID == askID else", "sendChatMessage()"),
+    "one place sets the prefill block; Today stays unsent and turn-end sends preserve and recheck the displayed question identity")
 cmod = block(core, "        static func continueTarget(", "\n        }\n")
 pin("enabledFor.contains(decides)" in cmod and "static let continueProviders: Set<MeaningProvider> = [.jev]" in core and "top.strength == .strong" in cmod and "p >= continueFloor" in cmod and "p - second >= continueGap" in cmod and "top.canContinue" in cmod, "Continue in is Jev only, Strong only, with a clear gap, for a session that can take a message")
 pin("static let continueGap = 0.25" in core and "static let continueFloor = 0.6" in core, "the gap and the floor are named")

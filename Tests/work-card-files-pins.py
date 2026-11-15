@@ -93,7 +93,7 @@ need('Text(WorkCardFiles.startTileRefusal)' in board and "if startFileHover {" i
 # 4. The block is composed once, and the Agent workspace shows what the send composes.
 submit = body(store, "    func submit(source: WorkSource", "    // MARK: - Start it, then open it (0.5.249)")
 need("let files = cardFiles.handoff(for: source.id, mode: mode, sessionID: mode == .newSession ? nil : session?.id," in submit, "the send composes the files with the store's one composer")
-need("let sent = WorkCardFiles.compose(text: text, block: files.block, instruction: instruction)" in submit, "the block goes between the text and the instruction")
+need("let sent = cosThread ? text : WorkCardFiles.compose(text: text, block: files.block, instruction: instruction)" in submit, "ordinary handoffs keep text, files, then instruction; the shared COS thread sends only the question")
 need(submit.index("cardFiles.reload(source.id)") < submit.index("let files = cardFiles.handoff("), "the send reads the card's manifest from disk first")
 need("if !files.sending.isEmpty { row.context = files.refs }" in submit, "the receipt records what went")
 cursor_limit = "if prefill, !Self.cursorPrefillFits(sent, tag: tag, instruction: instruction) { throw failure(Self.cursorFilesTooLong) }"

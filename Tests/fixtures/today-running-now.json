@@ -8,7 +8,8 @@
     "reason",
     "enabled",
     "source",
-    "retryAfterMs"
+    "retryAfterMs",
+    "sessions"
   ],
   "runningNow": {
     "text": "Three things can wait until tomorrow. Two builders are on the Today summary and the Work pane, and QA is idle.",
@@ -17,7 +18,10 @@
     "model": "sonnet",
     "state": "fresh",
     "enabled": true,
-    "source": "settings"
+    "source": "settings",
+    "sessions": [
+      { "title": "Today summary", "provider": "codex", "state": "working", "movedAt": "2026-11-08T14:09:00Z", "lastAsk": "Check the Today summary." }
+    ]
   },
   "off": {
     "text": "",

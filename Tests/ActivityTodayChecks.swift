@@ -1382,6 +1382,10 @@ import Foundation
         check(reply.reason == nil, "reason is absent on a fresh view")
         check(reply.enabled, "enabled")
         check(reply.source == "settings", "source", reply.source)
+        check(reply.sessions?.count == 1 && reply.sessions?.first?.lastAsk == "Check the Today summary.",
+              "the current server's optional sessions are preserved for Ask about this")
+        check(fixture["off"].flatMap { TodaySummary.Reply($0) }?.sessions == nil,
+              "older summaries without sessions remain supported")
         var counts = TodayHome.Counts()
         counts.needs = 6
         counts.folded = 6

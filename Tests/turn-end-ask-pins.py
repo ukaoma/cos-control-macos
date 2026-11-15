@@ -4,6 +4,7 @@ import sys
 root = sys.argv[1]
 def read(p): return open(f"{root}/{p}").read()
 helper, win, models = read("HelperSources/main.swift"), read("Sources/ActivityWindow.swift"), read("Sources/Models.swift")
+controller = read("Sources/ControllerModel.swift")
 fails = []
 def need(cond, label):
     if not cond: fails.append(label)
@@ -20,16 +21,24 @@ gate = body(models, "    static func turnEndAsk(_ session: ClaudeSession) -> Tur
 need('session.provider == "claude", isWaiting(session), session.waitingSource == turnEndSource' in gate,
      "[gate] Claude, waiting, and the server's turn_end source")
 today = body(win, "    func todayTurnEndChoices(", "\n    func commandCanContinue(")
-need("todayReplyInControl(session, words: TodayHome.turnEndReply(choice: choice))" in today
-     and "todayReplyInControl(session, words: TodayHome.turnEndPrefix)" in today,
-     "[today] a choice or Other opens the session with the attributed reply in place")
+need("todayReplyInControl(session, words: TodayHome.turnEndReply(choice: choice), askID: ask.id)" in today
+     and "todayReplyInControl(session, words: TodayHome.turnEndPrefix, askID: ask.id)" in today
+     and "model.prefillTurnEndAnswer(words, askID: askID)" in today,
+     "[today] a choice or Other opens the session with the attributed reply bound to the question shown")
 need("sendChatMessage" not in today and "session-chat" not in today and "performChatSend" not in today,
      "[today] nothing is sent from Today")
 need("!model.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {" in today and "guard commandCanContinue(session) else {" in today,
      "[today] never over another session's unsent reply, and only where the composer can take a message")
 block = body(win, "struct TurnEndAskBlock: View {", "\nstruct SessionQuestionCard: View {")
-need("model.prefillChat(words)\n        model.sendChatMessage()" in block,
-     "[reader] a reply goes through the open session's own Continue (its gates, caution and retry)")
+need("model.sendTurnEndAnswer(words, askID: ask.id)" in block
+     and "model.sendChatMessage()" not in block,
+     "[reader] a reply uses the question-bound send, never bypassing its identity guard")
+sender = body(controller, "    func sendTurnEndAnswer(_ words: String, askID: String?) {", "\n    }\n")
+need("prefillTurnEndAnswer(words, askID: askID)" in sender
+     and "guard let askID = chatDraftAskID, openClaudeRow?.waitingAskID == askID else {" in sender
+     and sender.count("sendChatMessage()") == 1
+     and sender.index("guard let askID") < sender.index("sendChatMessage()"),
+     "[reader] the captured question must still match before Continue runs")
 need("send(TodayHome.turnEndReply(choice: choice))" in block and "if let words = TodayHome.turnEndReply(other: other)" in block,
      "[reader] choices and Other carry X1's attributed prefix")
 need(block.count(".disabled(gate != nil || busy") == 3 and "Text(gate ?? TodayHome.turnEndHonestLine)" in block,

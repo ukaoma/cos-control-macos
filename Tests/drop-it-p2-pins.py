@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """0.5.372 Drop it P2 wiring pins: the source text that ties the Mac half together. Usage: drop-it-p2-pins.py <repo>.
 Prints "drop it p2 pins: N passed"."""
-import re, sys
+import plistlib, re, sys
 from pathlib import Path
 root = Path(sys.argv[1])
 def read(p): return (root / p).read_text(encoding="utf-8")
@@ -30,9 +30,22 @@ for text in re.findall(r'\.init\("REACH-\d\d", "([^"]*)", "([^"]*)"', catalog):
     need(not re.search("[—–→]|->", text[0] + text[1]), "[copy] no em dash, en dash or arrow: " + text[0])
 import json
 whats = json.loads(read("Resources/WhatsNew.json")); plist = read("Resources/Info.plist"); log = read("CHANGELOG.md")
-# 0.5.373 (the quit fix) sits on top: P2's own section, entry and order still hold; app-update-quit-request-pins pins the bump.
-p2 = [s for s in whats["whatsNew"]["sections"] if s["title"] == "0.5.372"]
-need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.3(?:7[2-9]|[89][0-9])</string>", plist) is not None and whats.get("version", "").startswith(("0.5.37", "0.5.38", "0.5.39")), "[version] Info.plist and What's New are 0.5.372 or a later 0.5.37x, 0.5.38x or 0.5.39x")
-need(len(p2) == 1 and any("COS reaching out" in i for i in p2[0]["items"]) and whats["whatsNew"]["sections"].index(p2[0]) <= 17, "[version] What's New has its 0.5.372 section naming COS reaching out, within the first eighteen (0.5.393 through 0.5.373 sit above it)")
+# The bundled What's New is sanitized through AppUpdateWhatsNew.sectionLimit (8) before Views renders it.
+# P2's older notes were already outside that visible window; the old <=17 bound was a historical-file position,
+# not a display limit. Pin actual release identity and chronological retention, not an arbitrary growing cutoff.
+meta = plistlib.loads(plist.encode())
+sections = whats["whatsNew"]["sections"]
+titles = [s["title"] for s in sections]
+p2 = [s for s in sections if s["title"] == "0.5.372"]
+need(meta.get("CFBundleShortVersionString") == "0.5.395" and meta.get("CFBundleVersion") == "449"
+     and whats.get("version") == "0.5.395" and titles[:2] == ["0.5.395", "0.5.393"],
+     "[version] Info.plist and What's New identify 0.5.395 build 449, carrying the 0.5.393 notes")
+need(len(p2) == 1 and any("COS reaching out" in i for i in p2[0]["items"]),
+     "[version] What's New retains one 0.5.372 section naming COS reaching out")
+releases = [tuple(map(int, title.split("."))) for title in titles if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", title)]
+need(releases == sorted(releases, reverse=True) and titles.count("0.5.373") == 1 and titles.count("0.5.371") == 1
+     and titles.index("0.5.373") + 1 == titles.index("0.5.372")
+     and titles.index("0.5.372") + 1 == titles.index("0.5.371"),
+     "[version] the retained release notes descend, with 0.5.373 then P2 0.5.372 then Drop it 0.5.371")
 need("\n## 0.5.372 (build 426)" in "\n" + log and log.index("## 0.5.372 (build 426)") < log.index("\n## 0.5.371 (build 425)"), "[version] the changelog's 0.5.372 entry sits above 0.5.371's")
 print(f"drop it p2 pins: {passed} passed")
