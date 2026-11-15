@@ -1,4 +1,4 @@
-## 0.5.395 (build 449) — Shared COS chat and plan pacing
+## 0.5.395 (build 449): Shared COS chat and plan pacing
 
 Private candidate for server 7.0.47. Notarization, installation, phone enrollment and activation have separate receipts.
 
