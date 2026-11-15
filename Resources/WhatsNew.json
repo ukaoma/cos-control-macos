@@ -1,8 +1,17 @@
 {
-  "version": "0.5.393",
+  "version": "0.5.395",
   "whatsNew": {
-    "summary": "Reply from the message reader, Back goes the way you came, one code connects your glasses, and Meetings scrolls past the calendar. Plus everything in 0.5.389.",
+    "summary": "Your COS chat is shared with the web, with model and effort choices and a Jump to latest button. Usage now shows plan pacing.",
     "sections": [
+      {
+        "title": "0.5.395",
+        "items": [
+          "Read the shared COS conversation, load earlier messages, expand full answers, and retry interrupted asks on supported servers. Model and effort choices are remembered.",
+          "Jump to latest takes you to the bottom of the COS chat.",
+          "Usage shows plan use against elapsed time, with reset dates and pace estimates when the server has the required data.",
+          "Answers to session questions stay tied to the question you saw. If the session has moved on, your words remain available."
+        ]
+      },
       {
         "title": "0.5.393",
         "items": [
@@ -94,13 +103,13 @@
           "Sessions shows the files and images a session made, under the reply that made them: pictures it sent or looked at, files it sent, and files it linked to.",
           "Click a card to open it with Quick Look. COS fetches a copy only you can read through the COS server and deletes it when Quick Look closes.",
           "A file whose name says it may hold secrets never opens. A file that is gone, or outside the session's folder, says so.",
-          "Cards follow “Show session files, screenshots and images” in Settings, Privacy, on COS Control Web. When it is off, Sessions shows no cards and fetches nothing.",
+          "Cards follow \u201cShow session files, screenshots and images\u201d in Settings, Privacy, on COS Control Web. When it is off, Sessions shows no cards and fetches nothing.",
           "Linked files need COS server 7.0.5 or later. Pictures and sent files also show with earlier COS servers that have the session files switch; with an older one Sessions shows no cards, as before.",
           "Settings, Activity home: Summaries per day sets how many Today summaries COS may write a day, from 1 to 100. It starts at 100.",
           "When COS reconnects after it could not read your sessions, Today asks for a fresh summary right away, once.",
           "Messages and the Drop it COS chat: numbered lists in a COS answer now sit on their own lines, as on COS Control Web. Copy answer and Copy turn still copy the answer exactly as COS wrote it.",
-          "Sessions: a link to a file on your Mac reads as the file’s name or the link’s words, not a folder path, and its card shows under the reply.",
-          "Settings, Sessions: Extra folders for previews lists the folders a session’s files may also open from. Add a project folder or remove one. It starts empty."
+          "Sessions: a link to a file on your Mac reads as the file\u2019s name or the link\u2019s words, not a folder path, and its card shows under the reply.",
+          "Settings, Sessions: Extra folders for previews lists the folders a session\u2019s files may also open from. Add a project folder or remove one. It starts empty."
         ]
       },
       {
@@ -108,9 +117,9 @@
         "items": [
           "Today shows the summary COS writes about your sessions, the same one COS Control Web shows, with when it was updated.",
           "Refresh reads everything on Today again and asks for a new summary, at most every 30 seconds. If the daily limit is reached, a meeting is recording or COS is updating, Today says so.",
-          "Settings, Activity home has the switch “Write the Today summary with a model”, the same one COS Control Web shows. When it is off, or the COS server is older, Today keeps its own headline.",
-          "Work items waiting on your answer or review appear in Today and Work again, dated by when they started waiting, and Work handoffs still in flight show in Needs you so you can check on them. One you already answered in its session leaves the list. If COS cannot read them, Today says so instead of calling you caught up. A COS server without Work’s list no longer stops Today from settling.",
-          "Memories, To review: only items that need a decision are counted, and Today’s “Next 7 of N” counts the same way COS Control Web does. Suggested rules still under their confidence bar sit in a calm Learning group.",
+          "Settings, Activity home has the switch \u201cWrite the Today summary with a model\u201d, the same one COS Control Web shows. When it is off, or the COS server is older, Today keeps its own headline.",
+          "Work items waiting on your answer or review appear in Today and Work again, dated by when they started waiting, and Work handoffs still in flight show in Needs you so you can check on them. One you already answered in its session leaves the list. If COS cannot read them, Today says so instead of calling you caught up. A COS server without Work\u2019s list no longer stops Today from settling.",
+          "Memories, To review: only items that need a decision are counted, and Today\u2019s \u201cNext 7 of N\u201d counts the same way COS Control Web does. Suggested rules still under their confidence bar sit in a calm Learning group.",
           "Held voices: if one row from the server cannot be read, Speakers shows an error instead of quietly leaving it out. Leaving Speakers for Today no longer leaves voices stuck loading.",
           "Sessions: if the COS server does not answer, Today says it could not read your sessions instead of waiting forever, and keeps trying. After a quick relaunch with the pet on, Today reads your sessions again on its own.",
           "The summary also hears how many sub-agents each session is running. If one session row from the server cannot be read, Today uses your saved session list rather than a partial one, and the pet keeps finished sessions until COS has read the full list.",
@@ -190,7 +199,7 @@
           "Attach photos, video, PDFs and documents to a message, up to five: drag them onto the box, paste a screenshot, or choose them with Add. Ask sends them with your words.",
           "Each reply has Undo and Move for 24 hours. When COS is not sure where something goes, it asks one question instead of guessing. History lists everything you dropped, with where it went.",
           "The Messages tab shows a number when COS is waiting on your answer, and a dot when the chat has something you have not read.",
-          "It is off until you turn it on in Settings, Work and agents, Work chat, and it needs a newer COS server. While it is off, Messages and ⌘K's File to Work are exactly as before.",
+          "It is off until you turn it on in Settings, Work and agents, Work chat, and it needs a newer COS server. While it is off, Messages and \u2318K's File to Work are exactly as before.",
           "Meeting consolidation continues automatically across saved passes, past the former 15-minute limit, and reports completion only after checking the saved inventory and audit.",
           "Stop cleanup is available beside the running status. Originals and uncertain matches remain preserved.",
           "Requires a compatible COS server with resumable cleanup support. Older servers refuse before starting.",
@@ -261,36 +270,36 @@
       {
         "title": "0.5.363",
         "items": [
-          "With Today home on, type a few words about a topic in ⌘K and it lists the sessions that fit best, strongest first. Each row shows its tool, project, age, how strong the match is, and the line it was judged on. Open one and keep working there.",
+          "With Today home on, type a few words about a topic in \u2318K and it lists the sessions that fit best, strongest first. Each row shows its tool, project, age, how strong the match is, and the line it was judged on. Open one and keep working there.",
           "Meaning matches sit above word matches, so the best sessions are first. A word now matches at the start of a word, in titles and in text, so \"miss\" no longer finds \"permissions\" and \"model\" still finds ControllerModel. Two sessions with one title each say when they last moved. \"Recent\" is no longer drawn next to an age.",
-          "Finding by meaning is off until you say yes. When Jev or SubQ is your decision model and its key is saved, ⌘K asks for that model on every search of three words or more until you answer: Turn on, or Never. After a yes, each search sends the words you type in ⌘K, plus the title and first 150 characters of the first prompt from up to 508 recent sessions, to that model, through the COS server. Emails, links, home-folder paths and key-shaped text are removed first. Names and other details are not. SubQ keeps what it is sent. Settings, Decision models shows and changes your choice for the model that decides search.",
-          "Without that yes, typing in ⌘K searches the start of your newest sessions on this Mac and sends nothing off it. Finding by meaning needs a newer COS server. An older server keeps word search; Update Server adds it.",
-          "The Work search picker in Settings, Decision models is now Work and ⌘K search, because it also picks the model for this, and the Decision models blurb says so.",
-          "When one match is clearly the best and Jev decides (not yet for SubQ), ⌘K offers Continue in this session. It opens that session with your words ready in its reply box. Nothing is sent until you press Send, and Return in the box does not send them.",
-          "⌘K also goes to the Memories views (Recent learning, Applied this week, All memories, To review, Knowledge), Work's three layouts (Your move, Board, Focus), and any group in Settings, such as Decision models or Microphone. Type a tab name exactly and Return opens it. A Settings group name, such as \"performance\", still searches your sessions too.",
-          "A session that has not moved in six hours reads Idle in ⌘K, not Running. It stays in the list.",
+          "Finding by meaning is off until you say yes. When Jev or SubQ is your decision model and its key is saved, \u2318K asks for that model on every search of three words or more until you answer: Turn on, or Never. After a yes, each search sends the words you type in \u2318K, plus the title and first 150 characters of the first prompt from up to 508 recent sessions, to that model, through the COS server. Emails, links, home-folder paths and key-shaped text are removed first. Names and other details are not. SubQ keeps what it is sent. Settings, Decision models shows and changes your choice for the model that decides search.",
+          "Without that yes, typing in \u2318K searches the start of your newest sessions on this Mac and sends nothing off it. Finding by meaning needs a newer COS server. An older server keeps word search; Update Server adds it.",
+          "The Work search picker in Settings, Decision models is now Work and \u2318K search, because it also picks the model for this, and the Decision models blurb says so.",
+          "When one match is clearly the best and Jev decides (not yet for SubQ), \u2318K offers Continue in this session. It opens that session with your words ready in its reply box. Nothing is sent until you press Send, and Return in the box does not send them.",
+          "\u2318K also goes to the Memories views (Recent learning, Applied this week, All memories, To review, Knowledge), Work's three layouts (Your move, Board, Focus), and any group in Settings, such as Decision models or Microphone. Type a tab name exactly and Return opens it. A Settings group name, such as \"performance\", still searches your sessions too.",
+          "A session that has not moved in six hours reads Idle in \u2318K, not Running. It stays in the list.",
           "COS cost has a Finding sessions row, counted by the day.",
-          "When rows arrive in ⌘K the list scrolls to keep your highlighted row in view.",
+          "When rows arrive in \u2318K the list scrolls to keep your highlighted row in view.",
           "Speakers: a voice's closest match below 0.65 no longer has a one-click \"Yes, this is ...\" button. It is a menu, so confirming a weak guess takes a deliberate second step."
         ]
       },
       {
         "title": "0.5.361",
         "items": [
-          "With Today home on in Settings, ⌘K goes to any pane or tab. Type usage, cos cost, messages, archive, voices or work, and press Return.",
+          "With Today home on in Settings, \u2318K goes to any pane or tab. Type usage, cos cost, messages, archive, voices or work, and press Return.",
           "Type sessions or recent to list your sessions, newest first, and add today, yesterday or this week to narrow the list. Type running to see what runs and what waits. Session lists and search need Show AI sessions on, in Settings, Work and agents.",
-          "Typing in ⌘K searches the start of your newest sessions on this Mac only, and sends nothing off it. It shows the line that matched. Search all sessions opens Sessions with your words filled in, and Sessions' search asks the COS server and can use your OpenAI key.",
+          "Typing in \u2318K searches the start of your newest sessions on this Mac only, and sends nothing off it. It shows the line that matched. Search all sessions opens Sessions with your words filled in, and Sessions' search asks the COS server and can use your OpenAI key.",
           "Return on words that are not a command never starts anything on the first press. It moves to Ask COS, and a second press runs it. With Work runs from Today off, the first press files the words as a task.",
-          "The session list refreshes when you open ⌘K.",
-          "After hours, Today and ⌘K agree: when everything left can wait, both say how many things can wait until tomorrow.",
+          "The session list refreshes when you open \u2318K.",
+          "After hours, Today and \u2318K agree: when everything left can wait, both say how many things can wait until tomorrow.",
           "A long session title is cut in the panel's footer, and \"Return again opens it\" stays whole."
         ]
       },
       {
         "title": "0.5.360",
         "items": [
-          "With Today home on in Settings, ⌘K is the COS command center: start or stop a recording, open what's waiting, get saved answers, Ask COS, troubleshoot.",
-          "With Today home on, what's recording now sits at the top of Today and first in ⌘K.",
+          "With Today home on in Settings, \u2318K is the COS command center: start or stop a recording, open what's waiting, get saved answers, Ask COS, troubleshoot.",
+          "With Today home on, what's recording now sits at the top of Today and first in \u2318K.",
           "Sessions has a third view, COS cost: what COS itself used over 30 days, by job, measured where it can be. A row with only character counts says Estimated and stays out of the measured total.",
           "Work shows the runs themselves, with the wider figure in words.",
           "Once COS has measured calls, add what you pay a month to see COS's share. It stays on this Mac.",
@@ -298,7 +307,7 @@
           "Update Server won't move backward.",
           "The Miles Windu pet no longer leaves a droid fragment behind after a strike.",
           "A paused Usage page now says it is paused, offers Resume tracking and drops the month estimate. Count Cursor tokens tells a Keychain that didn't answer from one that said no, and offers the install command when Cursor's command line is missing.",
-          "With Today home on, Return in ⌘K goes to the command or session your words point at before it starts anything, and a row you ran is cleared so the next ⌘K doesn't offer it again. A question that mentions recording no longer starts one when you press Return.",
+          "With Today home on, Return in \u2318K goes to the command or session your words point at before it starts anything, and a row you ran is cleared so the next \u2318K doesn't offer it again. A question that mentions recording no longer starts one when you press Return.",
           "COS cost puts a + on any figure that leaves out calls with no verified price, says when it couldn't read its record of calls, and keeps trying while the usage history is busy."
         ]
       },
@@ -394,7 +403,7 @@
           "Cost is a standard API-equivalent estimate, not your subscription bill. It applies the October 25 rate snapshot to all dates. Unknown prices stay unavailable; browser-only sessions, Cursor and other Macs are not included.",
           "Longer custom pet animations retain their approved timing, including 256-frame casts. Your installed artwork is preserved.",
           "Includes 0.5.345 dictation improvements and its fix for learning edits to capitalized dictations.",
-          "Jedi Miles Windu gains thirteen illustrated combat casts across Sessions 1–4. Exact stock packs update; custom artwork and playback settings stay yours."
+          "Jedi Miles Windu gains thirteen illustrated combat casts across Sessions 1\u20134. Exact stock packs update; custom artwork and playback settings stay yours."
         ]
       },
       {
@@ -402,7 +411,7 @@
         "items": [
           "COS leaves out um, uh, er and hmm said on their own before it types or copies, also with AI polish off. Text in another language, file names such as um.py, and handles such as @uh keep them. Settings, Dictation, Remove filler sounds turns it off. What was heard stays on the card.",
           "A dictation at the start of a text box, or after a full stop, question mark or new line, starts with a capital when COS can read the text box. Never in terminals or password fields, and never for words like iPhone, @handles, paths or a lowercase word in your dictionary. Settings, Dictation, Capitalize the start of a sentence.",
-          "When you are still holding ⌘ or ⌃ as Claude's polish arrives, COS waits up to 1.2 seconds for you to let go, then a moment of no typing, before it swaps the polished text in. Shift and Option cancel the pending swap immediately. Settings can turn the wait off.",
+          "When you are still holding \u2318 or \u2303 as Claude's polish arrives, COS waits up to 1.2 seconds for you to let go, then a moment of no typing, before it swaps the polished text in. Shift and Option cancel the pending swap immediately. Settings can turn the wait off.",
           "Undo polish, on the pill after a swap and on the dictation's card, puts back exactly what COS typed. Apply polished in Activity puts Claude's version back again.",
           "Under AI polish, one line says which polish your COS server runs for the model you chose: the newest polish, the earlier one, or Previous polish you picked. COS reads it again when the server is updated or rolled back.",
           "If the microphone fails to start with System default, COS tries a microphone that delivered sound before (never Bluetooth or an iPhone) and says which it used. A sound or a mute that hits an audio error pauses for 10 minutes instead of holding up dictation, with Play sounds again and Mute again in Settings.",
@@ -418,7 +427,7 @@
           "COS checks for your change sooner after you stop typing. Your dictionary still learns a word only after a longer pause.",
           "If your last change may not have been read before the text was sent or cleared, nothing is saved. COS never keeps an older version as what you sent.",
           "When AI polish gives back your words unchanged, COS records it as unchanged, not as a failed polish. When the server cleaned up filler or spellings on its own, COS still puts the cleaned text in, and the card says Cleaned up.",
-          "With COS server 6.91.0, Sonnet now uses the new polish (v4), and its card says so, for example Polished · Sonnet · v4. Previous polish (v3) in Settings, Dictation goes back to the earlier prompt.",
+          "With COS server 6.91.0, Sonnet now uses the new polish (v4), and its card says so, for example Polished \u00b7 Sonnet \u00b7 v4. Previous polish (v3) in Settings, Dictation goes back to the earlier prompt.",
           "With AI polish on Claude Sonnet, COS can learn two style habits from changes you make to text it typed: dropping a filler such as \"honestly\" or \"to be honest\", and using or writing out contractions. A habit becomes a rule after you make the same change in two dictations.",
           "Your style rules apply only to Sonnet polish with the new prompt. On Haiku, with Previous polish, or with learning off, Settings lists them as Not used or Paused, and COS learns nothing new.",
           "When COS adds a rule, the pill says Learned your style, with Undo, once for each rule. Settings, Dictation, Your style lists your rules with Remove, lets you add one or reset them, and has a switch to stop learning. Suggest only proposes rules instead of adding them.",
@@ -593,7 +602,7 @@
           "Reset pause, Use for answers, Remove and Remove all keys are buttons, each confirmed first. Saved keys can still be removed after going back to an older COS.",
           "Sessions that ran on a key cannot be continued, forked or opened in their app from Control, so they never resume on your plan.",
           "New installs get an optional Add your own key step at the end of setup. Skip is the default and sends nothing.",
-          "Dictation: if your Mac misses the moment you let go of the dictation key, COS now notices and finishes the dictation normally, typing the text instead of copying it. If the 🌐 key also has a job in macOS, COS tells you and opens Keyboard settings. A press while the last dictation is still finishing now says so. Dictation settings now live in Activity, Dictation, Settings.",
+          "Dictation: if your Mac misses the moment you let go of the dictation key, COS now notices and finishes the dictation normally, typing the text instead of copying it. If the \ud83c\udf10 key also has a job in macOS, COS tells you and opens Keyboard settings. A press while the last dictation is still finishing now says so. Dictation settings now live in Activity, Dictation, Settings.",
           "Dictation no longer quits COS Control when you switch to a microphone with a different audio format, like the Studio Display Microphone."
         ]
       },
@@ -633,7 +642,7 @@
           "With a model chosen, Claude cleans each dictation before COS pastes it: filler words like um, punctuation, doubled words and spellings from your COS dictionary. It does not reliably fix a word the speech engine misheard, and Sonnet sometimes guesses wrong.",
           "The pill says POLISHING while Claude works. COS waits at most 5 seconds for Haiku and 9 for Sonnet; if Claude is slower, unavailable or fails, COS pastes what it heard, with no error card.",
           "Uses your Claude plan through the COS server, with the server's own daily limit. Dictations over 8,000 characters are pasted as heard.",
-          "Dictation history marks a polished dictation Polished · Haiku or Polished · Sonnet, and its detail shows What was heard, with Copy.",
+          "Dictation history marks a polished dictation Polished \u00b7 Haiku or Polished \u00b7 Sonnet, and its detail shows What was heard, with Copy.",
           "Jedi Miles Windu, the default pet, now fights shuffled opponent casts like Nia, Elara and Rowan: two, three and four sessions each rotate three casts without an immediate repeat, and one session keeps the slower sprint.",
           "A Miles Windu pet that was never changed updates by itself. A pet you changed or installed yourself stays exactly as it is.",
           "Use on a shipped character now needs a click: Return no longer confirms it, and a confirm left open is withdrawn when the panel closes, so a stray key cannot replace your pet."
@@ -660,7 +669,7 @@
         "items": [
           "If COS Control does not close for an update within 20 seconds, the update closes it and reopens the new version. You no longer need Force Quit.",
           "A Mac recording is never cut off: the update stops, says \"Finish the Mac recording, then choose Try again\", and installs nothing until you do.",
-          "While it installs, the window says \"Closing COS Control…\", then the new version opens.",
+          "While it installs, the window says \"Closing COS Control\u2026\", then the new version opens.",
           "If an update could not close COS Control, the next launch offers Finish installing, with nothing to download again.",
           "A Live cues switch in Settings, in the Meeting assistant card under Home city. Turn live cues on or off here; nobody edits the server's files by hand.",
           "The line under the switch says what cues use, like On. Cues use Claude Sonnet 5.5, SubQ, and your notes. Or what stops them, in words, and what to do.",
@@ -675,7 +684,7 @@
           "Stop and save a glasses meeting from COS Control. It is in the live meeting header, and in the panel when one glasses meeting is recording. Confirm, and COS asks the glasses to stop.",
           "The glasses stop and save the meeting themselves, so the lens shows Saving and Saved and no audio is split into a second meeting.",
           "COS says what happened: Saving the meeting, then Saved with its name. If the glasses are not connected, the server is unreachable or the meeting already stopped, it says so and nothing stops.",
-          "Meeting Ask’s copied context shows where in the meeting each answer reached, as Through 3:30, and how long the answer took when the server measured it, as Answer time: 6.4 s. It no longer prints a meeting position in milliseconds that read like a wait.",
+          "Meeting Ask\u2019s copied context shows where in the meeting each answer reached, as Through 3:30, and how long the answer took when the server measured it, as Answer time: 6.4 s. It no longer prints a meeting position in milliseconds that read like a wait.",
           "Needs COS Glasses 6.10.644 and server 6.76.1."
         ]
       },
@@ -758,8 +767,8 @@
       {
         "title": "Fix dictation faster",
         "items": [
-          "Fix a dictation the moment it lands: Fix on the pill for 5 seconds, or ⌃⌥F (set in Settings).",
-          "Click, drag and move windows while you hold the dictation key: COS keeps listening, and the text lands where your cursor ends up. A click right after the press is still ⌥-click or ⌘-click.",
+          "Fix a dictation the moment it lands: Fix on the pill for 5 seconds, or \u2303\u2325F (set in Settings).",
+          "Click, drag and move windows while you hold the dictation key: COS keeps listening, and the text lands where your cursor ends up. A click right after the press is still \u2325-click or \u2318-click.",
           "If a dictation is cut short (another key while you hold the shortcut, or sleep), COS still transcribes what you said and copies it; a card shows the text with Copy. If you copied something meanwhile, your clipboard is left alone. Under a second is dropped.",
           "After you fix a word, Replace it in the app puts the corrected text back where COS typed it, when that spot hasn't changed; otherwise COS copies the corrected text.",
           "Fix a word selects the whole misheard phrase and suggests the spelling from your dictionary. Return saves.",
@@ -804,8 +813,8 @@
         "title": "Dictation, Wispr-style",
         "items": [
           "Hold your shortcut and the bar under your pet becomes a listening pill with a live waveform that moves for quiet speech too. No window opens, and nothing takes focus from the app you are typing in. With the pet hidden, the same pill sits above the Dock.",
-          "Release and COS transcribes, copies the text, and drops it into whatever text box has your cursor when it finishes, so you can click somewhere else while it works. The pill flashes ✓ Inserted with the app's name only when COS sees the text land. The text stays on the clipboard, so ⌘V works again anywhere.",
-          "Some apps, such as terminals and Electron editors, get ⌘V; COS shows Pasted when it can't confirm. COS sends ⌘V once and never asks you to paste again; the text stays on the clipboard and in Recent dictations with Copy.",
+          "Release and COS transcribes, copies the text, and drops it into whatever text box has your cursor when it finishes, so you can click somewhere else while it works. The pill flashes \u2713 Inserted with the app's name only when COS sees the text land. The text stays on the clipboard, so \u2318V works again anywhere.",
+          "Some apps, such as terminals and Electron editors, get \u2318V; COS shows Pasted when it can't confirm. COS sends \u2318V once and never asks you to paste again; the text stays on the clipboard and in Recent dictations with Copy.",
           "No text box selected? A card pops over the pet with the text and a Copy button. It folds away after 20 seconds; hover to keep it.",
           "The DICTATIONS pill on the pet opens Recent dictations, kept on this Mac, each with where it went and a Copy button.",
           "Still refused: password fields, and secure keyboard input held by another app (its own card). COS never presses Send or Return, and line breaks become spaces in a terminal.",
@@ -818,16 +827,16 @@
         "items": [
           "Open a dictation and choose Fix a word: tap what COS got wrong, type the right spelling, Save. It joins the one COS dictionary your G2 meetings, Mac recordings and dictation already use, from the next sentence on.",
           "Recent corrections show what COS learned, from where and when, and each one can be undone.",
-          "Meetings → Dictionary in COS Activity shows the whole dictionary: recent corrections, vocabulary and every correction, searchable, with add and remove. Fix a word, Undo and single-word edits need server 6.73.12; on an older server the dictionary still reads and takes hand-added corrections."
+          "Meetings \u2192 Dictionary in COS Activity shows the whole dictionary: recent corrections, vocabulary and every correction, searchable, with add and remove. Fix a word, Undo and single-word edits need server 6.73.12; on an older server the dictionary still reads and takes hand-added corrections."
         ]
       },
       {
         "title": "Dictate into any Mac app",
         "items": [
           "Turn on Dictate into Mac apps in Settings, choose a microphone, and set Push to talk and Start / stop shortcuts. Speech runs through Parakeet Ultra on this Mac with your COS dictionary.",
-          "Any key can be the shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn 🌐 or Right ⌘. Fn+arrow and other chords never start dictation.",
-          "To use Fn, set System Settings → Keyboard → Press 🌐 key to Do Nothing, and move Wispr Flow off Fn. Fn and single-key shortcuts use Accessibility, which insertion already needs.",
-          "A click right after you press your shortcut modifier (⌥-click, ⌘-click) counts as a chord and never starts dictation; later clicks keep dictating."
+          "Any key can be the shortcut: a modifier plus a key, a function key, or one modifier key by itself such as Fn \ud83c\udf10 or Right \u2318. Fn+arrow and other chords never start dictation.",
+          "To use Fn, set System Settings \u2192 Keyboard \u2192 Press \ud83c\udf10 key to Do Nothing, and move Wispr Flow off Fn. Fn and single-key shortcuts use Accessibility, which insertion already needs.",
+          "A click right after you press your shortcut modifier (\u2325-click, \u2318-click) counts as a chord and never starts dictation; later clicks keep dictating."
         ]
       },
       {
@@ -839,7 +848,7 @@
           "The panel checks every chunk for sound. If nothing reaches COS for 12 seconds it says so, instead of only counting chunks received.",
           "A red menu bar indicator and Stop control stay available while recording. Local audio is retained for explicit recovery if delivery is interrupted; a silent capture can be kept while you record again.",
           "Work requests blocked before sending can be reviewed and sent to another connected session, or a new or forked session, after confirmation.",
-          "A Mac recording that stopped while its audio still uploads reads \"Capture stopped · saving N/M\" on Meetings, with Finish saving, instead of Live now."
+          "A Mac recording that stopped while its audio still uploads reads \"Capture stopped \u00b7 saving N/M\" on Meetings, with Finish saving, instead of Live now."
         ]
       },
       {
@@ -903,7 +912,7 @@
           "Choose Opus or Sonnet to plan, beside the composer. Opus is the default; the choice stays on this Mac. Needs server 6.73.10; older servers plan with Sonnet.",
           "If an earlier handoff on the card is still unresolved, COS lists it first, with Mark reviewed, Acknowledge or Check status, instead of refusing partway through a plan.",
           "A refused assignment shows its reason and the others stay sendable. If the task, its files or its sessions change after planning, COS asks you to plan again.",
-          "Read each session’s delivery status and results together in the task conversation. Shared task completion remains your decision; Cursor and app-owned sessions keep manual continuation.",
+          "Read each session\u2019s delivery status and results together in the task conversation. Shared task completion remains your decision; Cursor and app-owned sessions keep manual continuation.",
           "Choose how hard the planner thinks: Low, Medium or High (default). Each round names the model and effort that planned it, and says Dispatched only when a session received an assignment."
         ]
       },

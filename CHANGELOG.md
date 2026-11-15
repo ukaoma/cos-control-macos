@@ -1,3 +1,14 @@
+## 0.5.395 (build 449) — Shared COS chat and plan pacing
+
+Private candidate for server 7.0.47. Notarization, installation, phone enrollment and activation have separate receipts.
+
+- Integrates the previously reviewed native Usage plan ruler, including the Cursor period display. Source readings still depend on server availability and provider permission.
+- Displays the shared COS chat history with older-page loading, whole-answer expansion, failed/interrupted retry and model/effort selection. Legacy servers and message-reader replies retain their existing paths.
+- Adds an accessible Jump to latest button to the COS chat.
+- Binds session-question answers to their original question ID, preserves refused drafts, and never queues these answers for later delivery.
+- Preserves both phone push environment switches through managed server updates; they remain off by default.
+- Pins the selected server's web and signer assets for phone enrollment. Physical phone acceptance tests remain required before activation.
+
 ## 0.5.393 (build 447), Meetings scrolls past the calendar, and one QR in the whole app
 
 One build of 0.5.392 and two reviewed branches: the Meetings and Work picker scroll (lane D4) and the glasses pairing card (lane O1).
