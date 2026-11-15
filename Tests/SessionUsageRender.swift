@@ -13,6 +13,11 @@ import SwiftUI
             .replacingOccurrences(of: #""closest":"codex""#, with: #""closest":"claude""#)
             .replacingOccurrences(of: #""state":"failed","usedPct":null"#, with: #""state":"failed","usedPct":40"#).utf8))
         guard contractPane.lines[0].usedPct == 40, contractPane.closest == "claude", !contractPane.lines[0].hasRuler else { fatalError("plan: the contract payload did not build") }
+        // Server 7.0.45 (lead 20:58): a Cursor line exactly as the server sends it, switched on. The Mac draws it with no
+        // Mac change: it decodes, it is the closest, and it has a ruler.
+        let cursorPane = try JSONDecoder().decode(PlanPane.self, from: Data(cursorFixture.utf8))
+        guard cursorPane.closest == "cursor", let cursorTop = PlanRulerPresentation.closest(cursorPane), cursorTop.provider == "cursor", cursorTop.hasRuler,
+              cursorTop.usedPct == 97, cursorPane.lines.filter(\.hasRuler).map(\.provider) == ["codex", "cursor"] else { fatalError("plan: the Cursor line did not draw") }
         PlanRulerStore.shared.offscreen = true
         PlanRulerStore.shared.pane = planPane
         PlanRulerStore.shared.open = false
@@ -193,12 +198,12 @@ import SwiftUI
         var planHeights: [String: Int] = [:]
         for dark in [false, true] {
             for width in [1200.0, 760.0] {
-                for state in ["closed", "open", "failed", "reading", "contract-closed", "contract"] {
+                for state in ["closed", "open", "failed", "reading", "contract-closed", "contract", "cursor-closed", "cursor"] {
                     let plan = PlanRulerStore()
                     plan.offscreen = true
                     plan.open = !state.hasSuffix("closed")
                     // contract: a payload the server should never send (Claude failed, yet with 40% and named closest).
-                    plan.pane = state == "failed" ? nil : state.hasPrefix("contract") ? contractPane : planPane
+                    plan.pane = state == "failed" ? nil : state.hasPrefix("contract") ? contractPane : state.hasPrefix("cursor") ? cursorPane : planPane
                     plan.failed = state == "failed"
                     plan.loading = state == "reading"
                     let view = PlanRulerView(plan: plan, narrow: width < 944).padding(24).frame(width: width, alignment: .top).background(COSPalette.panel).cosControlTheme()
@@ -222,10 +227,11 @@ import SwiftUI
         }
         // A refresh never changes the height: reading and a failed read take the open height, closed is one row everywhere.
         let closed = Set(planHeights.filter { $0.key.hasSuffix("closed") }.values)
-        guard planHeights.count == 24, closed.count == 1, let closedHeight = closed.first else { fatalError("plan: closed heights differ \(planHeights)") }
+        guard planHeights.count == 32, closed.count == 1, let closedHeight = closed.first else { fatalError("plan: closed heights differ \(planHeights)") }
         for width in [1200, 760] { for theme in ["light", "dark"] {
             let open = planHeights["\(width) \(theme) open"]!
-            guard ["failed", "reading", "contract"].allSatisfy({ planHeights["\(width) \(theme) \($0)"] == open }), open > closedHeight else {
+            guard ["failed", "reading", "contract"].allSatisfy({ planHeights["\(width) \(theme) \($0)"] == open }), open > closedHeight,
+                  planHeights["\(width) \(theme) cursor"]! > closedHeight else {
                 fatalError("plan: \(width) \(theme) open, failed and reading differ \(planHeights)")
             }
         } }
@@ -266,6 +272,7 @@ import SwiftUI
         guard probe.done else { fatalError("plan: the store run did not finish") }
         print("PASS: plan store executed: two triggers in flight send one request; a failed read keeps nothing; offscreen never reads")
         print("PASS: plan ruler heights: closed \(closedHeight) pt everywhere; open, failed and reading equal at each width and theme")
+        print("PASS: plan Cursor line (server 7.0.45 output, switched on) decodes, is the closest, draws its ruler, and keeps the closed row's height")
         for dark in [false, true] {
             let detail = SessionUsageInspector(title: "Saturday, Oct 24, 2026", rows: rows.filter { $0.day == month + "-24" }, excludingCacheReads: false, measure: .tokens,
                 isPeriod: true, canGoEarlier: true, canGoLater: false, comparison: nil, onStep: { _ in }, onClear: {}, onInspectDay: { _ in })
@@ -305,6 +312,12 @@ import SwiftUI
         print(only.map { "PASS: offscreen renders of \($0.sorted().joined(separator: ", ")) only" } ?? "PASS: offscreen light/dark Usage renders at 760, 800 and 1200 points, including first load/empty/error/backfill/reversed dates/API/cache/day/slice/sort/history-inspect/paused/long calendar states")
     }
 }
+
+/// Server 7.0.45 with COS_CURSOR_PLAN_USAGE=1: planPane() output (claude-server cursor-plan.ts + plan-pane.ts, U1 2026-11-14),
+/// Cursor Auto 97% of a Nov 1 to Dec 1 billing period. Generated by the server code, pasted byte for byte.
+let cursorFixture = #"""
+{"protocolVersion":1,"now":"2026-11-14T16:03:55.000Z","readAt":"2026-11-14T16:03:55.000Z","closest":"cursor","others":"Claude read failed. Codex 96% used.","lines":[{"provider":"claude","name":"Claude","readAt":null,"lastGoodAt":null,"reason":"no_limits","estimate":null,"usedPct":null,"gonePct":null,"windowStart":null,"resetsAt":null,"state":"failed","windowWords":"Week not known","short":"Read failed, refused by Claude","shortLong":"Read failed, refused by Claude","long":"Read failed: refused by Claude. No number is shown until a read succeeds.","quiet":"Claude read failed"},{"provider":"codex","name":"Codex","readAt":"2026-11-14T16:03:55.000Z","lastGoodAt":"2026-11-14T16:03:55.000Z","reason":null,"estimate":{"text":"At this week's average pace, Codex reaches its limit about 4:30 PM, before it resets tonight 10:31 PM.","arithmetic":"Worked out from 96% used in 6 days 11.5 hours of 7 days, about 0.6% an hour."},"usedPct":96,"gonePct":92.6,"windowStart":"2026-11-08T04:31:03.000Z","resetsAt":"2026-11-15T04:31:03.000Z","state":"fresh","windowWords":"Nov 7, 10:31 PM to Nov 14, 10:31 PM","short":"96% used, resets tonight","shortLong":"96% used, resets tonight 10:31 PM","long":"96% used. 93% of the week gone.","quiet":"Codex 96% used"},{"provider":"cursor","name":"Cursor","readAt":"2026-11-14T16:03:55.000Z","lastGoodAt":"2026-11-14T16:03:55.000Z","reason":null,"estimate":{"text":"At this billing period's average pace, Cursor reaches its limit about 8:00 PM, before it resets Dec 1, 2:00 AM.","arithmetic":"Worked out from 97% used in 13 days 8 hours of 30 days, about 0.3% an hour."},"usedPct":97,"gonePct":44.5,"windowStart":"2026-11-01T08:00:00.000Z","resetsAt":"2026-12-01T08:00:00.000Z","state":"fresh","windowWords":"Nov 1, 2:00 AM to Dec 1, 2:00 AM","short":"97% used, resets Dec 1","shortLong":"97% used, resets Dec 1, 2:00 AM","long":"97% used. The bar is the Auto bucket, the higher of the two (API 10%). Total used: 41%. 45% of the billing period gone.","quiet":"Cursor 97% used"}]}
+"""#
 
 /// The server's plan answer on 2026-11-14 (the same reading as the web harness and Tests/SessionUsageChecks.swift).
 let planFixture = """
