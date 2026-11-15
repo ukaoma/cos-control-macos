@@ -604,6 +604,9 @@ struct WebKeyChecks {
                           "signerBind": ["scope": "none", "addresses": [Any](), "reason": reason, "listening": false]]) as? [String: Any]
         }
         check(PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: bindAnswer("no_tailnet_address")) == .wait
+              && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: bindAnswer("address_lost")) == .wait
+              && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: bindAnswer("listen_failed")) == .wait
+              && PhoneApprovalsCore.proofWaitReasons == ["no_tailnet_address", "address_lost", "listen_failed"]
               && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: viaJSONValue(proofOn) as? [String: Any]) == .proven
               && PhoneApprovalsCore.proofStep(.off, status: 404, body: nil) == .proven,
               "phone on proof waits for the tailnet", "a server still waiting for its tailnet address is polled; a proven answer ends it")
@@ -612,6 +615,7 @@ struct WebKeyChecks {
         var unfixedWaiting = bindAnswer("no_tailnet_address") ?? [:]
         unfixedWaiting["signerBindFixVersion"] = 0
         check(PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: bindAnswer("bind_host_not_tailnet")) == .fail
+              && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: bindAnswer("made_up_reason")) == .fail
               && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: bindAnswer("https_unavailable")) == .fail
               && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: bootstrapWaiting) == .fail
               && PhoneApprovalsCore.proofStep(.on(device: phone), status: 200, body: unfixedWaiting) == .fail

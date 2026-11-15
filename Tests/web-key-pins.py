@@ -363,7 +363,8 @@ proven_fn = body_of(core_pa, core_pa.index("static func proven(_ change: Change,
 need('bind?["scope"] as? String == tailnetScope && bind?["listening"] as? Bool == true' in proven_fn and "case .on: return authority && bindFixed" in proven_fn,
      "phone on proof needs listening", "the post-restart proof needs scope tailnet AND listening true")
 step_fn = body_of(core_pa, core_pa.index("static func proofStep(_ change: Change, status: Int?, body: [String: Any]?, expectedName: String? = nil) -> ProofStep"))
-need('bind["scope"] as? String == "none"' in step_fn and 'bind["reason"] as? String == "no_tailnet_address" else { return .fail }' in step_fn
+need('bind["scope"] as? String == "none"' in step_fn and '(bind["reason"] as? String).map(proofWaitReasons.contains) == true else { return .fail }' in step_fn
+     and 'static let proofWaitReasons: Set<String> = ["no_tailnet_address", "address_lost", "listen_failed"]' in core_pa
      and "guard change != .off, status == 200" in step_fn and step_fn.count("return .wait") == 1
      and "static let proofWaitSeconds: Double = 45" in core_pa,
      "phone on proof waits for the tailnet", "only no_tailnet_address waits; every other reason fails at once; Off never waits; the wait is 45 s")

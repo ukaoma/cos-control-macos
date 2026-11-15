@@ -701,6 +701,9 @@ enum PhoneApprovalsCore {
     /// appears). So after an On restart that one answer means wait, for at most proofWaitSeconds; any other failure, including
     /// "bind_host_not_tailnet" or "https_unavailable", fails at once and the apply path rolls back. Off never waits.
     enum ProofStep: Equatable, Sendable { case proven, wait, fail }
+    /// The server's not-yet-bound reasons that mean wait (PA-S fix round 1 added address_lost and listen_failed: the server
+    /// retries or re-reads its interfaces every 30 s). Anything else that is not scope "tailnet" fails at once.
+    static let proofWaitReasons: Set<String> = ["no_tailnet_address", "address_lost", "listen_failed"]
     static let proofWaitSeconds: Double = 45
     static let proofPollSeconds: Double = 2
     static func proofStep(_ change: Change, status: Int?, body: [String: Any]?, expectedName: String? = nil) -> ProofStep {
@@ -710,7 +713,7 @@ enum PhoneApprovalsCore {
               body["mode"] == nil || body["mode"] as? String == "authority",
               (integer(body["signerBindFixVersion"]) ?? 0) >= requiredFixVersion,
               let bind = body["signerBind"] as? [String: Any], bind["scope"] as? String == "none",
-              bind["reason"] as? String == "no_tailnet_address" else { return .fail }
+              (bind["reason"] as? String).map(proofWaitReasons.contains) == true else { return .fail }
         return .wait
     }
 
