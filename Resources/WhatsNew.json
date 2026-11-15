@@ -1,7 +1,7 @@
 {
   "version": "0.5.396",
   "whatsNew": {
-    "summary": "Phone sign-in uses trusted HTTPS when available. The phone QR refreshes after a server update. Includes shared COS chat, Jump to latest and Usage plan pacing.",
+    "summary": "Phone sign-in uses trusted HTTPS when available, and the QR refreshes after a server update. Plus everything in 0.5.395: shared COS chat, Jump to latest and Usage plan pacing.",
     "sections": [
       {
         "title": "0.5.396",
