@@ -1,3 +1,10 @@
+## 0.5.397 (build 451): Session reply phone notifications
+
+Matched with server 7.0.49.
+
+- Pin the matching web assets for server 7.0.49, which connects session reply readiness to phone notifications when phone opt-in and the corresponding notification categories are enabled; they remain off by default.
+- Retain the secure phone sign-in, shared COS chat and Usage plan pacing behavior from 0.5.396. Native Swift and helper code are unchanged.
+
 ## 0.5.396 (build 450): Secure phone sign-in
 
 Matched with server 7.0.48.

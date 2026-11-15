@@ -189,11 +189,11 @@ for script in list((root / "Tests").glob("*.sh")) + list((root / "scripts").glob
 
 # ── Version touchpoints and the lanes.
 plist = read("Resources/Info.plist")
-need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.396</string>", plist) and re.search(r"<key>CFBundleVersion</key>\s*<string>450</string>", plist),
-     "version", "Info.plist is 0.5.396 (build 450), shared COS chat on top of Meetings scrolling as one page, the one-QR glasses card, Reply, Back by path, the glasses code, phone approvals held back, the turn-end ask, the question card, production hardening, Work chat with no session, Prep on every Next up row, Today Next up and Ask about this, phone approvals registration only, Sessions file cards, the Mac parity bundle and calendars on top of 0.5.377: pet session counts on top of Meeting Prep, Ask Work review, the Messages cleanup, quit fix, P2 and Drop it")
+need(re.search(r"<key>CFBundleShortVersionString</key>\s*<string>0\.5\.397</string>", plist) and re.search(r"<key>CFBundleVersion</key>\s*<string>451</string>", plist),
+     "version", "Info.plist is 0.5.397 (build 451), shared COS chat on top of Meetings scrolling as one page, the one-QR glasses card, Reply, Back by path, the glasses code, phone approvals held back, the turn-end ask, the question card, production hardening, Work chat with no session, Prep on every Next up row, Today Next up and Ask about this, phone approvals registration only, Sessions file cards, the Mac parity bundle and calendars on top of 0.5.377: pet session counts on top of Meeting Prep, Ask Work review, the Messages cleanup, quit fix, P2 and Drop it")
 whats = json.loads(read("Resources/WhatsNew.json"))
 sec = [s for s in whats["whatsNew"]["sections"] if s["title"] == "0.5.371"]
-need(whats.get("version") == "0.5.396" and [s["title"] for s in whats["whatsNew"]["sections"][:3]] == ["0.5.396", "0.5.395", "0.5.393"] and len(sec) == 1 and any("Drop it" in i for i in sec[0]["items"]), "version", "What's New leads with 0.5.396, retains 0.5.395 then 0.5.393, and one 0.5.371 section naming Drop it")
+need(whats.get("version") == "0.5.397" and [s["title"] for s in whats["whatsNew"]["sections"][:4]] == ["0.5.397", "0.5.396", "0.5.395", "0.5.393"] and len(sec) == 1 and any("Drop it" in i for i in sec[0]["items"]), "version", "What's New leads with 0.5.397, retains 0.5.396, 0.5.395 then 0.5.393, and one 0.5.371 section naming Drop it")
 need("\n## 0.5.371 (build 425)" in "\n" + read("CHANGELOG.md"), "version", "the changelog has its 0.5.371 (build 425) entry")
 need('python3 "$ROOT/Tests/drop-it-helper-checks.py" "$TMP/cos-control-helper"' in run_sh, "lanes wired", "Tests/run.sh runs the helper checks")
 for lane in ("pins", "models", "wiring"):

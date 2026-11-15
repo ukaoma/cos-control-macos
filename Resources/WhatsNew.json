@@ -1,8 +1,14 @@
 {
-  "version": "0.5.396",
+  "version": "0.5.397",
   "whatsNew": {
-    "summary": "Phone sign-in uses trusted HTTPS when available, and the QR refreshes after a server update. Plus everything in 0.5.395: shared COS chat, Jump to latest and Usage plan pacing.",
+    "summary": "Phone notifications can tell you when a session reply is ready with server 7.0.49. Includes secure phone sign-in, shared COS chat and Usage plan pacing.",
     "sections": [
+      {
+        "title": "0.5.397",
+        "items": [
+          "With server 7.0.49, session reply notifications open Sessions; message notifications open their COS message. They require phone notification opt-in and the corresponding notification categories to be enabled. Both stay off by default."
+        ]
+      },
       {
         "title": "0.5.396",
         "items": [
