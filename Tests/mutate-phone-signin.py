@@ -120,7 +120,7 @@ mutants = [
  ("AN1 an Android phone is not counted", M, '    static let phoneOS: Set<String> = ["ios", "android"]', '    static let phoneOS: Set<String> = ["ios"]', APP, "[phone row any phone]"),
  ("AN2 the Tailscale QR goes back to the App Store", M, '    static let tailscalePhoneDownload = "https://tailscale.com/download"', '    static let tailscalePhoneDownload = "https://apps.apple.com/app/tailscale/id1470499037"', APP, "[phone row]"),
  ("BN1 the old-server note is gone", V, "            if hidden { SettingsHubBlock { PhoneSignInOldServer(model: model) } }\n", "", PINS, "[old server says so]"),
- ("BN2 no ask after the server changes", M, "        guard serverTooOld else { return }\n        askedThisAppearance = false\n", "        guard serverTooOld else { return }\n", APP, "[phone old server rechecks]"),
+ ("BN2 no ask after the server changes", M, "    func recheckAfterServerChange() {\n        hide()\n    }", "    func recheckAfterServerChange() {\n    }", APP, "[phone old server rechecks]"),
  ("BN3 the update never rechecks", V, "        .onChange(of: model.status.version) { _, _ in state.recheckAfterServerChange() }\n", "", PINS, "[old server rechecks]"),
  ("BN4 the row never says Tailscale goes on both", V, "                Text(PhoneSignInRules.bothDevices).font(COSType.body(11)).foregroundStyle(COSPalette.muted)\n                    .fixedSize(horizontal: false, vertical: true)\n", "", PINS, "[both devices]"),
 ]

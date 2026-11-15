@@ -1,3 +1,10 @@
+## 0.5.396 (build 450): Secure phone sign-in
+
+Matched with server 7.0.48.
+
+- Refresh an open phone QR after a server update and discard stale replies. Use the trusted HTTPS address selected by the server.
+- Pin the matching web assets for server 7.0.48, including secure phone links and notification destinations.
+
 ## 0.5.395 (build 449): Shared COS chat and plan pacing
 
 Private candidate for server 7.0.47. Notarization, installation, phone enrollment and activation have separate receipts.

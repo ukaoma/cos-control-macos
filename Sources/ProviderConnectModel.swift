@@ -2712,7 +2712,7 @@ final class PhoneSignInState: ObservableObject {
     private var askedThisAppearance = false
     private var lastAttempt: Date?
     private var retryAfter: TimeInterval = 0
-    /// Bumped by hide(): a reply that began before it is dropped, so nothing shows after the row went away.
+    /// Bumped by hide(): replies from a hidden row or a previous server version are dropped.
     private(set) var generation = 0
     private var lastStage: String?
 
@@ -2817,13 +2817,10 @@ final class PhoneSignInState: ObservableObject {
         await mint()
     }
 
-    /// Anand fix b (2026-11-12): the server changed (Update Server finished, or another version answers), so an old-server
-    /// verdict is asked again on the next tick, even within this appearance. The verdict itself stays until an answer clears it.
+    /// The server changed: its old links, codes and in-flight replies no longer belong on screen. The next visible tick
+    /// asks again, including after an old-server verdict. Invalidation alone never makes a link while the row is hidden.
     func recheckAfterServerChange() {
-        guard serverTooOld else { return }
-        askedThisAppearance = false
-        lastAttempt = nil
-        retryAfter = 0
+        hide()
     }
 
     /// The row went off screen: the QR, the code and their lines go, and a reply still in flight is dropped.

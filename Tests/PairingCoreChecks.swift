@@ -197,6 +197,12 @@ enum PairingCoreChecks {
         check(!"\(ready)".contains("127.0.0.1"), "web handoff only the link", "the loopback url never crosses")
         var byIP = full; byIP["phoneUrl"] = ip
         check(WebSignInCore.handoffAnswer(status: 200, body: byIP)["phoneUrl"] as? String == ip, "web handoff ready", "the tailnet IP when the Mac has no name")
+        // Trusted phone HTTPS is passed through exactly, including its ticket; the helper never downgrades it.
+        let secure = "https://example-mac.tail00000a.ts.net/control?handoff=\(ticket)"
+        var trusted = full; trusted["phoneUrl"] = secure
+        let secureAnswer = WebSignInCore.handoffAnswer(status: 200, body: trusted)
+        check(secureAnswer["phone"] as? String == "ready" && secureAnswer["phoneUrl"] as? String == secure,
+              "web handoff trusted https", "the canonical HTTPS phone link reaches the QR unchanged")
         // phoneUrl null: no tailnet address on this Mac. No phoneUrl at all: a server before 6.99.3.
         var none = full; none["phoneUrl"] = NSNull()
         let off = WebSignInCore.handoffAnswer(status: 200, body: none)

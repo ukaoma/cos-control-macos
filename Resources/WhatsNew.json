@@ -1,8 +1,16 @@
 {
-  "version": "0.5.395",
+  "version": "0.5.396",
   "whatsNew": {
-    "summary": "Your COS chat is shared with the web, with model and effort choices and a Jump to latest button. Usage now shows plan pacing. Plus everything in 0.5.393: scrolling fixes for Meetings and Work, and clearer glasses setup.",
+    "summary": "Phone sign-in uses trusted HTTPS when available. The phone QR refreshes after a server update. Includes shared COS chat, Jump to latest and Usage plan pacing.",
     "sections": [
+      {
+        "title": "0.5.396",
+        "items": [
+          "Phone sign-in QRs use the secure address when your server has trusted HTTPS ready.",
+          "An open phone sign-in card refreshes its QR after the server version changes.",
+          "With server 7.0.48, session notifications open Sessions and message notifications open their COS message."
+        ]
+      },
       {
         "title": "0.5.395",
         "items": [

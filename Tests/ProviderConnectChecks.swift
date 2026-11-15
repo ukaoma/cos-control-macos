@@ -1115,8 +1115,11 @@ extension ProviderConnectChecks {
         check(fake.count("web-handoff") == beforeChange + 1 && !state.serverTooOld && state.handoff != nil, "phone old server rechecks",
               "a server change asks at once and the QR shows: \(fake.calls)")
         state.recheckAfterServerChange()
+        check(state.handoff == nil && !state.holdsAnything && fake.count("web-handoff") == beforeChange + 1,
+              "phone server change", "the old QR goes immediately; invalidation does not mint")
         await state.tick()
-        check(fake.count("web-handoff") == beforeChange + 1, "phone old server rechecks", "a server change with the row already showing asks nothing extra")
+        check(fake.count("web-handoff") == beforeChange + 2 && state.handoff != nil,
+              "phone server change", "the next visible tick makes a fresh QR even inside 90 seconds")
         fake.answers["web-handoff"] = handoffDetails(expires: clock, phone: "needs_update")
         state.hide()
         await state.tick()
@@ -1157,9 +1160,22 @@ extension ProviderConnectChecks {
         await state.showCode()
         check(state.handoff == nil && state.code == nil && state.droppedReplies == 2, "phone in flight", "a reply after hide is never shown")
         fake.during = nil
+        // A server change drops replies from both old routes, just as hiding does.
+        let beforeServerDrops = state.droppedReplies
+        fake.during = { state.recheckAfterServerChange() }
+        await state.mint()
+        await state.showCode()
+        check(state.handoff == nil && state.code == nil && state.droppedReplies == beforeServerDrops + 2,
+              "phone server in flight", "old-server QR and code replies cannot restore the cleared state")
+        fake.during = nil
         // Shown again: a fresh link at once, never the old one.
         await state.tick()
         check(state.handoff?.url == phoneLink && fake.calls.last == "web-handoff", "phone fresh on show", "\(fake.calls)")
+        await state.showCode()
+        check(state.code != nil, "phone server change", "a live code before the server changes")
+        state.recheckAfterServerChange()
+        check(!state.holdsAnything && state.code == nil && state.codeLine == nil,
+              "phone server change", "a server change clears the code and its line too")
         // Nothing logged ever carries the link, its ticket or the code.
         check(!lines.isEmpty && lines.allSatisfy { !$0.contains(phoneTicket) && !$0.contains("http") && !$0.contains("K7Q2") }, "phone log", "\(lines)")
 
@@ -1174,13 +1190,16 @@ extension ProviderConnectChecks {
         var heldAfterHiding = true
         await looped.run(visible: { visible }, sleep: { _ in
             steps += 1
-            if steps == 1 { callsWhileHidden = lf.calls.count }
+            if steps == 1 {
+                looped.recheckAfterServerChange()
+                callsWhileHidden = lf.calls.count
+            }
             if steps == 2 { visible = true }
             if steps == 3 { visible = false }
             if steps == 4 { heldAfterHiding = looped.holdsAnything }
             return steps < 5
         })
-        check(callsWhileHidden == 0, "phone visibility", "no call before the row is on screen: \(callsWhileHidden)")
+        check(callsWhileHidden == 0, "phone visibility", "no call before the row is on screen, including after a server change: \(callsWhileHidden)")
         check(lf.calls == ["web-handoff"], "phone visibility", "one call, only while shown: \(lf.calls)")
         check(!heldAfterHiding, "phone visibility", "hidden again: nothing kept, before the task ends")
         check(!looped.holdsAnything && looped.handoff == nil, "phone visibility", "and after")
