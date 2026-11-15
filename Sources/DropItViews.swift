@@ -348,7 +348,7 @@ struct DropItChatPane: View {
                 .onAppear { positioned = false; followsLatest = true; proxy.scrollTo("drop-it-bottom", anchor: .bottom) }
                 .overlay(alignment: .bottomTrailing) {
                     Button { jumpRequest += 1 } label: { Label("Jump to latest", systemImage: "arrow.down.to.line") }
-                        .buttonStyle(.bordered).background(TodayInk.page, in: Capsule())
+                        .buttonStyle(COSQuietButtonStyle()).background(TodayInk.page, in: Capsule())
                         .accessibilityLabel("Jump to latest COS chat message")
                         .help("Scroll to the bottom of your COS chat")
                         .padding(12)

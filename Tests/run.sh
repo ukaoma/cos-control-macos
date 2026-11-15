@@ -1536,7 +1536,7 @@ def body(src, start, end):
     i = src.index(start); return src[i:src.index(end, i)]
 submit = body(store, "    func submit(source: WorkSource", "    /// The first line of a handoff's Progress timeline.")
 # 0.5.254: the card's file block goes between the text and the instruction (WorkCardFiles.compose), so the instruction stays last.
-assert "let sent = WorkCardFiles.compose(text: text, block: files.block, instruction: instruction)" in submit and '"query": sent' in submit and "Data(sent.utf8)" in submit, "every send must carry the status-line instruction"
+assert "let sent = cosThread ? text : WorkCardFiles.compose(text: text, block: files.block, instruction: instruction)" in submit and '"query": sent' in submit and "Data(sent.utf8)" in submit, "ordinary Work sends keep text, files, then status instruction; shared COS sends only the question"
 assert "WorkCardFiles.compose(text: journalPrompt ?? text, block: files.block, instruction: instruction) : sent" in submit, "the receipt must keep what was sent (Continue resends it)"
 assert "text.utf16.count <= Self.draftLimit" in submit, "the draft limit leaves room for the instruction"
 target = body(progress, "nonisolated static func target(for kind:", "/// Forward only")
@@ -1573,7 +1573,7 @@ assert "newSessionLink = Task { [weak self] in await self?.linkNewSession(id) }"
 # default) and opens in its app once its first reply is done; a Continue on a session its app owns never sends a server
 # turn. Behaviour is covered by Tests/run-work-progress.sh (tests 15 to 19 and the pure rules in appChecks).
 # 0.5.252: a New session the glasses started records that it stays in the background instead (pinned in the 0.5.252 block).
-assert "if opensInApp, Self.appProviders.contains(row.provider) {\n                    row.appOpen = origin == nil ? WorkAppOpen() : WorkAppOpen(skipped: WorkRequestOrigin.staysInBackground)" in submit, "open-in-app is recorded on the job receipt at send"
+assert "if opensInApp, !cosThread, Self.appProviders.contains(row.provider) {\n                    row.appOpen = origin == nil ? WorkAppOpen() : WorkAppOpen(skipped: WorkRequestOrigin.staysInBackground)" in submit, "ordinary Work records open-in-app at send; shared COS stays in Control"
 assert submit.index("row.appOpen = origin == nil ? WorkAppOpen()") < submit.index('row.channel = "job"; try save(row)'), "the intent is journaled before the run starts"
 owner_at = submit.index("} else if let owner = Self.appOwner(of: session!.id, in: receipts) {")
 assert owner_at < submit.index("} else { try await continueSession(session!, row: &row) }"), "an app-owned session is checked before any server turn"
@@ -5416,8 +5416,8 @@ need("if chatParkReason != nil {" in chat_send
      "a pane send on a probed-busy thread must go to the queue BEFORE any attach")
 need("case .threadFree:\n                chatParkReason = nil" in chat_send,
      "a 409 thread_free must fall through to the ordinary pane send")
-need("if let reason = lastAttachRefusalReason, Self.petQueueableReasons.contains(reason) {" in chat_send,
-     "a busy attach in the pane no longer parks")
+need("if turnEndAskID == nil, let reason = lastAttachRefusalReason, Self.petQueueableReasons.contains(reason) {" in chat_send,
+     "ordinary busy attaches park; a direct question answer is never sent late")
 need("lastAttachRefusalReason = response.details[\"reason\"]?.string" in model,
      "the attach refusal reason is not kept for the park path")
 need("if model.chatRefusal == nil, let hint = model.chatParkHint {" in activity_src,

@@ -3,7 +3,7 @@
 
 - Copy parity (QA G8): every key-lane string Control shows that the lens or server also shows comes from the server's
   one catalog, server/lib/key-notices.ts. Checked against the INTEGRATION TIP (claude/key-lanes-k1-int, read with git
-  from ~/cos-worktrees/kl-k1-int or COS_KEY_LANES_SERVER) whenever it is on this Mac, so later server drift fails here;
+  from ~/cos-worktrees/kl-k1-int, or explicit COS_KEY_LANES_SERVER + COS_KEY_LANES_SERVER_REF) whenever it is on this Mac, so later server drift fails here;
   and always against the vendored copy (Tests/fixtures/key-lanes/key-notices-99c5ce7.ts, SHA-256 pinned).
 - Hooks: exactly one Settings row in the panel, exactly one optional step (in the Ready stage) and one install latch in
   the setup window, and the keyed-session guard at the top of each Continue and Fork entry point.
@@ -29,12 +29,20 @@ import os
 FIXTURE = 'Tests/fixtures/key-lanes/key-notices-99c5ce7.ts'
 vendored = read(FIXTURE)
 check(hashlib.sha256(vendored.encode()).hexdigest() == 'ea5ec0fad0d97764ac99833f2d5d2bbe331c1af19c1574d1e4b598ef5c0c1443', 'the vendored catalog is the 99c5ce7 blob')
-server = pathlib.Path(os.environ.get('COS_KEY_LANES_SERVER', str(pathlib.Path.home() / 'cos-worktrees/kl-k1-int')))
+server_override = os.environ.get('COS_KEY_LANES_SERVER')
+ref_override = os.environ.get('COS_KEY_LANES_SERVER_REF')
+server = pathlib.Path(server_override or str(pathlib.Path.home() / 'cos-worktrees/kl-k1-int'))
+server_ref = ref_override or ('HEAD' if server_override else 'claude/key-lanes-k1-int')
+configured_server = server_override is not None or ref_override is not None
 sources = [('vendored 99c5ce7', vendored)]
+if configured_server:
+    check(server.is_dir(), 'the configured key-lanes server checkout exists')
 if server.exists():
-    tip = subprocess.run(['git', '-C', str(server), 'show', 'claude/key-lanes-k1-int:server/lib/key-notices.ts'], capture_output=True, text=True)
+    tip = subprocess.run(['git', '-C', str(server), 'show', f'{server_ref}:server/lib/key-notices.ts'], capture_output=True, text=True)
+    if configured_server:
+        check(tip.returncode == 0, 'the configured key-lanes server revision/catalog is readable')
     if tip.returncode == 0:
-        sources.append(('integration tip', tip.stdout))
+        sources.append((f'server {server_ref}', tip.stdout))
 print('key lanes copy parity against: ' + ', '.join(name for name, _ in sources))
 
 def swift_string(name):
@@ -77,6 +85,7 @@ for name, src in (('Views.swift', panel), ('ControlSetup.swift', setup)):
 check(setup.count('.onReceive(KeyLanesStore.shared.$install) { InstallCohort.adoptKeyLanes($0?.rawValue) }') == 1, 'the third ControlSetup line only hands the latch answer to InstallCohort')
 
 def body(src, signature):
+    check(src.count(signature) == 1, f'the entry point is unique: {signature.strip()}')
     start = src.index(signature)
     return src[start:start + 1600]
 for signature, src, guard in (
@@ -86,8 +95,10 @@ for signature, src, guard in (
         ('    func forkToPlatform(source: WorkSource,', work, 'if let line = KeyLanes.refusal(sessionID: session.nativeID) { error = line; return }')):
     b = body(src, signature)
     check(guard in b, f'the keyed-session refusal is displayed by {signature.strip()}')
-    head = b[b.index(') async {\n') if ') async {\n' in b[:600] else b.index('() {\n'):]
-    check(guard in '\n'.join(head.splitlines()[:4]), f'the refusal comes before anything runs in {signature.strip()}')
+    opener = re.match(r'[^{}]*\{\n', b)
+    check(opener is not None, f'the function opener is recognized in {signature.strip()}')
+    head = b[opener.end():]
+    check(guard in '\n'.join(head.splitlines()[:3]), f'the refusal comes before anything runs in {signature.strip()}')
 check('if let line = KeyLanes.refusal(sessionID: session.sessionId) { platformOpenNotice = line; platformOpenFailed = true; return }' in body(model, '    func openSessionInPlatform(_ session: ClaudeSession) {'),
       'a keyed session never opens in its app (QA C9)')
 window = read('Sources/ActivityWindow.swift')
