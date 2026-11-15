@@ -2270,11 +2270,12 @@ final class ControllerModel: ObservableObject {
     }
 
     /// Option A, Settings PK-02: phone approvals on for one phone, or off, after the row's confirmation. The arguments come
-    /// only from PhoneApprovalsSwitch.request, which refuses on while phone approvals are unavailable (0.5.392); the helper
-    /// validates them again (PhoneApprovalsCore.change). `run` is for Tests/WebKeyChecks.swift only, so a check can execute
+    /// only from PhoneApprovalsSwitch.request, which refuses on unless the server's last status proved the SR-15 fix and,
+    /// before a first certificate, the person agreed to that exact name going public (PA-C); the helper reads the server again
+    /// and decides for itself (PhoneApprovalsCore.onRefusal). `run` is for the checks and renders only, so they can execute
     /// this method without a helper; the app passes nothing and the call goes to perform.
-    func setPhoneApprovals(on: Bool, phone: PhoneApprovalsSwitch.Phone?, run: ((String, [String]) -> Void)? = nil) {
-        guard let arguments = PhoneApprovalsSwitch.request(on: on, phone: phone) else { return }
+    func setPhoneApprovals(on: Bool, phone: PhoneApprovalsSwitch.Phone?, disclosedName: String? = nil, run: ((String, [String]) -> Void)? = nil) {
+        guard let arguments = PhoneApprovalsSwitch.request(on: on, phone: phone, readiness: webKey.onReadiness, disclosedName: disclosedName) else { return }
         if let run { run("set-phone-approvals", arguments) } else { perform("set-phone-approvals", arguments: arguments) }
     }
 

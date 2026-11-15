@@ -153,7 +153,8 @@ struct WebKeyChecks {
         signerTLSLine()
         reasonParity(g)
         phoneApprovalsSwitch()
-        phoneApprovalsUnavailable()
+        phoneApprovalsOnGate()
+        await phoneApprovalsReadinessFlow()
         await phoneApprovalsOff()
         await cancellation()
         await flow(pending: pending, anchorG: anchorG, anchorDER: anchorDER, anchorRaw: anchorRaw, selfDns: selfDns)
@@ -542,9 +543,29 @@ struct WebKeyChecks {
         check(PhoneApprovalsCore.change(fromEnvironment: on.set) == .on(device: phone) && PhoneApprovalsCore.change(fromEnvironment: off.set) == .off
               && PhoneApprovalsCore.change(fromEnvironment: ["COS_VIDEO_UPLOAD_V2": "1"]) == nil, "phone switch proof",
               "both apply paths prove a phone approvals write, and only that")
-        // The restarted server's own status proves the change.
-        check(PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: ["enabled": true])
-              && PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: ["enabled": true, "mode": "authority"]), "phone switch proof", "on: 200 and enabled")
+        // The restarted server's own status proves the change. PA-C: on also needs the SR-15 fix and a tailnet-only bind.
+        let fixedBind: [String: Any] = ["signerBindFixVersion": 1, "signerBind": ["scope": "tailnet", "addresses": ["100.64.0.10"], "reason": NSNull()]]
+        var proofOn: [String: Any] = ["enabled": true]
+        proofOn.merge(fixedBind) { a, _ in a }
+        var proofAuthority = proofOn
+        proofAuthority["mode"] = "authority"
+        check(PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: viaJSONValue(proofOn) as? [String: Any])
+              && PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: viaJSONValue(proofAuthority) as? [String: Any]),
+              "phone switch proof", "on: 200, enabled and the tailnet-only bind")
+        check(!PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: ["enabled": true])
+              && !PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: viaJSONValue(["enabled": true, "signerBindFixVersion": 1,
+                                                                                                  "signerBind": ["scope": "none", "addresses": [Any](), "reason": "no_tailnet_address"]]) as? [String: Any])
+              && !PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: viaJSONValue(["enabled": true, "signerBindFixVersion": true,
+                                                                                                  "signerBind": ["scope": "tailnet"]]) as? [String: Any]),
+              "phone on proof needs the bind", "a restarted server without the fix, with no tailnet bind, or with a boolean version does not prove on")
+        var bootstrapFixed = fixedBind
+        bootstrapFixed["enabled"] = false; bootstrapFixed["mode"] = "bootstrap"
+        var contradictionFixed = fixedBind
+        contradictionFixed["enabled"] = true; contradictionFixed["mode"] = "bootstrap"
+        check(!PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: viaJSONValue(bootstrapFixed) as? [String: Any])
+              && !PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: viaJSONValue(contradictionFixed) as? [String: Any])
+              && !PhoneApprovalsCore.proven(.on(device: phone), status: 503, body: viaJSONValue(proofOn) as? [String: Any]),
+              "phone switch proof", "a tailnet bind alone never proves on: the server must also be on, in authority mode, with a 200")
         check(!PhoneApprovalsCore.proven(.on(device: phone), status: 200, body: ["enabled": false, "mode": "bootstrap"])
               && !PhoneApprovalsCore.proven(.on(device: phone), status: 404, body: nil)
               && !PhoneApprovalsCore.proven(.on(device: phone), status: nil, body: nil)
@@ -577,13 +598,23 @@ struct WebKeyChecks {
               && PhoneApprovalsSwitch.arguments(on: true, phone: nil) == nil
               && PhoneApprovalsSwitch.arguments(on: true, phone: .init(name: "x", ipv4: "192.168.1.9")) == nil,
               "phone switch args", "on needs a phone on the tailnet; off takes nothing")
-        // The confirmation names the phone and says plainly that the Mac's name becomes public in certificate logs.
-        let message = PhoneApprovalsSwitch.confirmOnMessage(amy, macName: "example-mac.tail00000a.ts.net")
+        // The confirmation names the phone; before a first certificate it says plainly that the Mac's name becomes public.
+        let message = PhoneApprovalsSwitch.confirmOnMessage(amy, publicName: "example-mac.tail00000a.ts.net")
+        let issuedMessage = PhoneApprovalsSwitch.confirmOnMessage(amy, publicName: nil)
         check(PhoneApprovalsSwitch.confirmOnTitle(amy).contains("amy-iphone") && message.contains("amy-iphone")
               && message.contains("example-mac.tail00000a.ts.net") && message.contains("becomes public in certificate logs")
-              && message.contains("restarts the server"), "phone switch confirm", "the phone, the Mac's name, public certificate logs, the restart")
-        let copy = [PhoneApprovalsSwitch.confirmOnTitle(amy), message, PhoneApprovalsSwitch.confirmOnMessage(amy, macName: nil), PhoneApprovalsSwitch.confirmOffTitle,
+              && message.contains("restarts the server") && issuedMessage.contains("amy-iphone") && issuedMessage.contains("restarts the server")
+              && !issuedMessage.contains("certificate"), "phone switch confirm", "the phone, the Mac's name, public certificate logs, the restart")
+        // PA-C: the disclosure names the exact name, says public certificate logs and permanently, and that Off does not undo it.
+        let name = "example-mac.tail00000a.ts.net"
+        let disclosure = [PhoneApprovalsSwitch.disclosureTitle(name), PhoneApprovalsSwitch.disclosureMessage(name), PhoneApprovalsSwitch.disclosureAgree(name)]
+        check(disclosure.allSatisfy { $0.contains(name) } && disclosure[1].contains("public certificate logs") && disclosure[1].contains("permanently")
+              && disclosure[1].contains("off later does not remove it") && disclosure[1].contains("asks for a certificate")
+              && disclosure[2].contains("permanently"), "phone on disclosure copy", "the exact name, public certificate logs, permanently, and Off does not remove it")
+        let copy = [PhoneApprovalsSwitch.confirmOnTitle(amy), message, issuedMessage, PhoneApprovalsSwitch.confirmOffTitle,
                     PhoneApprovalsSwitch.confirmOffMessage, PhoneApprovalsSwitch.label, PhoneApprovalsSwitch.labelOn, PhoneApprovalsSwitch.detail, PhoneApprovalsSwitch.noPhone]
+                    + disclosure + [PhoneApprovalsCore.notReady, PhoneApprovalsCore.needsFix, PhoneApprovalsCore.needsTailnetBind,
+                                    PhoneApprovalsCore.disclosureMissing, PhoneApprovalsCore.disclosureStale]
         check(copy.allSatisfy { !$0.isEmpty && !$0.contains("—") && !$0.contains("COS_") }, "phone switch confirm", "plain copy: no em dash, no variable names")
         check(PhoneApprovalsSwitch.detail.hasPrefix("Off unless you turn it on."), "phone switch off by default", "the row says it is off by default")
         check(PhoneApprovalsSwitch.title(on: false) == "Turn on phone approvals" && PhoneApprovalsSwitch.title(on: true) == "Phone approvals are on",
@@ -594,33 +625,152 @@ struct WebKeyChecks {
               "phone switch waits for work", "an apply is live only with nothing in progress and no running work")
     }
 
-    /// 0.5.392 (lead ruling 2026-11-12 19:50): phone approvals cannot be turned on from this build, by anyone. Executes the
-    /// gates the app and the helper go through: what the app sends (request, the only argument source of
-    /// ControllerModel.setPhoneApprovals, its one sender of set-phone-approvals), what the helper applies (permits, checked
-    /// right after it parses), and where Settings mounts the row (shown, mounted). Off keeps working for a Mac already on.
-    static func phoneApprovalsUnavailable() {
+    /// PA-C (2026-11-15): the reviewed return of On. Executes every gate the app and the helper go through, against status
+    /// bodies parsed from JSON as the helper hands them over: the server's proof (PhoneApprovalsReadiness), what the app sends
+    /// (request, the only argument source of ControllerModel.setPhoneApprovals), what the helper applies (change, then onRefusal
+    /// on its own status read), and where Settings mounts the row (shown, mounted). Off keeps working whatever the server says.
+    static func phoneApprovalsOnGate() {
         let amy = PhoneApprovalsSwitch.Phone(name: "amy-iphone", ipv4: "100.64.0.11")
-        let versions: [String?] = [PhoneApprovalsSwitch.minimumServer, "7.0.31", "8.0.0", "7.0.29", nil]
-        // Nothing turns it on: the app never sends on, whatever phone; the helper refuses on even when run by hand.
-        check(PhoneApprovalsSwitch.request(on: true, phone: amy) == nil && PhoneApprovalsSwitch.request(on: true, phone: nil) == nil
-              && PhoneApprovalsCore.change(["on", amy.ipv4]).map(PhoneApprovalsCore.permits) == false,
-              "phone switch unavailable", "the app never sends on and the helper never applies it, for any phone")
-        // The row is not mounted for a Mac that is off, in any view, on any server.
-        check(versions.allSatisfy { !PhoneApprovalsSwitch.shown(serverVersion: $0) }
-              && versions.allSatisfy { v in [true, false].allSatisfy { !PhoneApprovalsSwitch.mounted(serverVersion: v, rowDrawn: $0, on: false, pendingOff: false) } },
-              "phone switch unavailable", "no turn-on row for a Mac that is off, in Basic or All, on any server")
-        // App and helper agree, as they do on the server floor.
-        check(PhoneApprovalsSwitch.available == PhoneApprovalsCore.available, "phone switch unavailable", "the app and the helper make the same build decision")
-        // A Mac whose server already reports it on (or whose Off still waits) keeps the Off row, in every view, and Off goes through.
-        check(PhoneApprovalsSwitch.mounted(serverVersion: "7.0.31", rowDrawn: false, on: true, pendingOff: false)
-              && PhoneApprovalsSwitch.mounted(serverVersion: "7.0.31", rowDrawn: true, on: true, pendingOff: false)
-              && PhoneApprovalsSwitch.mounted(serverVersion: "7.0.31", rowDrawn: false, on: false, pendingOff: true)
-              && !PhoneApprovalsSwitch.mounted(serverVersion: "7.0.29", rowDrawn: true, on: true, pendingOff: true),
+        let name = "example-mac.tail00000a.ts.net"
+        func body(_ text: String) -> [String: Any] { obj(Data(text.utf8)) }
+        func ready(_ text: String) -> PhoneApprovalsReadiness? { PhoneApprovalsReadiness.read(status: 200, body: body(text)) }
+        let bind = #""signerBind":{"scope":"tailnet","addresses":["100.64.0.10"],"reason":null,"listening":false}"#
+        let firstText = #"{"ok":true,"enabled":false,"mode":"off","signerBindFixVersion":1,\#(bind),"certDisclosure":{"issued":false,"publicName":"\#(name)"}}"#
+        let issuedText = #"{"ok":true,"enabled":false,"mode":"off","signerBindFixVersion":1,\#(bind),"certDisclosure":{"issued":true,"publicName":null}}"#
+        let first = ready(firstText), issued = ready(issuedText)
+        // The server's proof: the fix and a tailnet-only bind.
+        check(first?.bindFixed == true && first?.canTurnOn == true && first?.needsDisclosure == true && first?.publicName == name
+              && issued?.canTurnOn == true && issued?.needsDisclosure == false, "phone on needs the server fix",
+              "a server with the fix and a tailnet-only bind can turn on; a first certificate needs the disclosure")
+        let unfixed: [String] = [
+            #"{"enabled":false,"mode":"off"}"#,                                                                       // an older server
+            #"{"signerBindFixVersion":0,\#(bind),"certDisclosure":{"issued":true}}"#,                                // below the fix
+            #"{"signerBindFixVersion":true,\#(bind),"certDisclosure":{"issued":true}}"#,                             // a boolean
+            #"{"signerBindFixVersion":1.5,\#(bind),"certDisclosure":{"issued":true}}"#,                              // a fraction
+            #"{"signerBindFixVersion":"1",\#(bind),"certDisclosure":{"issued":true}}"#,                              // a string
+            #"{"signerBindFixVersion":1,"signerBind":{"scope":"all","addresses":[]},"certDisclosure":{"issued":true}}"#,   // every interface
+            #"{"signerBindFixVersion":1,"signerBind":{"scope":"none","addresses":[],"reason":"no_tailnet_address"},"certDisclosure":{"issued":true}}"#,
+            #"{"signerBindFixVersion":1,"signerBind":{"scope":"Tailnet"},"certDisclosure":{"issued":true}}"#,      // not the exact word
+            #"{"signerBindFixVersion":1,"certDisclosure":{"issued":true}}"#,                                       // no bind
+        ]
+        check(unfixed.allSatisfy { ready($0)?.canTurnOn == false } && unfixed.allSatisfy { !PhoneApprovalsSwitch.canStart(ready($0)) }
+              && ready(#"{"signerBindFixVersion":2,\#(bind),"certDisclosure":{"issued":true}}"#)?.canTurnOn == true
+              && PhoneApprovalsReadiness.read(status: 404, body: [:]) == nil && !PhoneApprovalsSwitch.canStart(nil),
+              "phone on needs the server fix", "no fix, a malformed version, any bind but tailnet, or no answer cannot turn on")
+        // The disclosure: needed unless the server says plainly it already asked; it must name a real ts.net name.
+        let noName = [#"{"signerBindFixVersion":1,\#(bind),"certDisclosure":{"issued":false,"publicName":null}}"#,
+                      #"{"signerBindFixVersion":1,\#(bind),"certDisclosure":{"issued":false,"publicName":"Example-Mac.tail00000a.ts.net"}}"#,
+                      #"{"signerBindFixVersion":1,\#(bind),"certDisclosure":{"issued":false,"publicName":"example-mac.ts.net"}}"#,
+                      #"{"signerBindFixVersion":1,\#(bind),"certDisclosure":{"issued":false,"publicName":"example mac.tail00000a.ts.net"}}"#,
+                      #"{"signerBindFixVersion":1,\#(bind),"certDisclosure":{"issued":false,"publicName":"example-mac.evil.example.com"}}"#,
+                      #"{"signerBindFixVersion":1,\#(bind),"certDisclosure":{"issued":"true","publicName":null}}"#,
+                      #"{"signerBindFixVersion":1,\#(bind)}"#]
+        check(noName.allSatisfy { ready($0)?.canTurnOn == false && ready($0)?.needsDisclosure == true }, "phone on disclosure",
+              "before a first certificate, on is offered only when the exact public name is known and well formed")
+        check(first?.disclosed(nil) == false && first?.disclosed("other-mac.tail00000a.ts.net") == false && first?.disclosed(name) == true
+              && issued?.disclosed(nil) == true, "phone on disclosure", "agreed only for the server's exact name, or not needed at all")
+        // What the app sends.
+        check(PhoneApprovalsSwitch.request(on: true, phone: amy, readiness: first, disclosedName: nil) == nil
+              && PhoneApprovalsSwitch.request(on: true, phone: amy, readiness: first, disclosedName: "other-mac.tail00000a.ts.net") == nil
+              && PhoneApprovalsSwitch.request(on: true, phone: amy, readiness: first, disclosedName: name) == ["on", amy.ipv4, "--disclosed-name", name]
+              && PhoneApprovalsSwitch.request(on: true, phone: amy, readiness: issued, disclosedName: nil) == ["on", amy.ipv4]
+              && PhoneApprovalsSwitch.request(on: true, phone: nil, readiness: issued, disclosedName: nil) == nil,
+              "phone on disclosure", "on carries the agreed name before a first certificate, and is not sent without it")
+        check(unfixed.allSatisfy { PhoneApprovalsSwitch.request(on: true, phone: amy, readiness: ready($0), disclosedName: name) == nil }
+              && PhoneApprovalsSwitch.request(on: true, phone: amy, readiness: nil, disclosedName: name) == nil,
+              "phone on needs the server fix", "the app never sends on without the server's proof")
+        // What the helper applies, from its own read of the same status.
+        check(PhoneApprovalsCore.onRefusal(status: 200, body: body(firstText), disclosedName: name) == nil
+              && PhoneApprovalsCore.onRefusal(status: 200, body: body(issuedText), disclosedName: nil) == nil
+              && PhoneApprovalsCore.onRefusal(status: 200, body: body(firstText), disclosedName: nil) == PhoneApprovalsCore.disclosureMissing
+              && PhoneApprovalsCore.onRefusal(status: 200, body: body(firstText), disclosedName: "other-mac.tail00000a.ts.net") == PhoneApprovalsCore.disclosureStale
+              && PhoneApprovalsCore.onRefusal(status: 200, body: body(issuedText), disclosedName: name) == PhoneApprovalsCore.disclosureStale,
+              "phone on helper gate", "the helper refuses on before a first certificate without the disclosure for the exact name")
+        check(PhoneApprovalsCore.onRefusal(status: 404, body: [:], disclosedName: name) == PhoneApprovalsCore.needsFix
+              && PhoneApprovalsCore.onRefusal(status: nil, body: nil, disclosedName: name) == PhoneApprovalsCore.notReady
+              && PhoneApprovalsCore.onRefusal(status: 401, body: [:], disclosedName: name) == PhoneApprovalsCore.notReady
+              && unfixed.prefix(5).allSatisfy { PhoneApprovalsCore.onRefusal(status: 200, body: body($0), disclosedName: nil) == PhoneApprovalsCore.needsFix }
+              && unfixed.suffix(4).allSatisfy { PhoneApprovalsCore.onRefusal(status: 200, body: body($0), disclosedName: nil) == PhoneApprovalsCore.needsTailnetBind },
+              "phone on helper gate", "the helper refuses on for no answer, an old server, a malformed version, or any bind but tailnet")
+        // The helper's arguments with the disclosure.
+        check(PhoneApprovalsCore.change(["on", amy.ipv4, "--disclosed-name", name]) == .on(device: amy.ipv4)
+              && PhoneApprovalsCore.disclosedName(["on", amy.ipv4, "--disclosed-name", name]) == name
+              && PhoneApprovalsCore.disclosedName(["on", amy.ipv4]) == nil
+              && PhoneApprovalsCore.change(["on", amy.ipv4, "--disclosed-name", "Example.tail00000a.ts.net"]) == nil
+              && PhoneApprovalsCore.change(["on", amy.ipv4, "--other", name]) == nil
+              && PhoneApprovalsCore.change(["on", "192.168.1.9", "--disclosed-name", name]) == nil
+              && PhoneApprovalsCore.change(["off", "--disclosed-name", name]) == nil
+              && PhoneApprovalsCore.disclosedName(["on", "192.168.1.9", "--disclosed-name", name]) == nil,
+              "phone switch args", "on may carry one well-formed disclosed name and nothing else")
+        // The app and the helper agree: the same constants, the same names, and the app sends on exactly when the helper takes it.
+        let names = [name, "a.b.ts.net", "Example.tail00000a.ts.net", "example.ts.net", "x..ts.net", "-x.tail00000a.ts.net", "x.tail00000a.ts.net.", "", "evil.com", "example-mac.evil.example.com"]
+        check(PhoneApprovalsReadiness.requiredFixVersion == PhoneApprovalsCore.requiredFixVersion && PhoneApprovalsReadiness.tailnetScope == PhoneApprovalsCore.tailnetScope
+              && PhoneApprovalsSwitch.disclosedFlag == PhoneApprovalsCore.disclosedFlag
+              && names.allSatisfy { PhoneApprovalsReadiness.validName($0) == PhoneApprovalsCore.validName($0) }
+              && PhoneApprovalsReadiness.validName(name) == name && PhoneApprovalsReadiness.validName("Example.tail00000a.ts.net") == nil,
+              "phone on app and helper agree", "one fix version, one scope word, one flag, one name rule")
+        var agree = true
+        for text in [firstText, issuedText] + unfixed + noName {
+            for agreed in [nil, name, "other-mac.tail00000a.ts.net"] as [String?] {
+                let sent = PhoneApprovalsSwitch.request(on: true, phone: amy, readiness: ready(text), disclosedName: agreed)
+                let taken = sent.map { args in PhoneApprovalsCore.change(args) != nil && PhoneApprovalsCore.onRefusal(status: 200, body: body(text), disclosedName: PhoneApprovalsCore.disclosedName(args)) == nil }
+                if sent != nil && taken != true { agree = false }
+            }
+        }
+        check(agree, "phone on app and helper agree", "whatever the app sends for on, the helper takes against the same status")
+        // Where Settings mounts the row.
+        let versions: [String?] = [PhoneApprovalsSwitch.minimumServer, "7.0.31", "8.0.0"]
+        check(versions.allSatisfy { PhoneApprovalsSwitch.mounted(serverVersion: $0, rowDrawn: true, on: false, pendingOff: false, readiness: first) }
+              && versions.allSatisfy { !PhoneApprovalsSwitch.mounted(serverVersion: $0, rowDrawn: false, on: false, pendingOff: false, readiness: first) }
+              && !PhoneApprovalsSwitch.mounted(serverVersion: "7.0.29", rowDrawn: true, on: false, pendingOff: false, readiness: first)
+              && !PhoneApprovalsSwitch.mounted(serverVersion: nil, rowDrawn: true, on: false, pendingOff: false, readiness: first)
+              && unfixed.allSatisfy { t in versions.allSatisfy { !PhoneApprovalsSwitch.mounted(serverVersion: $0, rowDrawn: true, on: false, pendingOff: false, readiness: ready(t)) } }
+              && !PhoneApprovalsSwitch.mounted(serverVersion: "8.0.0", rowDrawn: true, on: false, pendingOff: false, readiness: nil)
+              && PhoneApprovalsSwitch.shown(serverVersion: "7.0.31", readiness: first) && !PhoneApprovalsSwitch.shown(serverVersion: "7.0.31", readiness: nil),
+              "phone on needs the server fix", "the turn-on row mounts in All only, for a server at the floor that proves the fix")
+        check(PhoneApprovalsSwitch.anchorID(on: false, pendingOff: false) == "PK-02" && PhoneApprovalsSwitch.anchorID(on: true, pendingOff: false) == "PK-02-off"
+              && PhoneApprovalsSwitch.anchorID(on: false, pendingOff: true) == "PK-02-off",
+              "phone switch full settings only", "the turn-on row takes PK-02 (All only); the Off row an id Basic never hides")
+        // A Mac whose server already reports it on (or whose Off still waits) keeps the Off row, in every view, whatever the
+        // server says about its bind, and Off goes through.
+        check(PhoneApprovalsSwitch.mounted(serverVersion: "7.0.31", rowDrawn: false, on: true, pendingOff: false, readiness: nil)
+              && PhoneApprovalsSwitch.mounted(serverVersion: "7.0.31", rowDrawn: true, on: true, pendingOff: false, readiness: ready(unfixed[6]))
+              && PhoneApprovalsSwitch.mounted(serverVersion: "7.0.31", rowDrawn: false, on: false, pendingOff: true, readiness: nil)
+              && !PhoneApprovalsSwitch.mounted(serverVersion: "7.0.29", rowDrawn: true, on: true, pendingOff: true, readiness: nil),
               "phone switch off stays reachable", "a Mac already on keeps the Off row in Basic and All, and so does a waiting Off")
-        check(PhoneApprovalsSwitch.request(on: false, phone: nil) == ["off"] && PhoneApprovalsSwitch.request(on: false, phone: amy) == ["off"]
-              && PhoneApprovalsCore.change(["off"]).map(PhoneApprovalsCore.permits) == true
+        check(PhoneApprovalsSwitch.request(on: false, phone: nil, readiness: nil, disclosedName: nil) == ["off"]
+              && PhoneApprovalsSwitch.request(on: false, phone: amy, readiness: ready(unfixed[0]), disclosedName: name) == ["off"]
+              && PhoneApprovalsCore.change(["off"]) == .off
               && PhoneApprovalsCore.environment(.off).set == ["COS_WEB_KEY_AUTHORITY": "0"],
-              "phone switch off stays reachable", "Off is sent and applied, and writes the flag as 0")
+              "phone switch off stays reachable", "Off is sent and applied whatever the server says, and writes the flag as 0")
+    }
+
+    /// PA-C: Control reads the readiness from every status answer, the off mode's included (servers with the fix answer it to
+    /// the token; no origin, so the Phone approvals block stays hidden), and forgets it when the server stops answering.
+    @MainActor
+    static func phoneApprovalsReadinessFlow() async {
+        let fake = FakeServer()
+        let state = WebKeyState()
+        state.runHelper = { args, body in await fake.run(args, body) }
+        state.secure = MemoryStore(); state.stateDirectory = scratchDir("readiness")
+        let name = "example-mac.tail00000a.ts.net"
+        fake.answers["status"] = (200, ["ok": true, "enabled": false, "mode": "off", "signerBindFixVersion": 1,
+                                        "signerBind": ["scope": "tailnet", "addresses": ["100.64.0.10"], "reason": NSNull(), "listening": false],
+                                        "certDisclosure": ["issued": false, "publicName": name]])
+        await state.refresh()
+        check(!state.visible && state.mode == .off && state.onReadiness?.canTurnOn == true && state.onReadiness?.publicName == name
+              && fake.calls.map(\.op) == ["status"], "phone on readiness read", "an off server with the fix: block hidden, readiness kept, nothing else asked")
+        fake.answers["status"] = (404, ["ok": false])
+        await state.refresh()
+        check(!state.visible && state.onReadiness == nil, "phone on readiness read", "an older server (404) leaves no readiness")
+        fake.answers["status"] = (200, ["ok": true, "enabled": false, "mode": "off", "signerBindFixVersion": 1,
+                                        "signerBind": ["scope": "none", "addresses": [Any](), "reason": "no_tailnet_address", "listening": false],
+                                        "certDisclosure": ["issued": true, "publicName": NSNull()]])
+        await state.refresh()
+        check(state.onReadiness != nil && state.onReadiness?.canTurnOn == false, "phone on readiness read", "a server with no tailnet bind reads as not ready")
+        fake.answers["status"] = nil
+        await state.refresh()
+        check(state.onReadiness == nil, "phone on readiness read", "no answer forgets the readiness")
     }
 
     /// Option A (lead ruling 2026-11-12 10:32): Off revokes every phone at once, whatever work runs; only its =0 restart waits.

@@ -114,7 +114,7 @@ need(re.search(r"VStack\(alignment: \.leading, spacing: 0\) \{\s*if state\.visib
      "nothing is drawn unless the server says the flag is on")
 refresh_fn = body_of(core, core.index("    func refresh() async"))
 need("let served = WebKeyServerMode.read(status: status.status, body: status.body)" in refresh_fn
-     and "guard served != .off, let suppliedOrigin" in refresh_fn and 'else { clear(); return }' in refresh_fn, "hidden unless the flag",
+     and "guard served != .off, let suppliedOrigin" in refresh_fn and 'else { clear(); onReadiness = readiness; return }' in refresh_fn, "hidden unless the flag",
      "visible only when the server reports authority or bootstrap")
 mode_fn = body_of(core, core.index("static func read(status: Int, body: [String: Any]) -> WebKeyServerMode"))
 need('guard status == 200, let origin = body["origin"] as? String, WebKeyProtocol.signerHost(origin) != nil else { return .off }' in mode_fn
@@ -285,38 +285,90 @@ pk02_at = catalog.find('.init("PK-02"')
 need('"PK-02"' not in basic_block and catalog.index("static let extras: [SettingsHubItem] = [") < pk02_at < catalog.index("static let items: [SettingsHubItem] = [")
      and re.search(r'\.init\("PK-02", "Turn on phone approvals", [^\n]*group: "glasses\.phone",\s*advanced: false, mount: \.group', catalog) is not None
      and phone.count('PhoneApprovalsSwitchMount(state: model.webKey, serverVersion: model.status.version, rowDrawn: hubRowDrawn("PK-02")) {') == 1
-     and phone.count('.settingsHubAnchor(PhoneApprovalsSwitch.anchorID)') == 1 and main_views.count("PhoneApprovalsSwitchRow(") == 1
-     and 'static var anchorID: String { available ? "PK-02" : "PK-02-off" }' in core and '.init("PK-02-off"' not in catalog
+     and phone.count('.settingsHubAnchor(PhoneApprovalsSwitch.anchorID(on: PhoneApprovalsSwitch.isOn(model.webKey.mode),') == 1
+     and main_views.count("PhoneApprovalsSwitchRow(") == 1
+     and 'static func anchorID(on: Bool, pendingOff: Bool) -> String { on || pendingOff ? "PK-02-off" : "PK-02" }' in core and '.init("PK-02-off"' not in catalog
      and main_views.count("PhoneApprovalsSwitchMount(") == 1,
      "phone switch full settings only", "PK-02 is an extras row in Phone and web, not in Basic, mounted only through PhoneApprovalsSwitch.mounted")
-# 0.5.392 (lead ruling 2026-11-12 19:50): phone approvals cannot be turned on from this build. The constant is compile time in
-# the app and the helper (never a defaults key, a server answer or an environment value), and the mount, the toggle, the app's
-# one sender and the helper all ask it. Search leaves out PK-01 and PK-02 exactly while it is false.
+# PA-C (2026-11-15), the reviewed return of On after the lead ruling of 2026-11-12 19:50 (review finding 9, SR-15). No
+# compile-time "available" constant, defaults key or environment value decides it: On needs the server's own proof
+# (signerBindFixVersion, signerBind.scope "tailnet") read from its token-authenticated status. The app's mount, toggle and
+# one sender ask PhoneApprovalsReadiness; the helper reads the status itself before writing anything for On (onRefusal) and is
+# the real gate. Off never asks any of it. Search still leaves out PK-01 and PK-02.
 mount_view = body_of(views, views.index("struct PhoneApprovalsSwitchMount<Content: View>: View"))
-mounted_fn = body_of(core, core.index("static func mounted(serverVersion: String?, rowDrawn: Bool, on: Bool, pendingOff: Bool) -> Bool"))
-request_fn = body_of(core, core.index("static func request(on: Bool, phone: Phone?) -> [String]?"))
+mounted_fn = body_of(core, core.index("static func mounted(serverVersion: String?, rowDrawn: Bool, on: Bool, pendingOff: Bool, readiness: PhoneApprovalsReadiness?) -> Bool"))
+shown_fn = body_of(core, core.index("static func shown(serverVersion: String?, readiness: PhoneApprovalsReadiness?) -> Bool"))
+request_fn = body_of(core, core.index("static func request(on: Bool, phone: Phone?, readiness: PhoneApprovalsReadiness?, disclosedName: String?) -> [String]?"))
+readiness_src = body_of(core, core.index("struct PhoneApprovalsReadiness: Equatable, Sendable {"))
 model = code("Sources/ControllerModel.swift")
-sender = body_of(model, model.index("func setPhoneApprovals(on: Bool, phone: PhoneApprovalsSwitch.Phone?, run: ((String, [String]) -> Void)? = nil)"))
+sender = body_of(model, model.index("func setPhoneApprovals(on: Bool, phone: PhoneApprovalsSwitch.Phone?, disclosedName: String? = nil, run: ((String, [String]) -> Void)? = nil)"))
 set_fn0 = body_of(helper, helper.index("private func setPhoneApprovals(_ arguments: [String]) throws"))
-app_unavailable = core.count("    static let available = false\n") == 1 and "static let available = true" not in core
-helper_unavailable = pairing.count("    static let available = false\n") == 1 and "static let available = true" not in pairing
+switch_src = body_of(core, core.index("enum PhoneApprovalsSwitch {"))
+core_pa = body_of(pairing, pairing.index("enum PhoneApprovalsCore {"))
 sources = "\n".join(code(str(f.relative_to(root))) for f in sorted((root / "Sources").glob("*.swift")))
-need(app_unavailable and helper_unavailable
-     and "if available { return rowDrawn && serverSupports(serverVersion) }" in mounted_fn
-     and "return serverSupports(serverVersion) && (on || pendingOff)" in mounted_fn
-     and "PhoneApprovalsSwitch.mounted(serverVersion: serverVersion, rowDrawn: rowDrawn, on: PhoneApprovalsSwitch.isOn(state.mode)," in mount_view
-     and "guard !on || available else { return nil }" in request_fn
-     and sender.count("PhoneApprovalsSwitch.request(on: on, phone: phone)") == 1 and "PhoneApprovalsSwitch.arguments(" not in sender
+helpers_all = "\n".join(code(str(f.relative_to(root))) for f in sorted((root / "HelperSources").glob("*.swift")))
+# No build constant decides On any more, in either target.
+no_constant = all(t not in src for src in (core, pairing, views, main_views, model, helper)
+                  for t in ("static let available", "PhoneApprovalsSwitch.available", "PhoneApprovalsCore.available", "permits("))
+need(no_constant and "UserDefaults" not in switch_src and "UserDefaults" not in readiness_src and "defaults" not in (mounted_fn + request_fn + shown_fn).lower()
+     and "ProcessInfo" not in switch_src + readiness_src + core_pa and "environment[" not in readiness_src,
+     "phone on needs the server fix", "no compile constant, defaults key or environment value decides On; only the server's proof does")
+# The readiness: the fix version and the exact scope word, read from the status body.
+need('static let requiredFixVersion: Int64 = 1' in readiness_src and 'static let tailnetScope = "tailnet"' in readiness_src
+     and 'WebKeyServerMode.int(body["signerBindFixVersion"])' in readiness_src
+     and 'var bindFixed: Bool { (fixVersion ?? 0) >= Self.requiredFixVersion && bindScope == Self.tailnetScope }' in readiness_src
+     and 'var canTurnOn: Bool { bindFixed && (!needsDisclosure || publicName != nil) }' in readiness_src
+     and 'certIssued: cert?["issued"] as? Bool == true' in readiness_src,
+     "phone on needs the server fix", "the readiness reads the fix version strictly, the exact scope word, and needs the public name before a first certificate")
+# The app's gates: mount (turn-on only with shown, Off whatever the server says), toggle, the one sender.
+need("if serverSupports(serverVersion) && (on || pendingOff) { return true }" in mounted_fn
+     and "return rowDrawn && shown(serverVersion: serverVersion, readiness: readiness)" in mounted_fn
+     and "serverSupports(serverVersion) && readiness?.canTurnOn == true" in shown_fn
+     and "pendingOff: DefaultsPhoneApprovalsPendingStore().load() != nil, readiness: state.onReadiness) {" in mount_view
+     and "guard !on || (readiness?.canTurnOn == true && readiness?.disclosed(disclosedName) == true) else { return nil }" in request_fn
+     and sender.count("PhoneApprovalsSwitch.request(on: on, phone: phone, readiness: webKey.onReadiness, disclosedName: disclosedName)") == 1
+     and "PhoneApprovalsSwitch.arguments(" not in sender
      and sources.count('"set-phone-approvals"') == 2 and sender.count('"set-phone-approvals"') == 2
-     and set_fn0.find("guard PhoneApprovalsCore.permits(change) else") > set_fn0.find("PhoneApprovalsCore.change(arguments)") >= 0
-     and set_fn0.find("guard PhoneApprovalsCore.permits(change) else") < set_fn0.find("PhoneApprovalsCore.environment(change)")
-     and "static func permits(_ change: Change) -> Bool { change == .off || available }" in pairing
-     and re.search(r"if wanted, !on \{\s*guard PhoneApprovalsSwitch\.available else \{ return \}\s*choosing = true", views) is not None
-     and "defaults" not in (mounted_fn + request_fn).lower() and "UserDefaults" not in body_of(core, core.index("enum PhoneApprovalsSwitch {")),
-     "phone switch unavailable", "a compile-time false in the app and the helper; mount, toggle, the one sender and the helper all ask it")
+     and re.search(r"if wanted, !on \{\s*guard PhoneApprovalsSwitch\.canStart\(state\.onReadiness\) else \{ return \}\s*choosing = true", views) is not None,
+     "phone on needs the server fix", "the mount, the toggle and the app's one sender all ask the server's proof; Off is mounted and sent regardless")
+# WebKeyState keeps the readiness from every status answer (the off mode's too), and clears it with the rest.
+refresh_body = body_of(core, core.index("    func refresh() async {"))
+clear_body = body_of(core, core.index("    private func clear() {"))
+need(refresh_body.count("let readiness = PhoneApprovalsReadiness.read(status: status.status, body: status.body)") == 1
+     and "else { clear(); onReadiness = readiness; return }" in refresh_body and refresh_body.count("onReadiness = readiness") == 2
+     and clear_body.count("onReadiness = nil") == 1 and core.count("onReadiness =") == 3,
+     "phone on readiness read", "the readiness is read from every status answer, the off mode's included, and cleared with the rest")
+# The helper is the real gate: On reads the server's status itself, before the server floor and before anything is written.
+need(set_fn0.find("if change != .off {") > set_fn0.find("PhoneApprovalsCore.change(arguments)") >= 0
+     and set_fn0.count('request("/api/web-key/status", token: token, timeout: 10, refuseRedirects: true)') == 1
+     and set_fn0.count("PhoneApprovalsCore.onRefusal(status: status?.status, body: status?.body,") == 1
+     and set_fn0.count("disclosedName: PhoneApprovalsCore.disclosedName(arguments))") == 1
+     and 0 <= set_fn0.find("PhoneApprovalsCore.onRefusal(") < set_fn0.find("PhoneApprovalsCore.environment(change)")
+     and 0 <= set_fn0.find("throw HelperError.message(refusal)") < set_fn0.find("ProviderEnvironment(")
+     and helpers_all.count("PhoneApprovalsCore.onRefusal(") == 1,
+     "phone on helper gate", "set-phone-approvals on reads the server's status and refuses before anything is written; off skips it")
+refusal_fn = body_of(core_pa, core_pa.index("static func onRefusal(status: Int?, body: [String: Any]?, disclosedName: String?) -> String?"))
+need("guard let fix = integer(body[\"signerBindFixVersion\"]), fix >= requiredFixVersion else { return needsFix }" in refusal_fn
+     and "guard (body[\"signerBind\"] as? [String: Any])?[\"scope\"] as? String == tailnetScope else { return needsTailnetBind }" in refusal_fn
+     and "if let disclosedName { return disclosedName == name ? nil : disclosureStale }" in refusal_fn
+     and "return issued ? nil : disclosureMissing" in refusal_fn
+     and "case .on: return authority && bindFixed" in core_pa,
+     "phone on helper gate", "the helper needs the fix, the tailnet bind and the disclosure for the exact name, and proves the bind after the restart")
 unavailable_rows = 'static let unavailableRows: Set<String> = ["PK-01", "PK-02"]'
-need(catalog.count(unavailable_rows) == 1 and "!unavailableRows.contains($0.id)" in catalog and app_unavailable,
-     "phone switch unavailable", "search leaves out PK-01 and PK-02 while phone approvals are unavailable; empty that set in the build that makes them available")
+need(catalog.count(unavailable_rows) == 1 and "!unavailableRows.contains($0.id)" in catalog,
+     "phone switch unavailable", "search leaves out PK-01 and PK-02: whether they draw depends on the server, which a static index cannot know")
+# The disclosure step: inline in the row (never a sheet), only while choosing before a first certificate, naming the exact
+# name; Turn on is disabled until it is agreed, and the confirm carries the agreed name to the one sender.
+need(re.search(r"if choosing && !on, let readiness = state\.onReadiness, readiness\.needsDisclosure, let name = readiness\.publicName \{", switch_view_src := body_of(views, views.index("struct PhoneApprovalsSwitchRow: View"))) is not None
+     and switch_view_src.count("Text(PhoneApprovalsSwitch.disclosureMessage(name))") == 1
+     and switch_view_src.count("Toggle(PhoneApprovalsSwitch.disclosureAgree(name), isOn: Binding(get: { disclosedName == name }, set: { disclosedName = $0 ? name : nil }))") == 1
+     and ".toggleStyle(COSCheckStyle())" in switch_view_src
+     and "private var disclosureAgreed: Bool { state.onReadiness?.disclosed(disclosedName) == true }" in switch_view_src
+     and "if let picked, disclosureAgreed { confirm.shown = onRequest(picked) }" in switch_view_src
+     and ".disabled(picked == nil || !disclosureAgreed || !PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active))" in switch_view_src
+     and "model.setPhoneApprovals(on: true, phone: picked, disclosedName: disclosedName)" in switch_view_src
+     and ".sheet(" not in views and ".popover(" not in switch_view_src,
+     "phone on disclosure", "the disclosure is inline, names the exact name, and Turn on stays disabled until it is agreed")
 # Off by default: the toggle never applies anything; only the two confirmations call setPhoneApprovals, and nothing else in
 # the helper writes the flag (one allowlist entry, then PhoneApprovalsCore's own constants).
 switch_view = body_of(views, views.index("struct PhoneApprovalsSwitchRow: View"))
@@ -326,7 +378,7 @@ toggle_end = switch_view.find(".accessibilityLabel(PhoneApprovalsSwitch.label)",
 need("Text(PhoneApprovalsSwitch.title(on: on && pendingOff == nil))" in switch_view and "Text(PhoneApprovalsSwitch.label)" not in switch_view,
      "phone switch title follows the switch", "the row's title says on only while the server is on and no Off waits")
 # The switch draws no second label (COSSwitchStyle ignores .labelsHidden()); VoiceOver keeps the name.
-need(0 <= toggle_at and switch_view.count("Toggle(") == 1 and "})) { EmptyView() }\n                .accessibilityLabel(PhoneApprovalsSwitch.label)" in switch_view,
+need(0 <= toggle_at and switch_view.count("Toggle(") == 2 and switch_view.count("Toggle(isOn:") == 1 and "})) { EmptyView() }\n                .accessibilityLabel(PhoneApprovalsSwitch.label)" in switch_view,
      "phone switch label once", "the switch has no visible label of its own; the row's title says it, and VoiceOver keeps the name")
 need(views.count("model.setPhoneApprovals(") == 2 and switch_view.count("PhoneApprovalsConfirm.Request(") == 2 and 0 <= toggle_at < toggle_end
      and "setPhoneApprovals" not in switch_view[toggle_at:toggle_end]
@@ -393,7 +445,7 @@ need(seed_fn.count("precondition(!model.backgroundWorkEnabled)") == 1 and source
 # The renders Miles reviews draw the Phone and web card in the app's order: UT-29, PK-02, PK-01, WB-01.
 render_card = body_of(code("Tests/PhoneApprovalsRender.swift"), code("Tests/PhoneApprovalsRender.swift").index("struct PhoneCard: View {"))
 render_order = [render_card.find(s) for s in ("PhoneSignInBlock(", "SettingsHubBlock { row }", "WebKeySettingsBlock(", "SettingsHubWebRevokeRow(")]
-app_order = [phone.find(s) for s in ('.settingsHubAnchor("UT-29")', '.settingsHubAnchor(PhoneApprovalsSwitch.anchorID)', '.settingsHubAnchor("PK-01")', "SettingsHubWebRevokeRow(")]
+app_order = [phone.find(s) for s in ('.settingsHubAnchor("UT-29")', '.settingsHubAnchor(PhoneApprovalsSwitch.anchorID(', '.settingsHubAnchor("PK-01")', "SettingsHubWebRevokeRow(")]
 need(all(i >= 0 for i in render_order + app_order) and render_order == sorted(render_order) and app_order == sorted(app_order),
      "phone switch render order", "the render's Phone and web card and the app's both run UT-29, PK-02, PK-01, WB-01")
 # 0.5.390: the server's not-trusted reason codes live in ONE Swift list, WebKeySignerTLS.sentences (copied from the server's

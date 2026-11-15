@@ -42,7 +42,11 @@ final class RenderSecure: WebKeySecureStore, @unchecked Sendable {
 
 /// What the COS server says about phone approvals.
 enum Served {
+    /// A server without the SR-15 fix (or with the bind not on the tailnet): the off answer has no readiness.
     case off
+    /// PA-C: a server with the fix, off, whose signer would bind this Mac's tailnet address only. `issued` false: the next On
+    /// asks for the first certificate, so the disclosure step runs.
+    case offReady(issued: Bool)
     case on(signerTls: [String: Any])
 }
 @MainActor let tlsPending: [String: Any] = ["trusted": false, "reason": "pending", "host": NSNull(), "notAfter": NSNull()]
@@ -67,6 +71,10 @@ enum Served {
     let status: [String: Any]
     switch served {
     case .off: status = ["enabled": false, "origin": origin]
+    case .offReady(let issued):
+        status = ["ok": true, "enabled": false, "mode": "off", "signerBindFixVersion": 1,
+                  "signerBind": ["scope": "tailnet", "addresses": ["100.64.0.10"], "reason": NSNull(), "listening": false],
+                  "certDisclosure": ["issued": issued, "publicName": issued ? NSNull() as Any : host as Any]]
     case .on(let tls):
         status = ["enabled": true, "mode": "authority", "origin": origin, "aud": aud, "anchorRegistered": true, "anchorMature": true,
                   "anchorSetAt": baseMs - 86_400_000, "epoch": 4, "signerTls": tls]
@@ -197,27 +205,41 @@ struct PhoneCard: View {
         })
         precondition(listed.map(\.name) == ["example-ipad", "example-iphone"], "the picker lists this account's iOS devices only")
 
-        // 0.5.392 (lead ruling 2026-11-12 19:50): phone approvals cannot be turned on from this build. Executes the app's one
-        // sender of set-phone-approvals, ControllerModel.setPhoneApprovals, with a recorder in place of the helper (`run`), so
-        // nothing here can reach a helper even if the gate breaks. On sends nothing for any phone; Off is sent as before.
+        // PA-C (2026-11-15): On only for a server that proves the SR-15 fix. Executes the app's one sender of
+        // set-phone-approvals, ControllerModel.setPhoneApprovals, with a recorder in place of the helper (`run`), so nothing
+        // here can reach a helper even if a gate breaks. A server without the fix: on sends nothing for any phone. A server
+        // with it: on is sent only with the disclosure for its exact name. Off is sent as before.
+        let ready0 = await seeded(.offReady(issued: false))
+        precondition(!ready0.webKey.visible && ready0.webKey.onReadiness?.canTurnOn == true && ready0.webKey.onReadiness?.publicName == host, "fixed-off fixture")
         var sent: [[String]] = []
         let record: (String, [String]) -> Void = { command, arguments in sent.append([command] + arguments) }
         for phone in [iphone, PhoneApprovalsSwitch.Phone(name: "example-ipad", ipv4: "100.64.0.21")] {
-            off.setPhoneApprovals(on: true, phone: phone, run: record)
+            off.setPhoneApprovals(on: true, phone: phone, disclosedName: host, run: record)
             pending.setPhoneApprovals(on: true, phone: phone, run: record)
+            ready0.setPhoneApprovals(on: true, phone: phone, run: record)
         }
         off.setPhoneApprovals(on: true, phone: nil, run: record)
-        precondition(sent.isEmpty && !off.busy && !pending.busy, "phone approvals unavailable: setPhoneApprovals never sends on, for any phone")
+        precondition(sent.isEmpty && !off.busy && !pending.busy && !ready0.busy, "phone approvals on: nothing without the fix or the disclosure")
+        ready0.setPhoneApprovals(on: true, phone: iphone, disclosedName: host, run: record)
+        precondition(sent == [["set-phone-approvals", "on", iphone.ipv4, "--disclosed-name", host]], "phone approvals on: sent with the agreed name")
+        sent = []
         pending.setPhoneApprovals(on: false, phone: nil, run: record)
         precondition(sent == [["set-phone-approvals", "off"]] && !pending.busy, "phone approvals off stays reachable: setPhoneApprovals sends off")
-        print("PASS phone approvals unavailable: setPhoneApprovals sent nothing for on (5 calls) and [set-phone-approvals off] for off")
-        // The mount: an off server shows no row in either view; a server that is on shows the Off row in both.
-        precondition(!PhoneApprovalsSwitch.mounted(serverVersion: off.status.version, rowDrawn: true, on: PhoneApprovalsSwitch.isOn(off.webKey.mode), pendingOff: false)
-                     && PhoneApprovalsSwitch.mounted(serverVersion: pending.status.version, rowDrawn: false, on: PhoneApprovalsSwitch.isOn(pending.webKey.mode), pendingOff: false),
-                     "phone approvals mount: none while off, the Off row in Basic and All while on")
+        print("PASS phone approvals on: sent only with the server's proof and the disclosed name; off sent as before")
+        // The mount: an off server without the fix shows no row in either view; with the fix, the turn-on row in All only;
+        // a server that is on shows the Off row in both.
+        precondition(!PhoneApprovalsSwitch.mounted(serverVersion: off.status.version, rowDrawn: true, on: PhoneApprovalsSwitch.isOn(off.webKey.mode), pendingOff: false,
+                                                   readiness: off.webKey.onReadiness)
+                     && PhoneApprovalsSwitch.mounted(serverVersion: ready0.status.version, rowDrawn: true, on: false, pendingOff: false, readiness: ready0.webKey.onReadiness)
+                     && !PhoneApprovalsSwitch.mounted(serverVersion: ready0.status.version, rowDrawn: false, on: false, pendingOff: false, readiness: ready0.webKey.onReadiness)
+                     && PhoneApprovalsSwitch.mounted(serverVersion: pending.status.version, rowDrawn: false, on: PhoneApprovalsSwitch.isOn(pending.webKey.mode), pendingOff: false,
+                                                     readiness: pending.webKey.onReadiness),
+                     "phone approvals mount: none without the fix, the turn-on row in All with it, the Off row in Basic and All while on")
         // The Off row's anchor is one Basic never hides (an id the catalog does not know); PK-02 itself is All only.
-        precondition(SettingsHubCatalog.drawn(PhoneApprovalsSwitch.anchorID, view: .basic) && SettingsHubCatalog.drawn(PhoneApprovalsSwitch.anchorID, view: .all)
-                     && SettingsHubCatalog.item(PhoneApprovalsSwitch.anchorID) == nil, "phone approvals Off row: its anchor draws in Basic and All")
+        let offAnchor = PhoneApprovalsSwitch.anchorID(on: true, pendingOff: false)
+        precondition(SettingsHubCatalog.drawn(offAnchor, view: .basic) && SettingsHubCatalog.drawn(offAnchor, view: .all)
+                     && SettingsHubCatalog.item(offAnchor) == nil && PhoneApprovalsSwitch.anchorID(on: false, pendingOff: false) == "PK-02",
+                     "phone approvals Off row: its anchor draws in Basic and All")
         precondition(PhoneApprovalsSwitch.phones((noPhone.glassesPairing.tailscale?.peers ?? []).map {
             PhoneApprovalsSwitch.Peer(os: $0.os, dns: $0.dns, ipv4: $0.ipv4, sameUser: $0.sameUser)
         }).isEmpty, "no-phone fixture")
@@ -229,13 +251,17 @@ struct PhoneCard: View {
         count += try page(ControlPanel.hubFixture(model: pending, category: .glasses), width: 1280, height: 1400, name: "page-5-basic-on-off-row-1280", out: out)
         UserDefaults.standard.set(SettingsHubView.all.rawValue, forKey: SettingsHubView.key)
         count += try page(ControlPanel.hubFixture(model: off, category: .glasses), width: 1280, height: 1100, name: "page-2-all-no-switch-1280", out: out)
+        count += try page(ControlPanel.hubFixture(model: ready0, category: .glasses), width: 1280, height: 1100, name: "page-6-all-fixed-server-switch-1280", out: out)
         count += try page(ControlPanel.hubFixture(model: pending, category: .glasses), width: 1280, height: 1400, name: "page-3-all-on-certificate-pending-1280", out: out)
         count += try page(ControlPanel.hubFixture(model: pending, category: .glasses), width: 760, height: 1500, name: "page-4-all-on-certificate-pending-760", out: out)
 
         // The card, one step each.
         let cardWidth: CGFloat = 720 + 32
-        // 0.5.392: the turn-on steps (cards 1 to 5 in 0.5.391) cannot be reached in this build, so they are not drawn.
+        // PA-C: the turn-on steps, on a server that proves the fix and has not asked for a certificate yet.
         let steps: [(String, ControllerModel, PhoneApprovalsSwitchRow.FixtureStep, RestartApply.Work)] = [
+            ("card-1-disclosure-not-agreed", ready0, .disclosure(agreed: false), .init()),
+            ("card-2-disclosure-agreed", ready0, .disclosure(agreed: true), .init()),
+            ("card-3-confirm-turn-on", ready0, .confirmOn(iphone), .init()),
             ("card-6-confirm-turn-off", pending, .confirmOff, .init()),
         ]
         for (name, model, step, work) in steps {
@@ -252,7 +278,8 @@ struct PhoneCard: View {
 
         // The picker's menu is a system menu, which an offscreen render cannot open; this is what it lists.
         print("picker lists: \(listed.map(\.name).joined(separator: ", ")) (not friend-iphone, another account; not example-laptop, a Mac)")
-        print("confirm on: \(PhoneApprovalsSwitch.confirmOnTitle(iphone)) | \(PhoneApprovalsSwitch.confirmOnMessage(iphone, macName: off.glassesPairing.tailscale?.selfDNS))")
+        print("disclosure: \(PhoneApprovalsSwitch.disclosureTitle(host)) | \(PhoneApprovalsSwitch.disclosureMessage(host)) | \(PhoneApprovalsSwitch.disclosureAgree(host))")
+        print("confirm on: \(PhoneApprovalsSwitch.confirmOnTitle(iphone)) | \(PhoneApprovalsSwitch.confirmOnMessage(iphone, publicName: host))")
         print("confirm off: \(PhoneApprovalsSwitch.confirmOffTitle) | \(PhoneApprovalsSwitch.confirmOffMessage)")
         print("amber lines: pending \"\(WebKeySignerTLS.line("pending"))\"; certs off \"\(WebKeySignerTLS.certsOff)\"")
         print("PhoneApprovalsRender wrote \(count) PNGs")

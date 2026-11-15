@@ -736,10 +736,10 @@ enum SettingsHubCatalog {
     /// The count beside a group's Advanced disclosure.
     static func advancedCount(_ group: String) -> Int { items(inGroup: group).filter(\.advanced).count }
     /// What search covers: every row the hub draws, in a card or in the top strip.
-    /// 0.5.392 (lead ruling 2026-11-12 19:50): rows search never lists in this build. Phone approvals cannot be turned on
-    /// (PhoneApprovalsSwitch.available is false), so neither the switch (PK-02) nor the Phone approvals block (PK-01) is a
-    /// result; on a Mac whose server is already on, both stay on the Glasses, phone and web page. Empty again only in the build
-    /// that makes phone approvals available (Tests/web-key-pins.py holds the two together).
+    /// 0.5.392 (lead ruling 2026-11-12 19:50): rows search never lists. PA-C (2026-11-15) keeps it: the switch (PK-02) and
+    /// the Phone approvals block (PK-01) draw only when the server proves them (PhoneApprovalsReadiness, WebKeyServerMode),
+    /// which a static search index cannot know, so a result could open onto nothing. Both stay on the Glasses, phone and
+    /// web page whenever they draw (Tests/web-key-pins.py).
     static let unavailableRows: Set<String> = ["PK-01", "PK-02"]
     static let searchable: [SettingsHubItem] = all.filter { $0.mount != .outside && !unavailableRows.contains($0.id) }
     static func category(of item: SettingsHubItem) -> SettingsHubCategory? { item.group.flatMap { group($0)?.category } }

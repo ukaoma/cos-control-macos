@@ -108,7 +108,7 @@ struct PhoneApprovalsSwitchMount<Content: View>: View {
 
     var body: some View {
         if PhoneApprovalsSwitch.mounted(serverVersion: serverVersion, rowDrawn: rowDrawn, on: PhoneApprovalsSwitch.isOn(state.mode),
-                                        pendingOff: DefaultsPhoneApprovalsPendingStore().load() != nil) {
+                                        pendingOff: DefaultsPhoneApprovalsPendingStore().load() != nil, readiness: state.onReadiness) {
             content()
         }
     }
@@ -127,6 +127,8 @@ struct PhoneApprovalsSwitchRow: View {
     @State private var picked: PhoneApprovalsSwitch.Phone?
     /// A turn-on found running work: the row says it waits.
     @State private var held = false
+    /// PA-C: the name the person agreed may go into public certificate logs (the disclosure box), for this turn-on only.
+    @State private var disclosedName: String?
     /// Option A: Off's saved wait (PhoneApprovalsOff), read from UserDefaults when the row appears.
     @State private var pendingOff: PhoneApprovalsPendingOff?
     /// The helper is running Off's =0 restart; when it finishes, a proved restart clears the wait.
@@ -155,17 +157,29 @@ struct PhoneApprovalsSwitchRow: View {
                 // already says it (renders at 5122a8f, card-7 and card-8, showed it twice). VoiceOver keeps the name.
                 Toggle(isOn: Binding(get: { (on && pendingOff == nil) || choosing }, set: { wanted in
                     if wanted, !on {
-                        // 0.5.392: unavailable, so the switch never starts turning on (PhoneApprovalsSwitch.available).
-                        guard PhoneApprovalsSwitch.available else { return }
+                        // PA-C: only a server that proves the SR-15 fix starts the turn-on step (PhoneApprovalsSwitch.canStart).
+                        guard PhoneApprovalsSwitch.canStart(state.onReadiness) else { return }
                         choosing = true
                         Task { await pairing.refreshTailscale() }
                     } else if !wanted, on, pendingOff == nil {
                         confirm.shown = offRequest()
                     } else if !wanted {
-                        choosing = false; picked = nil; held = false
+                        choosing = false; picked = nil; held = false; disclosedName = nil
                     }
                 })) { EmptyView() }
                 .accessibilityLabel(PhoneApprovalsSwitch.label).toggleStyle(COSSwitchStyle()).disabled(locked || pendingOff != nil)
+            }
+            if choosing && !on, let readiness = state.onReadiness, readiness.needsDisclosure, let name = readiness.publicName {
+                // PA-C: the disclosure, inline before the first certificate, naming the exact name. Turn on stays disabled
+                // until this box is ticked for this name (PhoneApprovalsReadiness.disclosed), and the helper refuses without it.
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(PhoneApprovalsSwitch.disclosureTitle(name)).font(COSType.body(12.5, weight: .semibold)).foregroundStyle(TodayInk.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(PhoneApprovalsSwitch.disclosureMessage(name)).font(COSType.body(12)).foregroundStyle(TodayInk.sub)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Toggle(PhoneApprovalsSwitch.disclosureAgree(name), isOn: Binding(get: { disclosedName == name }, set: { disclosedName = $0 ? name : nil }))
+                        .toggleStyle(COSCheckStyle()).font(COSType.body(12))
+                }
             }
             if choosing && !on {
                 if phones.isEmpty {
@@ -176,9 +190,9 @@ struct PhoneApprovalsSwitchRow: View {
                                 options: [COSDropdownOption(PhoneApprovalsSwitch.Phone?.none, "Choose a phone", placeholder: true)]
                                     + phones.map { COSDropdownOption(Optional($0), $0.name) })
                     .frame(maxWidth: 280, alignment: .leading)
-                    Button(PhoneApprovalsSwitch.confirmOn) { if let picked { confirm.shown = onRequest(picked) } }
+                    Button(PhoneApprovalsSwitch.confirmOn) { if let picked, disclosureAgreed { confirm.shown = onRequest(picked) } }
                         .buttonStyle(TodayButtonStyle(small: true))
-                        .disabled(picked == nil || !PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active))
+                        .disabled(picked == nil || !disclosureAgreed || !PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active))
                 }
             }
             if let pendingOff {
@@ -198,7 +212,7 @@ struct PhoneApprovalsSwitchRow: View {
         // After the helper's restart (or any other operation): read the server again, so On and the amber line follow it.
         .onChange(of: model.busy) { _, busy in
             guard !busy else { return }
-            choosing = false; picked = nil
+            choosing = false; picked = nil; disclosedName = nil
             if applyingOff {
                 applyingOff = false
                 PhoneApprovalsOff.finished(store: pendingStore, helperSucceeded: model.error == nil)
@@ -210,13 +224,17 @@ struct PhoneApprovalsSwitchRow: View {
         .onAppear { pendingOff = pendingStore.load(); resumeOff() }
     }
 
-    /// Turn on for this phone: the page draws it. The apply still asks applyAllowed at the click.
+    /// PA-C: the disclosure is agreed for the server's exact name, or none is needed (a certificate was already asked for).
+    private var disclosureAgreed: Bool { state.onReadiness?.disclosed(disclosedName) == true }
+
+    /// Turn on for this phone: the page draws it. The apply still asks applyAllowed at the click, and carries the agreed name.
     func onRequest(_ phone: PhoneApprovalsSwitch.Phone) -> PhoneApprovalsConfirm.Request {
-        PhoneApprovalsConfirm.Request(
+        let readiness = state.onReadiness
+        return PhoneApprovalsConfirm.Request(
             title: PhoneApprovalsSwitch.confirmOnTitle(phone),
-            message: PhoneApprovalsSwitch.confirmOnMessage(phone, macName: pairing.tailscale?.selfDNS),
+            message: PhoneApprovalsSwitch.confirmOnMessage(phone, publicName: readiness?.needsDisclosure == true ? readiness?.publicName : nil),
             actions: [.normal(PhoneApprovalsSwitch.confirmOn) {
-                if PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active) { model.setPhoneApprovals(on: true, phone: picked) } else { held = true }
+                if PhoneApprovalsSwitch.applyAllowed(locked: locked, workActive: work.active) { model.setPhoneApprovals(on: true, phone: picked, disclosedName: disclosedName) } else { held = true }
             }, .cancel()])
     }
 
@@ -248,7 +266,7 @@ struct PhoneApprovalsSwitchRow: View {
 
     /// Offscreen renders only (Tests/PhoneApprovalsRender.swift): the row opened on one step, as a click would leave it, with
     /// the model's background work off. Nothing here applies anything; the confirm's buttons are drawn, never pressed.
-    enum FixtureStep { case choosing(PhoneApprovalsSwitch.Phone?), confirmOn(PhoneApprovalsSwitch.Phone), confirmOff }
+    enum FixtureStep { case choosing(PhoneApprovalsSwitch.Phone?), disclosure(agreed: Bool), confirmOn(PhoneApprovalsSwitch.Phone), confirmOff }
     static func renderFixture(model: ControllerModel, state: WebKeyState, pairing: GlassesPairingState, work: RestartApply.Work = .init(),
                               confirm: PhoneApprovalsConfirm, step: FixtureStep) -> PhoneApprovalsSwitchRow {
         precondition(!model.backgroundWorkEnabled)
@@ -256,8 +274,12 @@ struct PhoneApprovalsSwitchRow: View {
         switch step {
         case .choosing(let phone):
             row._choosing = State(initialValue: true); row._picked = State(initialValue: phone)
+        case .disclosure(let agreed):
+            row._choosing = State(initialValue: true)
+            row._disclosedName = State(initialValue: agreed ? state.onReadiness?.publicName : nil)
         case .confirmOn(let phone):
             row._choosing = State(initialValue: true); row._picked = State(initialValue: phone)
+            row._disclosedName = State(initialValue: state.onReadiness?.publicName)
             confirm.shown = row.onRequest(phone)
         case .confirmOff:
             confirm.shown = row.offRequest()

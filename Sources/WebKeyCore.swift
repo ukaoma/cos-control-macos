@@ -439,6 +439,61 @@ enum WebKeySignerTLS {
     }
 }
 
+// MARK: - What turning phone approvals on needs from the server (PA-C 2026-11-15, review finding 9 / SR-15)
+
+/// The server's own facts about the signer listener (3144) and its certificate, from the token-authenticated GET
+/// /api/web-key/status. Servers with the SR-15 fix answer it in every mode, off included (no origin then, so
+/// WebKeyServerMode still reads off), with `signerBindFixVersion` (an integer, absent on older servers), `signerBind`
+/// (`scope` "tailnet" or "none", the addresses, a reason) and `certDisclosure` (`issued`, `publicName`: the exact ts.net name
+/// `tailscale cert` would be asked for). Turning on is possible only when the server reports the fix and that the signer binds
+/// this Mac's tailnet address and nothing else (`canTurnOn`). The helper reads the same status again and decides for itself
+/// (PhoneApprovalsCore.onRefusal, HelperSources/PairingCore.swift): this is what the row shows, the helper is the real gate.
+struct PhoneApprovalsReadiness: Equatable, Sendable {
+    /// The first signer bind fix; PhoneApprovalsCore.requiredFixVersion must equal it (a check holds both).
+    static let requiredFixVersion: Int64 = 1
+    /// The only bind scope that allows turning on; PhoneApprovalsCore.tailnetScope must equal it (a check).
+    static let tailnetScope = "tailnet"
+
+    let fixVersion: Int64?
+    let bindScope: String?
+    /// true only when the server says it has already requested or holds a certificate for its signer. Anything else
+    /// (false, missing, not a boolean) means the next On asks for one, so the disclosure step runs.
+    let certIssued: Bool
+    /// The exact name that goes into public certificate logs, or nil when the server does not know it or it is malformed.
+    let publicName: String?
+
+    /// nil for anything but a 200. Every field is read strictly: a boolean is never a version, a fraction never a version.
+    static func read(status: Int, body: [String: Any]) -> PhoneApprovalsReadiness? {
+        guard status == 200 else { return nil }
+        let bind = body["signerBind"] as? [String: Any]
+        let cert = body["certDisclosure"] as? [String: Any]
+        return PhoneApprovalsReadiness(fixVersion: WebKeyServerMode.int(body["signerBindFixVersion"]), bindScope: bind?["scope"] as? String,
+                                       certIssued: cert?["issued"] as? Bool == true,
+                                       publicName: (cert?["publicName"] as? String).flatMap(validName))
+    }
+
+    /// The server has the SR-15 fix and its signer binds only this Mac's tailnet address.
+    var bindFixed: Bool { (fixVersion ?? 0) >= Self.requiredFixVersion && bindScope == Self.tailnetScope }
+    /// The next On asks for the first certificate, so the person must first agree to the name going public.
+    var needsDisclosure: Bool { !certIssued }
+    /// Turning on can be offered: the bind is fixed, and when a certificate will be asked for, its exact name is known.
+    var canTurnOn: Bool { bindFixed && (!needsDisclosure || publicName != nil) }
+    /// The disclosure was agreed for exactly this name (or none is needed).
+    func disclosed(_ agreed: String?) -> Bool { !needsDisclosure || (publicName != nil && agreed == publicName) }
+
+    /// A lowercase MagicDNS name, <node>.<tailnet>.ts.net, the shape `tailscale cert` takes. Anything else is nil, so a
+    /// malformed or empty answer never reaches the disclosure. PhoneApprovalsCore.validName must agree (a check).
+    static func validName(_ value: String) -> String? {
+        let labels = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard value.utf8.count <= 253, labels.count >= 4, labels.suffix(2).joined(separator: ".") == "ts.net" else { return nil }
+        let ok = labels.allSatisfy { label in
+            !label.isEmpty && label.utf8.count <= 63 && label.first != "-" && label.last != "-"
+                && label.unicodeScalars.allSatisfy { ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == "-" }
+        }
+        return ok ? value : nil
+    }
+}
+
 // MARK: - The phone approvals switch (option A, lead 2026-11-11 21:31)
 
 /// Settings PK-02, in full Settings only (never Basic): off by default; turning it on picks one of this account's iPhones
@@ -449,13 +504,13 @@ enum PhoneApprovalsSwitch {
     /// The first server with the reopened phone approvals; PhoneApprovalsCore.minimumServer must equal it (a check).
     static let minimumServer = "7.0.30"
 
-    /// 0.5.392 (lead ruling 2026-11-12 19:50): phone approvals cannot be turned on from this build, by anyone. A compile-time
-    /// constant, never a defaults key or a server answer: the switch opens 3144 on every interface (review finding 9, open)
-    /// and puts the Mac's tailnet name in public certificate logs. Turning it on returns in its own build, with those closed.
-    /// With it false: the row is not mounted for a Mac that is off (shown), the app never sends `set-phone-approvals on`
-    /// (request), and the helper refuses it (PhoneApprovalsCore.available, which must equal this: a check). Search never lists
-    /// PK-01 or PK-02 (SettingsHubCatalog.unavailableRows). A Mac whose server already reports it on keeps the Off row (mounted).
-    static let available = false
+    /// 0.5.392 (lead ruling 2026-11-12 19:50) made On unavailable at compile time: 3144 listened on every interface (review
+    /// finding 9, SR-15) and the first certificate puts the Mac's tailnet name in public certificate logs. PA-C (2026-11-15)
+    /// returns On only behind the server's own proof that both are dealt with (PhoneApprovalsReadiness): never a flipped
+    /// constant, a defaults key or an environment value. Without that proof the turn-on row is not mounted (mounted), the
+    /// toggle does not start (canStart), the app never sends `set-phone-approvals on` (request), and the helper refuses it after
+    /// reading the server itself (PhoneApprovalsCore.onRefusal). Search still never lists PK-01 or PK-02, because whether
+    /// they draw depends on the server (SettingsHubCatalog.unavailableRows). A Mac whose server is already on keeps its Off row.
 
     struct Peer: Equatable, Sendable {
         var os: String
@@ -491,9 +546,9 @@ enum PhoneApprovalsSwitch {
         return octets.count == 4 && octets[0] == 100 && (64...127).contains(octets[1])
     }
 
-    /// The row's Settings anchor. Available: PK-02, which Basic leaves out (SettingsHubAnchorChrome). Unavailable: an id the
-    /// catalog does not know, which no view hides, so a Mac that is already on keeps its Off row in Basic too (render page-5).
-    static var anchorID: String { available ? "PK-02" : "PK-02-off" }
+    /// The row's Settings anchor. Turning on: PK-02, which Basic leaves out (SettingsHubAnchorChrome). A Mac that is on, or
+    /// whose Off still waits: an id the catalog does not know, which no view hides, so its Off row draws in Basic too (render page-5).
+    static func anchorID(on: Bool, pendingOff: Bool) -> String { on || pendingOff ? "PK-02-off" : "PK-02" }
 
     /// A server new enough to have the reopened phone approvals.
     static func serverSupports(_ serverVersion: String?) -> Bool {
@@ -501,23 +556,34 @@ enum PhoneApprovalsSwitch {
         return version.lexicographicallyPrecedes(floor) == false
     }
 
-    /// The turn-on row: only in a build where phone approvals are available, and only for a server that has them.
-    static func shown(serverVersion: String?) -> Bool { available && serverSupports(serverVersion) }
-
-    /// Whether Settings mounts PK-02. Available: where hubRowDrawn (All view) and the server floor allow. Unavailable (0.5.392):
-    /// only while the server reports phone approvals on, or an Off is still waiting (PhoneApprovalsPendingOff), and then in
-    /// every view, so a Mac that is already on can always turn it off. The row offers no way to turn it on in that build.
-    static func mounted(serverVersion: String?, rowDrawn: Bool, on: Bool, pendingOff: Bool) -> Bool {
-        if available { return rowDrawn && serverSupports(serverVersion) }
-        return serverSupports(serverVersion) && (on || pendingOff)
+    /// The turn-on row: a server with the reopened phone approvals that also proves the SR-15 fix (PhoneApprovalsReadiness).
+    static func shown(serverVersion: String?, readiness: PhoneApprovalsReadiness?) -> Bool {
+        serverSupports(serverVersion) && readiness?.canTurnOn == true
     }
 
-    /// What the app sends the helper. Off always goes through (a Mac that is on must be able to turn it off); on only where
-    /// phone approvals are available. ControllerModel.setPhoneApprovals is the only caller, and the only way the app writes
-    /// COS_WEB_KEY_AUTHORITY or COS_WEB_KEY_DEVICES.
-    static func request(on: Bool, phone: Phone?) -> [String]? {
-        guard !on || available else { return nil }
-        return arguments(on: on, phone: phone)
+    /// Whether Settings mounts PK-02. The turn-on row: where hubRowDrawn (All view) allows and the server proves the fix
+    /// (shown). The Off row: while the server reports phone approvals on, or an Off is still waiting (PhoneApprovalsPendingOff),
+    /// in every view and whatever the server says about its bind, so a Mac that is on can always turn it off.
+    static func mounted(serverVersion: String?, rowDrawn: Bool, on: Bool, pendingOff: Bool, readiness: PhoneApprovalsReadiness?) -> Bool {
+        if serverSupports(serverVersion) && (on || pendingOff) { return true }
+        return rowDrawn && shown(serverVersion: serverVersion, readiness: readiness)
+    }
+
+    /// Whether the toggle may start turning on (opening the phone step).
+    static func canStart(_ readiness: PhoneApprovalsReadiness?) -> Bool { readiness?.canTurnOn == true }
+
+    /// The flag that carries the agreed name to the helper, which refuses On without it before a first certificate.
+    static let disclosedFlag = "--disclosed-name"
+
+    /// What the app sends the helper. Off always goes through (a Mac that is on must be able to turn it off). On only when
+    /// the server proves the SR-15 fix (canTurnOn) and, before a first certificate, the person agreed to that exact name going
+    /// public; the name then goes with it. ControllerModel.setPhoneApprovals is the only caller, and the only way the app
+    /// writes COS_WEB_KEY_AUTHORITY or COS_WEB_KEY_DEVICES.
+    static func request(on: Bool, phone: Phone?, readiness: PhoneApprovalsReadiness?, disclosedName: String?) -> [String]? {
+        guard !on || (readiness?.canTurnOn == true && readiness?.disclosed(disclosedName) == true) else { return nil }
+        guard let base = arguments(on: on, phone: phone) else { return nil }
+        guard on, let readiness, readiness.needsDisclosure, let name = readiness.publicName else { return base }
+        return base + [disclosedFlag, name]
     }
 
     private static func numbers(_ version: String) -> [Int]? {
@@ -543,12 +609,25 @@ enum PhoneApprovalsSwitch {
 
     // Copy. Plain sentences, no em dashes (Tests/web-key-pins.py).
     static func confirmOnTitle(_ phone: Phone) -> String { "Turn on phone approvals for \(phone.name)?" }
-    static func confirmOnMessage(_ phone: Phone, macName: String?) -> String {
-        let mac = macName.map { "Your Mac's Tailscale name, \($0)," } ?? "Your Mac's Tailscale name"
-        return "\(phone.name) can then approve agent actions with its passkey and user verification on one of your Apple devices, after you enroll it here with Touch ID. "
-            + "\(mac) becomes public in certificate logs when its first certificate is issued, and stays public. "
+    /// `publicName` is the agreed name when this On asks for the first certificate, nil when the server already has one.
+    static func confirmOnMessage(_ phone: Phone, publicName: String?) -> String {
+        let first = "\(phone.name) can then approve agent actions with its passkey and user verification on one of your Apple devices, after you enroll it here with Touch ID. "
+        guard let publicName else { return first + "COS restarts the server to turn this on." }
+        return first
+            + "Your Mac's Tailscale name, \(publicName), becomes public in certificate logs when its first certificate is issued, and stays public. "
             + "COS restarts the server to turn this on."
     }
+
+    // The disclosure step (PA-C): before the first On, inline in the row, naming the exact name. Turn on stays disabled until
+    // the box is ticked for that name, and the helper refuses On without it.
+    static func disclosureTitle(_ name: String) -> String { "\(name) will be public" }
+    static func disclosureMessage(_ name: String) -> String {
+        "Turning this on asks for a certificate for \(name), so your phone can trust this Mac. "
+            + "Every certificate is published in public certificate logs, so this name goes into them permanently. "
+            + "Anyone can look it up, and turning phone approvals off later does not remove it. "
+            + "This COS server has not asked for a certificate for this Mac yet."
+    }
+    static func disclosureAgree(_ name: String) -> String { "I understand \(name) goes into public certificate logs permanently" }
     static let confirmOn = "Turn on and restart"
     static let confirmOffTitle = "Turn off phone approvals?"
     static let confirmOffMessage = "Every enrolled phone is removed now and stops approving at once. If you turn this on again, enroll each phone again with Touch ID. COS then restarts the server with phone approvals off, after any running work."
@@ -1161,6 +1240,9 @@ final class WebKeyState: ObservableObject {
     @Published private(set) var signerTLSLine: String?
     /// Server reopen: why a hand-placed certificate pair was refused (WebKeySignerTLS.storedRefused), authority only.
     @Published private(set) var signerTLSStoredLine: String?
+    /// PA-C: what turning phone approvals on needs from the server (PhoneApprovalsReadiness), read from every status answer,
+    /// the off mode's included; nil when the server did not answer 200. Only the PK-02 row reads it; the helper reads its own.
+    @Published private(set) var onReadiness: PhoneApprovalsReadiness?
     private(set) var anchor: (any WebKeyAnchorSigner)?
     private var origin: String?
     private var readID: UUID?
@@ -1207,8 +1289,10 @@ final class WebKeyState: ObservableObject {
         protectionReady = false
         recoveryRequired = false
         guard let status = await ask("status"), current(id) else { if current(id) { clear() }; return }
+        let readiness = PhoneApprovalsReadiness.read(status: status.status, body: status.body)
         let served = WebKeyServerMode.read(status: status.status, body: status.body)
-        guard served != .off, let suppliedOrigin = status.body["origin"] as? String else { clear(); return }
+        guard served != .off, let suppliedOrigin = status.body["origin"] as? String else { clear(); onReadiness = readiness; return }
+        onReadiness = readiness
         visible = true
         if origin != suppliedOrigin || mode != served { card = nil; typedCode = ""; audit = nil }
         origin = suppliedOrigin
@@ -1249,6 +1333,7 @@ final class WebKeyState: ObservableObject {
         controlState = nil; audit = nil; origin = nil; anchorMature = false; recoveryRequired = false
         signerTLSLine = nil
         signerTLSStoredLine = nil
+        onReadiness = nil
     }
 
     /// Bootstrap, right after THIS run registered the anchor (the same condition as authority's rebind): start Control's

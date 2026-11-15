@@ -6896,9 +6896,19 @@ final class COSControlHelper {
     /// Option A (lead 2026-11-11 21:31), Settings PK-02: phone approvals on for one named phone, or off, through the same
     /// managed provider environment as every other server flag (allowlist, drain lease, restart, proof, rollback). Rules:
     /// PhoneApprovalsCore. Never touches the anchor, ~/.cos-glasses/.env or any certificate.
+    /// PA-C (2026-11-15): On first reads the running server's own token-authenticated status and refuses unless it proves the
+    /// SR-15 fix, a tailnet-only signer bind and, before a first certificate, the disclosure for its exact name. This is the
+    /// real gate (the app's checks only decide what it shows). Off never reads it, so a Mac that is on can always turn it off.
     private func setPhoneApprovals(_ arguments: [String]) throws {
         guard let change = PhoneApprovalsCore.change(arguments) else { throw HelperError.message(PhoneApprovalsCore.usage) }
-        guard PhoneApprovalsCore.permits(change) else { throw HelperError.message(PhoneApprovalsCore.unavailable) }
+        if change != .off {
+            let token = try readToken()
+            let status = request("/api/web-key/status", token: token, timeout: 10, refuseRedirects: true)
+            if let refusal = PhoneApprovalsCore.onRefusal(status: status?.status, body: status?.body,
+                                                          disclosedName: PhoneApprovalsCore.disclosedName(arguments)) {
+                throw HelperError.message(refusal)
+            }
+        }
         let runningVersion = (maintenanceStatus()?["serverVersion"] as? String)
             ?? request("/api/health", timeout: 12)?.body?["server_version"] as? String
         let stoppedCompatibleManagedServer = loadManifest().map {

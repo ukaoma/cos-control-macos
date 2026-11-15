@@ -584,29 +584,76 @@ enum PhoneApprovalsCore {
     /// The first server with the reopened phone approvals (SR-01 to SR-12). The integrator sets it to the integrated
     /// server's version; PhoneApprovalsSwitch.minimumServer (Sources/WebKeyCore.swift) must equal it (a check holds both).
     static let minimumServer = "7.0.30"
-    /// 0.5.392 (lead ruling 2026-11-12 19:50): this build never turns phone approvals on, even when the helper is run by hand.
-    /// Off still works, so a Mac that is already on can turn it off. Must equal PhoneApprovalsSwitch.available (a check).
-    static let available = false
+    /// PA-C (2026-11-15), the reviewed return of On after the lead ruling of 2026-11-12 19:50 (review finding 9, SR-15). The
+    /// helper is the real gate: before it writes anything for On it reads the server's token-authenticated GET
+    /// /api/web-key/status itself (onRefusal) and requires the SR-15 fix (signerBindFixVersion at least this), a signer bound
+    /// to this Mac's tailnet address only (signerBind.scope "tailnet"), and, before a first certificate, the exact name the
+    /// person agreed to make public (--disclosed-name). Off never asks any of it. Both must equal PhoneApprovalsReadiness's
+    /// (Sources/WebKeyCore.swift; a check holds both).
+    static let requiredFixVersion: Int64 = 1
+    static let tailnetScope = "tailnet"
+    static let disclosedFlag = "--disclosed-name"
 
     enum Change: Equatable, Sendable {
         case on(device: String)
         case off
     }
 
-    /// `on <IPv4 in 100.64.0.0/10>` or `off`, and nothing else: no list, no name, no other address.
+    /// `on <IPv4 in 100.64.0.0/10> [--disclosed-name <name>.ts.net]` or `off`, and nothing else: no list, no other address.
     static func change(_ arguments: [String]) -> Change? {
         switch arguments.count {
         case 1 where arguments[0] == "off": return .off
-        case 2 where arguments[0] == "on":
+        case 2 where arguments[0] == "on", 4 where arguments[0] == "on" && arguments[2] == disclosedFlag && validName(arguments[3]) != nil:
             let device = arguments[1]
             return TailscaleCore.isTailnet(device) ? .on(device: device) : nil
         default: return nil
         }
     }
 
-    /// Whether this build applies the change: off always; on only where phone approvals are available.
-    static func permits(_ change: Change) -> Bool { change == .off || available }
-    static let unavailable = "Phone approvals cannot be turned on in this version of COS Control."
+    /// The name the person agreed may go into public certificate logs, when On carries one.
+    static func disclosedName(_ arguments: [String]) -> String? {
+        guard change(arguments) != nil, arguments.count == 4 else { return nil }
+        return arguments[3]
+    }
+
+    /// Why the helper refuses On, from the server's own status read just before the change; nil when On may go ahead.
+    /// Fails closed: no answer, an old server (no signerBindFixVersion), a bind that is not tailnet-only, a missing disclosure
+    /// before a first certificate, or a disclosure for any name but the server's exact one all refuse.
+    static func onRefusal(status: Int?, body: [String: Any]?, disclosedName: String?) -> String? {
+        // A server without the fix answers 404 while off (the route falls through); no answer or any other status is not ready.
+        guard status == 200, let body else { return status == 404 ? needsFix : notReady }
+        guard let fix = integer(body["signerBindFixVersion"]), fix >= requiredFixVersion else { return needsFix }
+        guard (body["signerBind"] as? [String: Any])?["scope"] as? String == tailnetScope else { return needsTailnetBind }
+        let cert = body["certDisclosure"] as? [String: Any]
+        let issued = cert?["issued"] as? Bool == true
+        let name = (cert?["publicName"] as? String).flatMap(validName)
+        if let disclosedName { return disclosedName == name ? nil : disclosureStale }
+        return issued ? nil : disclosureMissing
+    }
+    static let notReady = "COS could not read the server's phone approvals status, so phone approvals stay off. Start the server and try again."
+    static let needsFix = "This COS server cannot turn on phone approvals safely yet. Update the server first."
+    static let needsTailnetBind = "Phone approvals stay off: the server could not limit your phone's connection to this Mac's Tailscale address. Check that Tailscale is connected."
+    static let disclosureMissing = "Phone approvals stay off: confirm first that this Mac's Tailscale name goes into public certificate logs."
+    static let disclosureStale = "Phone approvals stay off: this Mac's Tailscale name is not the one you confirmed. Turn it on again to see the name."
+
+    /// A non-negative whole number from a server answer, never a boolean or a fraction (NSNumber bridges true to 1).
+    static func integer(_ value: Any?) -> Int64? {
+        guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID() else { return nil }
+        let d = n.doubleValue
+        guard d >= 0, d <= 9_007_199_254_740_991, d == d.rounded() else { return nil }
+        return Int64(d)
+    }
+
+    /// A lowercase MagicDNS name, <node>.<tailnet>.ts.net. Must agree with PhoneApprovalsReadiness.validName (a check).
+    static func validName(_ value: String) -> String? {
+        let labels = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard value.utf8.count <= 253, labels.count >= 4, labels.suffix(2).joined(separator: ".") == "ts.net" else { return nil }
+        let ok = labels.allSatisfy { label in
+            !label.isEmpty && label.utf8.count <= 63 && label.first != "-" && label.last != "-"
+                && label.unicodeScalars.allSatisfy { ("a"..."z").contains($0) || ("0"..."9").contains($0) || $0 == "-" }
+        }
+        return ok ? value : nil
+    }
 
     /// The provider environment to set and the keys to remove. Off writes "0" and only removes the devices list.
     static func environment(_ change: Change) -> (set: [String: String], remove: Set<String>) {
@@ -619,12 +666,16 @@ enum PhoneApprovalsCore {
     /// The restarted server proves the change through GET /api/web-key/status. On: 200, enabled true, authority mode
     /// (mode absent or "authority"). The origin is not required: a boot-time miss of the tailnet name is refreshed later
     /// (S1), and the Phone approvals line says so. Off: anything but an enabled authority answer (no route is a 404).
+    /// PA-C: on is proven only when the restarted server also still reports the SR-15 fix and a tailnet-only signer bind; a
+    /// server that came back any other way fails the proof, and the apply paths roll the change back.
     static func proven(_ change: Change, status: Int?, body: [String: Any]?) -> Bool {
         let enabled = status == 200 && body?["enabled"] as? Bool == true
         let mode = body?["mode"]
         let authority = enabled && (mode == nil || mode as? String == "authority")
+        let bindFixed = (integer(body?["signerBindFixVersion"]) ?? 0) >= requiredFixVersion
+            && (body?["signerBind"] as? [String: Any])?["scope"] as? String == tailnetScope
         switch change {
-        case .on: return authority
+        case .on: return authority && bindFixed
         case .off: return !enabled
         }
     }
@@ -638,5 +689,5 @@ enum PhoneApprovalsCore {
         }
     }
 
-    static let usage = "Use set-phone-approvals on <this phone's Tailscale IPv4 address>, or set-phone-approvals off."
+    static let usage = "Use set-phone-approvals on <this phone's Tailscale IPv4 address> [--disclosed-name <this Mac's Tailscale name>], or set-phone-approvals off."
 }

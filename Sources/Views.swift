@@ -4328,12 +4328,14 @@ private extension ControlPanel {
                 .settingsHubAnchor("UT-29")
             // PK-02 (option A, lead 2026-11-11 21:31): Turn on phone approvals. Full Settings only (not a basic row, so
             // hubRowDrawn is false in Basic), off by default, and only for a server with the reopened phone approvals.
-            // 0.5.392 (lead 19:50): unavailable at compile time; mounted only while the server is on or an Off waits, to turn
-            // it off (PhoneApprovalsSwitch.mounted, read by PhoneApprovalsSwitchMount, which follows the server's mode).
+            // PA-C (2026-11-15): the turn-on row mounts only for a server that proves the SR-15 fix (signer bound to this Mac's
+            // tailnet address only); the Off row mounts in every view while the server is on or an Off waits
+            // (PhoneApprovalsSwitch.mounted, read by PhoneApprovalsSwitchMount, which follows the server's status).
             PhoneApprovalsSwitchMount(state: model.webKey, serverVersion: model.status.version, rowDrawn: hubRowDrawn("PK-02")) {
                 SettingsHubBlock { PhoneApprovalsSwitchRow(model: model, state: model.webKey, pairing: model.glassesPairing,
                                                            work: restartWork, locked: serverSettingsLocked, confirm: phoneConfirm) }
-                    .settingsHubAnchor(PhoneApprovalsSwitch.anchorID)
+                    .settingsHubAnchor(PhoneApprovalsSwitch.anchorID(on: PhoneApprovalsSwitch.isOn(model.webKey.mode),
+                                                                     pendingOff: DefaultsPhoneApprovalsPendingStore().load() != nil))
             }
             // PK-01 (server 6.99.31, COS_WEB_KEY_AUTHORITY): Phone approvals, beside the phone sign-in, in Basic and All, never
             // under Advanced. Zero height unless the server says the flag is on.
