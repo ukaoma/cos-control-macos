@@ -241,7 +241,7 @@ with tempfile.TemporaryDirectory(prefix='cos-drop-it-', dir='/tmp') as tmp:
         check(len(requests) == prior, 'invalid shared reads never reach the server')
 
         work_contract = subprocess.run([sys.argv[1], 'self-test-work'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=40)
-        check(work_contract.returncode == 0 and json.loads(work_contract.stdout).get('ok') is True, 'actual work-new thread marker and exact session-question payload parsers pass isolated admission contract')
+        check(work_contract.returncode == 0 and json.loads(work_contract.stdout).get('ok') is True, 'actual work-new, session-question, and canonical previous-generation retry builders pass isolated contract')
 
         # ── no server, no token
         sock = socket.socket(); sock.bind(('127.0.0.1', 0)); dead = sock.getsockname()[1]; sock.close()

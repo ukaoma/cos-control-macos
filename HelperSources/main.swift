@@ -19562,6 +19562,25 @@ final class COSControlHelper {
                 "dropItThreadTimeline": dropItInt((block?["thread"] as? [String: Any])?["timeline"]).map { $0 as Any } ?? NSNull()]
     }
 
+    /// A new generation restores the previous durable job's files, including asks made on another surface or before restart.
+    /// Never infer an empty attachment list from missing metadata or from the in-memory composer.
+    static func dropItThreadRetryPayload(clientJobId: String, generation: Int, query: String, model: String,
+                                         effort: String?, previous: [String: Any]) -> [String: Any]? {
+        guard generation >= 2, previous["clientJobId"] as? String == clientJobId,
+              dropItInt(previous["generation"]) == generation - 1,
+              let status = previous["status"] as? String, ["failed", "interrupted", "canceled"].contains(status),
+              let jobID = previous["jobId"] as? String, workJobID(jobID),
+              let session = previous["sessionId"] as? String, dropItMatches(session, "\\A[A-Za-z0-9-]{8,80}\\z"),
+              let refs = previous["attachments"] as? [[String: Any]], refs.count <= 5,
+              refs.allSatisfy({ $0["id"] is String }),
+              let files = dropItMediaIds(refs.map { $0["id"]! }) else { return nil }
+        var payload: [String: Any] = ["clientJobId": clientJobId, "generation": generation, "query": query, "model": model,
+                                      "source": "web", "cosThread": true, "activityToolMode": "status"]
+        if let effort { payload["effort"] = effort }
+        if !files.isEmpty { payload["attachmentIds"] = files }
+        return payload
+    }
+
     /// Retry keeps the original client id and uses only its next generation. A lost response is recovered by that exact key.
     private func emitDropItThreadRetry(_ input: Data) throws {
         try requireLiveWorkTransport()
@@ -19575,11 +19594,9 @@ final class COSControlHelper {
         }
         let token = try readToken()
         let catalog = try fetchWorkModels(token: token)
-        let files: [String]
-        if let ids = raw["attachmentIds"] {
-            guard let checked = Self.dropItMediaIds(ids) else { throw HelperError.message("The retry's attachments are invalid") }
-            files = checked
-        } else { files = [] }
+        if let ids = raw["attachmentIds"], Self.dropItMediaIds(ids) == nil {
+            throw HelperError.message("The retry's attachments are invalid")
+        }
         guard catalog.models.contains(where: { $0["id"] as? String == model && $0["available"] as? Bool == true }) else {
             throw HelperError.message("The selected model is unavailable; no substitute was sent")
         }
@@ -19596,10 +19613,12 @@ final class COSControlHelper {
             guard prior.status == 404, (prior.body?["error"] as? [String: Any])?["code"] as? String == "query_job_not_found" else {
                 throw HelperError.message("Could not recover this retry. Try again with the same chat")
             }
-            var payload: [String: Any] = ["clientJobId": id, "generation": generation, "query": query, "model": model,
-                                          "source": "web", "cosThread": true, "activityToolMode": "status"]
-            if let effort { payload["effort"] = effort }
-            if !files.isEmpty { payload["attachmentIds"] = files }
+            guard let previous = request("/api/query-jobs/by-client/" + id + "?generation=\(generation - 1)&trail=0", token: token, timeout: 15),
+                  previous.status == 200, let saved = previous.body?["job"] as? [String: Any],
+                  let payload = Self.dropItThreadRetryPayload(clientJobId: id, generation: generation, query: query, model: model,
+                                                            effort: effort, previous: saved) else {
+                throw HelperError.message("Could not restore the original question's files. Nothing was retried. Add the files to a new Ask.")
+            }
             let body = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
             guard let admitted = request("/api/query-jobs", method: "POST", token: token, body: body, timeout: 30) else {
                 throw HelperError.message("Retry delivery is unknown. Try again with this same chat to recover it")
@@ -22012,6 +22031,49 @@ final class COSControlHelper {
               Self.sessionChatQuestionFields("turn_end:1794740000000") == ["turnEndAskId": "turn_end:1794740000000"],
               Self.sessionChatQuestionFields(nil)?.isEmpty == true, Self.sessionChatQuestionFields("turn_end:old") == nil else {
             throw HelperError.message("COS chat thread mark and exact question identity contract failed")
+        }
+        // The actual retry request builder restores files from the saved generation, never a local ask cache.
+        let retryID = "6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b"
+        let savedFile = "m_" + String(repeating: "a", count: 24)
+        let otherFile = "m_" + String(repeating: "b", count: 24)
+        let savedRetry: [String: Any] = ["clientJobId": retryID, "generation": 1, "jobId": retryID,
+                                        "sessionId": "cos-session-123", "status": "failed",
+                                        "attachments": [["id": savedFile, "label": "Saved document"]]]
+        func retryPayload(_ previous: [String: Any]) -> [String: Any]? {
+            Self.dropItThreadRetryPayload(clientJobId: retryID, generation: 2, query: "Whole user question", model: "sonnet",
+                                         effort: "high", previous: previous)
+        }
+        let restoredRetry = retryPayload(savedRetry)
+        let retryBytes = try JSONSerialization.data(withJSONObject: restoredRetry ?? [:])
+        let retryWire = try JSONSerialization.jsonObject(with: retryBytes) as? [String: Any]
+        guard retryWire?["attachmentIds"] as? [String] == [savedFile], retryWire?["query"] as? String == "Whole user question",
+              retryWire?["generation"] as? Int == 2, retryWire?["source"] as? String == "web", retryWire?["cosThread"] as? Bool == true,
+              retryWire?["model"] as? String == "sonnet", retryWire?["effort"] as? String == "high", retryWire?["sessionId"] == nil else {
+            throw HelperError.message("Canonical retry files and query payload failed")
+        }
+        var noFiles = savedRetry; noFiles["attachments"] = [[String: Any]]()
+        guard let emptyRetry = retryPayload(noFiles), emptyRetry["attachmentIds"] == nil else {
+            throw HelperError.message("Canonical empty attachment list retry failed")
+        }
+        var twoFiles = savedRetry; twoFiles["attachments"] = [["id": savedFile], ["id": otherFile]]
+        guard retryPayload(twoFiles)?["attachmentIds"] as? [String] == [savedFile, otherFile] else {
+            throw HelperError.message("Canonical retry attachment order failed")
+        }
+        var missingFiles = savedRetry; missingFiles.removeValue(forKey: "attachments")
+        guard retryPayload(missingFiles) == nil else { throw HelperError.message("Missing canonical retry files were accepted") }
+        let invalidRetryFields: [(String, Any)] = [
+            ("attachments", NSNull()), ("attachments", [savedFile]), ("attachments", [["label": "Missing id"]]),
+            ("attachments", [["id": "not-media"]]), ("attachments", [["id": savedFile], ["id": savedFile]]),
+            ("attachments", (0..<6).map { ["id": "m_" + String(format: "%024x", $0)] }),
+            ("clientJobId", "another-job"), ("generation", 2), ("generation", true),
+            ("jobId", "bad"), ("sessionId", "../bad"), ("status", "running"), ("status", "completed")]
+        for (key, value) in invalidRetryFields {
+            var changed = savedRetry; changed[key] = value
+            guard retryPayload(changed) == nil else { throw HelperError.message("Malformed canonical retry metadata was accepted: " + key) }
+        }
+        for terminal in ["interrupted", "canceled"] {
+            var ended = savedRetry; ended["status"] = terminal
+            guard retryPayload(ended) != nil else { throw HelperError.message("Retryable terminal generation was refused") }
         }
         let workflow = "meeting-consolidation-v1"
         let cleanupCapability: [String: Any] = ["enabled": true, "protocolVersion": 1, "maintenanceWorkflows": [workflow]]
