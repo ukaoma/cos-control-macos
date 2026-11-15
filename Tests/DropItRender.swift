@@ -250,8 +250,13 @@ struct SettingsRowCard: View {
             let chatModel = seededModel(dropIt: true)
             try renderWindow(chatModel, width: 1280, height: 1500, name: "2-cos-chat", out: out) { chatModel.openDropItChat() }
             let shared = await sharedHistoryStore()
-            try render(DropItChatPane(store: shared, onAllMessages: {}, onHistory: {}, onOpen: { _, _ in }, polls: false),
+            let sharedHooks = DropItComposerHooks(
+                askModels: { [MessageReply.Choice(id: "codex-gpt-6-astra", label: "Codex GPT-6-Astra")] },
+                askEfforts: { _ in [WorkEffortChoice(value: "high", label: "High")] })
+            try render(DropItChatPane(store: shared, hooks: sharedHooks, onAllMessages: {}, onHistory: {}, onOpen: { _, _ in }, polls: false),
                        width: 1000, height: 900, name: "2b-cos-shared-history", out: out)
+            try render(DropItChatPane(store: shared, hooks: sharedHooks, onAllMessages: {}, onHistory: {}, onOpen: { _, _ in }, polls: false),
+                       width: 540, height: 760, name: "2c-cos-shared-history-narrow", out: out)
             // History, in the window.
             let historyModel = seededModel(dropIt: true)
             try renderWindow(historyModel, width: 1280, height: 900, name: "3-history", out: out) { historyModel.openDropItHistory() }
