@@ -19585,13 +19585,17 @@ final class COSControlHelper {
     private func emitDropItThreadRetry(_ input: Data) throws {
         try requireLiveWorkTransport()
         guard let raw = (try? JSONSerialization.jsonObject(with: input)) as? [String: Any],
-              Set(raw.keys).isSubset(of: ["clientJobId", "generation", "query", "model", "effort", "attachmentIds"]),
+              Set(raw.keys).isSubset(of: ["clientJobId", "generation", "query", "model", "effort", "attachmentIds", "recoveryOnly"]),
               let id = raw["clientJobId"] as? String, Self.workJobID(id),
               let generation = Self.dropItInt(raw["generation"]), (2...1_000_000).contains(generation),
               let query = Self.dropItPlain(raw["query"], max: 48_000, newlines: true), !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let model = raw["model"] as? String, let effort = Self.workEffort(raw["effort"]) else {
             throw HelperError.message("The COS chat retry is not valid")
         }
+        guard raw["recoveryOnly"] == nil || Self.dropItBool(raw["recoveryOnly"]) != nil else {
+            throw HelperError.message("The COS chat retry is not valid")
+        }
+        let recoveryOnly = Self.dropItBool(raw["recoveryOnly"]) == true
         let token = try readToken()
         let catalog = try fetchWorkModels(token: token)
         if let ids = raw["attachmentIds"], Self.dropItMediaIds(ids) == nil {
@@ -19608,11 +19612,13 @@ final class COSControlHelper {
             throw HelperError.message("Could not recover this retry. Try again with the same chat")
         }
         let response: HTTPResponse
+        var posted = false
         if prior.status == 200 { response = prior }
         else {
             guard prior.status == 404, (prior.body?["error"] as? [String: Any])?["code"] as? String == "query_job_not_found" else {
                 throw HelperError.message("Could not recover this retry. Try again with the same chat")
             }
+            guard !recoveryOnly else { throw HelperError.message("Could not recover this retry. Try again with the same chat") }
             guard let previous = request("/api/query-jobs/by-client/" + id + "?generation=\(generation - 1)&trail=0", token: token, timeout: 15),
                   previous.status == 200, let saved = previous.body?["job"] as? [String: Any],
                   let payload = Self.dropItThreadRetryPayload(clientJobId: id, generation: generation, query: query, model: model,
@@ -19620,17 +19626,20 @@ final class COSControlHelper {
                 throw HelperError.message("Could not restore the original question's files. Nothing was retried. Add the files to a new Ask.")
             }
             let body = String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
+            posted = true
             guard let admitted = request("/api/query-jobs", method: "POST", token: token, body: body, timeout: 30) else {
-                throw HelperError.message("Retry delivery is unknown. Try again with this same chat to recover it")
+                emit(ok: true, message: "Retry delivery is unknown. Try again with this same chat to recover it",
+                     details: ["transport": "unavailable", "retryPosted": true])
+                return
             }
             response = admitted
         }
         let job = response.body?["job"] as? [String: Any]
         if (200..<300).contains(response.status), job?["clientJobId"] as? String == id, Self.dropItInt(job?["generation"]) == generation {
-            emit(ok: true, message: "COS chat retry accepted", details: ["transport": "answered", "httpStatus": 200, "accepted": true, "jobStatus": (job?["status"] as? String) ?? "running"])
+            emit(ok: true, message: "COS chat retry accepted", details: ["transport": "answered", "httpStatus": 200, "accepted": true, "retryPosted": posted, "jobStatus": (job?["status"] as? String) ?? "running"])
         } else {
             var details = Self.dropItAnswer(op: "thread-retry", status: response.status, body: response.body)
-            details["transport"] = "answered"; details["httpStatus"] = response.status
+            details["transport"] = "answered"; details["httpStatus"] = response.status; details["retryPosted"] = posted
             emit(ok: true, message: "COS chat retry refused", details: details)
         }
     }

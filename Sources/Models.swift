@@ -15685,6 +15685,11 @@ struct TodayRunGuard {
         case .refused: recordStart(now: now); recordOutcome(admitted: false, now: now)
         }
     }
+    /// The retry helper reports whether it actually sent POST. Recovery GETs and preflight failures spend no start.
+    func accountRetry(_ details: [String: JSONValue], now: Date) {
+        guard details["retryPosted"]?.bool == true else { return }
+        account(details["accepted"]?.bool == true ? .admitted : .refused("The server did not start it."), now: now)
+    }
     /// Checked before anything is recorded: Work is sending something else, or an earlier run still holds this target.
     static func preflight(busy: Bool, holds: Bool) -> String? {
         if busy { return "Work is sending something else. Try again in a moment." }

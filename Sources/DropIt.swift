@@ -921,6 +921,9 @@ final class DropItStore: ObservableObject {
     var threadOnlyOn: () -> Bool = { false }
     /// The window checks the same Today cap/breaker and resolves the model currently shown by this composer.
     var retryOptions: (@MainActor () -> (model: String?, effort: String?, refusal: String?))?
+    /// Serialize retry admission with ordinary Today starts; finish sees transport evidence even after the pane closes.
+    var retryBegin: (@MainActor () -> String?)?
+    var retryFinished: (@MainActor ([String: JSONValue]) -> Void)?
     @Published private(set) var retryingEntries: Set<String> = []
     private var retryGenerations: [String: Int] = [:]
     @Published private(set) var threadEntries: [DropIt.ThreadEntry] = []
@@ -1233,7 +1236,6 @@ final class DropItStore: ObservableObject {
               ["failed", "interrupted"].contains(threadEntries[index].status),
               let client = threadEntries[index].clientJobId, let generation = threadEntries[index].generation,
               let options = retryOptions?() else { return }
-        if let refusal = options.refusal { entryLines[id] = refusal; return }
         guard let model = options.model else { entryLines[id] = "Choose an available model before asking again."; return }
         retryingEntries.insert(id); entryLines[id] = nil
         defer { retryingEntries.remove(id) }
@@ -1242,12 +1244,18 @@ final class DropItStore: ObservableObject {
         var body: [String: Any] = ["clientJobId": client, "generation": next, "query": threadEntries[index].question, "model": model]
         if let effort = options.effort { body["effort"] = effort }
         if let local = asks.first(where: { $0.id == client }), !local.attachmentIDs.isEmpty { body["attachmentIds"] = local.attachmentIDs }
+        // A cap/breaker refusal still permits a read-only recovery of a previously delivered attempt.
+        if options.refusal != nil { body["recoveryOnly"] = true }
         guard let data = DropIt.json(body) else { return }
+        if let refusal = retryBegin?() { entryLines[id] = refusal; return }
         let epoch = threadHistoryGeneration
-        let reply = await ask(DropIt.call("thread-retry"), data)
+        let response = try? await run(DropIt.call("thread-retry"), data)
+        retryFinished?(response?.details ?? [:])
+        let reply = DropIt.reply(response?.details)
         guard epoch == threadHistoryGeneration, threadOnlyOn() else { return }
         guard case .ok(let details) = reply, details["accepted"]?.bool == true else {
-            if case .refused(_, let why) = reply { entryLines[id] = why }
+            if let refusal = options.refusal { entryLines[id] = refusal }
+            else if case .refused(_, let why) = reply { entryLines[id] = why }
             else { entryLines[id] = "Could not confirm the retry. Ask again here to recover the same attempt." }
             return
         }

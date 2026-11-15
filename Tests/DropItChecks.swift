@@ -506,13 +506,28 @@ struct StandDown: Error {}
         check(stand.calls("thread-turn").count == registrations && shared.asks.last?.threadOnly == true, "[thread only] never manually registers a server-owned terminal turn")
         stand.answers["thread-history"] = answered(200, #""protocol":1,"entries":[],"updated":[\#(completed.replacingOccurrences(of: "completed", with: "failed"))],"newest":"c3.1.2.0.0","more":false"#)
         await shared.loadThreadHistory()
+        var retryBegins = 0
+        var retryCompletions: [[String: JSONValue]] = []
+        shared.retryBegin = { retryBegins += 1; return nil }
+        shared.retryFinished = { retryCompletions.append($0) }
         shared.retryOptions = { ("sonnet", "high", nil) }
-        stand.answers["thread-retry"] = answered(200, #""accepted":true,"jobStatus":"accepted""#)
+        stand.answers["thread-retry"] = answered(200, #""accepted":true,"retryPosted":true,"jobStatus":"accepted""#)
         await shared.retryThreadEntry(sharedID)
         let retryBody = stdinObject(stand.log.last(where: { stand.op($0.args) == "thread-retry" })?.stdin)
         check(retryBody["clientJobId"] as? String == "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" && retryBody["generation"] as? Int == 2 && retryBody["sessionId"] == nil,
               "[shared retry] next generation of the same client id, never a new turn or a different conversation")
         check(shared.threadEntries[0].status == "running" && shared.threadEntries[0].generation == 2, "[shared retry outcome] an old generation poll cannot roll a retry back")
+        check(retryBegins == 1 && retryCompletions.count == 1 && retryCompletions[0]["retryPosted"]?.bool == true,
+              "[shared retry guard] one admission lock and one accounting callback carry actual transport evidence")
+        let capped = DropItStore(run: stand.run)
+        capped.historyOn = { true }; capped.threadOnlyOn = { true }
+        stand.answers["thread-history"] = answered(200, #""protocol":1,"entries":[\#(completed.replacingOccurrences(of: "completed", with: "failed"))],"newest":"c1.1.1","more":false"#)
+        await capped.loadThreadHistory()
+        capped.retryOptions = { ("sonnet", nil, "Today's limit is reached.") }
+        stand.answers["thread-retry"] = answered(200, #""accepted":true,"retryPosted":false,"jobStatus":"completed""#)
+        await capped.retryThreadEntry(sharedID)
+        check(stdinObject(stand.log.last(where: { stand.op($0.args) == "thread-retry" })?.stdin)["recoveryOnly"] as? Bool == true,
+              "[shared retry cap] existing generation may be recovered without permission to POST")
         // Deferred responses exercise real await boundaries, not a source-string expectation.
         let races = Stand()
         let race = DropItStore(run: races.run)
@@ -534,6 +549,8 @@ struct StandDown: Error {}
         while races.waiting["thread-entry"]?.isEmpty != false { await Task.yield() }
         race.closed(); races.release("thread-entry"); await closedExpansion.value
         check(race.threadEntries[0].answer == "new answer", "[shared expansion closed] closing the pane invalidates its in-flight expansion")
+        var raceFinished = 0
+        race.retryFinished = { _ in raceFinished += 1 }
         race.retryOptions = { ("sonnet", nil, nil) }
         let failed2 = newer.replacingOccurrences(of: "completed", with: "failed")
         races.answers["thread-history"] = answered(200, #""protocol":1,"entries":[],"updated":[\#(failed2)],"newest":"c1.1.3","more":false"#)
@@ -548,9 +565,11 @@ struct StandDown: Error {}
               "[shared uncertain retry] observing the uncertain generation terminal advances the next user retry")
         races.captureOnEntry.insert("thread-retry"); races.holding = ["thread-retry"]
         races.answers["thread-retry"] = answered(200, #""accepted":true,"jobStatus":"running""#)
+        let finishedBeforeClose = raceFinished
         let closedRetry = Task { await race.retryThreadEntry(sharedID) }
         while races.waiting["thread-retry"]?.isEmpty != false { await Task.yield() }
         race.closed(); races.release("thread-retry"); await closedRetry.value
+        check(raceFinished == finishedBeforeClose + 1, "[shared retry closed] accounting and lock release happen despite the closed-pane epoch guard")
         check(race.threadEntries[0].generation == 3 && race.threadEntries[0].status == "failed", "[shared retry closed] a closed pane cannot apply an in-flight retry response")
         let oldHistory = DropItStore(run: stand.run)
         let historyCalls = stand.calls("thread-history").count

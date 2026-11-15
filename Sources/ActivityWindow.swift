@@ -11620,6 +11620,16 @@ extension ActivityWindow {
             }
             return (chosen, effort, today.runRefusal(target: "cos:ask:retry", handoff: handoffStore))
         }
+        model.dropIt.retryBegin = { [today, handoffStore] in
+            if today.runBusy { return "A run is starting." }
+            if let refusal = TodayRunGuard.preflight(busy: handoffStore.busy || handoffStore.quietSend, holds: false) { return refusal }
+            today.runBusy = true
+            return nil
+        }
+        model.dropIt.retryFinished = { [today] details in
+            TodayRunGuard(defaults: .standard).accountRetry(details, now: Date())
+            today.runBusy = false
+        }
         model.dropIt.dropTakes = model.status.dropIt.attachments
         model.dropIt.isSecret = { WorkCardFiles.looksSecret(name: $0) }
     }

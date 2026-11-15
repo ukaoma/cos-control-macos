@@ -836,6 +836,23 @@ import Foundation
         check(TodayRunGuard.preflight(busy: true, holds: false) != nil && TodayRunGuard.preflight(busy: false, holds: true) != nil
               && TodayRunGuard.preflight(busy: false, holds: false) == nil, "busy Work or an open run refuses before anything is recorded")
         check(TodayRunGuard.line(.capReached)?.contains("on this Mac") == true, "the cap says it is this Mac's")
+        let retryDefaults = UserDefaults(suiteName: suite + ".retry")!
+        defer { retryDefaults.removePersistentDomain(forName: suite + ".retry") }
+        let retryGuard = TodayRunGuard(defaults: retryDefaults, calendar: calendar)
+        retryGuard.accountRetry([:], now: now)
+        retryGuard.accountRetry(["retryPosted": .bool(false), "accepted": .bool(true)], now: now)
+        check(retryGuard.used(now: now) == 0, "retry preflight and exact-generation GET recovery do not consume a start")
+        retryGuard.accountRetry(["retryPosted": .bool(true)], now: now) // POST reached transport, its 202 was lost.
+        retryGuard.accountRetry(["retryPosted": .bool(false), "accepted": .bool(true)], now: now)
+        check(retryGuard.used(now: now) == 1, "lost retry 202 counts its POST once and recovery does not count again")
+        for _ in 0..<2 { retryGuard.accountRetry(["retryPosted": .bool(true), "accepted": .bool(false)], now: now) }
+        check(retryGuard.used(now: now) == 3 && retryGuard.pausedUntil(now: now) != nil,
+              "three refused or uncertain retry POSTs open the ordinary Today breaker")
+        let later = now.addingTimeInterval(TodayRunGuard.breakerPause + 1)
+        for _ in 0..<17 { retryGuard.accountRetry(["retryPosted": .bool(true), "accepted": .bool(true)], now: later) }
+        check(retryGuard.used(now: later) == 20 && retryGuard.admission(target: "cos:ask:retry", inFlight: [], switchOn: true, now: later) == .capReached,
+              "retry POSTs use the same 20 per day cap as ordinary Ask")
+        check(retryDefaults.integer(forKey: TodayRunGuard.failuresKey) == 0, "admitted retry POST resets failed-start streak")
         // The model: Sonnet, never Opus by default, never Cursor.
         let models: [(id: String, provider: String, available: Bool)] = [("claude-opus-4-8", "claude", true), ("cursor-auto", "cursor", true),
                                                                        ("claude-sonnet-4-6", "claude", true), ("gpt-5", "codex", true)]
